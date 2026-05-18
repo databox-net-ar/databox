@@ -1,0 +1,185 @@
+/* =====================================================================
+   cloud / style.css
+   Sistema de diseno unico para toda la app. Ver DESIGN.md.
+   ===================================================================== */
+
+/* 1. Tokens */
+:root {
+  --bg:        #1a1a1a;
+  --surface:   #242526;
+  --border:    #383838;
+  --row-hover: #2d2e2f;
+  --primary:   #317535;
+  --primary-h: #245828;
+  --danger:    #e62a2a;
+  --success:   #22c55e;
+  --warn:      #f59e0b;
+  --info:      #3b82f6;
+  --purple:    #8b5cf6;
+  --text:      #f0f0f0;
+  --muted:     #9ca0a4;
+  --radius:    10px;
+  --shadow:    0 1px 4px rgba(0,0,0,.45);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,.65);
+}
+
+/* 2. Reset & base */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100vh;
+}
+a { color: inherit; text-decoration: none; }
+
+/* 3. Layout */
+.layout  { display: flex; min-height: 100vh; }
+.sidebar { width: 220px; background: var(--primary);
+           border-right: 1px solid rgba(0,0,0,.25);
+           display: flex; flex-direction: column; flex-shrink: 0; }
+.main    { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.topbar  { background: var(--primary);
+           border-bottom: 1px solid rgba(0,0,0,.25);
+           padding: 0 24px; height: 60px;
+           display: flex; align-items: center; justify-content: space-between;
+           box-shadow: var(--shadow); position: relative; }
+.content { flex: 1; padding: 24px; overflow-y: auto; }
+
+/* 4. Sidebar */
+.sidebar-logo       { padding: 18px 20px; border-bottom: 1px solid rgba(0,0,0,.2);
+                      display: flex; align-items: center; justify-content: center; }
+.sidebar-logo-mark  { display: block; width: auto; height: 36px;
+                      max-width: 100%; object-fit: contain; }
+.sidebar-nav        { padding: 8px 0 12px; flex: 1; }
+.sidebar-footer     { padding: 10px 20px; font-size: .75rem; color: rgba(255,255,255,.7);
+                      border-top: 1px solid rgba(0,0,0,.2); text-align: center;
+                      letter-spacing: .03em; font-family: monospace; }
+
+.nav-item { display: flex; align-items: center; gap: 10px;
+            padding: 10px 20px; font-size: .9rem; color: rgba(255,255,255,.85);
+            cursor: pointer; border-left: 3px solid transparent;
+            transition: background .15s, color .15s; text-decoration: none; }
+.nav-item:hover  { background: rgba(0,0,0,.18); color: #fff; }
+.nav-item.active { background: rgba(0,0,0,.28); color: #fff;
+                   border-left-color: #fff; font-weight: 600; }
+.nav-icon { font-size: 1.1rem; width: 20px; text-align: center; }
+
+/* 5. Topbar */
+.topbar-title    { font-size: 1rem; font-weight: 600; flex: 1; color: #fff; }
+.topbar-user     { display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+                   position: relative; }
+.topbar-username { background: none; border: none; cursor: pointer;
+                   font-size: .85rem; color: rgba(255,255,255,.85);
+                   display: flex; align-items: center; gap: 4px;
+                   padding: 6px 10px; border-radius: 8px;
+                   transition: background .15s, color .15s; font-family: inherit; }
+.topbar-username:hover { background: rgba(0,0,0,.18); color: #fff; }
+
+.topbar .hamburger { color: #fff; }
+
+.user-dropdown   { display: none; position: absolute; right: 0; top: calc(100% + 6px);
+                   background: var(--surface); border: 1px solid var(--border);
+                   border-radius: 10px; box-shadow: var(--shadow-lg);
+                   min-width: 180px; overflow: hidden; z-index: 200; }
+.user-dropdown.open { display: block; }
+.user-dropdown .action-menu-item { display: flex; align-items: center; gap: 10px; width: 100%;
+                                   padding: 10px 16px; font-size: .85rem; color: var(--text);
+                                   background: none; border: none; cursor: pointer;
+                                   text-align: left; font-family: inherit; }
+.user-dropdown .action-menu-item:hover:not(:disabled) { background: var(--bg); color: var(--primary); }
+.user-dropdown .action-menu-item:disabled { opacity: .5; cursor: not-allowed; }
+.user-dropdown .action-menu-item i { width: 16px; text-align: center; color: var(--muted); }
+
+/* 6. Botones */
+.btn { padding: 8px 16px; border-radius: var(--radius); border: none;
+       font-size: .88rem; font-weight: 600; cursor: pointer;
+       display: inline-flex; align-items: center; gap: 6px;
+       transition: background .15s, transform .1s; font-family: inherit; }
+.btn:active        { transform: scale(.97); }
+.btn-primary       { background: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-h); }
+.btn-secondary     { background: var(--surface); color: var(--text);
+                     border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--bg); }
+.btn-ghost         { background: transparent; color: var(--muted);
+                     border: 1px solid var(--border); }
+.btn-ghost:hover   { background: var(--bg); color: var(--text); }
+.btn-sm            { padding: 5px 12px; font-size: .8rem; }
+.btn-icon-sm       { background: none; border: none; cursor: pointer;
+                     padding: 4px 8px; border-radius: 6px; font-size: .85rem;
+                     color: var(--muted); font-family: inherit; }
+.btn-icon-sm:hover { background: var(--bg); color: var(--text); }
+
+/* 10. Tablas */
+.table-card { background: var(--surface); border: 1px solid var(--border);
+              border-radius: var(--radius); box-shadow: var(--shadow);
+              overflow-x: auto; overflow-y: hidden; }
+table       { width: 100%; border-collapse: collapse; font-size: .88rem; }
+thead tr    { background: var(--bg); }
+th          { padding: 10px 14px; text-align: left;
+              font-size: .75rem; text-transform: uppercase; letter-spacing: .05em;
+              color: var(--muted); font-weight: 600;
+              border-bottom: 1px solid var(--border); white-space: nowrap; }
+td          { padding: 10px 14px; border-bottom: 1px solid var(--border);
+              vertical-align: middle; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--row-hover); }
+.td-nombre  { font-weight: 600; }
+.td-id      { color: var(--muted); font-size: .8rem; }
+.table-empty { text-align: center; padding: 48px 24px; color: var(--muted); }
+
+/* 11. Badges */
+.badge         { display: inline-block; padding: 2px 10px;
+                 border-radius: 99px; font-size: .75rem; font-weight: 600; }
+.badge-info    { background: rgba(59,130,246,.18); color: #93c5fd; }
+.badge-success { background: rgba(34,197,94,.18);  color: #86efac; }
+.badge-danger  { background: rgba(230,42,42,.2);   color: #f5a8a8; }
+.badge-warn    { background: rgba(245,158,11,.18); color: #fcd34d; }
+
+/* 12. Stat cards */
+.stats-bar  { display: flex; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+.stat-card  { background: var(--surface); border: 1px solid var(--border);
+              border-radius: var(--radius); padding: 14px 20px;
+              display: flex; flex-direction: column; gap: 2px;
+              flex: 1; min-width: 140px; }
+.stat-label { font-size: .75rem; color: var(--muted);
+              text-transform: uppercase; letter-spacing: .04em; }
+.stat-value { font-size: 1.5rem; font-weight: 700; }
+.stat-value.green  { color: var(--success); }
+.stat-value.orange { color: var(--primary); }
+.stat-value.red    { color: var(--danger); }
+.stat-value.blue   { color: var(--info); }
+
+.dash-link { cursor: pointer; transition: opacity .15s; }
+.dash-link:hover { opacity: .75; }
+.stat-card.dash-link:hover { background: var(--bg); }
+
+/* 13. Dashboard grid */
+.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 4px; }
+.dash-table-header { padding: 14px 20px 10px;
+                     font-weight: 600; font-size: .95rem;
+                     border-bottom: 1px solid var(--border);
+                     display: flex; align-items: center; justify-content: space-between; }
+.dash-ver-mas      { font-size: .78rem; font-weight: 500; color: var(--primary); cursor: pointer; }
+.dash-ver-mas:hover { text-decoration: underline; }
+
+/* 18. Spinner */
+.spin { display: inline-block; width: 28px; height: 28px;
+        border: 3px solid var(--border); border-top-color: var(--primary);
+        border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 19. Responsive */
+.hamburger        { display: none; background: none; border: none; cursor: pointer;
+                    font-size: 1.4rem; color: var(--text);
+                    padding: 4px 8px; margin-right: 8px; line-height: 1; }
+.sidebar-overlay  { display: none; position: fixed; inset: 0;
+                    background: rgba(0,0,0,.45); z-index: 199; }
+.sidebar-overlay.active { display: block; }
+
+@media (max-width: 768px) {
+  .hamburger { display: inline-flex; align-items: center; }
+  .sidebar   { position: fixed; top: 0; left: 0; height: 100vh; z-index: 200;
+               transform: translateX(-100%); transition: transform .25s; }
+  .sidebar.open { transform: translateX(0); }
+  .dash-grid { grid-template-columns: 1fr; }
+}
