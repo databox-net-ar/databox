@@ -1,0 +1,37 @@
+{
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+            "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+            "args": ["-c"]
+        }
+    },
+    "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "clear": true
+    },
+    "tasks": [
+        {
+            "label": "aprovisionar",
+            "type": "shell",
+            "command": "./scripts/aprovisionar.sh",
+            "problemMatcher": []
+        },
+        {
+            "label": "deploy",
+            "type": "shell",
+            "command": "./scripts/deploy.sh",
+            "problemMatcher": []
+        },
+        {
+            "label": "instalar",
+            "type": "shell",
+            "command": "./scripts/instalar.sh",
+            "problemMatcher": []
+        }
+    ]
+}
