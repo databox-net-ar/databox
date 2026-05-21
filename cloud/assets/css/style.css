@@ -335,6 +335,22 @@ textarea { resize: vertical; min-height: 60px; }
   .data-list { grid-template-columns: 1fr; }
 }
 
+/* 24. Tile grid (menu de navegacion / lanzadores) */
+.tile-grid  { display: grid;
+              grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+              gap: 16px; }
+.tile-card  { background: var(--surface); border: 1px solid var(--border);
+              border-radius: var(--radius); padding: 20px;
+              display: flex; flex-direction: column; gap: 6px;
+              text-align: left; cursor: pointer; text-decoration: none;
+              color: var(--text); font-family: inherit;
+              transition: border-color .15s, background .15s, transform .1s; }
+.tile-card:hover  { border-color: var(--primary); background: var(--row-hover); }
+.tile-card:active { transform: scale(.98); }
+.tile-icon  { font-size: 1.6rem; line-height: 1; margin-bottom: 4px; }
+.tile-title { font-weight: 600; font-size: .95rem; color: var(--text); }
+.tile-desc  { font-size: .8rem; color: var(--muted); }
+
 /* 16. Toasts */
 .toast { position: fixed; bottom: 24px; left: 50%;
          transform: translateX(-50%) translateY(16px);
@@ -376,4 +392,23 @@ textarea { resize: vertical; min-height: 60px; }
                font-weight: 600; color: var(--text); margin-bottom: 6px; }
 .login-submit { margin-top: 6px; padding: 10px 16px; font-size: .95rem; }
 .login-submit:disabled { opacity: .65; cursor: not-allowed; }
+
+/* ---- Lista de permisos (ABM de Roles) ---- */
+.perm-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+                margin-bottom: 8px; }
+.perm-list    { border: 1px solid var(--border); border-radius: var(--radius);
+                background: var(--bg); max-height: 280px; overflow-y: auto; }
+.perm-item    { display: flex; align-items: center; gap: 10px;
+                padding: 8px 12px; border-bottom: 1px solid var(--border);
+                cursor: pointer; transition: background .15s; }
+.perm-item:last-child { border-bottom: none; }
+.perm-item:hover      { background: var(--row-hover); }
+.perm-check   { width: 16px; height: 16px; accent-color: var(--primary);
+                cursor: pointer; flex-shrink: 0; }
+.perm-text    { flex: 1; display: flex; flex-direction: column; gap: 2px;
+                min-width: 0; }
+.perm-name    { font-size: .88rem; color: var(--text); font-weight: 500; }
+.perm-desc    { font-size: .78rem; color: var(--muted); }
+.perm-id      { font-family: monospace; font-size: .75rem; color: var(--muted);
+                flex-shrink: 0; }
 

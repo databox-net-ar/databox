@@ -47,9 +47,18 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
       </div>
 
       <nav class="sidebar-nav">
-        <a href="#/dashboard" class="nav-item" data-route="/dashboard">
-          <span class="nav-icon">📊</span> Dashboard
-        </a>
+        <div class="nav-group-wrap" data-group="inicio">
+          <button type="button" class="nav-item nav-group-toggle">
+            <span class="nav-icon">🏠</span>
+            <span class="nav-group-label">Inicio</span>
+            <span class="nav-group-arrow">+</span>
+          </button>
+          <div class="nav-sub">
+            <a href="#/dashboard" class="nav-item nav-sub-item" data-route="/dashboard">
+              <span class="nav-icon">📊</span> Dashboard
+            </a>
+          </div>
+        </div>
 
         <div class="nav-group-wrap" data-group="seguridad">
           <button type="button" class="nav-item nav-group-toggle">
@@ -60,6 +69,25 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
           <div class="nav-sub">
             <a href="#/usuarios" class="nav-item nav-sub-item" data-route="/usuarios">
               <span class="nav-icon">👥</span> Usuarios
+            </a>
+            <a href="#/roles" class="nav-item nav-sub-item" data-route="/roles">
+              <span class="nav-icon">🛡️</span> Roles
+            </a>
+            <a href="#/permisos" class="nav-item nav-sub-item" data-route="/permisos">
+              <span class="nav-icon">🔑</span> Permisos
+            </a>
+          </div>
+        </div>
+
+        <div class="nav-group-wrap" data-group="administracion">
+          <button type="button" class="nav-item nav-group-toggle">
+            <span class="nav-icon">⚙️</span>
+            <span class="nav-group-label">Administración</span>
+            <span class="nav-group-arrow">+</span>
+          </button>
+          <div class="nav-sub">
+            <a href="#/herramientas" class="nav-item nav-sub-item" data-route="/herramientas">
+              <span class="nav-icon">🛠️</span> Herramientas
             </a>
           </div>
         </div>

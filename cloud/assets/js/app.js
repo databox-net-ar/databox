@@ -709,6 +709,843 @@ async function eliminarUsuario(id) {
   }
 }
 
+// ------------------------- Vista: Roles (ABM) -------------------------
+const rolesFiltros = {
+  codigo: '', nombre: '', descripcion: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+let rolesBuscadorTimer = null;
+let permisosCatalogo = null; // cache de GET ?listar=permisos
+
+async function getPermisosCatalogo() {
+  if (permisosCatalogo) return permisosCatalogo;
+  const data = await apiGet('api/roles.php?listar=permisos');
+  permisosCatalogo = data.items || [];
+  return permisosCatalogo;
+}
+
+// Tokeniza un string CSV/espacios/punto-y-coma a array de ids string (sin vacios).
+function tokenizarPermisos(raw) {
+  if (raw == null) return [];
+  return String(raw)
+    .split(/[,;\s]+/)
+    .map((t) => t.trim())
+    .filter((t) => t !== '');
+}
+
+route('/roles', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Roles</div>
+      <div class="page-subtitle">Permisos agrupados que se asignan a los usuarios.</div>
+    </div>
+
+    <div class="stats-bar" id="rolStats">
+      <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+      <div class="stat-card"><span class="stat-label">Sin permisos</span><span class="stat-value red">—</span></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="search-wrap">
+          <input type="search" class="search-input" id="rolSearch"
+                 placeholder="Buscar nombre o descripción…">
+          <button class="search-clear" id="rolSearchClear" style="display:none">×</button>
+        </div>
+        <button class="btn btn-ghost" id="rolFiltrosBtn">
+          <i class="fa-solid fa-filter"></i> Filtros
+        </button>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-primary" id="rolNuevoBtn">+ Nuevo rol</button>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Nombre</th>
+            <th>Descripción</th>
+            <th style="text-align:right">Permisos</th>
+            <th style="text-align:right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="rolTbody">
+          <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  $('#rolNuevoBtn').addEventListener('click', () => abrirAltaEdicionRol(null));
+  $('#rolFiltrosBtn').addEventListener('click', () => abrirFiltrosRoles());
+
+  const inp = $('#rolSearch');
+  const clr = $('#rolSearchClear');
+  inp.value = rolesFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    rolesFiltros.q = inp.value.trim();
+    clearTimeout(rolesBuscadorTimer);
+    rolesBuscadorTimer = setTimeout(cargarRoles, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    rolesFiltros.q = '';
+    cargarRoles();
+  });
+
+  $('#rolTbody').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-act]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    if (btn.dataset.act === 'view')   abrirConsultarRol(id);
+    if (btn.dataset.act === 'edit')   abrirAltaEdicionRol(id);
+    if (btn.dataset.act === 'delete') eliminarRol(id);
+  });
+
+  await cargarRoles();
+}, 'Roles');
+
+async function cargarRoles() {
+  const tbody = $('#rolTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(rolesFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/roles.php?' + qs.toString());
+    pintarStatsRoles(data.stats);
+    pintarTablaRoles(data.items);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsRoles(s) {
+  const cards = $$('#rolStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.sin_permisos);
+}
+
+function pintarTablaRoles(rows) {
+  const tbody = $('#rolTbody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin roles.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td class="td-id">#${esc(r.id)}</td>
+      <td class="td-nombre">${esc(r.nombre || '—')}</td>
+      <td>${esc(r.descripcion || '—')}</td>
+      <td style="text-align:right">${fmtNum(r.permisos_count || 0)}</td>
+      <td>
+        <div class="actions" style="justify-content:flex-end">
+          <button class="action-icon view"   title="Consultar" data-act="view"   data-id="${r.id}"><i class="fa-regular fa-eye"></i></button>
+          <button class="action-icon edit"   title="Editar"    data-act="edit"   data-id="${r.id}"><i class="fa-solid fa-pencil"></i></button>
+          <button class="action-icon delete" title="Eliminar"  data-act="delete" data-id="${r.id}"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de Filtros (roles) ----
+function abrirFiltrosRoles() {
+  const f = rolesFiltros;
+  openModal(`
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Filtros</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Código</label>
+            <input type="number" id="fRolCodigo" value="${esc(f.codigo)}">
+          </div>
+          <div class="form-group">
+            <label>Nombre</label>
+            <input type="text" id="fRolNombre" value="${esc(f.nombre)}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Descripción</label>
+          <input type="text" id="fRolDescripcion" value="${esc(f.descripcion)}">
+        </div>
+        <div class="form-row-3">
+          <div class="form-group">
+            <label>Límite</label>
+            <input type="number" id="fRolLimite" min="1" max="1000" value="${esc(f.limite)}">
+          </div>
+          <div class="form-group">
+            <label>Ordenar por</label>
+            <select id="fRolOrderBy">
+              <option value="id"          ${f.order_by === 'id'          ? 'selected' : ''}>Código</option>
+              <option value="nombre"      ${f.order_by === 'nombre'      ? 'selected' : ''}>Nombre</option>
+              <option value="descripcion" ${f.order_by === 'descripcion' ? 'selected' : ''}>Descripción</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Dirección</label>
+            <select id="fRolDir">
+              <option value="asc"  ${f.dir === 'asc'  ? 'selected' : ''}>Ascendente</option>
+              <option value="desc" ${f.dir === 'desc' ? 'selected' : ''}>Descendente</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"     data-act="limpiar"  style="margin-right:auto">Limpiar</button>
+        <button class="btn btn-secondary" data-act="close">Cancelar</button>
+        <button class="btn btn-primary"   data-act="aplicar">Aplicar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close') closeModal();
+    if (a.dataset.act === 'limpiar') {
+      $('#fRolCodigo').value      = '';
+      $('#fRolNombre').value      = '';
+      $('#fRolDescripcion').value = '';
+      $('#fRolLimite').value      = '100';
+      $('#fRolOrderBy').value     = 'id';
+      $('#fRolDir').value         = 'desc';
+    }
+    if (a.dataset.act === 'aplicar') {
+      rolesFiltros.codigo      = $('#fRolCodigo').value.trim();
+      rolesFiltros.nombre      = $('#fRolNombre').value.trim();
+      rolesFiltros.descripcion = $('#fRolDescripcion').value.trim();
+      rolesFiltros.limite      = Number($('#fRolLimite').value) || 100;
+      rolesFiltros.order_by    = $('#fRolOrderBy').value;
+      rolesFiltros.dir         = $('#fRolDir').value;
+      closeModal();
+      cargarRoles();
+    }
+  });
+}
+
+// ---- Modal Consultar (rol) ----
+async function abrirConsultarRol(id) {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Consultar rol <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+
+  try {
+    const [r, catalogo] = await Promise.all([
+      apiGet(`api/roles.php?id=${id}`),
+      getPermisosCatalogo().catch(() => []),
+    ]);
+    const ids   = tokenizarPermisos(r.permisos);
+    const byId  = new Map(catalogo.map((p) => [String(p.id), p]));
+    const chips = ids.length
+      ? ids.map((pid) => {
+          const p = byId.get(String(pid));
+          const label = p ? `${p.nombre} (#${p.id})` : `#${pid}`;
+          return `<span class="badge badge-info" style="margin:2px 4px 2px 0">${esc(label)}</span>`;
+        }).join('')
+      : '';
+
+    const fila = (label, value, full = false, isCode = false, html = null) => {
+      const empty = html == null && (value == null || value === '');
+      const inner = html != null ? html
+                  : empty ? 'Sin dato'
+                  : isCode ? `<code>${esc(value)}</code>`
+                  : esc(value);
+      return `
+        <div class="data-row${full ? ' full' : ''}">
+          <span class="data-label">${esc(label)}</span>
+          <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+        </div>
+      `;
+    };
+    $('#modalRoot .modal-body').innerHTML = `
+      <dl class="data-list">
+        ${fila('Código',      '#' + r.id)}
+        ${fila('Permisos',    String(ids.length), false, false)}
+        ${fila('Nombre',      r.nombre, true, false)}
+        ${fila('Descripción', r.descripcion, true, false)}
+        ${fila('Detalle de permisos', null, true, false, chips || '<span class="data-value muted">Sin permisos asignados</span>')}
+      </dl>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Modal Alta / Edición (rol) ----
+async function abrirAltaEdicionRol(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar rol <span class="modal-subtitle">#${id}</span>` : 'Nuevo rol'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const [rol, catalogo] = await Promise.all([
+      esEdicion ? apiGet(`api/roles.php?id=${id}`) : Promise.resolve({}),
+      getPermisosCatalogo(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formRolHtml(rol, catalogo);
+    bindPermisosBuscador();
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close') closeModal();
+    if (a.dataset.act === 'guardar') await guardarRol(id, a);
+    if (a.dataset.act === 'perm-todos')   marcarPermisos(true);
+    if (a.dataset.act === 'perm-ninguno') marcarPermisos(false);
+  });
+}
+
+function formRolHtml(r, catalogo) {
+  const v = (k) => esc(r?.[k] ?? '');
+  const seleccionados = new Set(tokenizarPermisos(r?.permisos).map(String));
+
+  const checks = (catalogo || []).map((p) => {
+    const checked = seleccionados.has(String(p.id)) ? 'checked' : '';
+    return `
+      <label class="perm-item" data-nombre="${esc((p.nombre || '').toLowerCase())}">
+        <input type="checkbox" class="perm-check" value="${esc(p.id)}" ${checked}>
+        <span class="perm-text">
+          <span class="perm-name">${esc(p.nombre || '—')}</span>
+          ${p.descripcion ? `<span class="perm-desc">${esc(p.descripcion)}</span>` : ''}
+        </span>
+        <span class="perm-id">#${esc(p.id)}</span>
+      </label>
+    `;
+  }).join('');
+
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre *</label>
+        <input type="text" id="rNombre" value="${v('nombre')}" required>
+      </div>
+      <div class="form-group">
+        <label>Código</label>
+        <input type="text" value="${r?.id ? '#' + r.id : '(se asigna al crear)'}" readonly>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Descripción</label>
+      <input type="text" id="rDescripcion" value="${v('descripcion')}">
+    </div>
+    <div class="form-group">
+      <label>Permisos</label>
+      <div class="perm-toolbar">
+        <div class="search-wrap" style="flex:1">
+          <input type="search" id="rPermSearch" class="search-input" placeholder="Filtrar permisos…" style="width:100%">
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" data-act="perm-todos">Marcar todos</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-act="perm-ninguno">Quitar todos</button>
+      </div>
+      <div class="perm-list" id="rPermList">
+        ${checks || '<div class="table-empty" style="padding:20px">No hay permisos definidos en el catálogo.</div>'}
+      </div>
+    </div>
+    <div class="field-error" id="rError" style="display:none"></div>
+  `;
+}
+
+function bindPermisosBuscador() {
+  const inp = $('#rPermSearch');
+  if (!inp) return;
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    $$('#rPermList .perm-item').forEach((el) => {
+      const nombre = el.dataset.nombre || '';
+      el.style.display = !q || nombre.includes(q) ? '' : 'none';
+    });
+  });
+}
+
+function marcarPermisos(checked) {
+  $$('#rPermList .perm-item').forEach((el) => {
+    if (el.style.display === 'none') return; // respetar el filtro activo
+    const c = el.querySelector('.perm-check');
+    if (c) c.checked = checked;
+  });
+}
+
+async function guardarRol(id, btn) {
+  const nombre = $('#rNombre').value.trim();
+  const err    = $('#rError');
+  err.style.display = 'none';
+  $('#rNombre').classList.remove('input-invalid');
+
+  if (!nombre) {
+    $('#rNombre').classList.add('input-invalid');
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+
+  const ids = $$('#rPermList .perm-check')
+    .filter((c) => c.checked)
+    .map((c) => c.value);
+
+  const payload = {
+    nombre,
+    descripcion: $('#rDescripcion').value.trim(),
+    permisos:    ids.join(','),
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/roles.php', 'POST', payload);
+      toast('Rol creado.');
+    } else {
+      await apiSend(`api/roles.php?id=${id}`, 'PUT', payload);
+      toast('Rol actualizado.');
+    }
+    closeModal();
+    cargarRoles();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarRol(id) {
+  const ok = await confirmar({
+    title: 'Eliminar rol',
+    message: `Se eliminará el rol #${id}. Los usuarios que lo tengan asignado quedarán con la referencia colgada hasta editarlos.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/roles.php?id=${id}`, 'DELETE');
+    toast('Rol eliminado.');
+    cargarRoles();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Permisos (ABM) -------------------------
+const permisosFiltros = {
+  codigo: '', nombre: '', descripcion: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+let permisosBuscadorTimer = null;
+
+route('/permisos', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Permisos</div>
+      <div class="page-subtitle">Catálogo de permisos disponibles para asignar a los roles.</div>
+    </div>
+
+    <div class="stats-bar" id="permStats">
+      <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+      <div class="stat-card"><span class="stat-label">Sin descripción</span><span class="stat-value red">—</span></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="search-wrap">
+          <input type="search" class="search-input" id="permSearch"
+                 placeholder="Buscar nombre o descripción…">
+          <button class="search-clear" id="permSearchClear" style="display:none">×</button>
+        </div>
+        <button class="btn btn-ghost" id="permFiltrosBtn">
+          <i class="fa-solid fa-filter"></i> Filtros
+        </button>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-primary" id="permNuevoBtn">+ Nuevo permiso</button>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Nombre</th>
+            <th>Descripción</th>
+            <th style="text-align:right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="permTbody">
+          <tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  $('#permNuevoBtn').addEventListener('click', () => abrirAltaEdicionPermiso(null));
+  $('#permFiltrosBtn').addEventListener('click', () => abrirFiltrosPermisos());
+
+  const inp = $('#permSearch');
+  const clr = $('#permSearchClear');
+  inp.value = permisosFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    permisosFiltros.q = inp.value.trim();
+    clearTimeout(permisosBuscadorTimer);
+    permisosBuscadorTimer = setTimeout(cargarPermisos, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    permisosFiltros.q = '';
+    cargarPermisos();
+  });
+
+  $('#permTbody').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-act]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    if (btn.dataset.act === 'view')   abrirConsultarPermiso(id);
+    if (btn.dataset.act === 'edit')   abrirAltaEdicionPermiso(id);
+    if (btn.dataset.act === 'delete') eliminarPermiso(id);
+  });
+
+  await cargarPermisos();
+}, 'Permisos');
+
+async function cargarPermisos() {
+  const tbody = $('#permTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(permisosFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/permisos.php?' + qs.toString());
+    pintarStatsPermisos(data.stats);
+    pintarTablaPermisos(data.items);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsPermisos(s) {
+  const cards = $$('#permStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.sin_descripcion);
+}
+
+function pintarTablaPermisos(rows) {
+  const tbody = $('#permTbody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Sin permisos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((p) => `
+    <tr>
+      <td class="td-id">#${esc(p.id)}</td>
+      <td class="td-nombre">${esc(p.nombre || '—')}</td>
+      <td>${esc(p.descripcion || '—')}</td>
+      <td>
+        <div class="actions" style="justify-content:flex-end">
+          <button class="action-icon view"   title="Consultar" data-act="view"   data-id="${p.id}"><i class="fa-regular fa-eye"></i></button>
+          <button class="action-icon edit"   title="Editar"    data-act="edit"   data-id="${p.id}"><i class="fa-solid fa-pencil"></i></button>
+          <button class="action-icon delete" title="Eliminar"  data-act="delete" data-id="${p.id}"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de Filtros (permisos) ----
+function abrirFiltrosPermisos() {
+  const f = permisosFiltros;
+  openModal(`
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Filtros</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Código</label>
+            <input type="number" id="fPermCodigo" value="${esc(f.codigo)}">
+          </div>
+          <div class="form-group">
+            <label>Nombre</label>
+            <input type="text" id="fPermNombre" value="${esc(f.nombre)}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Descripción</label>
+          <input type="text" id="fPermDescripcion" value="${esc(f.descripcion)}">
+        </div>
+        <div class="form-row-3">
+          <div class="form-group">
+            <label>Límite</label>
+            <input type="number" id="fPermLimite" min="1" max="1000" value="${esc(f.limite)}">
+          </div>
+          <div class="form-group">
+            <label>Ordenar por</label>
+            <select id="fPermOrderBy">
+              <option value="id"          ${f.order_by === 'id'          ? 'selected' : ''}>Código</option>
+              <option value="nombre"      ${f.order_by === 'nombre'      ? 'selected' : ''}>Nombre</option>
+              <option value="descripcion" ${f.order_by === 'descripcion' ? 'selected' : ''}>Descripción</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Dirección</label>
+            <select id="fPermDir">
+              <option value="asc"  ${f.dir === 'asc'  ? 'selected' : ''}>Ascendente</option>
+              <option value="desc" ${f.dir === 'desc' ? 'selected' : ''}>Descendente</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"     data-act="limpiar"  style="margin-right:auto">Limpiar</button>
+        <button class="btn btn-secondary" data-act="close">Cancelar</button>
+        <button class="btn btn-primary"   data-act="aplicar">Aplicar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close') closeModal();
+    if (a.dataset.act === 'limpiar') {
+      $('#fPermCodigo').value      = '';
+      $('#fPermNombre').value      = '';
+      $('#fPermDescripcion').value = '';
+      $('#fPermLimite').value      = '100';
+      $('#fPermOrderBy').value     = 'id';
+      $('#fPermDir').value         = 'desc';
+    }
+    if (a.dataset.act === 'aplicar') {
+      permisosFiltros.codigo      = $('#fPermCodigo').value.trim();
+      permisosFiltros.nombre      = $('#fPermNombre').value.trim();
+      permisosFiltros.descripcion = $('#fPermDescripcion').value.trim();
+      permisosFiltros.limite      = Number($('#fPermLimite').value) || 100;
+      permisosFiltros.order_by    = $('#fPermOrderBy').value;
+      permisosFiltros.dir         = $('#fPermDir').value;
+      closeModal();
+      cargarPermisos();
+    }
+  });
+}
+
+// ---- Modal Consultar (permiso) ----
+async function abrirConsultarPermiso(id) {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Consultar permiso <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+
+  try {
+    const p = await apiGet(`api/permisos.php?id=${id}`);
+    const fila = (label, value, full = false) => {
+      const empty = value == null || value === '';
+      const inner = empty ? 'Sin dato' : esc(value);
+      return `
+        <div class="data-row${full ? ' full' : ''}">
+          <span class="data-label">${esc(label)}</span>
+          <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+        </div>
+      `;
+    };
+    $('#modalRoot .modal-body').innerHTML = `
+      <dl class="data-list">
+        ${fila('Código',      '#' + p.id)}
+        ${fila('Nombre',      p.nombre,      true)}
+        ${fila('Descripción', p.descripcion, true)}
+      </dl>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Modal Alta / Edición (permiso) ----
+async function abrirAltaEdicionPermiso(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar permiso <span class="modal-subtitle">#${id}</span>` : 'Nuevo permiso'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formPermisoHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const p = await apiGet(`api/permisos.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formPermisoHtml(p);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close') closeModal();
+    if (a.dataset.act === 'guardar') await guardarPermiso(id, a);
+  });
+}
+
+function formPermisoHtml(p) {
+  const v = (k) => esc(p?.[k] ?? '');
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre *</label>
+        <input type="text" id="pNombre" value="${v('nombre')}" required>
+      </div>
+      <div class="form-group">
+        <label>Código</label>
+        <input type="text" value="${p?.id ? '#' + p.id : '(se asigna al crear)'}" readonly>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Descripción</label>
+      <input type="text" id="pDescripcion" value="${v('descripcion')}">
+    </div>
+    <div class="field-error" id="pError" style="display:none"></div>
+  `;
+}
+
+async function guardarPermiso(id, btn) {
+  const nombre = $('#pNombre').value.trim();
+  const err    = $('#pError');
+  err.style.display = 'none';
+  $('#pNombre').classList.remove('input-invalid');
+
+  if (!nombre) {
+    $('#pNombre').classList.add('input-invalid');
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+
+  const payload = {
+    nombre,
+    descripcion: $('#pDescripcion').value.trim(),
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/permisos.php', 'POST', payload);
+      toast('Permiso creado.');
+    } else {
+      await apiSend(`api/permisos.php?id=${id}`, 'PUT', payload);
+      toast('Permiso actualizado.');
+    }
+    permisosCatalogo = null; // invalidar cache del selector de permisos en Roles
+    closeModal();
+    cargarPermisos();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarPermiso(id) {
+  const ok = await confirmar({
+    title: 'Eliminar permiso',
+    message: `Se eliminará el permiso #${id}. Los roles que lo tengan asignado quedarán con la referencia colgada hasta editarlos.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/permisos.php?id=${id}`, 'DELETE');
+    toast('Permiso eliminado.');
+    permisosCatalogo = null;
+    cargarPermisos();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Herramientas -------------------------
+route('/herramientas', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Herramientas</div>
+      <div class="page-subtitle">Utilidades para distintas áreas de la plataforma.</div>
+    </div>
+
+    <div class="tile-grid" id="toolsGrid">
+      <div class="table-empty" style="grid-column:1/-1">
+        Aún no hay herramientas disponibles.
+      </div>
+    </div>
+  `;
+}, 'Herramientas');
+
 // ------------------------- Chrome (sidebar / topbar / dropdown) -------------------------
 function bindChrome() {
   // hamburger
