@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # deploy.sh - Sincroniza la app al servidor databox
-# Host objetivo:  manchester.databox.com.ar
+# Host objetivo:  manchester.databox.net.ar
 # URL servida:    https://cloud.databox.net.ar
 #
 # Uso:
@@ -12,7 +12,7 @@
 
 set -e
 
-HOST="manchester.databox.com.ar"
+HOST="manchester.databox.net.ar"
 USER="ec2-user"
 KEY="/c/Users/Javier/OneDrive/Temp/Llaves/wescom/wescom.pem"
 BASE_LOCAL="$(cd "$(dirname "$0")/.." && pwd)"

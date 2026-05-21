@@ -45,9 +45,11 @@ a { color: inherit; text-decoration: none; }
 .content { flex: 1; padding: 24px; overflow-y: auto; }
 
 /* 4. Sidebar */
-.sidebar-logo       { padding: 18px 20px; border-bottom: 1px solid rgba(0,0,0,.2);
-                      display: flex; align-items: center; justify-content: center; }
-.sidebar-logo-mark  { display: block; width: auto; height: 36px;
+.sidebar-logo       { height: 60px; padding: 0 20px;
+                      border-bottom: 1px solid rgba(0,0,0,.2);
+                      display: flex; align-items: center; justify-content: center;
+                      flex-shrink: 0; }
+.sidebar-logo-mark  { display: block; width: auto; height: 24px;
                       max-width: 100%; object-fit: contain; }
 .sidebar-nav        { padding: 8px 0 12px; flex: 1; }
 .sidebar-footer     { padding: 10px 20px; font-size: .75rem; color: rgba(255,255,255,.7);
@@ -62,6 +64,23 @@ a { color: inherit; text-decoration: none; }
 .nav-item.active { background: rgba(0,0,0,.28); color: #fff;
                    border-left-color: #fff; font-weight: 600; }
 .nav-icon { font-size: 1.1rem; width: 20px; text-align: center; }
+
+/* Grupos colapsables del sidebar (DESIGN.md §4) */
+.nav-group-wrap                       { display: block; }
+.nav-group-toggle                     { width: 100%; background: none; border: none;
+                                        text-align: left; cursor: pointer;
+                                        font-family: inherit; color: rgba(255,255,255,.85); }
+.nav-group-label                      { flex: 1; }
+.nav-group-arrow                      { margin-left: auto; font-size: 1rem; font-weight: 700;
+                                        line-height: 1; color: rgba(255,255,255,.7);
+                                        transition: transform .2s; }
+.nav-group-wrap.open .nav-group-arrow { transform: rotate(45deg); }
+.nav-sub                              { display: none; background: rgba(0,0,0,.18);
+                                        border-top: 1px solid rgba(0,0,0,.2);
+                                        border-bottom: 1px solid rgba(0,0,0,.2); }
+.nav-group-wrap.open .nav-sub         { display: block; }
+.nav-sub-item                         { padding-left: 44px; font-size: .85rem; }
+.nav-sub-item.active                  { background: rgba(0,0,0,.32); }
 
 /* 5. Topbar */
 .topbar-title    { font-size: 1rem; font-weight: 600; flex: 1; color: #fff; }
@@ -97,9 +116,13 @@ a { color: inherit; text-decoration: none; }
 .btn:active        { transform: scale(.97); }
 .btn-primary       { background: var(--primary); color: #fff; }
 .btn-primary:hover { background: var(--primary-h); }
+.btn-danger        { background: var(--danger); color: #fff; }
+.btn-danger:hover  { background: #c91515; }
 .btn-secondary     { background: var(--surface); color: var(--text);
                      border: 1px solid var(--border); }
 .btn-secondary:hover { background: var(--bg); }
+.btn:disabled, .btn[disabled] { opacity: .5; cursor: not-allowed; }
+.btn:disabled:hover           { background: inherit; }
 .btn-ghost         { background: transparent; color: var(--muted);
                      border: 1px solid var(--border); }
 .btn-ghost:hover   { background: var(--bg); color: var(--text); }
@@ -182,4 +205,175 @@ tbody tr:hover { background: var(--row-hover); }
                transform: translateX(-100%); transition: transform .25s; }
   .sidebar.open { transform: translateX(0); }
   .dash-grid { grid-template-columns: 1fr; }
+  .form-row, .form-row-3, .form-row-4 { grid-template-columns: 1fr; }
 }
+
+/* 7. Inputs, selects, textareas */
+input[type=text], input[type=number], input[type=url], input[type=tel],
+input[type=email], input[type=date], input[type=time], input[type=datetime-local],
+input[type=password], input[type=search], select, textarea {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 12px; font-size: .88rem; background: var(--surface);
+  color: var(--text); outline: none; transition: border .15s; font-family: inherit;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary); box-shadow: 0 0 0 3px rgba(49,117,53,.25);
+}
+input:disabled, select:disabled, textarea:disabled,
+input[readonly], textarea[readonly] {
+  color: var(--muted); background: var(--bg); cursor: not-allowed; opacity: .75;
+}
+textarea { resize: vertical; min-height: 60px; }
+
+.field-error   { margin-top: 4px; font-size: .78rem; color: var(--danger); }
+.input-invalid { border-color: var(--danger) !important;
+                 box-shadow: 0 0 0 2px rgba(239,68,68,.18); }
+
+/* 8. Formularios */
+.form-row    { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-row-3  { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.form-row-4  { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.form-group  { display: flex; flex-direction: column; gap: 5px; }
+.form-group label {
+  font-size: .8rem; font-weight: 600; color: var(--muted);
+}
+.form-group input,
+.form-group select,
+.form-group textarea { width: 100%; }
+
+/* 9. Toolbar */
+.toolbar       { display: flex; align-items: center; gap: 12px;
+                 flex-wrap: wrap; margin-bottom: 20px; }
+.toolbar-left  { display: flex; align-items: center; gap: 10px;
+                 flex: 1; flex-wrap: wrap; }
+.toolbar-right { display: flex; gap: 10px; }
+
+.search-wrap        { position: relative; display: inline-flex; align-items: center; }
+.search-wrap .search-input { width: 240px; padding-right: 28px; }
+.search-clear       { position: absolute; right: 6px; background: none; border: none;
+                      cursor: pointer; color: var(--muted); font-size: 1.1rem;
+                      padding: 2px 4px; border-radius: 50%; transition: color .15s; }
+.search-clear:hover { color: var(--text); }
+
+.filter-chip        { padding: 6px 12px; border-radius: 20px;
+                      border: 1.5px solid var(--border);
+                      font-size: .8rem; font-weight: 600; cursor: pointer;
+                      white-space: nowrap; background: var(--surface);
+                      color: var(--muted); transition: all .15s;
+                      font-family: inherit; }
+.filter-chip:hover  { border-color: var(--primary); color: var(--primary); }
+.filter-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* Encabezado de modulo (titulo + subtitulo de pagina) */
+.page-header   { margin-bottom: 20px; }
+.page-title    { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+.page-subtitle { margin-top: 4px; font-size: .88rem; color: var(--muted); }
+
+/* Acciones de fila (iconos de la columna Acciones) */
+.actions          { display: flex; gap: 6px; align-items: center; }
+.action-icon      { background: none; border: none; cursor: pointer;
+                    padding: 6px 8px; border-radius: 6px; color: var(--muted);
+                    font-size: .95rem; transition: background .15s, color .15s;
+                    font-family: inherit; }
+.action-icon:hover           { background: var(--bg); color: var(--text); }
+.action-icon.view:hover      { color: var(--info); }
+.action-icon.edit:hover      { color: var(--primary); }
+.action-icon.delete:hover    { color: var(--danger); }
+.action-icon:disabled,
+.action-icon[disabled]       { opacity: .4; cursor: not-allowed; }
+.action-icon:disabled:hover  { background: none; color: var(--muted); }
+
+/* 14. Modales */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+                  display: flex; align-items: center; justify-content: center;
+                  z-index: 100; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.modal-backdrop.open { opacity: 1; pointer-events: all; }
+.modal          { background: var(--surface); border-radius: 14px;
+                  width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto;
+                  box-shadow: var(--shadow-lg);
+                  transform: scale(.96) translateY(12px); transition: transform .2s; margin: 16px; }
+.modal-backdrop.open .modal { transform: scale(1) translateY(0); }
+.modal-header   { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+                  display: flex; align-items: center; justify-content: space-between; }
+.modal-title    { font-size: 1rem; font-weight: 700;
+                  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.modal-subtitle { font-size: .8rem; font-weight: 500; color: var(--muted); }
+.modal-body     { padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+.modal-footer   { padding: 16px 24px; border-top: 1px solid var(--border);
+                  display: flex; gap: 10px; justify-content: flex-end; align-items: center; }
+.modal.modal-wide { max-width: 760px; }
+
+/* 15. Confirm dialog */
+.confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5);
+                    display: flex; align-items: center; justify-content: center;
+                    z-index: 150; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.confirm-backdrop.open { opacity: 1; pointer-events: all; }
+.confirm-box     { background: var(--surface); border-radius: 14px;
+                   padding: 28px 28px 20px; max-width: 380px;
+                   width: calc(100% - 32px); box-shadow: var(--shadow-lg);
+                   transform: scale(.95); transition: transform .15s; }
+.confirm-backdrop.open .confirm-box { transform: scale(1); }
+.confirm-title   { font-weight: 700; margin-bottom: 8px; }
+.confirm-msg     { font-size: .88rem; color: var(--muted); margin-bottom: 20px; }
+.confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* 22. Lista de datos (Consultar) */
+.data-list  { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.data-row   { background: color-mix(in srgb, var(--surface) 90%, #000);
+              border-radius: var(--radius); padding: 12px 14px;
+              display: flex; flex-direction: column; gap: 4px; border: none; }
+.data-row.full   { grid-column: 1 / -1; }
+.data-label      { font-size: .72rem; font-weight: 600;
+                   text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.data-value      { font-size: .9rem; color: var(--text);
+                   word-break: break-word; white-space: pre-wrap; }
+.data-value.muted{ color: var(--muted); font-style: italic; }
+.data-value code { font-family: monospace; font-size: .85rem;
+                   background: var(--bg); border: 1px solid var(--border);
+                   border-radius: 6px; padding: 2px 8px; }
+@media (max-width: 768px) {
+  .data-list { grid-template-columns: 1fr; }
+}
+
+/* 16. Toasts */
+.toast { position: fixed; bottom: 24px; left: 50%;
+         transform: translateX(-50%) translateY(16px);
+         background: #0d0d0d; color: var(--text);
+         border: 1px solid var(--border);
+         padding: 10px 20px; border-radius: 99px;
+         font-size: .88rem; opacity: 0; pointer-events: none;
+         transition: opacity .2s, transform .2s;
+         z-index: 200; white-space: nowrap;
+         box-shadow: var(--shadow-lg); }
+.toast.show  { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.error { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* ---- Auth: splash + login ---- */
+.auth-checking .layout,
+.auth-checking .login-screen,
+.is-app .login-screen,
+.is-app .auth-splash,
+.is-login .layout,
+.is-login .auth-splash { display: none !important; }
+
+.auth-splash { position: fixed; inset: 0; display: flex;
+               align-items: center; justify-content: center;
+               background: var(--bg); z-index: 300; }
+
+.login-screen { position: fixed; inset: 0; display: flex;
+                align-items: center; justify-content: center;
+                background: var(--bg); padding: 20px; z-index: 250; }
+
+.login-card { width: 100%; max-width: 360px;
+              background: var(--surface); border: 1px solid var(--border);
+              border-radius: 14px; padding: 28px 24px;
+              box-shadow: var(--shadow-lg);
+              display: flex; flex-direction: column; gap: 14px; }
+
+.login-logo  { width: 56px; height: 56px; object-fit: contain;
+               margin: 0 auto 4px; }
+.login-title { text-align: center; font-size: 1.05rem;
+               font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.login-submit { margin-top: 6px; padding: 10px 16px; font-size: .95rem; }
+.login-submit:disabled { opacity: .65; cursor: not-allowed; }
+

@@ -13,24 +13,56 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <link rel="stylesheet" href="assets/css/style.css?v=<?= $cssVer ?>">
 </head>
-<body>
+<body class="auth-checking">
+  <div class="auth-splash" id="authSplash">
+    <div class="spin"></div>
+  </div>
+
+  <div class="login-screen" id="loginScreen" hidden>
+    <form class="login-card" id="loginForm" autocomplete="on" novalidate>
+      <img src="assets/img/logo_light.png" class="login-logo" alt="Databox">
+      <div class="login-title">Ingresar al panel</div>
+
+      <div class="form-group">
+        <label for="loginCorreo">Correo</label>
+        <input type="email" id="loginCorreo" name="correo" autocomplete="username" required>
+      </div>
+      <div class="form-group">
+        <label for="loginContrasena">Contraseña</label>
+        <input type="password" id="loginContrasena" name="contrasena" autocomplete="current-password" required>
+      </div>
+
+      <div class="field-error" id="loginError" hidden></div>
+
+      <button type="submit" class="btn btn-primary login-submit" id="loginSubmit">
+        Ingresar
+      </button>
+    </form>
+  </div>
+
   <div class="layout">
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-logo">
-        <svg class="sidebar-logo-mark" viewBox="0 0 160 36" xmlns="http://www.w3.org/2000/svg" aria-label="Databox">
-          <g fill="#fff">
-            <rect x="2"  y="6"  width="22" height="22" rx="4" fill="rgba(255,255,255,.18)"/>
-            <rect x="6"  y="10" width="14" height="14" rx="2"/>
-            <text x="32" y="24" font-family="-apple-system,Segoe UI,sans-serif"
-                  font-size="18" font-weight="700" letter-spacing="1">DATABOX</text>
-          </g>
-        </svg>
+        <img src="assets/img/logo_light.png" class="sidebar-logo-mark" alt="Databox">
       </div>
 
       <nav class="sidebar-nav">
         <a href="#/dashboard" class="nav-item" data-route="/dashboard">
           <span class="nav-icon">📊</span> Dashboard
         </a>
+
+        <div class="nav-group-wrap" data-group="seguridad">
+          <button type="button" class="nav-item nav-group-toggle">
+            <span class="nav-icon">🔐</span>
+            <span class="nav-group-label">Seguridad</span>
+            <span class="nav-group-arrow">+</span>
+          </button>
+          <div class="nav-sub">
+            <a href="#/usuarios" class="nav-item nav-sub-item" data-route="/usuarios">
+              <span class="nav-icon">👥</span> Usuarios
+            </a>
+          </div>
+        </div>
       </nav>
 
       <div class="sidebar-footer">v<span id="appVersion">dev</span></div>
@@ -43,11 +75,10 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
         <div class="topbar-title" id="topbarTitle">Dashboard</div>
         <div class="topbar-user">
           <button class="topbar-username" id="userBtn">
-            <span>admin</span> <i class="fa-solid fa-chevron-down" style="font-size:.7rem"></i>
+            <span id="userBtnName">—</span> <i class="fa-solid fa-chevron-down" style="font-size:.7rem"></i>
           </button>
           <div class="user-dropdown" id="userDropdown">
-            <!-- placeholder para futuros items (perfil, cerrar sesion, etc.) -->
-            <button class="action-menu-item" disabled><i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión</button>
+            <button class="action-menu-item" id="logoutBtn"><i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión</button>
           </div>
         </div>
       </div>

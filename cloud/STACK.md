@@ -12,13 +12,13 @@ carpeta; no documenta otras aplicaciones del repositorio.
 | Capa            | Tecnología                                          |
 |-----------------|-----------------------------------------------------|
 | Servidor web    | Apache 2.4 (mod_rewrite habilitado)                 |
-| Lenguaje        | PHP 8.2 (`pdo_mysql`, `gd` con jpeg/webp/freetype)  |
+| Lenguaje        | PHP 8.2 (`pdo_mysql`)                               |
 | Base de datos   | MySQL 8.0 (Docker en desarrollo, RDS en producción) |
 | Frontend        | HTML + CSS + **JavaScript vanilla** (sin framework) |
 | Iconografía     | Emojis + FontAwesome 6 (CDN)                        |
 | Estilos         | CSS plano con variables — ver `DESIGN.md`           |
 | Runtime         | Docker + docker-compose                             |
-| Mapas           | Google Maps JS API (key en tabla `configuracion`)   |
+| Reverse proxy   | Nginx + certbot/Let's Encrypt (solo en producción)  |
 
 **No usar:** Composer, Node/npm, bundlers (Vite/Webpack), frameworks JS
 (React/Vue/Angular), frameworks CSS (Bootstrap/Tailwind), ORMs.
@@ -29,40 +29,55 @@ exactamente lo que se sirve.
 
 | Entorno      | URL                              | Puerto |
 |--------------|----------------------------------|--------|
-| Desarrollo   | http://localhost:8086            | 8086   |
-| Producción   | https://cloud.databox.net.ar     | 8086 interno (HTTPS terminado por reverse proxy) |
+| Desarrollo   | http://localhost:`$DATABOX_APP_PORT` | dinámico (default 8086, fallback al primer libre) |
+| Producción   | https://cloud.databox.net.ar     | 80 interno del contenedor, expuesto en 127.0.0.1:8086 y proxyado por Nginx |
 
-El virtual host de cloud está definido en `docker/apache.conf` con
-`DocumentRoot /opt/app/databox/cloud` y escucha en el puerto **8086**.
-El servidor de producción es `seattle.databox.net.ar` (Amazon Linux 2023,
+En desarrollo, `scripts/instalar.sh` elige el primer puerto libre
+desde 8086 hacia arriba y lo escribe en `.env` como `DATABOX_APP_PORT`
+(idem `DATABOX_DB_PORT` desde 3307). `docker-compose.yml` lee esas
+variables y mapea `$DATABOX_APP_PORT:80`.
+
+En producción, el contenedor publica únicamente en `127.0.0.1:8086` y
+Nginx (instalado y configurado por `scripts/aprovisionar_server.sh`)
+hace de frente público en `cloud.databox.net.ar` con SSL emitido por
+certbot. El servidor es `manchester.databox.net.ar` (Amazon Linux 2023,
 usuario `ec2-user`).
 
 ## 3. Estructura de carpetas
 
 ```
-cloud/
-├── index.php          ← SPA shell: layout + contenedor de vistas
-├── api/               ← endpoints PHP propios de cloud
-│   ├── bootstrap.php  ← arranque común (config, conexión, helpers)
-│   └── … (un archivo PHP por recurso)
-├── assets/
-│   ├── css/style.css  ← un único CSS para toda la aplicación
-│   ├── js/app.js      ← un único JS para toda la aplicación
-│   └── img/
-├── sql/               ← scripts SQL del esquema (migraciones)
-├── CLAUDE.md          ← instrucciones para Claude en esta carpeta
-├── DESIGN.md          ← sistema de diseño visual
-├── STACK.md           ← este archivo
-└── README.md
+databox/                        ← raíz del repositorio
+├── .env                        ← puertos locales (lo genera instalar.sh, NO commitear)
+├── .env.development            ← creds de la BD local (NO commitear)
+├── .env.production             ← creds de RDS y APIs externas (NO commitear)
+├── docker-compose.yml          ← stack de desarrollo (app + databox-db)
+├── docker/
+│   └── Dockerfile              ← php:8.2-apache + pdo_mysql + mod_rewrite
+├── db/
+│   └── schema.sql              ← fuente de verdad del esquema (ver ../CLAUDE.md)
+├── scripts/                    ← operatoria (instalar, aprovisionar, deploy)
+└── cloud/                      ← ESTA carpeta — DocumentRoot de Apache
+    ├── index.php               ← SPA shell: layout + contenedor de vistas
+    ├── api/                    ← endpoints PHP (un archivo por recurso)
+    │   └── dashboard.php
+    ├── assets/
+    │   ├── css/style.css       ← un único CSS para toda la aplicación
+    │   ├── js/app.js           ← un único JS para toda la aplicación
+    │   └── img/
+    ├── sql/                    ← (opcional) migraciones incrementales — ver §7
+    ├── CLAUDE.md               ← instrucciones para Claude en esta carpeta
+    ├── DESIGN.md               ← sistema de diseño visual
+    └── STACK.md                ← este archivo
 ```
 
 **Convenciones de carpetas:**
 
-| Carpeta   | Qué va adentro                                                          |
-|-----------|-------------------------------------------------------------------------|
-| `api/`    | Un archivo PHP por recurso. Devuelve JSON. Maneja GET/POST/PUT/DELETE.   |
-| `assets/` | CSS, JS, imágenes estáticas. Servidos directamente por Apache.           |
-| `sql/`    | Scripts SQL del esquema y migraciones.                                   |
+| Carpeta            | Qué va adentro                                                       |
+|--------------------|----------------------------------------------------------------------|
+| `cloud/api/`       | Un archivo PHP por recurso. Devuelve JSON. Maneja GET/POST/PUT/DELETE. |
+| `cloud/assets/`    | CSS, JS, imágenes estáticas. Servidos directamente por Apache.       |
+| `cloud/sql/`       | (Opcional) migraciones incrementales aplicadas por `instalar.sh`.    |
+| `db/`              | `schema.sql` — fuente de verdad del esquema, cargado por MySQL al inicializar. |
 
 ## 4. Patrón SPA con un solo archivo
 
@@ -75,7 +90,7 @@ framework y sin build step:
 
 - En `assets/js/app.js` se intercepta la navegación del sidebar y se
   reemplaza el contenido del contenedor `#view` según la ruta pedida
-  (hash routing: `#/dashboard`, `#/devices`, etc.).
+  (hash routing: `#/dashboard`, etc.).
 
 - Cada vista carga sus datos vía `fetch('api/<recurso>.php')` cuando
   se la muestra por primera vez (lazy load).
@@ -88,102 +103,152 @@ inmediata en desarrollo (volumen bind de Docker).
 mientras se respete la disciplina de una vista = un módulo claro
 dentro de `app.js`.
 
+Las URLs de assets en `index.php` incluyen `?v=<?= filemtime(...) ?>`
+para forzar refresh del navegador cuando cambia el archivo en disco.
+
 ## 5. Autenticación
 
-- JWT firmado en `lib/jwt.php`.
-- Token persistido en la cookie `databox_token` (path `/`, HttpOnly en prod).
-- Cada endpoint protegido empieza con:
-  ```php
-  require_once __DIR__ . '/../lib/auth_check.php';
-  requireAuth();
-  ```
-- `requireAuth()` devuelve **401 JSON** si la petición pide JSON;
-  redirige a `login.php` si pide HTML.
-- `authUser()` devuelve el payload del token o `null`.
-- `setup.php` crea el primer usuario admin y **debe borrarse después
-  de usarlo** (verifica que la tabla `usuarios` esté vacía).
+**Estado:** sin implementar todavía. El placeholder en el topbar
+(`<button class="topbar-username">admin</button>`) y el item "Cerrar
+sesión" del dropdown están deshabilitados a la espera del módulo de
+auth. Hasta entonces, los endpoints en `api/` son públicos.
+
+Cuando se implemente, el patrón esperado (alineado con otros proyectos
+del grupo) será:
+
+- JWT firmado, persistido en cookie `databox_token` (HttpOnly en prod).
+- Cada endpoint protegido empieza con un `require_once` de un helper
+  común que devuelve **401 JSON** si la petición pide JSON, o redirige
+  a login si pide HTML.
+- Bootstrap admin vía script único que crea el primer usuario y se
+  borra después de usarlo.
+
+No agregar autenticación sin coordinar el patrón antes — cambiarlo
+después en todos los endpoints es caro.
 
 ## 6. Variables de entorno
 
-Cloud **no** lee variables de entorno por su cuenta. Las consume a
-través de `api/config/secrets.php` (en la raíz del repositorio padre),
-que carga `.env.development` o `.env.production` según `APP_ENV`.
+Los `.env.*` viven en la raíz del repositorio (`databox/.env*`), no
+dentro de `cloud/`:
 
-`APP_ENV` lo setea el contenedor Docker:
-- En desarrollo: `APP_ENV=development` → lee `.env.development` (MySQL local en Docker, base `databox_dev`).
-- En producción: `APP_ENV=production` → lee `.env.production` (RDS, base `databox`).
+| Archivo              | Para qué                                                    |
+|----------------------|-------------------------------------------------------------|
+| `.env`               | Puertos locales (`DATABOX_APP_PORT`, `DATABOX_DB_PORT`). Lo regenera `scripts/instalar.sh`. |
+| `.env.development`   | Credenciales de la BD local en Docker (`db:3306`, `databox_dev`, root/root). |
+| `.env.production`    | Credenciales de RDS y APIs externas (Causam, etc.).         |
 
-Constantes que cloud usa habitualmente (definidas por `secrets.php`):
-`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`, `DB_CHARSET`,
-`MEDIA_BASE_URL`, `S3_BUCKET`.
+**Cómo las consume el contenedor:**
+
+- En **desarrollo**, `docker-compose.yml` setea `APP_ENV=development`
+  como variable de entorno y bind-montea `./.env.development` en
+  `/var/www/.env.development:ro` (para que PHP la pueda leer si en el
+  futuro se agrega un loader).
+- En **producción**, `docker-compose.prod.yml` (generado por
+  `aprovisionar_server.sh`) usa `env_file: - .env.production`, así que
+  Docker expone cada `KEY=VALUE` como variable de entorno del proceso
+  PHP. `getenv('DB_HOST')` funciona directamente.
+
+Constantes habituales:
+`APP_ENV`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`,
+`API_CAUSAM_URL`, `API_CAUSAM_KEY`, `API_CAUSAM_SECRET`.
 
 **Reglas:**
-- Los `.env.*` están en `.gitignore` y nunca se commitean.
-- Cualquier archivo que necesite credenciales hace `require_once` del
-  loader, nunca lee el `.env` directo.
+- Los `.env*` están en `.gitignore` y nunca se commitean.
+- Ningún archivo PHP debe imprimir, loguear o devolver credenciales en
+  respuestas, ni siquiera para debug.
 
 ## 7. Base de datos
 
-- **Desarrollo:** MySQL 8.0 en un contenedor llamado `databox-mysql` (lo
-  levanta `docker-compose.override.yml`). Host `mysql` desde el
-  contenedor PHP, `localhost:3306` desde Windows. Base `databox_dev`,
-  usuario `root`, password `123`.
+- **Desarrollo:** MySQL 8.0 en el contenedor `databox-db` (servicio
+  `db` de `docker-compose.yml`). Host `db` desde el contenedor PHP,
+  `localhost:$DATABOX_DB_PORT` desde Windows. Base `databox_dev`,
+  usuario `root`, password `root`.
 - **Producción:** RDS MySQL externo
-  (`california.ccfymgq888f0.us-east-1.rds.amazonaws.com`), base `databox`.
-- **Esquema:** los `CREATE TABLE` y `ALTER` están centralizados en
-  `scripts/migrate.php` (en la raíz del repo). Es idempotente: cada
-  statement está en try/catch, así correrlo dos veces es seguro.
-- **Configuración runtime:** valores que cambian sin redeploy (claves
-  de APIs, parámetros editables) viven en la tabla `configuracion` y
-  se leen con `getConfigValue('clave')` desde `api/config/db.php`.
+  (`oxford.c6q5xu8xpxfu.us-east-1.rds.amazonaws.com`), base `databox`,
+  usuario `admin`. En `docker-compose.prod.yml` **no** se levanta el
+  servicio `db`.
+- **Esquema:** la fuente de verdad es `db/schema.sql` (en la raíz del
+  repo). El `CLAUDE.md` raíz lo declara explícitamente como referencia
+  obligatoria antes de escribir queries o tocar modelos.
+- **Carga inicial del esquema:** en desarrollo, MySQL ejecuta
+  `db/schema.sql` la primera vez que el volumen `databox-db-data` está
+  vacío (vía `docker-entrypoint-initdb.d`). `scripts/instalar.sh` hace
+  `down -v` antes de `up`, asegurando que el siguiente arranque sea
+  con BD virgen y aplique el schema actualizado.
+- **Migraciones incrementales (opcional):** los archivos
+  `cloud/sql/migrations/*.sql` se aplican siempre por orden alfabético
+  al final de `instalar.sh`. Deben ser **idempotentes** (chequear
+  `information_schema` antes de cada `ALTER`), porque corren en cada
+  rebuild. En prod, las migraciones se aplican manualmente contra RDS
+  (ver `scripts/deploy.sh`).
+- **No editar el esquema en prod a mano.** Cambios al schema: editar
+  `db/schema.sql` (para entornos nuevos) **y** agregar un archivo
+  numerado en `cloud/sql/migrations/` (para los ya inicializados).
 
 ## 8. Docker
 
-Cloud se sirve dentro de la imagen `php-apache` (definida en el
-`Dockerfile` de la raíz: `php:8.2-apache` + `pdo_mysql` + `gd` + `mod_rewrite`).
+Cloud se sirve dentro de la imagen `databox` (definida en
+`docker/Dockerfile`: `php:8.2-apache` + `pdo_mysql` + `mod_rewrite`).
 
-- El virtual host de cloud está en `docker/apache.conf`:
-  `<VirtualHost *:8086> DocumentRoot /opt/app/databox/cloud </VirtualHost>`.
-- El puerto 8086 está abierto en `docker/ports.conf` (`Listen 8086`).
-- En `docker-compose.yml` la carpeta `cloud/` se monta como volumen
-  bind: los cambios en el código se ven al instante, sin rebuild.
+- En desarrollo (`docker-compose.yml`):
+  - Servicio `databox` con `DocumentRoot` por defecto del contenedor
+    (`/var/www/html`), al que se bind-montea `./cloud/`.
+  - Servicio `db` (`mysql:8.0`) con volumen nombrado `databox-db-data`
+    para persistir entre rebuilds, y `db/schema.sql` montado en
+    `/docker-entrypoint-initdb.d/` para inicializar la BD virgen.
+  - Puertos host vienen de `.env` (`DATABOX_APP_PORT`, `DATABOX_DB_PORT`).
+- En producción (`docker-compose.prod.yml`, generado en el servidor):
+  - Solo el servicio `databox`, expuesto en `127.0.0.1:8086`.
+  - Sin servicio `db` (la BD es RDS).
+  - `env_file: .env.production`.
+- En producción además corre **Nginx** en el host como reverse proxy
+  (no en Docker), terminando TLS con certbot. La configuración la
+  genera `scripts/aprovisionar_server.sh`.
 
 ## 9. Deploy y operatoria
 
-Cloud no tiene scripts propios — usa los scripts compartidos de la
-raíz del repositorio:
+Cloud no tiene scripts propios — usa los scripts compartidos en
+`scripts/` de la raíz del repositorio:
 
-| Script                          | Para qué                                                              |
-|---------------------------------|------------------------------------------------------------------------|
-| `scripts/deploy.sh [--rebuild]` | Sube cloud (y resto) al servidor de producción vía tar + SSH.          |
-| `scripts/rebuild_local.sh`      | Recrea el contenedor local (al cambiar Dockerfile o compose).          |
-| `scripts/migrate.php`           | Aplica el esquema de la BD. Idempotente. Lo corre el deploy al final.  |
+| Script                            | Para qué                                                                                   |
+|-----------------------------------|--------------------------------------------------------------------------------------------|
+| `scripts/instalar.sh`             | Rebuild idempotente del stack local. Elige puertos libres, recrea contenedores, aplica migraciones de `cloud/sql/migrations/`. |
+| `scripts/aprovisionar.sh`         | Provisiona el servidor remoto desde cero (transfiere archivos + invoca aprovisionar_server.sh). |
+| `scripts/aprovisionar_server.sh`  | Setup interno del server (Docker, Nginx, certbot, `docker-compose.prod.yml`). Lo dispara `aprovisionar.sh`. |
+| `scripts/deploy.sh [--rebuild]`   | Despliegue incremental: sincroniza `cloud/`, `docker/`, `db/` y `.env.production` vía tar+SSH a `manchester.databox.net.ar` y recrea el contenedor. |
 
-**Flujo de deploy de cloud:**
-1. `scripts/deploy.sh` escribe `1.0.<timestamp>` en `cloud/version.txt`.
-2. Tar de `cloud/` (excluyendo `.git`, `.vscode`, `node_modules`, `*.log`, `*.pem`, `*.key`) → SSH a `seattle.databox.net.ar` → extrae en `/opt/app/databox/cloud/`.
-3. `docker compose up -d --force-recreate` en el servidor. `--force-recreate` es obligatorio: Docker bind-montea `.env.production` por inodo, y al reemplazarlo hay que recrear el contenedor para que PHP lea el nuevo.
-4. `docker compose exec -T php-apache php /opt/app/databox/scripts/migrate.php` aplica migraciones.
-
-**Banner de nueva versión:** el frontend pollea `api/version` y
-muestra `.version-banner` si el `version.txt` del servidor cambió
-respecto al que cargó al iniciar. El `style.css` se incluye con
-`?v=<?= time() ?>` para evitar caché.
+**Flujo de deploy de cloud (`scripts/deploy.sh`):**
+1. Escribe `1.0.<timestamp>` en `cloud/version.txt` (placeholder — no
+   hay banner consumiendo este valor todavía).
+2. Tar de `cloud/`, `docker/`, `db/` y `.env.production` (excluyendo
+   `.git`, `node_modules`, `vendor`, `*.log`, `*.pem`, `*.key`) →
+   `ssh` a `manchester.databox.net.ar` → extrae en `/opt/app/databox/`.
+3. `docker compose -f docker-compose.prod.yml up -d --force-recreate`
+   en el servidor. `--force-recreate` es obligatorio: Docker bind-montea
+   `.env.production` por inodo, así que al reemplazar el archivo hay
+   que recrear el contenedor para que PHP lea el nuevo.
+4. Las migraciones SQL contra RDS se aplican **manualmente** (el
+   contenedor PHP no trae cliente mysql). Ver el comentario al final
+   de `scripts/deploy.sh`.
 
 ## 10. Convenciones de código
 
-- **PHP:** sin namespaces, sin Composer. Archivos sueltos en `api/` y `lib/` con `require_once` explícito.
-- **Respuestas API:** siempre JSON con la forma `{ok: true, data: …}` o `{ok: false, error: '…'}`.
-- **Métodos HTTP:** GET para listar/leer, POST para crear, PUT para actualizar, DELETE para borrar.
-- **Tiempo:** zona horaria fijada en `America/Argentina/Buenos_Aires` (en `db.php`) y `SET time_zone = '-03:00'` en la conexión.
-- **Imágenes:** lo grueso (subida, recorte, búsqueda EAN) está en `lib/imagen.php` y endpoints `api/upload*.php`, `api/buscar_imagenes.php`, `api/recortar_imagen.php`.
+- **PHP:** sin namespaces, sin Composer. Archivos sueltos en `cloud/api/`
+  con `require_once` explícito si comparten helpers.
+- **Respuestas API:** siempre JSON con la forma `{ok: true, data: …}`
+  o `{ok: false, error: '…'}`.
+- **Métodos HTTP:** GET para listar/leer, POST para crear, PUT para
+  actualizar, DELETE para borrar.
+- **Tiempo:** zona horaria `America/Argentina/Buenos_Aires` en PHP y
+  `SET time_zone = '-03:00'` en la conexión MySQL.
+- **Encoding:** UTF-8 en todo. Endpoints PHP usan
+  `header('Content-Type: application/json; charset=utf-8')` y
+  `json_encode($data, JSON_UNESCAPED_UNICODE)`.
 
 ## 11. Criterios de aceptación (qué tiene que ser cierto siempre)
 
 1. **Sin build step.** No hay `node_modules`, no hay `vendor/`, no hay archivos generados.
-2. **Un solo CSS y un solo JS** (`assets/css/style.css` y `assets/js/app.js`).
-3. **`.env.*` nunca se commitea, ni se loguea, ni se imprime.**
-4. **Cada endpoint en `api/` valida con `requireAuth()`** salvo los explícitamente públicos (login, version).
-5. **El esquema se modifica solo agregando a `scripts/migrate.php`** — nada de SQL manual en producción.
-6. **`version.txt` lo actualiza el deploy**, nadie lo edita a mano.
-7. **Cloud se sirve en https://cloud.databox.net.ar** (puerto interno 8086). Si en algún momento cambia el dominio o el puerto, actualizar este archivo.
+2. **Un solo CSS y un solo JS** (`cloud/assets/css/style.css` y `cloud/assets/js/app.js`).
+3. **`.env*` nunca se commitea, ni se loguea, ni se imprime.**
+4. **El esquema vive en `db/schema.sql`** (fuente de verdad declarada en `../CLAUDE.md`). Cambios al schema en bases ya inicializadas se hacen vía `cloud/sql/migrations/*.sql` idempotentes.
+5. **Cloud se sirve en https://cloud.databox.net.ar** (puerto interno 8086, proxyado por Nginx en `manchester.databox.net.ar`). Si en algún momento cambia el dominio, host o puerto, actualizar este archivo.

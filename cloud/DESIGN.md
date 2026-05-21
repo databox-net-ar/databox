@@ -105,10 +105,12 @@ El sidebar está pintado de plano en `var(--primary)` (`#317535`). Por eso sus e
 .sidebar       { background: var(--primary);             /* verde institucional */
                  border-right: 1px solid rgba(0,0,0,.25); }
 
-.sidebar-logo  { padding: 18px 20px; border-bottom: 1px solid rgba(0,0,0,.2);
-                 display: flex; align-items: center; justify-content: center; }
-.sidebar-logo-mark  { display: block; width: auto; height: 36px;
-                      max-width: 100%; object-fit: contain; }   /* <img src="assets/img/databox_white.png"> */
+.sidebar-logo  { height: 60px; padding: 0 20px;       /* misma altura que la topbar */
+                 border-bottom: 1px solid rgba(0,0,0,.2);
+                 display: flex; align-items: center; justify-content: center;
+                 flex-shrink: 0; }
+.sidebar-logo-mark  { display: block; width: auto; height: 24px;
+                      max-width: 100%; object-fit: contain; }   /* <img src="assets/img/logo_light.png"> */
 
 .sidebar-nav   { padding: 8px 0 12px; flex: 1; }
 .sidebar-footer{ padding: 10px 20px; font-size: .75rem; color: rgba(255,255,255,.7);
@@ -146,7 +148,7 @@ El sidebar está pintado de plano en `var(--primary)` (`#317535`). Por eso sus e
 .nav-sub-item.active                  { background: rgba(0,0,0,.32); }
 ```
 
-**Patrón:** la cabecera del sidebar contiene **solo el logo** centrado — `<img src="assets/img/databox_white.png" class="sidebar-logo-mark">` a 36 px de alto, sin texto "DATABOX / cloud" adjunto. Debajo, los items de primer nivel pueden ser navegación directa (`<a class="nav-item">`) o **grupos colapsables** (`.nav-group-wrap` con un `<button class="nav-group-toggle">` que aloja un `.nav-sub` con uno o más `.nav-sub-item`). El glifo `+` del toggle rota 45° al abrir (queda como `×`). Cuando el JS navega a una sub-ruta debe agregar la clase `open` al grupo correspondiente para que el sub-menú permanezca visible. Footer con versión en monospace. **No** introducir tokens grises ni `--text` / `--muted` / `--border` dentro del sidebar (tampoco del topbar — ver §5): textos en `#fff` u opacidades de blanco; bandas internas y estados en negros translúcidos sobre el verde institucional.
+**Patrón:** la cabecera del sidebar contiene **solo el logo** centrado — `<img src="assets/img/logo_light.png" class="sidebar-logo-mark">` a 24 px de alto, sin texto "DATABOX / cloud" adjunto. Debajo, los items de primer nivel pueden ser navegación directa (`<a class="nav-item">`) o **grupos colapsables** (`.nav-group-wrap` con un `<button class="nav-group-toggle">` que aloja un `.nav-sub` con uno o más `.nav-sub-item`). El glifo `+` del toggle rota 45° al abrir (queda como `×`). Cuando el JS navega a una sub-ruta debe agregar la clase `open` al grupo correspondiente para que el sub-menú permanezca visible. Footer con versión en monospace. **No** introducir tokens grises ni `--text` / `--muted` / `--border` dentro del sidebar (tampoco del topbar — ver §5): textos en `#fff` u opacidades de blanco; bandas internas y estados en negros translúcidos sobre el verde institucional.
 
 ```html
 <nav class="sidebar-nav">

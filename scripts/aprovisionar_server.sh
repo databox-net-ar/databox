@@ -133,55 +133,64 @@ sudo docker compose -f "$COMPOSE_FILE" ps
 echo "        OK"
 
 # ---- 8. Emitir certificado SSL ----
-echo "[ 8/8 ] Verificando DNS para SSL..."
+# Sin pre-chequeo de DNS: certbot tiene sus propias verificaciones y reporta
+# errores claros. El pre-chequeo viejo (`dig vs IMDS public-ipv4`) saltaba SSL
+# en setups con CDN/proxy o IPs efimeras, dejando HTTPS sin configurar.
+echo "[ 8/8 ] Configurando SSL con certbot..."
 
-IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" --max-time 3 || echo "")
-PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
-    --max-time 3 http://169.254.169.254/latest/meta-data/public-ipv4 || echo "")
+if [ ! -x /opt/certbot/bin/certbot ]; then
+    echo "        Instalando certbot en /opt/certbot..."
+    sudo python3 -m venv /opt/certbot
+    sudo /opt/certbot/bin/pip install --quiet --upgrade pip
+    sudo /opt/certbot/bin/pip install --quiet certbot certbot-nginx
+    sudo ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
+fi
+echo "        certbot $(/usr/bin/certbot --version 2>&1 | awk '{print $2}')"
 
-if [ -z "$PUBLIC_IP" ]; then
-    echo "        AVISO: no se pudo detectar la IP publica -- saltando SSL."
-else
-    echo "        IP publica del servidor: $PUBLIC_IP"
+echo "        Emitiendo/renovando certificado para $DOMAIN..."
+if ! sudo certbot --nginx \
+        --non-interactive \
+        --agree-tos \
+        --email "$CERTBOT_EMAIL" \
+        --redirect \
+        --keep-until-expiring \
+        -d "$DOMAIN"; then
+    echo ""
+    echo "        ERROR: certbot fallo. Ultimas lineas del log:"
+    echo "        --------------------------------------------"
+    sudo tail -40 /var/log/letsencrypt/letsencrypt.log 2>/dev/null | sed 's/^/        /'
+    echo "        --------------------------------------------"
+    echo ""
+    echo "        Causas comunes:"
+    echo "          - El dominio $DOMAIN no apunta a la IP publica de este server."
+    echo "          - El Security Group del EC2 no tiene abierto el puerto 80"
+    echo "            (HTTP-01 challenge entra por 80, no por 443)."
+    echo "          - Limite de rate de Let's Encrypt (5 fallos/hora por dominio)."
+    exit 1
+fi
+echo "        OK -- certificado emitido/renovado."
 
-    RESOLVED=$(dig +short A "$DOMAIN" @8.8.8.8 | tail -n1)
-    if [ "$RESOLVED" != "$PUBLIC_IP" ]; then
-        echo "        DNS aun no apunta al servidor:"
-        echo "          $DOMAIN -> ${RESOLVED:-(no resuelve)} (esperado $PUBLIC_IP)"
-        echo ""
-        echo "        Configurar DNS y volver a correr este script para SSL."
-    else
-        echo "        DNS OK. Verificando certbot..."
+if [ ! -f /etc/cron.d/certbot ]; then
+    echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && /usr/bin/certbot renew -q" \
+        | sudo tee /etc/cron.d/certbot > /dev/null
+    echo "        Cron de renovacion creado en /etc/cron.d/certbot"
+fi
 
-        if [ ! -x /opt/certbot/bin/certbot ]; then
-            echo "        Instalando certbot en /opt/certbot..."
-            sudo python3 -m venv /opt/certbot
-            sudo /opt/certbot/bin/pip install --quiet --upgrade pip
-            sudo /opt/certbot/bin/pip install --quiet certbot certbot-nginx
-            sudo ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
-        fi
-        echo "        certbot $(/usr/bin/certbot --version 2>&1 | awk '{print $2}')"
+# Verificacion: Nginx debe haber quedado con un listener en 443.
+if ! sudo nginx -T 2>/dev/null | grep -qE 'listen\s+443'; then
+    echo "        ERROR: Nginx no quedo escuchando en 443 despues de certbot."
+    echo "        Revisar /etc/nginx/conf.d/databox.conf"
+    exit 1
+fi
 
-        echo "        Emitiendo/verificando certificado para $DOMAIN..."
-        if sudo certbot --nginx \
-                --non-interactive \
-                --agree-tos \
-                --email "$CERTBOT_EMAIL" \
-                --redirect \
-                --keep-until-expiring \
-                -d "$DOMAIN"; then
-            echo "        OK -- SSL configurado."
-        else
-            echo "        AVISO: certbot fallo. Revisar /var/log/letsencrypt/letsencrypt.log"
-        fi
-
-        if [ ! -f /etc/cron.d/certbot ]; then
-            echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && /usr/bin/certbot renew -q" \
-                | sudo tee /etc/cron.d/certbot > /dev/null
-            echo "        Cron de renovacion creado en /etc/cron.d/certbot"
-        fi
-    fi
+# Smoke test interno (loopback): forzamos que $DOMAIN resuelva a 127.0.0.1
+# para que SNI matche el cert. Si esto falla, Nginx local esta mal.
+local_code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 \
+    --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/" || echo "000")
+echo "        Smoke test interno: https://$DOMAIN/ -> $local_code"
+if [ "$local_code" = "000" ]; then
+    echo "        ERROR: Nginx no responde por 443 ni en loopback."
+    exit 1
 fi
 
 echo ""

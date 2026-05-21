@@ -16,7 +16,7 @@
 
 set -e
 
-HOST="manchester.databox.com.ar"
+HOST="manchester.databox.net.ar"
 USER="ec2-user"
 KEY="/c/Users/Javier/OneDrive/Temp/Llaves/wescom/wescom.pem"
 BASE_LOCAL="$(cd "$(dirname "$0")/.." && pwd)"
@@ -90,7 +90,41 @@ ssh -i "$KEY" -o StrictHostKeyChecking=no -t \
     "DOMAIN='$DOMAIN' CERTBOT_EMAIL='$CERTBOT_EMAIL' bash '$BASE_REMOTE/scripts/aprovisionar_server.sh'"
 
 echo ""
+
+# ---- 5. Verificar conectividad real HTTP / HTTPS desde local ----
+# Si el server reporto OK pero HTTPS no responde desde afuera, casi siempre
+# es porque el Security Group del EC2 no tiene abierto el puerto 443.
+echo "  Verificando conectividad desde local..."
+
+http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://${DOMAIN}/" || echo "000")
+https_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://${DOMAIN}/" || echo "000")
+
+echo "    http://${DOMAIN}/  -> ${http_code}"
+echo "    https://${DOMAIN}/ -> ${https_code}"
+echo ""
+
+problemas=0
+if [ "$http_code" != "200" ] && [ "$http_code" != "301" ] && [ "$http_code" != "302" ]; then
+    echo "  AVISO: HTTP no responde como se esperaba."
+    problemas=1
+fi
+if [ "$https_code" = "000" ]; then
+    echo "  AVISO: HTTPS no responde (puerto 443 inalcanzable desde internet)."
+    echo "    El cert SSL puede estar bien, pero el Security Group del EC2"
+    echo "    bloquea 443. En la consola de AWS:"
+    echo "      EC2 -> Security Groups -> SG del server -> Inbound rules"
+    echo "      Agregar: HTTPS / TCP / 443 / 0.0.0.0/0"
+    problemas=1
+elif [ "$https_code" != "200" ] && [ "$https_code" != "301" ] && [ "$https_code" != "302" ]; then
+    echo "  AVISO: HTTPS respondio con code=${https_code}, revisar Nginx."
+    problemas=1
+fi
+
 echo "============================================================"
-echo "  Aprovisionamiento completo -- https://${DOMAIN}/"
+if [ "$problemas" -eq 0 ]; then
+    echo "  Aprovisionamiento completo -- https://${DOMAIN}/"
+else
+    echo "  Aprovisionamiento finalizado con AVISOS -- revisar arriba."
+fi
 echo "============================================================"
 echo ""
