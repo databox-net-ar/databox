@@ -28,6 +28,12 @@
             "problemMatcher": []
         },
         {
+            "label": "deploy + rebuild",
+            "type": "shell",
+            "command": "./scripts/deploy.sh --rebuild",
+            "problemMatcher": []
+        },
+        {
             "label": "instalar",
             "type": "shell",
             "command": "./scripts/instalar.sh",

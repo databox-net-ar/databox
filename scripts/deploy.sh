@@ -39,18 +39,19 @@ echo "  version.txt actualizado en cloud/"
 echo ""
 
 # ---- 2. Verificar artefactos requeridos ----
-for f in .env.production docker/Dockerfile cloud; do
+for f in .env.production env.php docker/Dockerfile cloud; do
     if [ ! -e "$BASE_LOCAL/$f" ]; then
         echo "ERROR: falta $BASE_LOCAL/$f"
         exit 1
     fi
 done
 
-# ---- 3. Subir cloud/, docker/, db/, .env.production ----
+# ---- 3. Subir cloud/, docker/, db/, env.php, .env.production ----
 # NO subimos docker-compose.yml: en el servidor vive docker-compose.prod.yml,
 # generado por aprovisionar_server.sh (sin servicio databox-db).
 # .env.production se sube en cada deploy para mantener prod en sync.
-echo "  Subiendo cloud/, docker/, db/ y .env.production..."
+# env.php es el loader de variables (define APP_KEY_CLOUD y demas como constantes).
+echo "  Subiendo cloud/, docker/, db/, env.php y .env.production..."
 cd "$BASE_LOCAL"
 
 # db/ se incluye porque CLAUDE.md lo declara como schema de referencia.
@@ -67,7 +68,7 @@ tar \
     --exclude='*.log' \
     --exclude='*.pem' \
     --exclude='*.key' \
-    -czf - cloud docker $INCLUDE_DB .env.production | \
+    -czf - cloud docker $INCLUDE_DB env.php .env.production | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar -xzf - -C '$BASE_REMOTE/'"

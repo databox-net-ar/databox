@@ -88,7 +88,7 @@ EOF
 # --- Limpiar contenedores previos -------------------------------------------
 # El orden importa:
 #   1) `docker compose down -v --remove-orphans` SIEMPRE primero. Borra
-#      contenedores, red y -- critico -- el volumen `databox-db-data` del
+#      contenedores, red y -- critico -- el volumen `databox-mysql-data` del
 #      proyecto. Si saltearamos esto el volumen sobrevive y MySQL no vuelve
 #      a correr schema.sql en el siguiente up (initdb solo se ejecuta en
 #      DB virgen), dejando el schema desactualizado.
@@ -99,7 +99,7 @@ echo -e "${RED}==> Limpiando contenedores previos...${NC}"
 docker compose -p databox down -v --remove-orphans > /dev/null 2>&1 || true
 
 existing=$(docker ps -a --format '{{.Names}}')
-for name in databox databox-db; do
+for name in databox databox-mysql; do
     if echo "$existing" | grep -qx "$name"; then
         echo "    removiendo $name (huerfano sin label compose)"
         docker rm -f "$name" > /dev/null
@@ -115,11 +115,11 @@ if ! docker compose -p databox up -d --build; then
     echo -e "${YELLOW}--- docker ps -a (databox) ---${NC}"
     docker ps -a --filter "name=databox" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
     echo ""
-    echo -e "${YELLOW}--- docker logs databox (ultimas 50 lineas) ---${NC}"
-    docker logs --tail 50 databox 2>&1 || true
+    echo -e "${YELLOW}--- docker logs databox-apache (ultimas 50 lineas) ---${NC}"
+    docker logs --tail 50 databox-apache 2>&1 || true
     echo ""
-    echo -e "${YELLOW}--- docker logs databox-db (ultimas 50 lineas) ---${NC}"
-    docker logs --tail 50 databox-db 2>&1 || true
+    echo -e "${YELLOW}--- docker logs databox-mysql (ultimas 50 lineas) ---${NC}"
+    docker logs --tail 50 databox-mysql 2>&1 || true
     exit 1
 fi
 
@@ -151,16 +151,16 @@ if [ -d "$migrations_dir" ]; then
         [ -f "$m" ] || continue
         name=$(basename "$m")
         echo "    $name"
-        if ! docker cp "$m" "databox-db:/tmp/migration.sql" > /dev/null; then
-            echo -e "${RED}ERROR copiando $name al contenedor databox-db${NC}"
+        if ! docker cp "$m" "databox-mysql:/tmp/migration.sql" > /dev/null; then
+            echo -e "${RED}ERROR copiando $name al contenedor databox-mysql${NC}"
             exit 1
         fi
-        if ! docker exec databox-db sh -c 'mysql -uroot -proot databox_dev < /tmp/migration.sql'; then
+        if ! docker exec databox-mysql sh -c 'mysql -uroot -proot databox_dev < /tmp/migration.sql'; then
             echo -e "${RED}ERROR aplicando $name${NC}"
             exit 1
         fi
     done
-    docker exec databox-db rm -f /tmp/migration.sql > /dev/null || true
+    docker exec databox-mysql rm -f /tmp/migration.sql > /dev/null || true
 fi
 
 # --- Resumen ----------------------------------------------------------------
@@ -168,7 +168,7 @@ echo ""
 if $ok; then
     echo -e "${GREEN}==> Listo.${NC}"
 else
-    echo -e "${YELLOW}==> Stack arriba, pero la app aun no responde. Revisa logs con: docker logs databox${NC}"
+    echo -e "${YELLOW}==> Stack arriba, pero la app aun no responde. Revisa logs con: docker logs databox-apache${NC}"
 fi
 
 echo ""

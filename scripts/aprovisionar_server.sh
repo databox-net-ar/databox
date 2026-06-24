@@ -64,7 +64,7 @@ echo "        OK -- Compose $(sudo docker compose version --short) / buildx $(su
 
 # ---- 4. Verificar artefactos transferidos ----
 echo "[ 4/8 ] Verificando archivos del proyecto..."
-for f in cloud docker/Dockerfile .env.production; do
+for f in cloud docker/Dockerfile env.php .env.production; do
     if [ ! -e "$APP_DIR/$f" ]; then
         echo "        ERROR: falta $APP_DIR/$f"
         echo "        Re-correr scripts/aprovisionar.sh desde la maquina local."
@@ -85,7 +85,7 @@ cat > "$APP_DIR/$COMPOSE_FILE" << EOF
 # Produccion: sin servicio databox-db (BD en AWS RDS, ver .env.production).
 services:
   databox:
-    container_name: databox
+    container_name: databox-apache
     build:
       context: ./docker
       dockerfile: Dockerfile
@@ -93,6 +93,8 @@ services:
       - "127.0.0.1:${APP_PORT_HOST}:80"
     volumes:
       - ./cloud:/var/www/html
+      - ./env.php:/var/www/env.php:ro
+      - ./.env.production:/var/www/.env.production:ro
     env_file:
       - .env.production
     restart: unless-stopped
@@ -200,7 +202,7 @@ echo ""
 echo "  App:        https://${DOMAIN}/   (proxy a 127.0.0.1:${APP_PORT_HOST})"
 echo "  Repo:       $APP_DIR"
 echo "  Compose:    docker compose -f $APP_DIR/$COMPOSE_FILE <cmd>"
-echo "  Logs:       sudo docker logs -f databox"
+echo "  Logs:       sudo docker logs -f databox-apache"
 echo "  Restart:    cd $APP_DIR && sudo docker compose -f $COMPOSE_FILE restart"
 echo "  Ver SSL:    sudo certbot certificates"
 echo "============================================================"

@@ -34,7 +34,7 @@ echo "============================================================"
 echo ""
 
 # ---- 1. Validar artefactos locales ----
-for f in .env.production docker/Dockerfile cloud scripts/aprovisionar_server.sh; do
+for f in .env.production env.php docker/Dockerfile cloud scripts/aprovisionar_server.sh; do
     if [ ! -e "$BASE_LOCAL/$f" ]; then
         echo "ERROR: falta $BASE_LOCAL/$f"
         exit 1
@@ -57,7 +57,7 @@ echo ""
 # Se incluye scripts/ para que aprovisionar_server.sh quede disponible en el
 # server. .env.production tambien (esta en .gitignore, no llega por otra via).
 # db/ es opcional (schema de referencia).
-echo "  Subiendo cloud/, docker/, db/, scripts/, .env.production..."
+echo "  Subiendo cloud/, docker/, db/, scripts/, env.php, .env.production..."
 cd "$BASE_LOCAL"
 
 INCLUDE_DB=""
@@ -72,7 +72,7 @@ tar \
     --exclude='*.log' \
     --exclude='*.pem' \
     --exclude='*.key' \
-    -czf - cloud docker $INCLUDE_DB scripts .env.production | \
+    -czf - cloud docker $INCLUDE_DB scripts env.php .env.production | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar -xzf - -C '$BASE_REMOTE/'"

@@ -393,6 +393,50 @@ textarea { resize: vertical; min-height: 60px; }
 .login-submit { margin-top: 6px; padding: 10px 16px; font-size: .95rem; }
 .login-submit:disabled { opacity: .65; cursor: not-allowed; }
 
+/* 25. Tarjeta de ayuda del módulo (ABM.md §Tarjeta de ayuda) */
+.module-help { background: var(--surface); border: 1px solid var(--border);
+               border-radius: var(--radius); padding: 14px 18px;
+               margin-bottom: 16px; box-shadow: var(--shadow);
+               display: flex; gap: 14px; align-items: center; }
+.module-help .module-help-icon { font-size: 1.6rem; line-height: 1; }
+.module-help .module-help-text { font-size: .88rem; color: var(--muted); line-height: 1.45; }
+
+/* 26. Botones solo-ícono de la toolbar (ABM.md §Botones solo-ícono) */
+.btn.btn-icon       { position: relative; width: 36px; height: 36px;
+                      padding: 0; justify-content: center; }
+.btn.btn-icon i     { font-size: .95rem; }
+.btn.btn-icon.active { background: transparent;
+                       border-color: var(--primary); color: var(--primary); }
+.btn-icon-badge     { position: absolute; top: -4px; right: -4px;
+                      min-width: 18px; height: 18px; padding: 0 5px;
+                      border-radius: 99px; background: var(--warn); color: #1a1a1a;
+                      font-size: .65rem; font-weight: 700; line-height: 1;
+                      display: inline-flex; align-items: center; justify-content: center; }
+
+/* 27. Menú contextual (filas del listado y modal Consultar) */
+.ctx-menu        { position: fixed; z-index: 300; display: none;
+                   min-width: 190px;
+                   background: var(--surface); border: 1px solid var(--border);
+                   border-radius: 10px; box-shadow: var(--shadow-lg);
+                   overflow: hidden; padding: 4px 0; }
+.ctx-menu.open   { display: block; }
+.ctx-menu button { display: flex; align-items: center; gap: 10px; width: 100%;
+                   padding: 8px 14px; background: none; border: none; cursor: pointer;
+                   font-size: .85rem; color: var(--text);
+                   text-align: left; font-family: inherit; }
+.ctx-menu button:hover:not(:disabled)   { background: var(--bg); color: var(--primary); }
+.ctx-menu button:disabled               { opacity: .5; cursor: not-allowed; }
+.ctx-menu button i                      { width: 14px; text-align: center; color: var(--muted); }
+.ctx-menu button:hover:not(:disabled) i { color: inherit; }
+.ctx-menu-sep    { height: 1px; background: var(--border); margin: 4px 0; }
+.ctx-menu-danger { color: var(--danger); }
+.ctx-menu-danger:hover:not(:disabled),
+.ctx-menu-danger:hover:not(:disabled) i { background: var(--danger) !important;
+                                          color: #fff !important; }
+
+/* 28. Filas del listado clickeables (ABM.md §Interacción con la fila) */
+tbody tr.row-clickable { cursor: pointer; }
+
 /* ---- Lista de permisos (ABM de Roles) ---- */
 .perm-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
                 margin-bottom: 8px; }

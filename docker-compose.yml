@@ -2,7 +2,7 @@ name: databox
 
 services:
   databox:
-    container_name: databox
+    container_name: databox-apache
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -10,6 +10,7 @@ services:
       - "${DATABOX_APP_PORT}:80"
     volumes:
       - ./cloud:/var/www/html
+      - ./env.php:/var/www/env.php:ro
       - ./.env.development:/var/www/.env.development:ro
     environment:
       APP_ENV: development
@@ -18,7 +19,7 @@ services:
     restart: unless-stopped
 
   db:
-    container_name: databox-db
+    container_name: databox-mysql
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: root

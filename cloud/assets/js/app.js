@@ -110,6 +110,53 @@ function confirmar({ title, message, confirmText = 'Confirmar', danger = true })
   });
 }
 
+// ------------------------- Menú contextual genérico (ABM.md) -------------------------
+// Un único menú por sección (ya renderizado en el DOM). Lo abrimos posicionándolo
+// como `position: fixed` cerca del clic / botón hamburguesa. El módulo guarda el
+// contexto (id del registro, datos) en `getCtxMenuData()` para que los handlers
+// `data-action` puedan resolverlo al disparar.
+let _ctxMenuActual = null;
+let _ctxMenuData   = null;
+
+function abrirCtxMenu(menuEl, x, y, data) {
+  cerrarCtxMenu();
+  if (!menuEl) return;
+  _ctxMenuActual = menuEl;
+  _ctxMenuData   = data || null;
+  menuEl.classList.add('open');
+  // medir y reposicionar dentro del viewport
+  const rect = menuEl.getBoundingClientRect();
+  const w    = rect.width  || 200;
+  const h    = rect.height || 200;
+  let nx = x, ny = y;
+  if (nx + w > window.innerWidth  - 8) nx = window.innerWidth  - w - 8;
+  if (ny + h > window.innerHeight - 8) ny = window.innerHeight - h - 8;
+  if (nx < 8) nx = 8;
+  if (ny < 8) ny = 8;
+  menuEl.style.left = nx + 'px';
+  menuEl.style.top  = ny + 'px';
+}
+
+function cerrarCtxMenu() {
+  if (!_ctxMenuActual) return;
+  _ctxMenuActual.classList.remove('open');
+  _ctxMenuActual = null;
+  _ctxMenuData   = null;
+}
+
+function getCtxMenuData() { return _ctxMenuData; }
+
+document.addEventListener('click', (ev) => {
+  if (!_ctxMenuActual) return;
+  if (_ctxMenuActual.contains(ev.target)) return;
+  cerrarCtxMenu();
+});
+document.addEventListener('scroll', () => cerrarCtxMenu(), true);
+window.addEventListener('resize',  () => cerrarCtxMenu());
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') cerrarCtxMenu();
+});
+
 // ------------------------- Router -------------------------
 const routes = {};
 function route(path, handler, title) {
@@ -249,63 +296,165 @@ const USR_ESTADOS = {
   I: { label: 'Inactivo', badge: 'badge-danger'  },
   B: { label: 'Baja',     badge: 'badge-danger'  },
 };
-const usuariosFiltros = {
-  codigo: '', nombre: '', dni: '', correo: '', celular: '', estado: '',
+const usuariosFiltrosDefaults = {
+  q: '', codigo: '', nombre: '', dni: '', correo: '', celular: '', estado: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
-let usuariosBuscadorTimer = null;
+const usuariosFiltros = { ...usuariosFiltrosDefaults };
+let usuariosBuscadorTimer  = null;
+let usuariosFiltrosSnapshot = null;
+let usuariosCacheRows       = [];
 
 route('/usuarios', async (mount) => {
   mount.innerHTML = `
-    <div class="page-header">
-      <div class="page-title">Usuarios</div>
-      <div class="page-subtitle">Cuentas con acceso a la plataforma.</div>
-    </div>
-
-    <div class="stats-bar" id="usrStats">
-      <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-      <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green">—</span></div>
-      <div class="stat-card"><span class="stat-label">Inactivos</span><span class="stat-value red">—</span></div>
-    </div>
-
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <div class="search-wrap">
-          <input type="search" class="search-input" id="usrSearch"
-                 placeholder="Buscar nombre, correo, DNI…">
-          <button class="search-clear" id="usrSearchClear" style="display:none">×</button>
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">👥</div>
+        <div class="module-help-text">
+          Los usuarios son las personas con acceso a la plataforma: cada uno se identifica
+          con su correo y contraseña, y los roles asignados determinan qué pueden hacer.
         </div>
-        <button class="btn btn-ghost" id="usrFiltrosBtn">
-          <i class="fa-solid fa-filter"></i> Filtros
-        </button>
       </div>
-      <div class="toolbar-right">
-        <button class="btn btn-primary" id="usrNuevoBtn">+ Nuevo usuario</button>
+
+      <div class="stats-bar" id="usrStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green">—</span></div>
+        <div class="stat-card"><span class="stat-label">Inactivos</span><span class="stat-value red">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="usrSearch"
+                   placeholder="🔍 Buscar nombre, correo o DNI…">
+            <button class="search-clear" id="usrSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="usrFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="usrFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="usrRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="usrNuevoBtn">+ Nuevo usuario</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>DNI</th>
+              <th>Correo</th>
+              <th>Celular</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="usrTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <div class="table-card">
-      <table>
-        <thead>
-          <tr>
-            <th>Código</th>
-            <th>Nombre</th>
-            <th>DNI</th>
-            <th>Correo</th>
-            <th>Celular</th>
-            <th>Estado</th>
-            <th style="text-align:right">Acciones</th>
-          </tr>
-        </thead>
-        <tbody id="usrTbody">
-          <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
-        </tbody>
-      </table>
+    <!-- Menú contextual único de la sección -->
+    <div id="usrCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md §Modal de filtros) -->
+    <div class="modal-backdrop" id="filtrosUsuariosBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosUsuarios()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosUsuarios()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fUsrCodigo" min="1" placeholder="ID …" oninput="onFiltroUsuarios('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fUsrNombre" oninput="onFiltroUsuarios('nombre', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>DNI</label>
+              <input type="text" id="fUsrDni" oninput="onFiltroUsuarios('dni', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Correo</label>
+              <input type="text" id="fUsrCorreo" oninput="onFiltroUsuarios('correo', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Celular</label>
+            <input type="text" id="fUsrCelular" oninput="onFiltroUsuarios('celular', this.value)">
+          </div>
+          <div class="form-group">
+            <label>Estado del usuario</label>
+            <div id="fUsrEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-estado="" >Todos</button>
+              <button type="button" class="filter-chip" data-estado="A">Activo</button>
+              <button type="button" class="filter-chip" data-estado="I">Inactivo</button>
+              <button type="button" class="filter-chip" data-estado="B">Baja</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fUsrLimite" min="1" max="1000" value="100" onchange="onFiltroUsuarios('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fUsrOrderBy" onchange="onFiltroUsuarios('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="dni">DNI</option>
+                <option value="correo">Correo</option>
+                <option value="registrado">Fecha de registro</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fUsrDir" onchange="onFiltroUsuarios('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosUsuarios()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosUsuarios()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosUsuarios()">Aplicar</button>
+        </div>
+      </div>
     </div>
   `;
 
   $('#usrNuevoBtn').addEventListener('click', () => abrirAltaEdicion(null));
-  $('#usrFiltrosBtn').addEventListener('click', () => abrirFiltros());
+  $('#usrFiltrosBtn').addEventListener('click', () => abrirModalFiltrosUsuarios());
+  $('#usrRefrescarBtn').addEventListener('click', () => cargarUsuarios());
 
   const inp = $('#usrSearch');
   const clr = $('#usrSearchClear');
@@ -315,24 +464,51 @@ route('/usuarios', async (mount) => {
     clr.style.display = inp.value ? '' : 'none';
     usuariosFiltros.q = inp.value.trim();
     clearTimeout(usuariosBuscadorTimer);
-    usuariosBuscadorTimer = setTimeout(cargarUsuarios, 250);
+    usuariosBuscadorTimer = setTimeout(() => { cargarUsuarios(); refrescarBadgeFiltrosUsuarios(); }, 250);
   });
   clr.addEventListener('click', () => {
     inp.value = '';
     clr.style.display = 'none';
     usuariosFiltros.q = '';
     cargarUsuarios();
+    refrescarBadgeFiltrosUsuarios();
   });
 
+  // Acciones del menú contextual (mismo menú para hamburguesa y clic derecho)
+  $('#usrCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarUsuario(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicion(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarUsuario(data.id);
+  });
+
+  // Clic en fila → consultar; clic en hamburguesa → menú
   $('#usrTbody').addEventListener('click', (ev) => {
-    const btn = ev.target.closest('[data-act]');
-    if (!btn) return;
-    const id = Number(btn.dataset.id);
-    if (btn.dataset.act === 'view')   abrirConsultar(id);
-    if (btn.dataset.act === 'edit')   abrirAltaEdicion(id);
-    if (btn.dataset.act === 'delete') eliminarUsuario(id);
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#usrCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarUsuario(Number(tr.dataset.id));
+  });
+  // Clic derecho en fila → menú
+  $('#usrTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#usrCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
   });
 
+  refrescarBadgeFiltrosUsuarios();
   await cargarUsuarios();
 }, 'Usuarios');
 
@@ -348,7 +524,8 @@ async function cargarUsuarios() {
   try {
     const data = await apiGet('api/usuarios.php?' + qs.toString());
     pintarStatsUsuarios(data.stats);
-    pintarTablaUsuarios(data.items);
+    usuariosCacheRows = data.items || [];
+    pintarTablaUsuarios(usuariosCacheRows);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
@@ -371,18 +548,18 @@ function pintarTablaUsuarios(rows) {
   tbody.innerHTML = rows.map((u) => {
     const est = USR_ESTADOS[u.estado] || { label: u.estado || '—', badge: 'badge-info' };
     return `
-      <tr>
+      <tr data-id="${u.id}" class="row-clickable">
         <td class="td-id">#${esc(u.id)}</td>
         <td class="td-nombre">${esc(u.nombre || '—')}</td>
         <td>${esc(u.dni || '—')}</td>
         <td>${esc(u.correo || '—')}</td>
         <td>${esc(u.celular || '—')}</td>
         <td><span class="badge ${est.badge}">${esc(est.label)}</span></td>
-        <td>
-          <div class="actions" style="justify-content:flex-end">
-            <button class="action-icon view"   title="Consultar" data-act="view"   data-id="${u.id}"><i class="fa-regular fa-eye"></i></button>
-            <button class="action-icon edit"   title="Editar"    data-act="edit"   data-id="${u.id}"><i class="fa-solid fa-pencil"></i></button>
-            <button class="action-icon delete" title="Eliminar"  data-act="delete" data-id="${u.id}"><i class="fa-solid fa-trash"></i></button>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${u.id}">
+              <i class="fa-solid fa-bars"></i>
+            </button>
           </div>
         </td>
       </tr>
@@ -390,119 +567,89 @@ function pintarTablaUsuarios(rows) {
   }).join('');
 }
 
-// ---- Modal de Filtros ----
-function abrirFiltros() {
-  const f = usuariosFiltros;
-  openModal(`
-    <div class="modal">
-      <div class="modal-header">
-        <div class="modal-title">Filtros</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-row">
-          <div class="form-group">
-            <label>Código</label>
-            <input type="number" id="fCodigo" value="${esc(f.codigo)}">
-          </div>
-          <div class="form-group">
-            <label>Nombre</label>
-            <input type="text" id="fNombre" value="${esc(f.nombre)}">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>DNI</label>
-            <input type="text" id="fDni" value="${esc(f.dni)}">
-          </div>
-          <div class="form-group">
-            <label>Correo</label>
-            <input type="text" id="fCorreo" value="${esc(f.correo)}">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Celular</label>
-            <input type="text" id="fCelular" value="${esc(f.celular)}">
-          </div>
-          <div class="form-group">
-            <label>Estado</label>
-            <select id="fEstado">
-              <option value=""  ${f.estado === ''  ? 'selected' : ''}>Todos</option>
-              <option value="A" ${f.estado === 'A' ? 'selected' : ''}>Activo</option>
-              <option value="I" ${f.estado === 'I' ? 'selected' : ''}>Inactivo</option>
-              <option value="B" ${f.estado === 'B' ? 'selected' : ''}>Baja</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-row-3">
-          <div class="form-group">
-            <label>Límite</label>
-            <input type="number" id="fLimite" min="1" max="1000" value="${esc(f.limite)}">
-          </div>
-          <div class="form-group">
-            <label>Ordenar por</label>
-            <select id="fOrderBy">
-              <option value="id"        ${f.order_by === 'id'        ? 'selected' : ''}>Código</option>
-              <option value="nombre"    ${f.order_by === 'nombre'    ? 'selected' : ''}>Nombre</option>
-              <option value="dni"       ${f.order_by === 'dni'       ? 'selected' : ''}>DNI</option>
-              <option value="correo"    ${f.order_by === 'correo'    ? 'selected' : ''}>Correo</option>
-              <option value="registrado"${f.order_by === 'registrado'? 'selected' : ''}>Fecha de registro</option>
-              <option value="estado"    ${f.order_by === 'estado'    ? 'selected' : ''}>Estado</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Dirección</label>
-            <select id="fDir">
-              <option value="asc"  ${f.dir === 'asc'  ? 'selected' : ''}>Ascendente</option>
-              <option value="desc" ${f.dir === 'desc' ? 'selected' : ''}>Descendente</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"     data-act="limpiar"  style="margin-right:auto">Limpiar</button>
-        <button class="btn btn-secondary" data-act="close">Cancelar</button>
-        <button class="btn btn-primary"   data-act="aplicar">Aplicar</button>
-      </div>
-    </div>
-  `);
+// ---- Modal de Filtros (Usuarios) ----
+function onFiltroUsuarios(key, value) {
+  if (key === 'codigo' || key === 'nombre' || key === 'dni' ||
+      key === 'correo' || key === 'celular') {
+    usuariosFiltros[key] = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    usuariosFiltros.limite = n;
+  } else {
+    usuariosFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosUsuarios();
+  cargarUsuarios();
+}
 
-  $('#modalRoot').addEventListener('click', async (ev) => {
-    const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'limpiar') resetFiltros();
-    if (a.dataset.act === 'aplicar') {
-      usuariosFiltros.codigo   = $('#fCodigo').value.trim();
-      usuariosFiltros.nombre   = $('#fNombre').value.trim();
-      usuariosFiltros.dni      = $('#fDni').value.trim();
-      usuariosFiltros.correo   = $('#fCorreo').value.trim();
-      usuariosFiltros.celular  = $('#fCelular').value.trim();
-      usuariosFiltros.estado   = $('#fEstado').value;
-      usuariosFiltros.limite   = Number($('#fLimite').value) || 100;
-      usuariosFiltros.order_by = $('#fOrderBy').value;
-      usuariosFiltros.dir      = $('#fDir').value;
-      closeModal();
-      cargarUsuarios();
-    }
+function refrescarBadgeFiltrosUsuarios() {
+  const btn   = $('#usrFiltrosBtn');
+  const badge = $('#usrFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(usuariosFiltrosDefaults)) {
+    if (k === 'q') continue; // el campo rápido tiene su propio control
+    if (String(usuariosFiltros[k]) !== String(usuariosFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosUsuarios() {
+  const f = usuariosFiltros;
+  $('#fUsrCodigo').value  = f.codigo;
+  $('#fUsrNombre').value  = f.nombre;
+  $('#fUsrDni').value     = f.dni;
+  $('#fUsrCorreo').value  = f.correo;
+  $('#fUsrCelular').value = f.celular;
+  $('#fUsrLimite').value  = f.limite;
+  $('#fUsrOrderBy').value = f.order_by;
+  $('#fUsrDir').value     = f.dir;
+  $$('#fUsrEstadoChips .filter-chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.estado || '') === (f.estado || ''));
   });
 }
 
-function resetFiltros() {
-  $('#fCodigo').value  = '';
-  $('#fNombre').value  = '';
-  $('#fDni').value     = '';
-  $('#fCorreo').value  = '';
-  $('#fCelular').value = '';
-  $('#fEstado').value  = '';
-  $('#fLimite').value  = '100';
-  $('#fOrderBy').value = 'id';
-  $('#fDir').value     = 'desc';
+function abrirModalFiltrosUsuarios() {
+  usuariosFiltrosSnapshot = { ...usuariosFiltros };
+  sincronizarControlesFiltrosUsuarios();
+  // Bind chips de estado (idempotente)
+  $$('#fUsrEstadoChips .filter-chip').forEach((c) => {
+    c.onclick = () => { onFiltroUsuarios('estado', c.dataset.estado || ''); sincronizarControlesFiltrosUsuarios(); };
+  });
+  $('#filtrosUsuariosBackdrop').classList.add('open');
 }
 
-// ---- Modal Consultar ----
-async function abrirConsultar(id) {
+function cerrarModalFiltrosUsuarios() {
+  $('#filtrosUsuariosBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosUsuarios() {
+  if (usuariosFiltrosSnapshot) {
+    Object.assign(usuariosFiltros, usuariosFiltrosSnapshot);
+    refrescarBadgeFiltrosUsuarios();
+    cargarUsuarios();
+  }
+  cerrarModalFiltrosUsuarios();
+}
+
+function limpiarFiltrosUsuarios() {
+  Object.assign(usuariosFiltros, usuariosFiltrosDefaults);
+  // Mantener el buscador rápido tal cual lo dejó el usuario
+  usuariosFiltros.q = $('#usrSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosUsuarios();
+  refrescarBadgeFiltrosUsuarios();
+  cargarUsuarios();
+}
+
+// Exponer para los onclick del HTML
+window.onFiltroUsuarios          = onFiltroUsuarios;
+window.cancelarFiltrosUsuarios   = cancelarFiltrosUsuarios;
+window.limpiarFiltrosUsuarios    = limpiarFiltrosUsuarios;
+window.cerrarModalFiltrosUsuarios = cerrarModalFiltrosUsuarios;
+
+// ---- Modal Consultar (Usuario) ----
+async function abrirConsultarUsuario(id) {
   openModal(`
     <div class="modal modal-wide">
       <div class="modal-header">
@@ -511,16 +658,18 @@ async function abrirConsultar(id) {
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]')) closeModal();
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicion(id); }
   });
 
   try {
-    const u = await apiGet(`api/usuarios.php?id=${id}`);
+    const u   = await apiGet(`api/usuarios.php?id=${id}`);
     const est = USR_ESTADOS[u.estado] || { label: u.estado || '—' };
     const fila = (label, value, full = false, isCode = false) => {
       const empty = value == null || value === '';
@@ -536,17 +685,17 @@ async function abrirConsultar(id) {
     };
     $('#modalRoot .modal-body').innerHTML = `
       <dl class="data-list">
-        ${fila('Código',    '#' + u.id, false, false)}
-        ${fila('Estado',    est.label,  false, false)}
-        ${fila('Nombre',    u.nombre,   true,  false)}
+        ${fila('Código',    '#' + u.id)}
+        ${fila('Estado',    est.label)}
+        ${fila('Nombre',    u.nombre,   true)}
         ${fila('DNI',       u.dni)}
         ${fila('Nacimiento',u.nacimiento)}
-        ${fila('Correo',    u.correo,   true,  false)}
+        ${fila('Correo',    u.correo,   true)}
         ${fila('Celular',   u.celular)}
         ${fila('Sistemas',  u.sistemas)}
-        ${fila('Roles',     u.roles,    true,  false)}
+        ${fila('Roles',     u.roles,    true)}
         ${fila('Terminal',  u.terminal)}
-        ${fila('UUID',      u.uuid,     true,  true)}
+        ${fila('UUID',      u.uuid,     true, true)}
         ${fila('Registrado',fmtFecha(u.registrado))}
         ${fila('Último ingreso', fmtFecha(u.ingresado))}
       </dl>
@@ -710,12 +859,14 @@ async function eliminarUsuario(id) {
 }
 
 // ------------------------- Vista: Roles (ABM) -------------------------
-const rolesFiltros = {
-  codigo: '', nombre: '', descripcion: '',
+const rolesFiltrosDefaults = {
+  q: '', codigo: '', nombre: '', descripcion: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
-let rolesBuscadorTimer = null;
-let permisosCatalogo = null; // cache de GET ?listar=permisos
+const rolesFiltros = { ...rolesFiltrosDefaults };
+let rolesBuscadorTimer  = null;
+let rolesFiltrosSnapshot = null;
+let permisosCatalogo     = null; // cache de GET ?listar=permisos
 
 async function getPermisosCatalogo() {
   if (permisosCatalogo) return permisosCatalogo;
@@ -735,52 +886,129 @@ function tokenizarPermisos(raw) {
 
 route('/roles', async (mount) => {
   mount.innerHTML = `
-    <div class="page-header">
-      <div class="page-title">Roles</div>
-      <div class="page-subtitle">Permisos agrupados que se asignan a los usuarios.</div>
-    </div>
-
-    <div class="stats-bar" id="rolStats">
-      <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-      <div class="stat-card"><span class="stat-label">Sin permisos</span><span class="stat-value red">—</span></div>
-    </div>
-
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <div class="search-wrap">
-          <input type="search" class="search-input" id="rolSearch"
-                 placeholder="Buscar nombre o descripción…">
-          <button class="search-clear" id="rolSearchClear" style="display:none">×</button>
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">🛡️</div>
+        <div class="module-help-text">
+          Los roles son conjuntos de permisos que se asignan a los usuarios para
+          concederles capacidades en la plataforma; cada rol agrupa un perfil de uso típico.
         </div>
-        <button class="btn btn-ghost" id="rolFiltrosBtn">
-          <i class="fa-solid fa-filter"></i> Filtros
-        </button>
       </div>
-      <div class="toolbar-right">
-        <button class="btn btn-primary" id="rolNuevoBtn">+ Nuevo rol</button>
+
+      <div class="stats-bar" id="rolStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin permisos</span><span class="stat-value red">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="rolSearch"
+                   placeholder="🔍 Buscar nombre o descripción…">
+            <button class="search-clear" id="rolSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="rolFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="rolFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="rolRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="rolNuevoBtn">+ Nuevo rol</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Descripción</th>
+              <th style="text-align:right">Permisos</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="rolTbody">
+            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <div class="table-card">
-      <table>
-        <thead>
-          <tr>
-            <th>Código</th>
-            <th>Nombre</th>
-            <th>Descripción</th>
-            <th style="text-align:right">Permisos</th>
-            <th style="text-align:right">Acciones</th>
-          </tr>
-        </thead>
-        <tbody id="rolTbody">
-          <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
-        </tbody>
-      </table>
+    <!-- Menú contextual único de la sección -->
+    <div id="rolCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md §Modal de filtros) -->
+    <div class="modal-backdrop" id="filtrosRolesBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosRoles()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosRoles()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fRolCodigo" min="1" placeholder="ID …" oninput="onFiltroRoles('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fRolNombre" oninput="onFiltroRoles('nombre', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Descripción</label>
+            <input type="text" id="fRolDescripcion" oninput="onFiltroRoles('descripcion', this.value)">
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fRolLimite" min="1" max="1000" value="100" onchange="onFiltroRoles('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fRolOrderBy" onchange="onFiltroRoles('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="descripcion">Descripción</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fRolDir" onchange="onFiltroRoles('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosRoles()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosRoles()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosRoles()">Aplicar</button>
+        </div>
+      </div>
     </div>
   `;
 
   $('#rolNuevoBtn').addEventListener('click', () => abrirAltaEdicionRol(null));
-  $('#rolFiltrosBtn').addEventListener('click', () => abrirFiltrosRoles());
+  $('#rolFiltrosBtn').addEventListener('click', () => abrirModalFiltrosRoles());
+  $('#rolRefrescarBtn').addEventListener('click', () => cargarRoles());
 
   const inp = $('#rolSearch');
   const clr = $('#rolSearchClear');
@@ -790,24 +1018,48 @@ route('/roles', async (mount) => {
     clr.style.display = inp.value ? '' : 'none';
     rolesFiltros.q = inp.value.trim();
     clearTimeout(rolesBuscadorTimer);
-    rolesBuscadorTimer = setTimeout(cargarRoles, 250);
+    rolesBuscadorTimer = setTimeout(() => { cargarRoles(); refrescarBadgeFiltrosRoles(); }, 250);
   });
   clr.addEventListener('click', () => {
     inp.value = '';
     clr.style.display = 'none';
     rolesFiltros.q = '';
     cargarRoles();
+    refrescarBadgeFiltrosRoles();
+  });
+
+  $('#rolCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarRol(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionRol(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarRol(data.id);
   });
 
   $('#rolTbody').addEventListener('click', (ev) => {
-    const btn = ev.target.closest('[data-act]');
-    if (!btn) return;
-    const id = Number(btn.dataset.id);
-    if (btn.dataset.act === 'view')   abrirConsultarRol(id);
-    if (btn.dataset.act === 'edit')   abrirAltaEdicionRol(id);
-    if (btn.dataset.act === 'delete') eliminarRol(id);
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#rolCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarRol(Number(tr.dataset.id));
+  });
+  $('#rolTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#rolCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
   });
 
+  refrescarBadgeFiltrosRoles();
   await cargarRoles();
 }, 'Roles');
 
@@ -843,100 +1095,90 @@ function pintarTablaRoles(rows) {
     return;
   }
   tbody.innerHTML = rows.map((r) => `
-    <tr>
+    <tr data-id="${r.id}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
       <td class="td-nombre">${esc(r.nombre || '—')}</td>
       <td>${esc(r.descripcion || '—')}</td>
       <td style="text-align:right">${fmtNum(r.permisos_count || 0)}</td>
-      <td>
-        <div class="actions" style="justify-content:flex-end">
-          <button class="action-icon view"   title="Consultar" data-act="view"   data-id="${r.id}"><i class="fa-regular fa-eye"></i></button>
-          <button class="action-icon edit"   title="Editar"    data-act="edit"   data-id="${r.id}"><i class="fa-solid fa-pencil"></i></button>
-          <button class="action-icon delete" title="Eliminar"  data-act="delete" data-id="${r.id}"><i class="fa-solid fa-trash"></i></button>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
       </td>
     </tr>
   `).join('');
 }
 
-// ---- Modal de Filtros (roles) ----
-function abrirFiltrosRoles() {
-  const f = rolesFiltros;
-  openModal(`
-    <div class="modal">
-      <div class="modal-header">
-        <div class="modal-title">Filtros</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-row">
-          <div class="form-group">
-            <label>Código</label>
-            <input type="number" id="fRolCodigo" value="${esc(f.codigo)}">
-          </div>
-          <div class="form-group">
-            <label>Nombre</label>
-            <input type="text" id="fRolNombre" value="${esc(f.nombre)}">
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Descripción</label>
-          <input type="text" id="fRolDescripcion" value="${esc(f.descripcion)}">
-        </div>
-        <div class="form-row-3">
-          <div class="form-group">
-            <label>Límite</label>
-            <input type="number" id="fRolLimite" min="1" max="1000" value="${esc(f.limite)}">
-          </div>
-          <div class="form-group">
-            <label>Ordenar por</label>
-            <select id="fRolOrderBy">
-              <option value="id"          ${f.order_by === 'id'          ? 'selected' : ''}>Código</option>
-              <option value="nombre"      ${f.order_by === 'nombre'      ? 'selected' : ''}>Nombre</option>
-              <option value="descripcion" ${f.order_by === 'descripcion' ? 'selected' : ''}>Descripción</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Dirección</label>
-            <select id="fRolDir">
-              <option value="asc"  ${f.dir === 'asc'  ? 'selected' : ''}>Ascendente</option>
-              <option value="desc" ${f.dir === 'desc' ? 'selected' : ''}>Descendente</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"     data-act="limpiar"  style="margin-right:auto">Limpiar</button>
-        <button class="btn btn-secondary" data-act="close">Cancelar</button>
-        <button class="btn btn-primary"   data-act="aplicar">Aplicar</button>
-      </div>
-    </div>
-  `);
-
-  $('#modalRoot').addEventListener('click', (ev) => {
-    const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close') closeModal();
-    if (a.dataset.act === 'limpiar') {
-      $('#fRolCodigo').value      = '';
-      $('#fRolNombre').value      = '';
-      $('#fRolDescripcion').value = '';
-      $('#fRolLimite').value      = '100';
-      $('#fRolOrderBy').value     = 'id';
-      $('#fRolDir').value         = 'desc';
-    }
-    if (a.dataset.act === 'aplicar') {
-      rolesFiltros.codigo      = $('#fRolCodigo').value.trim();
-      rolesFiltros.nombre      = $('#fRolNombre').value.trim();
-      rolesFiltros.descripcion = $('#fRolDescripcion').value.trim();
-      rolesFiltros.limite      = Number($('#fRolLimite').value) || 100;
-      rolesFiltros.order_by    = $('#fRolOrderBy').value;
-      rolesFiltros.dir         = $('#fRolDir').value;
-      closeModal();
-      cargarRoles();
-    }
-  });
+// ---- Modal de Filtros (Roles) ----
+function onFiltroRoles(key, value) {
+  if (key === 'codigo' || key === 'nombre' || key === 'descripcion') {
+    rolesFiltros[key] = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    rolesFiltros.limite = n;
+  } else {
+    rolesFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosRoles();
+  cargarRoles();
 }
+
+function refrescarBadgeFiltrosRoles() {
+  const btn   = $('#rolFiltrosBtn');
+  const badge = $('#rolFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(rolesFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(rolesFiltros[k]) !== String(rolesFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosRoles() {
+  const f = rolesFiltros;
+  $('#fRolCodigo').value      = f.codigo;
+  $('#fRolNombre').value      = f.nombre;
+  $('#fRolDescripcion').value = f.descripcion;
+  $('#fRolLimite').value      = f.limite;
+  $('#fRolOrderBy').value     = f.order_by;
+  $('#fRolDir').value         = f.dir;
+}
+
+function abrirModalFiltrosRoles() {
+  rolesFiltrosSnapshot = { ...rolesFiltros };
+  sincronizarControlesFiltrosRoles();
+  $('#filtrosRolesBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosRoles() {
+  $('#filtrosRolesBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosRoles() {
+  if (rolesFiltrosSnapshot) {
+    Object.assign(rolesFiltros, rolesFiltrosSnapshot);
+    refrescarBadgeFiltrosRoles();
+    cargarRoles();
+  }
+  cerrarModalFiltrosRoles();
+}
+
+function limpiarFiltrosRoles() {
+  Object.assign(rolesFiltros, rolesFiltrosDefaults);
+  rolesFiltros.q = $('#rolSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosRoles();
+  refrescarBadgeFiltrosRoles();
+  cargarRoles();
+}
+
+window.onFiltroRoles           = onFiltroRoles;
+window.cancelarFiltrosRoles    = cancelarFiltrosRoles;
+window.limpiarFiltrosRoles     = limpiarFiltrosRoles;
+window.cerrarModalFiltrosRoles = cerrarModalFiltrosRoles;
 
 // ---- Modal Consultar (rol) ----
 async function abrirConsultarRol(id) {
@@ -948,12 +1190,14 @@ async function abrirConsultarRol(id) {
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]')) closeModal();
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionRol(id); }
   });
 
   try {
@@ -1166,59 +1410,138 @@ async function eliminarRol(id) {
 }
 
 // ------------------------- Vista: Permisos (ABM) -------------------------
-const permisosFiltros = {
-  codigo: '', nombre: '', descripcion: '',
+const permisosFiltrosDefaults = {
+  q: '', codigo: '', nombre: '', descripcion: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
-let permisosBuscadorTimer = null;
+const permisosFiltros = { ...permisosFiltrosDefaults };
+let permisosBuscadorTimer  = null;
+let permisosFiltrosSnapshot = null;
 
 route('/permisos', async (mount) => {
   mount.innerHTML = `
-    <div class="page-header">
-      <div class="page-title">Permisos</div>
-      <div class="page-subtitle">Catálogo de permisos disponibles para asignar a los roles.</div>
-    </div>
-
-    <div class="stats-bar" id="permStats">
-      <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-      <div class="stat-card"><span class="stat-label">Sin descripción</span><span class="stat-value red">—</span></div>
-    </div>
-
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <div class="search-wrap">
-          <input type="search" class="search-input" id="permSearch"
-                 placeholder="Buscar nombre o descripción…">
-          <button class="search-clear" id="permSearchClear" style="display:none">×</button>
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">🔑</div>
+        <div class="module-help-text">
+          Los permisos son las capacidades individuales del sistema (por ejemplo, gestionar
+          usuarios o enviar campañas) que se agrupan en roles y luego se asignan a los usuarios.
         </div>
-        <button class="btn btn-ghost" id="permFiltrosBtn">
-          <i class="fa-solid fa-filter"></i> Filtros
-        </button>
       </div>
-      <div class="toolbar-right">
-        <button class="btn btn-primary" id="permNuevoBtn">+ Nuevo permiso</button>
+
+      <div class="stats-bar" id="permStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin descripción</span><span class="stat-value red">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="permSearch"
+                   placeholder="🔍 Buscar nombre o descripción…">
+            <button class="search-clear" id="permSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="permFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="permFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="permRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="permNuevoBtn">+ Nuevo permiso</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Descripción</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="permTbody">
+            <tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <div class="table-card">
-      <table>
-        <thead>
-          <tr>
-            <th>Código</th>
-            <th>Nombre</th>
-            <th>Descripción</th>
-            <th style="text-align:right">Acciones</th>
-          </tr>
-        </thead>
-        <tbody id="permTbody">
-          <tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
-        </tbody>
-      </table>
+    <!-- Menú contextual único de la sección -->
+    <div id="permCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md §Modal de filtros) -->
+    <div class="modal-backdrop" id="filtrosPermisosBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosPermisos()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosPermisos()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fPermCodigo" min="1" placeholder="ID …" oninput="onFiltroPermisos('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fPermNombre" oninput="onFiltroPermisos('nombre', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Descripción</label>
+            <input type="text" id="fPermDescripcion" oninput="onFiltroPermisos('descripcion', this.value)">
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fPermLimite" min="1" max="1000" value="100" onchange="onFiltroPermisos('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fPermOrderBy" onchange="onFiltroPermisos('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="descripcion">Descripción</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fPermDir" onchange="onFiltroPermisos('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosPermisos()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosPermisos()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosPermisos()">Aplicar</button>
+        </div>
+      </div>
     </div>
   `;
 
   $('#permNuevoBtn').addEventListener('click', () => abrirAltaEdicionPermiso(null));
-  $('#permFiltrosBtn').addEventListener('click', () => abrirFiltrosPermisos());
+  $('#permFiltrosBtn').addEventListener('click', () => abrirModalFiltrosPermisos());
+  $('#permRefrescarBtn').addEventListener('click', () => cargarPermisos());
 
   const inp = $('#permSearch');
   const clr = $('#permSearchClear');
@@ -1228,24 +1551,48 @@ route('/permisos', async (mount) => {
     clr.style.display = inp.value ? '' : 'none';
     permisosFiltros.q = inp.value.trim();
     clearTimeout(permisosBuscadorTimer);
-    permisosBuscadorTimer = setTimeout(cargarPermisos, 250);
+    permisosBuscadorTimer = setTimeout(() => { cargarPermisos(); refrescarBadgeFiltrosPermisos(); }, 250);
   });
   clr.addEventListener('click', () => {
     inp.value = '';
     clr.style.display = 'none';
     permisosFiltros.q = '';
     cargarPermisos();
+    refrescarBadgeFiltrosPermisos();
+  });
+
+  $('#permCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarPermiso(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionPermiso(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarPermiso(data.id);
   });
 
   $('#permTbody').addEventListener('click', (ev) => {
-    const btn = ev.target.closest('[data-act]');
-    if (!btn) return;
-    const id = Number(btn.dataset.id);
-    if (btn.dataset.act === 'view')   abrirConsultarPermiso(id);
-    if (btn.dataset.act === 'edit')   abrirAltaEdicionPermiso(id);
-    if (btn.dataset.act === 'delete') eliminarPermiso(id);
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#permCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarPermiso(Number(tr.dataset.id));
+  });
+  $('#permTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#permCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
   });
 
+  refrescarBadgeFiltrosPermisos();
   await cargarPermisos();
 }, 'Permisos');
 
@@ -1281,99 +1628,89 @@ function pintarTablaPermisos(rows) {
     return;
   }
   tbody.innerHTML = rows.map((p) => `
-    <tr>
+    <tr data-id="${p.id}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
       <td class="td-nombre">${esc(p.nombre || '—')}</td>
       <td>${esc(p.descripcion || '—')}</td>
-      <td>
-        <div class="actions" style="justify-content:flex-end">
-          <button class="action-icon view"   title="Consultar" data-act="view"   data-id="${p.id}"><i class="fa-regular fa-eye"></i></button>
-          <button class="action-icon edit"   title="Editar"    data-act="edit"   data-id="${p.id}"><i class="fa-solid fa-pencil"></i></button>
-          <button class="action-icon delete" title="Eliminar"  data-act="delete" data-id="${p.id}"><i class="fa-solid fa-trash"></i></button>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
       </td>
     </tr>
   `).join('');
 }
 
-// ---- Modal de Filtros (permisos) ----
-function abrirFiltrosPermisos() {
-  const f = permisosFiltros;
-  openModal(`
-    <div class="modal">
-      <div class="modal-header">
-        <div class="modal-title">Filtros</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-row">
-          <div class="form-group">
-            <label>Código</label>
-            <input type="number" id="fPermCodigo" value="${esc(f.codigo)}">
-          </div>
-          <div class="form-group">
-            <label>Nombre</label>
-            <input type="text" id="fPermNombre" value="${esc(f.nombre)}">
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Descripción</label>
-          <input type="text" id="fPermDescripcion" value="${esc(f.descripcion)}">
-        </div>
-        <div class="form-row-3">
-          <div class="form-group">
-            <label>Límite</label>
-            <input type="number" id="fPermLimite" min="1" max="1000" value="${esc(f.limite)}">
-          </div>
-          <div class="form-group">
-            <label>Ordenar por</label>
-            <select id="fPermOrderBy">
-              <option value="id"          ${f.order_by === 'id'          ? 'selected' : ''}>Código</option>
-              <option value="nombre"      ${f.order_by === 'nombre'      ? 'selected' : ''}>Nombre</option>
-              <option value="descripcion" ${f.order_by === 'descripcion' ? 'selected' : ''}>Descripción</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Dirección</label>
-            <select id="fPermDir">
-              <option value="asc"  ${f.dir === 'asc'  ? 'selected' : ''}>Ascendente</option>
-              <option value="desc" ${f.dir === 'desc' ? 'selected' : ''}>Descendente</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"     data-act="limpiar"  style="margin-right:auto">Limpiar</button>
-        <button class="btn btn-secondary" data-act="close">Cancelar</button>
-        <button class="btn btn-primary"   data-act="aplicar">Aplicar</button>
-      </div>
-    </div>
-  `);
-
-  $('#modalRoot').addEventListener('click', (ev) => {
-    const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close') closeModal();
-    if (a.dataset.act === 'limpiar') {
-      $('#fPermCodigo').value      = '';
-      $('#fPermNombre').value      = '';
-      $('#fPermDescripcion').value = '';
-      $('#fPermLimite').value      = '100';
-      $('#fPermOrderBy').value     = 'id';
-      $('#fPermDir').value         = 'desc';
-    }
-    if (a.dataset.act === 'aplicar') {
-      permisosFiltros.codigo      = $('#fPermCodigo').value.trim();
-      permisosFiltros.nombre      = $('#fPermNombre').value.trim();
-      permisosFiltros.descripcion = $('#fPermDescripcion').value.trim();
-      permisosFiltros.limite      = Number($('#fPermLimite').value) || 100;
-      permisosFiltros.order_by    = $('#fPermOrderBy').value;
-      permisosFiltros.dir         = $('#fPermDir').value;
-      closeModal();
-      cargarPermisos();
-    }
-  });
+// ---- Modal de Filtros (Permisos) ----
+function onFiltroPermisos(key, value) {
+  if (key === 'codigo' || key === 'nombre' || key === 'descripcion') {
+    permisosFiltros[key] = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    permisosFiltros.limite = n;
+  } else {
+    permisosFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosPermisos();
+  cargarPermisos();
 }
+
+function refrescarBadgeFiltrosPermisos() {
+  const btn   = $('#permFiltrosBtn');
+  const badge = $('#permFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(permisosFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(permisosFiltros[k]) !== String(permisosFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosPermisos() {
+  const f = permisosFiltros;
+  $('#fPermCodigo').value      = f.codigo;
+  $('#fPermNombre').value      = f.nombre;
+  $('#fPermDescripcion').value = f.descripcion;
+  $('#fPermLimite').value      = f.limite;
+  $('#fPermOrderBy').value     = f.order_by;
+  $('#fPermDir').value         = f.dir;
+}
+
+function abrirModalFiltrosPermisos() {
+  permisosFiltrosSnapshot = { ...permisosFiltros };
+  sincronizarControlesFiltrosPermisos();
+  $('#filtrosPermisosBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosPermisos() {
+  $('#filtrosPermisosBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosPermisos() {
+  if (permisosFiltrosSnapshot) {
+    Object.assign(permisosFiltros, permisosFiltrosSnapshot);
+    refrescarBadgeFiltrosPermisos();
+    cargarPermisos();
+  }
+  cerrarModalFiltrosPermisos();
+}
+
+function limpiarFiltrosPermisos() {
+  Object.assign(permisosFiltros, permisosFiltrosDefaults);
+  permisosFiltros.q = $('#permSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosPermisos();
+  refrescarBadgeFiltrosPermisos();
+  cargarPermisos();
+}
+
+window.onFiltroPermisos           = onFiltroPermisos;
+window.cancelarFiltrosPermisos    = cancelarFiltrosPermisos;
+window.limpiarFiltrosPermisos     = limpiarFiltrosPermisos;
+window.cerrarModalFiltrosPermisos = cerrarModalFiltrosPermisos;
 
 // ---- Modal Consultar (permiso) ----
 async function abrirConsultarPermiso(id) {
@@ -1385,12 +1722,14 @@ async function abrirConsultarPermiso(id) {
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]')) closeModal();
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionPermiso(id); }
   });
 
   try {

@@ -5,6 +5,11 @@
 // caen a los defaults del docker-compose.yml (host db / databox_dev / root / root).
 // Ver STACK.md sec. 7.
 
+// Carga el .env correspondiente y publica cada variable como constante global
+// (DB_*, APP_KEY_CLOUD, APP_ENV). Si el repo crece y se suman mas apps, todas
+// comparten este loader.
+require_once dirname(__DIR__, 2) . '/env.php';
+
 function db(): PDO {
     static $pdo = null;
     if ($pdo !== null) return $pdo;
