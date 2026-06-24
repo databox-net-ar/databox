@@ -18,7 +18,7 @@
 set -eo pipefail
 
 APP_DIR="/opt/app/databox"
-APP_PORT_HOST=8086
+APP_PORT=8091
 DOMAIN="${DOMAIN:-cloud.databox.net.ar}"
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-javieralvarez@databox.net.ar}"
 COMPOSE_FILE="docker-compose.prod.yml"
@@ -77,12 +77,13 @@ echo "        OK"
 
 # ---- 5. Generar docker-compose.prod.yml ----
 # Difiere del docker-compose.yml del repo:
-#   - No incluye el servicio databox-db (en prod la BD es AWS RDS).
 #   - Bind solo a 127.0.0.1 (Nginx hace el frente publico).
+#   - Sin extra_hosts host.docker.internal (en prod la BD es RDS, ver .env.production).
+# Mismo puerto que dev (8091), igual interno y externo.
 echo "[ 5/8 ] Generando $COMPOSE_FILE..."
 cat > "$APP_DIR/$COMPOSE_FILE" << EOF
 # Generado por scripts/aprovisionar_server.sh - no editar a mano.
-# Produccion: sin servicio databox-db (BD en AWS RDS, ver .env.production).
+# Produccion: BD en AWS RDS (ver .env.production).
 services:
   databox:
     container_name: databox-apache
@@ -90,7 +91,7 @@ services:
       context: ./docker
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:${APP_PORT_HOST}:80"
+      - "127.0.0.1:${APP_PORT}:${APP_PORT}"
     volumes:
       - ./cloud:/var/www/html
       - ./env.php:/var/www/env.php:ro
@@ -109,7 +110,7 @@ server {
     listen 80;
     server_name ${DOMAIN};
     location / {
-        proxy_pass         http://127.0.0.1:${APP_PORT_HOST};
+        proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -199,7 +200,7 @@ echo ""
 echo "============================================================"
 echo "  Setup remoto completo."
 echo ""
-echo "  App:        https://${DOMAIN}/   (proxy a 127.0.0.1:${APP_PORT_HOST})"
+echo "  App:        https://${DOMAIN}/   (proxy a 127.0.0.1:${APP_PORT})"
 echo "  Repo:       $APP_DIR"
 echo "  Compose:    docker compose -f $APP_DIR/$COMPOSE_FILE <cmd>"
 echo "  Logs:       sudo docker logs -f databox-apache"

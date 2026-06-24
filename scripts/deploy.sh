@@ -48,7 +48,8 @@ done
 
 # ---- 3. Subir cloud/, docker/, db/, env.php, .env.production ----
 # NO subimos docker-compose.yml: en el servidor vive docker-compose.prod.yml,
-# generado por aprovisionar_server.sh (sin servicio databox-db).
+# generado por aprovisionar_server.sh. Ni dev ni prod corren MySQL en Docker:
+# en prod la BD es RDS, en dev es el MySQL del host.
 # .env.production se sube en cada deploy para mantener prod en sync.
 # env.php es el loader de variables (define APP_KEY_CLOUD y demas como constantes).
 echo "  Subiendo cloud/, docker/, db/, env.php y .env.production..."

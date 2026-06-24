@@ -13,7 +13,7 @@ carpeta; no documenta otras aplicaciones del repositorio.
 |-----------------|-----------------------------------------------------|
 | Servidor web    | Apache 2.4 (mod_rewrite habilitado)                 |
 | Lenguaje        | PHP 8.2 (`pdo_mysql`)                               |
-| Base de datos   | MySQL 8.0 (Docker en desarrollo, RDS en producción) |
+| Base de datos   | MySQL 8.0 (contenedor compartido `herramientas-mysql` en desarrollo, RDS en producción) |
 | Frontend        | HTML + CSS + **JavaScript vanilla** (sin framework) |
 | Iconografía     | Emojis + FontAwesome 6 (CDN)                        |
 | Estilos         | CSS plano con variables — ver `DESIGN.md`           |
@@ -29,15 +29,23 @@ exactamente lo que se sirve.
 
 | Entorno      | URL                              | Puerto |
 |--------------|----------------------------------|--------|
-| Desarrollo   | http://localhost:`$DATABOX_APP_PORT` | dinámico (default 8086, fallback al primer libre) |
-| Producción   | https://cloud.databox.net.ar     | 80 interno del contenedor, expuesto en 127.0.0.1:8086 y proxyado por Nginx |
+| Desarrollo   | http://localhost:8091            | 8091 fijo (igual interno y externo) |
+| Producción   | https://cloud.databox.net.ar     | 8091 interno del contenedor, expuesto en 127.0.0.1:8091 y proxyado por Nginx |
 
-En desarrollo, `scripts/instalar.sh` elige el primer puerto libre
-desde 8086 hacia arriba y lo escribe en `.env` como `DATABOX_APP_PORT`
-(idem `DATABOX_DB_PORT` desde 3307). `docker-compose.yml` lee esas
-variables y mapea `$DATABOX_APP_PORT:80`.
+**Regla de puerto:** databox usa SIEMPRE el `8091`. Igual interno
+(Apache escucha `Listen 8091` dentro del contenedor) y externo
+(host:contenedor mapean `8091:8091`). Igual en dev y en prod. No hay
+selección dinámica: si el puerto está ocupado por otra cosa,
+`instalar.sh` falla y hay que liberarlo.
 
-En producción, el contenedor publica únicamente en `127.0.0.1:8086` y
+La BD MySQL no la levanta este proyecto: se usa el contenedor compartido
+`herramientas-mysql` (mysql:8.0 publicado en `3306` del host, levantado
+por el repo `herramientas/`). Desde el contenedor PHP de databox se la
+alcanza via `host.docker.internal` (mapeado a `host-gateway` en
+`docker-compose.yml`); desde scripts del host se usa `docker exec
+herramientas-mysql ...`.
+
+En producción, el contenedor publica únicamente en `127.0.0.1:8091` y
 Nginx (instalado y configurado por `scripts/aprovisionar_server.sh`)
 hace de frente público en `cloud.databox.net.ar` con SSL emitido por
 certbot. El servidor es `manchester.databox.net.ar` (Amazon Linux 2023,
@@ -47,10 +55,9 @@ usuario `ec2-user`).
 
 ```
 databox/                        ← raíz del repositorio
-├── .env                        ← puertos locales (lo genera instalar.sh, NO commitear)
 ├── .env.development            ← creds de la BD local (NO commitear)
 ├── .env.production             ← creds de RDS y APIs externas (NO commitear)
-├── docker-compose.yml          ← stack de desarrollo (app + databox-db)
+├── docker-compose.yml          ← stack de desarrollo (solo app; BD compartida en herramientas-mysql)
 ├── docker/
 │   └── Dockerfile              ← php:8.2-apache + pdo_mysql + mod_rewrite
 ├── db/
@@ -133,8 +140,7 @@ dentro de `cloud/`:
 
 | Archivo              | Para qué                                                    |
 |----------------------|-------------------------------------------------------------|
-| `.env`               | Puertos locales (`DATABOX_APP_PORT`, `DATABOX_DB_PORT`). Lo regenera `scripts/instalar.sh`. |
-| `.env.development`   | Credenciales de la BD local en Docker (`db:3306`, `databox_dev`, root/root). |
+| `.env.development`   | Credenciales del contenedor MySQL compartido `herramientas-mysql` (`host.docker.internal:3306`, `databox_dev`, root/root). |
 | `.env.production`    | Credenciales de RDS y APIs externas (Causam, etc.).         |
 
 **Cómo las consume el contenedor:**
@@ -159,25 +165,27 @@ Constantes habituales:
 
 ## 7. Base de datos
 
-- **Desarrollo:** MySQL 8.0 en el contenedor `databox-db` (servicio
-  `db` de `docker-compose.yml`). Host `db` desde el contenedor PHP,
-  `localhost:$DATABOX_DB_PORT` desde Windows. Base `databox_dev`,
-  usuario `root`, password `root`.
+- **Desarrollo:** MySQL 8.0 en el contenedor compartido
+  **`herramientas-mysql`** (mysql:8.0, publicado en `3306` del host,
+  levantado por el repo `herramientas/`). Desde el contenedor PHP de
+  databox se la alcanza vía `host.docker.internal:3306` (gracias a
+  `extra_hosts: host.docker.internal:host-gateway` en `docker-compose.yml`);
+  desde scripts del host, vía `docker exec herramientas-mysql mysql ...`.
+  Base `databox_dev`, usuario `root`, password `root` (ver `.env.development`).
 - **Producción:** RDS MySQL externo
   (`oxford.c6q5xu8xpxfu.us-east-1.rds.amazonaws.com`), base `databox`,
-  usuario `admin`. En `docker-compose.prod.yml` **no** se levanta el
-  servicio `db`.
+  usuario `admin`. El `docker-compose.prod.yml` solo levanta el servicio
+  de la app.
 - **Esquema:** la fuente de verdad es `db/schema.sql` (en la raíz del
   repo). El `CLAUDE.md` raíz lo declara explícitamente como referencia
   obligatoria antes de escribir queries o tocar modelos.
-- **Carga inicial del esquema:** en desarrollo, MySQL ejecuta
-  `db/schema.sql` la primera vez que el volumen `databox-db-data` está
-  vacío (vía `docker-entrypoint-initdb.d`). `scripts/instalar.sh` hace
-  `down -v` antes de `up`, asegurando que el siguiente arranque sea
-  con BD virgen y aplique el schema actualizado.
-- **Migraciones incrementales (opcional):** los archivos
-  `cloud/sql/migrations/*.sql` se aplican siempre por orden alfabético
-  al final de `instalar.sh`. Deben ser **idempotentes** (chequear
+- **Carga inicial del esquema:** se carga manualmente contra el contenedor
+  compartido la primera vez que se monta el entorno de desarrollo:
+  `docker exec -i herramientas-mysql mysql -uroot -proot databox_dev < db/schema.sql`.
+- **Migraciones incrementales:** los archivos
+  `cloud/sql/migrations/*.sql` se aplican por orden alfabético al final
+  de `instalar.sh`, vía `docker exec herramientas-mysql ...` contra
+  `databox_dev`. Deben ser **idempotentes** (chequear
   `information_schema` antes de cada `ALTER`), porque corren en cada
   rebuild. En prod, las migraciones se aplican manualmente contra RDS
   (ver `scripts/deploy.sh`).
@@ -191,16 +199,18 @@ Cloud se sirve dentro de la imagen `databox` (definida en
 `docker/Dockerfile`: `php:8.2-apache` + `pdo_mysql` + `mod_rewrite`).
 
 - En desarrollo (`docker-compose.yml`):
-  - Servicio `databox` con `DocumentRoot` por defecto del contenedor
-    (`/var/www/html`), al que se bind-montea `./cloud/`.
-  - Servicio `db` (`mysql:8.0`) con volumen nombrado `databox-db-data`
-    para persistir entre rebuilds, y `db/schema.sql` montado en
-    `/docker-entrypoint-initdb.d/` para inicializar la BD virgen.
-  - Puertos host vienen de `.env` (`DATABOX_APP_PORT`, `DATABOX_DB_PORT`).
+  - Solo el servicio `databox` con `DocumentRoot` por defecto del
+    contenedor (`/var/www/html`), al que se bind-montea `./cloud/`.
+  - `extra_hosts: host.docker.internal:host-gateway` para que el PHP
+    del contenedor pueda llegar al MySQL compartido del host.
+  - Puerto fijo `8091:8091`.
 - En producción (`docker-compose.prod.yml`, generado en el servidor):
-  - Solo el servicio `databox`, expuesto en `127.0.0.1:8086`.
-  - Sin servicio `db` (la BD es RDS).
+  - Solo el servicio `databox`, expuesto en `127.0.0.1:8091:8091`.
+  - La BD es RDS (apuntada desde `.env.production`).
   - `env_file: .env.production`.
+- El `Dockerfile` parchea `/etc/apache2/ports.conf` y el VirtualHost
+  default para que Apache escuche en `8091` (no en 80). Esto garantiza
+  que el puerto sea idéntico interno y externo.
 - En producción además corre **Nginx** en el host como reverse proxy
   (no en Docker), terminando TLS con certbot. La configuración la
   genera `scripts/aprovisionar_server.sh`.
@@ -251,4 +261,4 @@ Cloud no tiene scripts propios — usa los scripts compartidos en
 2. **Un solo CSS y un solo JS** (`cloud/assets/css/style.css` y `cloud/assets/js/app.js`).
 3. **`.env*` nunca se commitea, ni se loguea, ni se imprime.**
 4. **El esquema vive en `db/schema.sql`** (fuente de verdad declarada en `../CLAUDE.md`). Cambios al schema en bases ya inicializadas se hacen vía `cloud/sql/migrations/*.sql` idempotentes.
-5. **Cloud se sirve en https://cloud.databox.net.ar** (puerto interno 8086, proxyado por Nginx en `manchester.databox.net.ar`). Si en algún momento cambia el dominio, host o puerto, actualizar este archivo.
+5. **Cloud se sirve en https://cloud.databox.net.ar** (puerto interno 8091, proxyado por Nginx en `manchester.databox.net.ar`). El puerto `8091` es fijo y debe coincidir en dev, prod, interno y externo. Si en algún momento cambia el dominio, host o puerto, actualizar este archivo.

@@ -4,11 +4,21 @@
 #
 # Que hace:
 #   - Verifica que Docker este disponible.
-#   - Detecta puertos libres para la app (host) y MySQL.
-#   - Escribe .env con los puertos elegidos.
-#   - Recrea el stack desde cero (down -v + up -d --build).
-#   - Aplica las migraciones de cloud/sql/migrations/*.sql.
+#   - Verifica que el puerto fijo 8091 este libre.
+#   - Recrea el contenedor de la app desde cero (down + up -d --build).
+#   - Aplica las migraciones de cloud/sql/migrations/*.sql contra el
+#     contenedor MySQL compartido `herramientas-mysql` (via docker exec).
 #   - Imprime la URL donde se sirve la app.
+#
+# Puertos: databox usa SIEMPRE el 8091, igual interno y externo, igual
+# en dev y en prod. No hay seleccion dinamica de puerto. Si 8091 esta
+# ocupado por otra cosa, instalar.sh falla y hay que liberarlo.
+#
+# La BD MySQL ya NO la levanta este proyecto: se usa el contenedor
+# compartido `herramientas-mysql` (mysql:8.0 publicado en 3306 del host).
+# Desde el contenedor PHP de databox se la alcanza via host.docker.internal
+# (mapeado a host-gateway en docker-compose.yml). Desde scripts del host
+# se interactua via `docker exec herramientas-mysql ...`.
 #
 # Pensado para VSCode > Tasks > "instalar" o manualmente desde
 # Git Bash:
@@ -28,9 +38,14 @@ GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# --- Constantes -------------------------------------------------------------
+APP_PORT=8091
+MYSQL_CONTAINER="herramientas-mysql"
+
 echo ""
 echo -e "${RED}==> Databox :: instalar (rebuild local)${NC}"
 echo "    repo: $REPO_ROOT"
+echo "    port: $APP_PORT (fijo)"
 echo ""
 
 # --- Pre-flight: docker -----------------------------------------------------
@@ -39,72 +54,64 @@ if ! docker version --format '{{.Server.Version}}' > /dev/null 2>&1; then
     exit 1
 fi
 
-# --- Helpers ----------------------------------------------------------------
-# Devuelve 0 si el puerto esta en uso (algo escucha en 127.0.0.1:port),
-# 1 si esta libre. Usa el builtin /dev/tcp/ de bash (disponible en Git Bash).
+# --- Cargar credenciales de la BD -------------------------------------------
+if [ ! -f "$REPO_ROOT/.env.development" ]; then
+    echo -e "${RED}ERROR: falta .env.development en la raiz del repo.${NC}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+set -a
+. "$REPO_ROOT/.env.development"
+set +a
+
+# --- Verificar que el puerto este libre -------------------------------------
+# El builtin /dev/tcp/ de bash devuelve 0 si algo escucha en el puerto.
+# Si esta ocupado, listamos contenedores Docker que lo publican para que
+# el usuario sepa que liberar.
 port_in_use() {
-    local port="$1"
-    (echo > "/dev/tcp/127.0.0.1/$port") > /dev/null 2>&1
+    (echo > "/dev/tcp/127.0.0.1/$1") > /dev/null 2>&1
 }
 
-# Devuelve el primer puerto libre desde $1 hacia arriba, saltando los de $2
-# (lista separada por espacios).
-find_free_port() {
-    local start="$1"
-    local reserved="$2"
-    local max=500
-    local p
-    for ((p = start; p < start + max; p++)); do
-        if [[ " $reserved " == *" $p "* ]]; then
-            continue
-        fi
-        if ! port_in_use "$p"; then
-            echo "$p"
-            return 0
-        fi
-    done
-    echo "No se encontro puerto libre en el rango $start..$((start + max - 1))" >&2
-    return 1
-}
+# Si el contenedor databox-apache esta arriba con ese puerto, no es un
+# conflicto: lo vamos a recrear nosotros mismos.
+databox_owns_port=false
+if docker ps --format '{{.Names}} {{.Ports}}' | grep -qE "^databox-apache .*[: ]${APP_PORT}->"; then
+    databox_owns_port=true
+fi
 
-# --- Elegir puertos ---------------------------------------------------------
-# Cloud preferido en 8086 (convencion del proyecto). Si esta ocupado, busca
-# el siguiente libre hacia arriba.
-APP_PORT=$(find_free_port 8086)
-DB_PORT=$(find_free_port 3307 "$APP_PORT")
+if ! $databox_owns_port && port_in_use "$APP_PORT"; then
+    echo -e "${RED}ERROR: el puerto $APP_PORT esta ocupado por otra cosa.${NC}"
+    echo "       Contenedores Docker que lo publican:"
+    docker ps --format '       {{.Names}}  {{.Ports}}' | grep -E "[: ]${APP_PORT}->" || echo "       (ninguno -- algun proceso fuera de Docker)"
+    echo ""
+    echo "       Liberalo antes de re-correr instalar.sh."
+    exit 1
+fi
 
-echo -e "${RED}==> Puertos elegidos:${NC}"
-echo "    app   -> $APP_PORT"
-echo "    mysql -> $DB_PORT"
-echo ""
+# --- Verificar contenedor MySQL compartido ----------------------------------
+if ! docker ps --format '{{.Names}}' | grep -qx "$MYSQL_CONTAINER"; then
+    echo -e "${RED}ERROR: el contenedor '$MYSQL_CONTAINER' no esta corriendo.${NC}"
+    echo "       Levantalo desde el repo herramientas/ antes de correr instalar.sh."
+    exit 1
+fi
 
-# --- Escribir .env ----------------------------------------------------------
-cat > .env << EOF
-# Generado por scripts/instalar.sh - no editar a mano
-DATABOX_APP_PORT=$APP_PORT
-DATABOX_DB_PORT=$DB_PORT
-EOF
+if ! docker exec "$MYSQL_CONTAINER" mysql -u"${DB_USER}" -p"${DB_PASS}" -e "SELECT 1" "${DB_NAME}" > /dev/null 2>&1; then
+    echo -e "${RED}ERROR: no se puede conectar a MySQL en $MYSQL_CONTAINER (db: ${DB_NAME}).${NC}"
+    echo "       Verifica las credenciales de .env.development y que la base exista."
+    exit 1
+fi
 
-# --- Limpiar contenedores previos -------------------------------------------
-# El orden importa:
-#   1) `docker compose down -v --remove-orphans` SIEMPRE primero. Borra
-#      contenedores, red y -- critico -- el volumen `databox-mysql-data` del
-#      proyecto. Si saltearamos esto el volumen sobrevive y MySQL no vuelve
-#      a correr schema.sql en el siguiente up (initdb solo se ejecuta en
-#      DB virgen), dejando el schema desactualizado.
-#   2) `docker rm -f` como fallback por si quedaron contenedores con esos
-#      nombres pero sin label de compose.
-echo -e "${RED}==> Limpiando contenedores previos...${NC}"
+# --- Limpiar contenedor previo ----------------------------------------------
+# `docker compose down --remove-orphans` SIEMPRE primero. `docker rm -f` como
+# fallback por si quedo el contenedor con ese nombre pero sin label de compose.
+echo -e "${RED}==> Limpiando contenedor previo...${NC}"
 
-docker compose -p databox down -v --remove-orphans > /dev/null 2>&1 || true
+docker compose -p databox down --remove-orphans > /dev/null 2>&1 || true
 
-existing=$(docker ps -a --format '{{.Names}}')
-for name in databox databox-mysql; do
-    if echo "$existing" | grep -qx "$name"; then
-        echo "    removiendo $name (huerfano sin label compose)"
-        docker rm -f "$name" > /dev/null
-    fi
-done
+if docker ps -a --format '{{.Names}}' | grep -qx "databox-apache"; then
+    echo "    removiendo databox-apache (huerfano sin label compose)"
+    docker rm -f databox-apache > /dev/null
+fi
 
 # --- Build & up -------------------------------------------------------------
 echo ""
@@ -117,9 +124,6 @@ if ! docker compose -p databox up -d --build; then
     echo ""
     echo -e "${YELLOW}--- docker logs databox-apache (ultimas 50 lineas) ---${NC}"
     docker logs --tail 50 databox-apache 2>&1 || true
-    echo ""
-    echo -e "${YELLOW}--- docker logs databox-mysql (ultimas 50 lineas) ---${NC}"
-    docker logs --tail 50 databox-mysql 2>&1 || true
     exit 1
 fi
 
@@ -138,11 +142,10 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 
 # --- Aplicar migraciones ----------------------------------------------------
-# `docker-entrypoint-initdb.d` SOLO procesa archivos en su raiz y SOLO la
-# primera vez (DB virgen), asi que las migraciones de cloud/sql/migrations/
-# nunca se ejecutarian solas. Las corremos siempre, en orden alfabetico.
-# Todas estan escritas como idempotentes (chequean information_schema antes
-# de ALTER), asi que reaplicarlas es no-op.
+# Las migraciones de cloud/sql/migrations/ se aplican contra el contenedor
+# compartido `herramientas-mysql` via docker exec. Estan escritas como
+# idempotentes (chequean information_schema antes de ALTER), asi que
+# reaplicarlas es no-op.
 migrations_dir="$REPO_ROOT/cloud/sql/migrations"
 if [ -d "$migrations_dir" ]; then
     echo ""
@@ -151,16 +154,11 @@ if [ -d "$migrations_dir" ]; then
         [ -f "$m" ] || continue
         name=$(basename "$m")
         echo "    $name"
-        if ! docker cp "$m" "databox-mysql:/tmp/migration.sql" > /dev/null; then
-            echo -e "${RED}ERROR copiando $name al contenedor databox-mysql${NC}"
-            exit 1
-        fi
-        if ! docker exec databox-mysql sh -c 'mysql -uroot -proot databox_dev < /tmp/migration.sql'; then
+        if ! docker exec -i "$MYSQL_CONTAINER" mysql -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" < "$m"; then
             echo -e "${RED}ERROR aplicando $name${NC}"
             exit 1
         fi
     done
-    docker exec databox-mysql rm -f /tmp/migration.sql > /dev/null || true
 fi
 
 # --- Resumen ----------------------------------------------------------------
@@ -173,8 +171,8 @@ fi
 
 echo ""
 echo -e "${GREEN}  Cloud   : http://localhost:$APP_PORT${NC}"
-echo "  MySQL   : localhost:$DB_PORT  (user: root / pass: root / db: databox_dev)"
+echo "  MySQL   : $MYSQL_CONTAINER  (db: ${DB_NAME}, user: ${DB_USER})"
 echo ""
-echo "  Logs    : docker logs -f databox"
+echo "  Logs    : docker logs -f databox-apache"
 echo "  Down    : docker compose -p databox down"
 echo ""
