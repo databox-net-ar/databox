@@ -4,8 +4,8 @@
  * Signature V4. Sin AWS SDK.
  *
  * Lee credenciales y bucket de las constantes AWS_ACCESS_KEY_ID,
- * AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, AWS_BUCKET definidas por
- * env.php a partir del .env del entorno.
+ * AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_S3_BUCKET definidas por env.php
+ * a partir del .env del entorno.
  *
  * Funciones públicas:
  *   s3_bucket_name(): string
@@ -19,29 +19,26 @@
 
 require_once dirname(__DIR__, 3) . '/env.php';
 
-function s3_bucket_name(): string {
-    $bucket = defined('AWS_BUCKET') ? AWS_BUCKET : (getenv('AWS_BUCKET') ?: '');
-    if ($bucket === '') {
-        throw new RuntimeException('AWS_BUCKET no definido en .env');
+foreach (['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'AWS_S3_BUCKET'] as $k) {
+    if (!defined($k) || (string) constant($k) === '') {
+        throw new RuntimeException('Falta configurar la constante ' . $k . ' en el .env.');
     }
-    return $bucket;
+}
+
+function s3_bucket_name(): string {
+    return AWS_S3_BUCKET;
 }
 
 function s3_region(): string {
-    $r = defined('AWS_DEFAULT_REGION') ? AWS_DEFAULT_REGION : (getenv('AWS_DEFAULT_REGION') ?: '');
-    return $r !== '' ? $r : 'us-east-1';
+    return AWS_REGION;
 }
 
 function s3_access_key(): string {
-    $k = defined('AWS_ACCESS_KEY_ID') ? AWS_ACCESS_KEY_ID : (getenv('AWS_ACCESS_KEY_ID') ?: '');
-    if ($k === '') throw new RuntimeException('AWS_ACCESS_KEY_ID no definido en .env');
-    return $k;
+    return AWS_ACCESS_KEY_ID;
 }
 
 function s3_secret_key(): string {
-    $k = defined('AWS_SECRET_ACCESS_KEY') ? AWS_SECRET_ACCESS_KEY : (getenv('AWS_SECRET_ACCESS_KEY') ?: '');
-    if ($k === '') throw new RuntimeException('AWS_SECRET_ACCESS_KEY no definido en .env');
-    return $k;
+    return AWS_SECRET_ACCESS_KEY;
 }
 
 function s3_public_url(string $key): string {

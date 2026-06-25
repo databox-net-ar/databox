@@ -4,7 +4,7 @@
  *
  * GET api/herramientas_s3_list.php?prefix=carpeta/&token=...
  *
- * Devuelve el contenido del bucket configurado en este entorno (AWS_BUCKET)
+ * Devuelve el contenido del bucket configurado en este entorno (AWS_S3_BUCKET)
  * agrupado por carpeta usando delimiter "/". Si hay más resultados de los
  * que devuelve una página, incluye un continuation token para paginar.
  */

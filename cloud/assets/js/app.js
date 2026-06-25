@@ -275,6 +275,12 @@ route('/dashboard', async (mount) => {
             <span class="tile-title">Latincloud</span>
             <span class="tile-desc">WHM cPanel.</span>
           </a>
+          <a href="https://evolution.york.databox.net.ar/manager/"
+             target="_blank" rel="noopener noreferrer" class="tile-card">
+            <span class="tile-icon">🤖</span>
+            <span class="tile-title">Evolution API</span>
+            <span class="tile-desc">Manager de instancias.</span>
+          </a>
         </div>
       </div>
     </div>

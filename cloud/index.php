@@ -118,12 +118,14 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
   </div>
 
   <!-- ===== Modal Explorador S3 ===== -->
-  <div class="modal-backdrop" id="s3ExpModalBackdrop">
+  <div class="modal-backdrop" id="s3ExpModalBackdrop"
+       onclick="if(event.target===this)cerrarExploradorS3()">
     <div class="modal s3-exp-modal">
       <div class="modal-header">
         <div class="modal-title">
-          <span>☁️ Explorador S3</span>
-          <span class="modal-subtitle" id="s3ExpBucket" style="font-family:monospace">—</span>
+          <span style="font-size:1.2rem">☁️</span>
+          <span>Explorador S3</span>
+          <span class="badge badge-info" id="s3ExpBucket" style="font-family:monospace">—</span>
         </div>
         <button class="btn-icon-sm" type="button" onclick="cerrarExploradorS3()" title="Cerrar">×</button>
       </div>
