@@ -250,6 +250,34 @@ route('/dashboard', async (mount) => {
         </table>
       </div>
     </div>
+
+    <div class="table-card" style="margin-top:20px">
+      <div class="dash-table-header">
+        <span>Plataformas</span>
+      </div>
+      <div style="padding:20px">
+        <div class="tile-grid">
+          <a href="https://us-east-1.console.aws.amazon.com/ec2/v2/home?region=us-east-1#Instances:"
+             target="_blank" rel="noopener noreferrer" class="tile-card">
+            <span class="tile-icon">☁️</span>
+            <span class="tile-title">AWS</span>
+            <span class="tile-desc">Consola EC2 (us-east-1).</span>
+          </a>
+          <a href="https://dash.cloudflare.com/"
+             target="_blank" rel="noopener noreferrer" class="tile-card">
+            <span class="tile-icon">🌐</span>
+            <span class="tile-title">Cloudflare</span>
+            <span class="tile-desc">Panel principal.</span>
+          </a>
+          <a href="https://ar151.xvserver.com:2087/cpsess3116822283/scripts4/listaccts"
+             target="_blank" rel="noopener noreferrer" class="tile-card">
+            <span class="tile-icon">🖥️</span>
+            <span class="tile-title">Latincloud</span>
+            <span class="tile-desc">WHM cPanel.</span>
+          </a>
+        </div>
+      </div>
+    </div>
   `;
 });
 
@@ -1878,12 +1906,384 @@ route('/herramientas', async (mount) => {
     </div>
 
     <div class="tile-grid" id="toolsGrid">
-      <div class="table-empty" style="grid-column:1/-1">
-        Aún no hay herramientas disponibles.
-      </div>
+      <button type="button" class="tile-card" onclick="abrirExploradorS3()">
+        <span class="tile-icon">📁</span>
+        <span class="tile-title">Explorador S3</span>
+        <span class="tile-desc">Navegá, subí, descargá y eliminá carpetas y archivos del bucket de media del entorno actual.</span>
+      </button>
     </div>
   `;
 }, 'Herramientas');
+
+// ------------------------- Herramientas: Explorador S3 -------------------------
+let s3ExpPrefix      = '';
+let s3ExpNextToken   = null;
+let s3ExpBucket      = '';
+let s3ExpCargando    = false;
+let s3ExpCtxKey      = null;
+let s3ExpCtxIsFolder = false;
+let s3ExpCtxUrl      = '';
+let s3ExpUltimaLista = { folders: [], objects: [] };
+
+function abrirExploradorS3() {
+  s3ExpPrefix    = '';
+  s3ExpNextToken = null;
+  s3ExpBucket    = '';
+  document.getElementById('s3ExpBucket').textContent = '—';
+  document.getElementById('s3ExpModalBackdrop').classList.add('open');
+  s3ExpCargar(true);
+}
+
+function cerrarExploradorS3() {
+  document.getElementById('s3ExpModalBackdrop').classList.remove('open');
+  s3ExpCerrarCtx();
+}
+
+function s3ExpRecargar() { s3ExpCargar(true); }
+
+function s3ExpNavegar(prefix) {
+  s3ExpPrefix = prefix || '';
+  s3ExpCargar(true);
+}
+
+async function s3ExpCargar(reiniciar) {
+  if (s3ExpCargando) return;
+  s3ExpCargando = true;
+
+  const tbody  = document.getElementById('s3ExpTbody');
+  const btnMas = document.getElementById('s3ExpBtnMas');
+  if (reiniciar) {
+    s3ExpNextToken = null;
+    s3ExpUltimaLista = { folders: [], objects: [] };
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px"><div class="spin"></div></td></tr>';
+    btnMas.style.display = 'none';
+  } else {
+    btnMas.disabled = true;
+    btnMas.textContent = 'Cargando…';
+  }
+
+  s3ExpRenderBreadcrumbs(s3ExpPrefix);
+
+  const params = new URLSearchParams();
+  if (s3ExpPrefix) params.set('prefix', s3ExpPrefix);
+  if (!reiniciar && s3ExpNextToken) params.set('token', s3ExpNextToken);
+
+  try {
+    const res  = await fetch('api/herramientas_s3_list.php?' + params.toString(), { credentials: 'same-origin' });
+    const data = await res.json();
+    if (!data.ok) {
+      tbody.innerHTML = '<tr><td colspan="5" class="s3-exp-empty">✗ ' + esc(data.error || 'Error al listar') + '</td></tr>';
+      s3ExpCargando = false;
+      return;
+    }
+
+    s3ExpBucket    = data.bucket;
+    s3ExpNextToken = data.next_token;
+    document.getElementById('s3ExpBucket').textContent = data.bucket;
+    s3ExpRenderBreadcrumbs(data.prefix);
+
+    if (reiniciar) {
+      s3ExpUltimaLista = { folders: [], objects: [] };
+    }
+    s3ExpUltimaLista.folders = s3ExpUltimaLista.folders.concat(data.folders || []);
+    s3ExpUltimaLista.objects = s3ExpUltimaLista.objects.concat(data.objects || []);
+
+    s3ExpRenderTabla(data.prefix);
+
+    if (data.truncated && s3ExpNextToken) {
+      btnMas.style.display = '';
+      btnMas.disabled = false;
+      btnMas.textContent = 'Cargar más';
+    } else {
+      btnMas.style.display = 'none';
+    }
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="s3-exp-empty">✗ Error de conexión</td></tr>';
+  } finally {
+    s3ExpCargando = false;
+  }
+}
+
+function s3ExpRenderTabla(prefix) {
+  const tbody = document.getElementById('s3ExpTbody');
+  const info  = document.getElementById('s3ExpFooterInfo');
+  const folders = s3ExpUltimaLista.folders;
+  const objects = s3ExpUltimaLista.objects;
+
+  let html = '';
+
+  // Fila "..": volver a la carpeta padre (solo si no estamos en la raíz).
+  if (prefix) {
+    const parts = prefix.replace(/\/$/, '').split('/');
+    parts.pop();
+    const parent = parts.length ? parts.join('/') + '/' : '';
+    html +=
+      '<tr class="row-clickable" onclick="s3ExpNavegar(\'' + esc(parent) + '\')">'
+      + '<td><i class="fa-solid fa-turn-up" style="color:var(--muted);transform:rotate(-90deg)"></i></td>'
+      + '<td><div class="s3-exp-nombre">..</div></td>'
+      + '<td class="s3-exp-size">—</td>'
+      + '<td class="s3-exp-date">—</td>'
+      + '<td></td>'
+      + '</tr>';
+  }
+
+  folders.forEach((folder) => {
+    const nombre = folder.substring(prefix.length).replace(/\/$/, '');
+    html +=
+      '<tr class="row-clickable"'
+      + ' onclick="s3ExpNavegar(\'' + esc(folder) + '\')"'
+      + ' oncontextmenu="event.preventDefault(); s3ExpAbrirCtx(event, \'' + esc(folder) + '\', true, \'\')">'
+      + '<td><i class="fa-solid fa-folder" style="color:var(--warn)"></i></td>'
+      + '<td><div class="s3-exp-nombre">' + esc(nombre) + '/</div></td>'
+      + '<td class="s3-exp-size">—</td>'
+      + '<td class="s3-exp-date">—</td>'
+      + '<td style="text-align:center">'
+      + '<button class="btn-icon-sm" title="Más acciones"'
+      + ' onclick="event.stopPropagation(); s3ExpAbrirCtx(event, \'' + esc(folder) + '\', true, \'\')">'
+      + '<i class="fa-solid fa-bars"></i></button>'
+      + '</td>'
+      + '</tr>';
+  });
+
+  objects.forEach((obj) => {
+    const nombre = obj.key.substring(prefix.length);
+    const fecha  = obj.last_modified ? s3ExpFormatFecha(obj.last_modified) : '';
+    const url    = obj.url || '';
+    const icono  = s3ExpEsImagen(nombre)
+      ? '<img class="s3-exp-thumb" loading="lazy" src="' + esc(url) + '" alt="" onerror="this.outerHTML=\'<i class=&quot;fa-solid fa-file-image&quot; style=&quot;color:var(--info)&quot;></i>\'">'
+      : '<i class="fa-solid ' + s3ExpIconoArchivo(nombre) + '" style="color:var(--info)"></i>';
+    html +=
+      '<tr class="row-clickable"'
+      + ' onclick="s3ExpAbrirArchivo(\'' + esc(url) + '\')"'
+      + ' oncontextmenu="event.preventDefault(); s3ExpAbrirCtx(event, \'' + esc(obj.key) + '\', false, \'' + esc(url) + '\')">'
+      + '<td>' + icono + '</td>'
+      + '<td><div class="s3-exp-nombre">' + esc(nombre) + '</div></td>'
+      + '<td class="s3-exp-size">' + s3ExpFormatSize(obj.size) + '</td>'
+      + '<td class="s3-exp-date">' + esc(fecha) + '</td>'
+      + '<td style="text-align:center">'
+      + '<button class="btn-icon-sm" title="Más acciones"'
+      + ' onclick="event.stopPropagation(); s3ExpAbrirCtx(event, \'' + esc(obj.key) + '\', false, \'' + esc(url) + '\')">'
+      + '<i class="fa-solid fa-bars"></i></button>'
+      + '</td>'
+      + '</tr>';
+  });
+
+  if (html === '') {
+    tbody.innerHTML = '<tr><td colspan="5" class="s3-exp-empty">Esta carpeta está vacía.</td></tr>';
+    info.textContent = '0 elementos';
+  } else {
+    tbody.innerHTML = html;
+    const totalSize = objects.reduce((a, f) => a + (f.size || 0), 0);
+    info.innerHTML =
+      '<span>' + folders.length + ' carpetas · ' + objects.length + ' archivos · ' + s3ExpFormatSize(totalSize) + ' en esta carpeta</span>';
+  }
+}
+
+function s3ExpCargarMas() { s3ExpCargar(false); }
+
+function s3ExpRenderBreadcrumbs(prefix) {
+  const cont = document.getElementById('s3ExpBreadcrumbs');
+  const partes = (prefix || '').split('/').filter(Boolean);
+  let html = '<button class="s3-exp-crumb" onclick="s3ExpNavegar(\'\')"><i class="fa-solid fa-house"></i> raíz</button>';
+  let acum = '';
+  for (let i = 0; i < partes.length; i++) {
+    acum += partes[i] + '/';
+    const isLast = (i === partes.length - 1);
+    html += '<span class="s3-exp-crumb-sep">/</span>';
+    if (isLast) {
+      html += '<span class="s3-exp-crumb current">' + esc(partes[i]) + '</span>';
+    } else {
+      html += '<button class="s3-exp-crumb" onclick="s3ExpNavegar(\'' + esc(acum) + '\')">' + esc(partes[i]) + '</button>';
+    }
+  }
+  cont.innerHTML = html;
+}
+
+function s3ExpEsImagen(nombre) {
+  const ext = (nombre.split('.').pop() || '').toLowerCase();
+  return ['jpg','jpeg','png','gif','webp','bmp','svg','avif'].indexOf(ext) >= 0;
+}
+
+function s3ExpIconoArchivo(nombre) {
+  const ext = (nombre.split('.').pop() || '').toLowerCase();
+  if (['jpg','jpeg','png','gif','webp','bmp','svg','avif','ico'].indexOf(ext) >= 0) return 'fa-file-image';
+  if (['mp4','mov','avi','mkv','webm'].indexOf(ext) >= 0)                            return 'fa-file-video';
+  if (['mp3','wav','ogg','flac','m4a'].indexOf(ext) >= 0)                            return 'fa-file-audio';
+  if (['pdf'].indexOf(ext) >= 0)                                                     return 'fa-file-pdf';
+  if (['zip','rar','7z','tar','gz'].indexOf(ext) >= 0)                               return 'fa-file-zipper';
+  if (['doc','docx'].indexOf(ext) >= 0)                                              return 'fa-file-word';
+  if (['xls','xlsx','csv'].indexOf(ext) >= 0)                                        return 'fa-file-excel';
+  if (['txt','md','log'].indexOf(ext) >= 0)                                          return 'fa-file-lines';
+  if (['js','php','html','css','json','xml','sql'].indexOf(ext) >= 0)                return 'fa-file-code';
+  return 'fa-file';
+}
+
+function s3ExpFormatFecha(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+       + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function s3ExpFormatSize(bytes) {
+  if (bytes == null || isNaN(bytes)) return '—';
+  if (bytes < 1024) return bytes + ' B';
+  const kb = bytes / 1024;
+  if (kb < 1024) return kb.toFixed(1) + ' KB';
+  const mb = kb / 1024;
+  if (mb < 1024) return mb.toFixed(1) + ' MB';
+  return (mb / 1024).toFixed(2) + ' GB';
+}
+
+function s3ExpAbrirArchivo(url) {
+  if (!url) return;
+  window.open(url, '_blank', 'noopener');
+}
+
+async function s3ExpSubirArchivo(fileList) {
+  if (!fileList || !fileList.length) return;
+  const file  = fileList[0];
+  const input = document.getElementById('s3ExpUploadInput');
+  const fd = new FormData();
+  fd.append('archivo', file);
+  fd.append('prefix', s3ExpPrefix);
+  fd.append('nombre', file.name);
+  toast('Subiendo ' + file.name + '…');
+  try {
+    const r = await fetch('api/herramientas_s3_upload.php', {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: fd,
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      toast(data.error || 'Error al subir', { error: true });
+      input.value = '';
+      return;
+    }
+    toast('Archivo subido');
+    input.value = '';
+    s3ExpCargar(true);
+  } catch (e) {
+    toast('Error de red al subir', { error: true });
+    input.value = '';
+  }
+}
+
+async function s3ExpCrearCarpeta() {
+  const nombre = prompt('Nombre de la nueva carpeta:');
+  if (!nombre) return;
+  try {
+    const r = await fetch('api/herramientas_s3_create_folder.php', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: s3ExpPrefix, nombre }),
+    });
+    const data = await r.json();
+    if (!data.ok) { toast(data.error || 'Error al crear carpeta', { error: true }); return; }
+    toast('Carpeta creada');
+    s3ExpCargar(true);
+  } catch (e) {
+    toast('Error de red al crear carpeta', { error: true });
+  }
+}
+
+async function s3ExpEliminar(key, esCarpeta) {
+  const tipo = esCarpeta ? 'carpeta' : 'archivo';
+  const msg  = esCarpeta
+    ? `Vas a eliminar la carpeta "${key}" y TODO su contenido de forma recursiva. Esta acción no se puede deshacer.`
+    : `Vas a eliminar "${key}". Esta acción no se puede deshacer.`;
+  const ok = await confirmar({
+    title: 'Eliminar ' + tipo,
+    message: msg,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    const r = await fetch('api/herramientas_s3_delete.php', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, recursivo: !!esCarpeta }),
+    });
+    const data = await r.json();
+    if (!data.ok) { toast(data.error || 'Error al eliminar', { error: true }); return; }
+    const txt = esCarpeta
+      ? `Carpeta eliminada (${data.eliminados || 0} objetos)`
+      : 'Archivo eliminado';
+    toast(txt);
+    s3ExpCargar(true);
+  } catch (e) {
+    toast('Error de red al eliminar', { error: true });
+  }
+}
+
+function s3ExpAbrirCtx(ev, key, esCarpeta, url) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  s3ExpCtxKey      = key;
+  s3ExpCtxIsFolder = !!esCarpeta;
+  s3ExpCtxUrl      = url || '';
+  const menu = document.getElementById('s3ExpCtxMenu');
+  menu.querySelector('[data-action="abrir"]').style.display      = esCarpeta ? 'none' : '';
+  menu.querySelector('[data-action="copiar-url"]').style.display = esCarpeta ? 'none' : '';
+  const x = ev.clientX || (ev.currentTarget && ev.currentTarget.getBoundingClientRect().left) || 0;
+  const y = ev.clientY || (ev.currentTarget && ev.currentTarget.getBoundingClientRect().bottom) || 0;
+  menu.style.left = Math.min(x, window.innerWidth - 220) + 'px';
+  menu.style.top  = Math.min(y, window.innerHeight - 180) + 'px';
+  menu.classList.add('open');
+}
+
+function s3ExpCerrarCtx() {
+  const menu = document.getElementById('s3ExpCtxMenu');
+  if (menu) menu.classList.remove('open');
+  s3ExpCtxKey = null;
+  s3ExpCtxUrl = '';
+}
+
+async function s3ExpCopiarUrlPublica(url) {
+  if (!url) { toast('Sin URL disponible', { error: true }); return; }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('URL copiada al portapapeles');
+  } catch (e) {
+    prompt('URL del archivo:', url);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const menu = document.getElementById('s3ExpCtxMenu');
+  if (!menu) return;
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action   = btn.getAttribute('data-action');
+    const key      = s3ExpCtxKey;
+    const isFolder = s3ExpCtxIsFolder;
+    const url      = s3ExpCtxUrl;
+    s3ExpCerrarCtx();
+    if (!key) return;
+    if      (action === 'abrir')       s3ExpAbrirArchivo(url);
+    else if (action === 'copiar-url')  s3ExpCopiarUrlPublica(url);
+    else if (action === 'eliminar')    s3ExpEliminar(key, isFolder);
+  });
+});
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('s3ExpCtxMenu');
+  if (menu && menu.classList.contains('open') && !menu.contains(e.target)) s3ExpCerrarCtx();
+});
+document.addEventListener('scroll', s3ExpCerrarCtx, true);
+window.addEventListener('resize',   s3ExpCerrarCtx);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const ctx = document.getElementById('s3ExpCtxMenu');
+  if (ctx && ctx.classList.contains('open')) { s3ExpCerrarCtx(); return; }
+  const back = document.getElementById('s3ExpModalBackdrop');
+  if (back && back.classList.contains('open')) cerrarExploradorS3();
+});
 
 // ------------------------- Chrome (sidebar / topbar / dropdown) -------------------------
 function bindChrome() {

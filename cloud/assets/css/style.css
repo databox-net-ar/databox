@@ -456,3 +456,44 @@ tbody tr.row-clickable { cursor: pointer; }
 .perm-id      { font-family: monospace; font-size: .75rem; color: var(--muted);
                 flex-shrink: 0; }
 
+/* 29. Explorador S3 (Herramientas) */
+.s3-exp-modal .modal-body { gap: 12px; }
+.s3-exp-modal             { max-width: 980px; width: calc(100% - 32px); }
+.modal.s3-exp-modal       { max-width: 980px; }
+.s3-exp-toolbar           { display: flex; align-items: center; justify-content: space-between;
+                            gap: 12px; flex-wrap: wrap; }
+.s3-exp-toolbar-right     { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.s3-exp-breadcrumbs       { display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+                            font-size: .88rem; color: var(--muted); min-height: 28px; }
+.s3-exp-breadcrumbs .s3-exp-crumb {
+  background: none; border: none; cursor: pointer;
+  color: var(--primary); font-size: .88rem; font-weight: 600;
+  padding: 2px 6px; border-radius: 6px; font-family: inherit;
+}
+.s3-exp-breadcrumbs .s3-exp-crumb:hover         { background: var(--bg); }
+.s3-exp-breadcrumbs .s3-exp-crumb.current       { color: var(--text); cursor: default; }
+.s3-exp-breadcrumbs .s3-exp-crumb.current:hover { background: none; }
+.s3-exp-breadcrumbs .s3-exp-crumb-sep           { color: var(--muted); opacity: .6; }
+
+.s3-exp-table-card                            { max-height: 60vh; overflow: auto; }
+.s3-exp-table-card thead tr                   { background: var(--bg); position: sticky; top: 0; z-index: 1; }
+.s3-exp-table-card tbody tr.row-clickable     { cursor: pointer; }
+.s3-exp-table-card tbody tr.row-clickable:hover { background: var(--row-hover); }
+.s3-exp-table-card .s3-exp-nombre             { display: flex; align-items: center; gap: 8px;
+                                                font-weight: 500; word-break: break-all; }
+.s3-exp-table-card .s3-exp-size,
+.s3-exp-table-card .s3-exp-date               { color: var(--muted); font-size: .82rem;
+                                                font-family: monospace; white-space: nowrap; }
+.s3-exp-thumb                                 { width: 28px; height: 28px; object-fit: cover;
+                                                border-radius: 4px; border: 1px solid var(--border);
+                                                background: var(--bg); display: block; }
+.s3-exp-footer-info                           { font-size: .78rem; color: var(--muted);
+                                                display: flex; justify-content: space-between;
+                                                gap: 8px; flex-wrap: wrap; }
+.s3-exp-empty                                 { padding: 30px; text-align: center; color: var(--muted); }
+
+@media (max-width: 640px) {
+  .s3-exp-table-card th:nth-child(4),
+  .s3-exp-table-card td:nth-child(4) { display: none; }
+}
+
