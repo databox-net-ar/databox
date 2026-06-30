@@ -2786,15 +2786,21 @@ function dcCompFmtImporte(v) {
 
 function dcCompEstadoBadge(e) {
   if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  const map = {
-    A: { label: 'Autorizado', cls: 'badge-success' },
-    P: { label: 'Pendiente',  cls: 'badge-warn'    },
-    C: { label: 'Cancelado',  cls: 'badge-danger'  },
-    B: { label: 'Baja',       cls: 'badge-danger'  },
+  // El texto del estado se toma del catalogo `estados` (campo
+  // 'datacount_comprobante_estado'). Si el catalogo aun no cargo o no
+  // contiene el codigo, mostramos el valor crudo como fallback.
+  // Los colores siguen la convencion heredada para A/P/C/B; el resto
+  // cae en badge-info.
+  const colorMap = {
+    A: 'badge-success',
+    P: 'badge-warn',
+    C: 'badge-danger',
+    B: 'badge-danger',
   };
-  const m = map[e];
-  if (m) return `<span class="badge ${m.cls}">${esc(m.label)}</span>`;
-  return `<span class="badge badge-info">${esc(e)}</span>`;
+  const cls  = colorMap[e] || 'badge-info';
+  const item = (dcCompEstadosCatalogo || []).find((x) => String(x.valor) === String(e));
+  const label = item ? item.texto : String(e);
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 
 route('/datacountcomprobantes', async (mount) => {
@@ -3029,7 +3035,13 @@ async function cargarDcComp() {
     if (v !== '' && v != null) qs.set(k, v);
   });
   try {
-    const data = await apiGet('api/datacountcomprobantes.php?' + qs.toString());
+    // En paralelo: traer comprobantes y asegurar que el catalogo de estados
+    // este cargado, asi `dcCompEstadoBadge` puede mostrar el `texto` y no el
+    // codigo crudo en la primera pintada.
+    const [data] = await Promise.all([
+      apiGet('api/datacountcomprobantes.php?' + qs.toString()),
+      dcCompCargarCatalogoEstados().catch(() => null),
+    ]);
     pintarStatsDcComp(data.stats);
     pintarTablaDcComp(data.items || []);
   } catch (e) {
