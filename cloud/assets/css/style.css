@@ -615,3 +615,46 @@ tbody tr.row-clickable { cursor: pointer; }
   .db-exp-table-card td:nth-child(7) { display: none; }
 }
 
+/* ---- Toggle switches (DESIGN.md §17) ---- */
+.toggle-switch        { display: inline-flex; align-items: center; gap: 10px;
+                        cursor: pointer; user-select: none; }
+.toggle-switch input  { display: none; }
+.toggle-track         { width: 44px; height: 24px; border-radius: 12px;
+                        background: var(--border); position: relative;
+                        transition: background .2s; flex-shrink: 0; }
+.toggle-switch input:checked + .toggle-track { background: var(--primary); }
+.toggle-thumb         { position: absolute; top: 3px; left: 3px;
+                        width: 18px; height: 18px; border-radius: 50%;
+                        background: #fff; transition: transform .2s;
+                        box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.toggle-switch input:checked + .toggle-track .toggle-thumb { transform: translateX(20px); }
+.toggle-label         { font-size: .88rem; color: var(--text); }
+
+/* ---- Facturación: panel de controles del motor ---- */
+.fact-controls            { display: flex; align-items: center; gap: 14px;
+                            padding: 14px 18px; margin-bottom: 16px;
+                            background: var(--surface); border: 1px solid var(--border);
+                            border-radius: var(--radius); box-shadow: var(--shadow);
+                            flex-wrap: wrap; }
+.fact-controls-title      { font-size: .9rem; font-weight: 600; color: var(--text); }
+.fact-controls-right      { margin-left: auto; display: flex; gap: 8px; }
+
+/* ---- Log estilo terminal (Facturación) ---- */
+.term-log                 { background: #0d0d0d; color: #e6e6e6;
+                            border: 1px solid var(--border);
+                            border-radius: var(--radius);
+                            padding: 12px 14px;
+                            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                            font-size: .82rem; line-height: 1.5;
+                            height: 60vh; min-height: 280px; overflow-y: auto;
+                            white-space: pre-wrap; word-break: break-word;
+                            box-shadow: var(--shadow); }
+.term-log-empty           { color: var(--muted); font-style: italic; }
+.term-log-line            { display: block; }
+.term-log-line .ts        { color: #6e7378; margin-right: 10px;
+                            font-variant-numeric: tabular-nums; }
+.term-log-line .lvl-info  { color: #93c5fd; }
+.term-log-line .lvl-ok    { color: #86efac; }
+.term-log-line .lvl-warn  { color: #fcd34d; }
+.term-log-line .lvl-error { color: #f5a8a8; }
+

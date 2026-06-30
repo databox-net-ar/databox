@@ -83,3 +83,23 @@ function desencriptar(string $cadena, string $clave = ''): string {
     }
     return $out;
 }
+
+// Lectura de parámetros runtime desde la tabla `parametros`.
+// Cachea en memoria del proceso. Si la variable no existe (o tiene valor NULL),
+// devuelve $default. Pensado para que el resto del sistema configure cosas como
+// `getParametro('smtp_host', 'localhost')` sin tocar el .env.
+function getParametro(string $variable, ?string $default = null): ?string {
+    static $cache = [];
+    if (array_key_exists($variable, $cache)) {
+        return $cache[$variable] ?? $default;
+    }
+    try {
+        $st = db()->prepare('SELECT valor FROM parametros WHERE variable = ? LIMIT 1');
+        $st->execute([$variable]);
+        $valor = $st->fetchColumn();
+        $cache[$variable] = ($valor === false || $valor === null) ? null : (string) $valor;
+    } catch (Throwable $e) {
+        $cache[$variable] = null;
+    }
+    return $cache[$variable] ?? $default;
+}

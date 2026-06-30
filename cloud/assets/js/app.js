@@ -1925,6 +1925,21 @@ route('/herramientas', async (mount) => {
         <span class="tile-title">Explorador DB</span>
         <span class="tile-desc">Recorrá las tablas de la base del entorno actual, ojeá su estructura y los últimos registros.</span>
       </button>
+      <button type="button" class="tile-card" onclick="abrirParametros()">
+        <span class="tile-icon">🧩</span>
+        <span class="tile-title">Editor de parámetros</span>
+        <span class="tile-desc">Variables runtime (variable / valor) que el resto del sistema lee para configurarse sin redeploy.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirMigraciones()">
+        <span class="tile-icon">📜</span>
+        <span class="tile-title">Migrador DB</span>
+        <span class="tile-desc">Aplicá las migraciones pendientes de <code>cloud/sql/migrations/</code> contra la BD del entorno actual.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirVisorSucesos()">
+        <span class="tile-icon">📰</span>
+        <span class="tile-title">Visor de sucesos</span>
+        <span class="tile-desc">Recorré el log de actividad (tabla <code>sucesos</code>) que los distintos módulos van registrando al trabajar.</span>
+      </button>
     </div>
   `;
 }, 'Herramientas');
@@ -3536,6 +3551,148 @@ async function eliminarDcComp(id) {
   }
 }
 
+// ------------------------- Vista: Datacount > Facturación (motor + log) -------------------------
+// El motor de facturación corre por fuera de esta app (proceso externo); lee el
+// parámetro `datacount.motor` de la tabla `parametros` para saber si tiene que
+// trabajar. Esta vista solo prende/apaga ese parámetro y muestra el log que el
+// motor va dejando. El log todavía no tiene fuente real (ver api/datacountfacturacion.php).
+
+const FACT_REFRESH_MS = 1000;
+let factPollTimer  = null;
+let factLastLogId  = 0;
+let factMotorPrev  = null;   // ultimo valor confirmado por el server, para revertir si falla el toggle
+
+function factDetener() {
+  if (factPollTimer) { clearInterval(factPollTimer); factPollTimer = null; }
+}
+
+function factSetMotorUI(motor) {
+  factMotorPrev = motor;
+  const badge = document.getElementById('factMotorBadge');
+  const sw    = document.getElementById('factMotorSwitch');
+  const lbl   = document.getElementById('factMotorLabel');
+  if (badge) {
+    if (motor === '1') {
+      badge.className = 'badge badge-success';
+      badge.textContent = 'Encendido';
+    } else {
+      badge.className = 'badge badge-danger';
+      badge.textContent = 'Apagado';
+    }
+  }
+  if (sw) sw.checked = (motor === '1');
+  if (lbl) lbl.textContent = motor === '1' ? 'Encendido' : 'Apagado';
+}
+
+async function factCargarStatus() {
+  try {
+    const s = await apiGet('api/datacountfacturacion.php?action=status');
+    factSetMotorUI(s.motor);
+  } catch (e) { /* silencioso: es polling */ }
+}
+
+async function factCargarLog() {
+  try {
+    const d = await apiGet('api/datacountfacturacion.php?action=log&since=' + factLastLogId);
+    if (!Array.isArray(d.items) || d.items.length === 0) return;
+    factAppendLineas(d.items);
+    if (d.last_id) factLastLogId = Math.max(factLastLogId, Number(d.last_id) || 0);
+  } catch (e) { /* silencioso */ }
+}
+
+function factAppendLineas(items) {
+  const cont = document.getElementById('factLog');
+  if (!cont) return;
+  const placeholder = cont.querySelector('.term-log-empty');
+  if (placeholder) placeholder.remove();
+  const stickToBottom = (cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 20);
+  const html = items.map((it) => {
+    const ts  = it.fecha   ? esc(it.fecha)   : '';
+    const lvl = String(it.nivel || 'info').toLowerCase();
+    const lvlCls = ['info','ok','warn','error'].includes(lvl) ? lvl : 'info';
+    const msg = esc(it.mensaje || '');
+    return `<span class="term-log-line"><span class="ts">${ts}</span><span class="lvl-${lvlCls}">${msg}</span></span>`;
+  }).join('');
+  cont.insertAdjacentHTML('beforeend', html);
+  if (stickToBottom) cont.scrollTop = cont.scrollHeight;
+}
+
+async function factToggleMotor(ev) {
+  const sw = ev.target;
+  const nuevo = sw.checked ? '1' : '0';
+  const anterior = factMotorPrev;
+  factSetMotorUI(nuevo); // optimista
+  try {
+    const r = await apiSend('api/datacountfacturacion.php?action=motor', 'POST', { valor: nuevo });
+    factSetMotorUI(r.motor);
+    toast(r.motor === '1' ? 'Motor de facturación encendido.' : 'Motor de facturación apagado.');
+  } catch (e) {
+    factSetMotorUI(anterior || (nuevo === '1' ? '0' : '1'));
+    toast(e.message, { error: true });
+  }
+}
+
+route('/datacountfacturacion', async (mount) => {
+  factDetener();
+  factLastLogId = 0;
+  factMotorPrev = null;
+
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">🤖</div>
+        <div class="module-help-text">
+          El motor de facturación es el proceso que registra automáticamente los comprobantes
+          de Datacount ante AFIP. Desde acá se lo prende o apaga y se sigue su actividad en vivo.
+        </div>
+      </div>
+
+      <div class="fact-controls">
+        <span class="fact-controls-title">Motor de facturación</span>
+        <span class="badge" id="factMotorBadge">…</span>
+        <label class="toggle-switch" title="Encender / Apagar motor">
+          <input type="checkbox" id="factMotorSwitch">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label" id="factMotorLabel">—</span>
+        </label>
+        <div class="fact-controls-right">
+          <button class="btn btn-ghost btn-icon" id="factLimpiarBtn" title="Limpiar pantalla">
+            <i class="fa-solid fa-eraser"></i>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="factRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="term-log" id="factLog">
+        <span class="term-log-empty">Sin registros aún.</span>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('factMotorSwitch').addEventListener('change', factToggleMotor);
+  document.getElementById('factRefrescarBtn').addEventListener('click', () => {
+    factCargarStatus();
+    factCargarLog();
+  });
+  document.getElementById('factLimpiarBtn').addEventListener('click', () => {
+    const cont = document.getElementById('factLog');
+    if (cont) cont.innerHTML = '<span class="term-log-empty">Sin registros aún.</span>';
+    factLastLogId = 0;
+  });
+
+  await factCargarStatus();
+  await factCargarLog();
+  // Polling 1s. Si el usuario navega a otra vista, render() reemplaza #view y el
+  // elemento #factLog desaparece — el propio tick se autodetiene.
+  factPollTimer = setInterval(() => {
+    if (!document.getElementById('factLog')) { factDetener(); return; }
+    factCargarStatus();
+    factCargarLog();
+  }, FACT_REFRESH_MS);
+}, 'Facturación');
+
 // ------------------------- Chrome (sidebar / topbar / dropdown) -------------------------
 function bindChrome() {
   // hamburger
@@ -3651,6 +3808,605 @@ async function doLogout() {
   $('#view').innerHTML = '';
   showLoginScreen();
 }
+
+// ------------------------- Herramientas: Editor de parámetros -------------------------
+// Editor de parámetros runtime. Sobre la tabla `parametros` (columnas
+// `variable` / `valor` / `comentario`) compartida con otras apps del grupo.
+let parametrosCache         = [];
+let parametrosFiltroQ       = '';
+let parametrosCtxRegistroId = null;
+let _parametrosSearchTimer  = null;
+let _parametrosGuardando    = false;
+
+function abrirParametros() {
+  document.getElementById('parametrosBackdrop').classList.add('open');
+  cargarParametros();
+}
+
+function cerrarParametros() {
+  document.getElementById('parametrosBackdrop').classList.remove('open');
+  parametrosCerrarMenu();
+}
+
+function parametrosOnSearch(v) {
+  parametrosFiltroQ = String(v ?? '');
+  const clearBtn = document.getElementById('parametrosSearchClear');
+  if (clearBtn) clearBtn.style.display = parametrosFiltroQ ? '' : 'none';
+  clearTimeout(_parametrosSearchTimer);
+  _parametrosSearchTimer = setTimeout(cargarParametros, 250);
+}
+
+function parametrosLimpiarBusqueda() {
+  parametrosFiltroQ = '';
+  const input = document.getElementById('parametrosSearch');
+  if (input) input.value = '';
+  document.getElementById('parametrosSearchClear').style.display = 'none';
+  cargarParametros();
+}
+
+async function cargarParametros() {
+  const tbody = document.getElementById('parametrosTbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
+
+  const params = new URLSearchParams();
+  if (parametrosFiltroQ) params.set('q', parametrosFiltroQ);
+  params.set('limite', '500');
+  params.set('order_by', 'variable');
+  params.set('dir', 'asc');
+
+  try {
+    const data = await apiGet('api/parametros.php?' + params.toString());
+    parametrosCache = data.items || [];
+    renderParametros(parametrosCache);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function renderParametros(rows) {
+  const tbody = document.getElementById('parametrosTbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="table-empty">Sin parámetros para mostrar.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((p) => {
+    const variable   = esc(p.variable || '');
+    const valor      = esc(p.valor    || '');
+    const comentario = esc(p.comentario || '');
+    return `
+      <tr class="row-clickable" data-id="${p.id}"
+          onclick="abrirEditarParametro(${p.id})"
+          oncontextmenu="event.preventDefault();parametrosAbrirCtx(event, ${p.id})">
+        <td class="td-id">${p.id}</td>
+        <td style="font-family:monospace;font-weight:600">${variable}</td>
+        <td title="${valor}"
+            style="font-family:monospace;color:var(--muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${valor || '<span style="color:var(--muted);font-style:italic">— vacío —</span>'}
+        </td>
+        <td style="font-size:.82rem;color:var(--muted);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${comentario}">
+          ${comentario}
+        </td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones"
+                    onclick="event.stopPropagation();parametrosAbrirCtx(event, ${p.id})">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function abrirNuevoParametro() {
+  limpiarErroresFormParametro();
+  document.getElementById('formParametroTitulo').innerHTML =
+    '<span style="font-size:1.2rem">🧩</span><span>Nuevo parámetro</span>';
+  document.getElementById('formParametroId').value         = '';
+  document.getElementById('formParametroVariable').value   = '';
+  document.getElementById('formParametroValor').value      = '';
+  document.getElementById('formParametroComentario').value = '';
+  document.getElementById('formParametroBackdrop').classList.add('open');
+  setTimeout(() => document.getElementById('formParametroVariable').focus(), 50);
+}
+
+function abrirEditarParametro(id) {
+  const p = parametrosCache.find((x) => x.id === id);
+  if (!p) { toast('No se encontró el parámetro.', { error: true }); return; }
+  limpiarErroresFormParametro();
+  document.getElementById('formParametroTitulo').innerHTML =
+    '<span style="font-size:1.2rem">🧩</span><span>Editar parámetro</span>';
+  document.getElementById('formParametroId').value         = p.id;
+  document.getElementById('formParametroVariable').value   = p.variable   || '';
+  document.getElementById('formParametroValor').value      = p.valor      || '';
+  document.getElementById('formParametroComentario').value = p.comentario || '';
+  document.getElementById('formParametroBackdrop').classList.add('open');
+  setTimeout(() => document.getElementById('formParametroValor').focus(), 50);
+}
+
+function limpiarErroresFormParametro() {
+  ['Variable', 'Valor', 'Comentario'].forEach((c) => {
+    const input = document.getElementById('formParametro' + c);
+    const err   = document.getElementById('formParametro' + c + 'Error');
+    if (input) input.classList.remove('input-invalid');
+    if (err)   { err.style.display = 'none'; err.textContent = ''; }
+  });
+}
+
+function mostrarErrorParametro(campo, msg) {
+  const input = document.getElementById('formParametro' + campo);
+  const err   = document.getElementById('formParametro' + campo + 'Error');
+  if (input) { input.classList.add('input-invalid'); input.focus(); }
+  if (err)   { err.style.display = ''; err.textContent = msg; }
+}
+
+async function guardarParametro() {
+  if (_parametrosGuardando) return;
+  limpiarErroresFormParametro();
+
+  const idRaw      = document.getElementById('formParametroId').value;
+  const id         = idRaw ? parseInt(idRaw, 10) : 0;
+  const variable   = document.getElementById('formParametroVariable').value.trim();
+  const valor      = document.getElementById('formParametroValor').value;
+  const comentario = document.getElementById('formParametroComentario').value.trim();
+
+  if (!variable) {
+    mostrarErrorParametro('Variable', 'La variable es obligatoria.');
+    return;
+  }
+  if (!/^[A-Za-z0-9_.\-]+$/.test(variable)) {
+    mostrarErrorParametro('Variable', 'Sólo letras, números, punto, guión y guión bajo.');
+    return;
+  }
+  if (variable.length > 255) {
+    mostrarErrorParametro('Variable', 'Máximo 255 caracteres.');
+    return;
+  }
+  if (valor.length > 255) {
+    mostrarErrorParametro('Valor', 'Máximo 255 caracteres.');
+    return;
+  }
+  if (comentario.length > 1024) {
+    mostrarErrorParametro('Comentario', 'Máximo 1024 caracteres.');
+    return;
+  }
+
+  const btn = document.getElementById('btnGuardarParametro');
+  _parametrosGuardando = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+
+  try {
+    const payload = { variable, valor, comentario };
+    if (id > 0) {
+      await apiSend('api/parametros.php?id=' + id, 'PUT', payload);
+      toast('Parámetro actualizado.');
+    } else {
+      await apiSend('api/parametros.php', 'POST', payload);
+      toast('Parámetro creado.');
+    }
+    document.getElementById('formParametroBackdrop').classList.remove('open');
+    cargarParametros();
+  } catch (e) {
+    const msg = e.message || 'Error al guardar.';
+    if (/ya existe/i.test(msg)) {
+      mostrarErrorParametro('Variable', msg);
+    } else {
+      toast(msg, { error: true });
+    }
+  } finally {
+    _parametrosGuardando = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+  }
+}
+
+async function eliminarParametro(id) {
+  const p = parametrosCache.find((x) => x.id === id);
+  if (!p) return;
+  const ok = await confirmar({
+    title: 'Eliminar parámetro',
+    message: `Vas a eliminar el parámetro «${p.variable}». Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend('api/parametros.php?id=' + id, 'DELETE');
+    toast('Parámetro eliminado.');
+    cargarParametros();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+function parametrosAbrirCtx(ev, id) {
+  parametrosCtxRegistroId = id;
+  const menu = document.getElementById('parametrosCtxMenu');
+  if (!menu) return;
+  let x = ev.clientX, y = ev.clientY;
+  if ((!x && !y) && ev.currentTarget && ev.currentTarget.getBoundingClientRect) {
+    const r = ev.currentTarget.getBoundingClientRect();
+    x = r.right; y = r.bottom;
+  }
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+function parametrosCerrarMenu() {
+  parametrosCtxRegistroId = null;
+  cerrarCtxMenu();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const menu = document.getElementById('parametrosCtxMenu');
+  if (!menu) return;
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const id     = parametrosCtxRegistroId;
+    parametrosCerrarMenu();
+    if (!id) return;
+    if (action === 'editar') {
+      abrirEditarParametro(id);
+    } else if (action === 'eliminar') {
+      eliminarParametro(id);
+    } else if (action === 'copiar-variable') {
+      const p = parametrosCache.find((x) => x.id === id);
+      if (p && navigator.clipboard) {
+        navigator.clipboard.writeText(p.variable).then(
+          () => toast('Variable copiada.'),
+          () => toast('No se pudo copiar.', { error: true }),
+        );
+      }
+    }
+  });
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const ctx     = document.getElementById('parametrosCtxMenu');
+  const form    = document.getElementById('formParametroBackdrop');
+  const listado = document.getElementById('parametrosBackdrop');
+  if (ctx && ctx.classList.contains('open')) { parametrosCerrarMenu(); return; }
+  if (form && form.classList.contains('open')) { form.classList.remove('open'); return; }
+  if (listado && listado.classList.contains('open')) { cerrarParametros(); }
+});
+
+// ------------------------- Herramientas: Migrador DB -------------------------
+// Lista los .sql de cloud/sql/migrations/ y permite aplicarlos contra la
+// BD del entorno actual (panel dev → databox_dev, panel prod → RDS).
+let migracionesCache       = [];
+let migrPreviewNombreActual = '';
+let _migrCargando          = false;
+let _migrAplicando         = false;
+
+function abrirMigraciones() {
+  document.getElementById('migracionesBackdrop').classList.add('open');
+  cargarMigraciones();
+}
+
+function cerrarMigraciones() {
+  document.getElementById('migracionesBackdrop').classList.remove('open');
+}
+
+async function cargarMigraciones() {
+  if (_migrCargando) return;
+  _migrCargando = true;
+
+  const tbody = document.getElementById('migrTbody');
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
+
+  try {
+    const data = await apiGet('api/herramientas_migraciones_list.php');
+    migracionesCache = data.items || [];
+
+    document.getElementById('migrDbName').textContent = data.database || '—';
+    const envBadge = document.getElementById('migrEnvBadge');
+    const env = (data.env || 'unknown').toLowerCase();
+    envBadge.textContent = env;
+    envBadge.className = 'badge ' + (env === 'production' ? 'badge-danger'
+                                   : env === 'development' ? 'badge-success'
+                                   : 'badge-warn');
+
+    renderMigraciones(migracionesCache);
+    actualizarResumenMigraciones();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="6" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
+  } finally {
+    _migrCargando = false;
+  }
+}
+
+function actualizarResumenMigraciones() {
+  const total      = migracionesCache.length;
+  const aplicadas  = migracionesCache.filter((m) => m.estado === 'aplicada').length;
+  const pendientes = total - aplicadas;
+  const drift      = migracionesCache.filter((m) => m.hash_drift).length;
+
+  let txt = `${total} archivo${total === 1 ? '' : 's'} · ${aplicadas} aplicada${aplicadas === 1 ? '' : 's'} · ${pendientes} pendiente${pendientes === 1 ? '' : 's'}`;
+  if (drift > 0) txt += ` · ⚠ ${drift} con drift de hash`;
+  document.getElementById('migrResumen').textContent = txt;
+
+  const btn = document.getElementById('migrBtnAplicarPendientes');
+  btn.disabled = pendientes === 0;
+  btn.textContent = pendientes === 0
+    ? 'Sin pendientes'
+    : `Aplicar ${pendientes} pendiente${pendientes === 1 ? '' : 's'}`;
+}
+
+function renderMigraciones(rows) {
+  const tbody = document.getElementById('migrTbody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="table-empty">No hay archivos en <code style="font-family:monospace">cloud/sql/migrations/</code>.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((m) => {
+    const nombre   = esc(m.nombre || '');
+    const tamano   = formatearTamanoBytes(m.tamano || 0);
+    const hashCorto = (m.hash || '').slice(0, 8);
+    const aplicada = m.aplicada
+      ? `<span style="font-family:monospace;font-size:.82rem">${esc(m.aplicada)}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+
+    let badge;
+    if (m.estado === 'aplicada' && m.hash_drift) {
+      badge = '<span class="badge badge-warn" title="El archivo cambió después de aplicarse">⚠ drift</span>';
+    } else if (m.estado === 'aplicada') {
+      badge = '<span class="badge badge-success">aplicada</span>';
+    } else {
+      badge = '<span class="badge badge-info">pendiente</span>';
+    }
+
+    const btnAplicar = m.estado === 'pendiente'
+      ? `<button class="btn btn-primary btn-sm" onclick="aplicarMigracionDesdeListado('${esc(m.nombre)}')">Aplicar</button>`
+      : '';
+
+    return `
+      <tr>
+        <td>${badge}</td>
+        <td style="font-family:monospace;font-weight:600">${nombre}</td>
+        <td style="font-size:.82rem;color:var(--muted)">${tamano}</td>
+        <td style="font-family:monospace;font-size:.78rem;color:var(--muted)" title="${esc(m.hash || '')}">${hashCorto}</td>
+        <td>${aplicada}</td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center;gap:6px">
+            <button class="btn btn-ghost btn-sm" onclick="verMigracion('${esc(m.nombre)}')">Ver SQL</button>
+            ${btnAplicar}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function formatearTamanoBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+async function verMigracion(nombre) {
+  migrPreviewNombreActual = nombre;
+  document.getElementById('migrPreviewNombre').textContent = nombre;
+  const ta = document.getElementById('migrPreviewSql');
+  ta.value = 'Cargando…';
+  document.getElementById('migrPreviewBackdrop').classList.add('open');
+
+  const m = migracionesCache.find((x) => x.nombre === nombre);
+  const btn = document.getElementById('migrPreviewBtnAplicar');
+  if (m && m.estado === 'pendiente') {
+    btn.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'Aplicar';
+  } else {
+    btn.style.display = 'none';
+  }
+
+  try {
+    const data = await apiGet('api/herramientas_migraciones_get.php?nombre=' + encodeURIComponent(nombre));
+    ta.value = data.contenido || '';
+  } catch (e) {
+    ta.value = '-- Error al cargar: ' + e.message;
+  }
+}
+
+async function migrPreviewAplicar() {
+  if (!migrPreviewNombreActual) return;
+  document.getElementById('migrPreviewBackdrop').classList.remove('open');
+  await aplicarMigracionConConfirmacion(migrPreviewNombreActual);
+}
+
+async function aplicarMigracionDesdeListado(nombre) {
+  await aplicarMigracionConConfirmacion(nombre);
+}
+
+async function aplicarMigracionConConfirmacion(nombre) {
+  const dbName = document.getElementById('migrDbName').textContent || '?';
+  const env    = (document.getElementById('migrEnvBadge').textContent || '').toLowerCase();
+  const esProd = env === 'production';
+
+  const ok = await confirmar({
+    title: esProd ? '⚠ Aplicar en PRODUCCIÓN' : 'Aplicar migración',
+    message: `Vas a aplicar «${nombre}» contra la base ${dbName}${esProd ? ' (PRODUCCIÓN)' : ''}. ` +
+             `Las sentencias DDL no se pueden deshacer. ¿Continuar?`,
+    confirmText: esProd ? 'Aplicar en prod' : 'Aplicar',
+    danger: esProd,
+  });
+  if (!ok) return;
+  await aplicarMigracionSinConfirmar(nombre);
+}
+
+async function aplicarMigracionSinConfirmar(nombre) {
+  if (_migrAplicando) return;
+  _migrAplicando = true;
+  try {
+    const data = await apiSend('api/herramientas_migraciones_apply.php', 'POST', { nombre });
+    toast(`«${nombre}» aplicada en ${data.duracion_ms} ms.`);
+    return true;
+  } catch (e) {
+    toast(e.message || 'Error al aplicar.', { error: true });
+    return false;
+  } finally {
+    _migrAplicando = false;
+    await cargarMigraciones();
+  }
+}
+
+async function aplicarPendientesMigraciones() {
+  const pendientes = migracionesCache.filter((m) => m.estado === 'pendiente').map((m) => m.nombre);
+  if (!pendientes.length) return;
+
+  const dbName = document.getElementById('migrDbName').textContent || '?';
+  const env    = (document.getElementById('migrEnvBadge').textContent || '').toLowerCase();
+  const esProd = env === 'production';
+
+  const ok = await confirmar({
+    title: esProd ? '⚠ Aplicar TODAS en PRODUCCIÓN' : 'Aplicar todas las pendientes',
+    message: `Vas a aplicar ${pendientes.length} migración${pendientes.length === 1 ? '' : 'es'} ` +
+             `contra la base ${dbName}${esProd ? ' (PRODUCCIÓN)' : ''} en orden alfabético. ` +
+             `Si una falla, se detiene la corrida y las anteriores quedan aplicadas. ¿Continuar?`,
+    confirmText: esProd ? 'Aplicar en prod' : 'Aplicar todas',
+    danger: esProd,
+  });
+  if (!ok) return;
+
+  const btn = document.getElementById('migrBtnAplicarPendientes');
+  btn.disabled = true;
+
+  let aplicadas = 0;
+  for (const nombre of pendientes) {
+    btn.textContent = `Aplicando ${nombre}…`;
+    let exito = false;
+    try {
+      await apiSend('api/herramientas_migraciones_apply.php', 'POST', { nombre });
+      exito = true;
+      aplicadas++;
+    } catch (e) {
+      toast(`Falló «${nombre}»: ${e.message}`, { error: true });
+    }
+    if (!exito) break;
+  }
+  if (aplicadas === pendientes.length) {
+    toast(`Aplicadas ${aplicadas} migración${aplicadas === 1 ? '' : 'es'}.`);
+  } else if (aplicadas > 0) {
+    toast(`Corrida parcial: ${aplicadas} de ${pendientes.length} aplicadas.`, { error: true });
+  }
+  await cargarMigraciones();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const prev    = document.getElementById('migrPreviewBackdrop');
+  const listado = document.getElementById('migracionesBackdrop');
+  if (prev && prev.classList.contains('open')) { prev.classList.remove('open'); return; }
+  if (listado && listado.classList.contains('open')) { cerrarMigraciones(); }
+});
+
+// ------------------------- Herramientas: Visor de sucesos -------------------------
+// Visor read-only de la tabla `sucesos`. Los distintos modulos del panel
+// escriben ahi su log de actividad (id / fecha / origen / detalle).
+let sucesosCache         = [];
+let sucesosFiltroQ       = '';
+let _sucesosSearchTimer  = null;
+
+function abrirVisorSucesos() {
+  document.getElementById('sucesosBackdrop').classList.add('open');
+  cargarSucesos();
+}
+
+function cerrarVisorSucesos() {
+  document.getElementById('sucesosBackdrop').classList.remove('open');
+}
+
+function sucesosOnSearch(v) {
+  sucesosFiltroQ = String(v ?? '');
+  const clearBtn = document.getElementById('sucesosSearchClear');
+  if (clearBtn) clearBtn.style.display = sucesosFiltroQ ? '' : 'none';
+  clearTimeout(_sucesosSearchTimer);
+  _sucesosSearchTimer = setTimeout(cargarSucesos, 250);
+}
+
+function sucesosLimpiarBusqueda() {
+  sucesosFiltroQ = '';
+  const input = document.getElementById('sucesosSearch');
+  if (input) input.value = '';
+  document.getElementById('sucesosSearchClear').style.display = 'none';
+  cargarSucesos();
+}
+
+async function cargarSucesos() {
+  const tbody = document.getElementById('sucesosTbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
+
+  const desde  = document.getElementById('sucesosDesde')?.value  || '';
+  const hasta  = document.getElementById('sucesosHasta')?.value  || '';
+  const limite = document.getElementById('sucesosLimite')?.value || '200';
+
+  const params = new URLSearchParams();
+  if (sucesosFiltroQ) params.set('q', sucesosFiltroQ);
+  if (desde)          params.set('desde', desde);
+  if (hasta)          params.set('hasta', hasta);
+  params.set('limite', limite);
+
+  try {
+    const data = await apiGet('api/sucesos.php?' + params.toString());
+    sucesosCache = data.items || [];
+    const resumen = document.getElementById('sucesosResumen');
+    if (resumen && data.stats) {
+      const m = data.stats.mostrados ?? sucesosCache.length;
+      const t = data.stats.total     ?? m;
+      resumen.textContent = `${m.toLocaleString('es-AR')} de ${t.toLocaleString('es-AR')} registros`;
+    }
+    renderSucesos(sucesosCache);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function renderSucesos(rows) {
+  const tbody = document.getElementById('sucesosTbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">Sin sucesos para mostrar.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((s) => {
+    const fecha   = esc(s.fecha   || '');
+    const origen  = esc(s.origen  || '');
+    const detalle = esc(s.detalle || '');
+    return `
+      <tr class="row-clickable" data-id="${s.id}" onclick="sucesosVerDetalle(${s.id})">
+        <td class="td-id">${s.id}</td>
+        <td style="font-family:monospace;white-space:nowrap">${fecha || '<span style="color:var(--muted);font-style:italic">—</span>'}</td>
+        <td style="font-family:monospace;font-weight:600">${origen || '<span style="color:var(--muted);font-style:italic">—</span>'}</td>
+        <td style="color:var(--muted);max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${detalle}">${detalle}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function sucesosVerDetalle(id) {
+  const s = sucesosCache.find((x) => x.id === id);
+  if (!s) return;
+  document.getElementById('sucesoDetalleId').textContent     = s.id;
+  document.getElementById('sucesoDetalleFecha').textContent  = s.fecha  || '—';
+  document.getElementById('sucesoDetalleOrigen').textContent = s.origen || '—';
+  document.getElementById('sucesoDetalleTexto').value        = s.detalle || '';
+  document.getElementById('sucesoDetalleBackdrop').classList.add('open');
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const detalle = document.getElementById('sucesoDetalleBackdrop');
+  const listado = document.getElementById('sucesosBackdrop');
+  if (detalle && detalle.classList.contains('open')) { detalle.classList.remove('open'); return; }
+  if (listado && listado.classList.contains('open')) { cerrarVisorSucesos(); }
+});
 
 // ------------------------- Boot -------------------------
 window.addEventListener('hashchange', () => {
