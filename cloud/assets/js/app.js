@@ -77,6 +77,9 @@ function openModal(html) {
 function closeModal() {
   const m = $('#modalRoot');
   if (!m) return;
+  // Liberar el id ya para que un openModal() inmediato no quede compitiendo con
+  // este nodo durante los 200 ms de animacion de cierre.
+  m.id = '';
   m.classList.remove('open');
   setTimeout(() => m.remove(), 200);
 }
@@ -1917,6 +1920,11 @@ route('/herramientas', async (mount) => {
         <span class="tile-title">Explorador S3</span>
         <span class="tile-desc">Navegá, subí, descargá y eliminá carpetas y archivos del bucket de media del entorno actual.</span>
       </button>
+      <button type="button" class="tile-card" onclick="abrirExploradorDB()">
+        <span class="tile-icon">🗄️</span>
+        <span class="tile-title">Explorador DB</span>
+        <span class="tile-desc">Recorrá las tablas de la base del entorno actual, ojeá su estructura y los últimos registros.</span>
+      </button>
     </div>
   `;
 }, 'Herramientas');
@@ -2290,6 +2298,1243 @@ document.addEventListener('keydown', (e) => {
   const back = document.getElementById('s3ExpModalBackdrop');
   if (back && back.classList.contains('open')) cerrarExploradorS3();
 });
+
+// ------------------------- Herramientas: Explorador DB -------------------------
+let dbExpTablas       = [];        // listado completo
+let dbExpFiltro       = '';        // filtro del buscador (vista de tablas)
+let dbExpTablaActual  = null;      // nombre de la tabla abierta (vista detalle) o null
+let dbExpDbName       = '';
+let dbExpEnv          = '';
+let dbExpCargando     = false;
+let dbExpRegistros    = [];        // último set de filas cargadas
+let dbExpPkCols       = [];        // columnas PK de la tabla abierta
+let dbExpAutoIncCols  = [];        // columnas auto_increment
+let dbExpNullableCols = [];        // columnas que permiten NULL
+let dbExpColsTabla    = [];        // orden de columnas de la tabla abierta
+let dbExpRegsTotal    = 0;         // total real (COUNT(*))
+let dbExpLimite       = 50;        // cuántos registros pedir al backend
+let dbExpFiltroRegs   = '';        // filtro client-side de la pestaña Registros
+
+function abrirExploradorDB() {
+  dbExpTablas      = [];
+  dbExpFiltro      = '';
+  dbExpTablaActual = null;
+  document.getElementById('dbExpModalBackdrop').classList.add('open');
+  dbExpMostrarVista('tables');
+  dbExpCargarTablas();
+}
+
+function cerrarExploradorDB() {
+  document.getElementById('dbExpModalBackdrop').classList.remove('open');
+}
+
+function dbExpRecargar() {
+  if (dbExpTablaActual) dbExpAbrirTabla(dbExpTablaActual);
+  else                  dbExpCargarTablas();
+}
+
+function dbExpMostrarVista(vista) {
+  const vT = document.getElementById('dbExpViewTables');
+  const vD = document.getElementById('dbExpViewDetail');
+  const buscador = document.getElementById('dbExpSearchWrap');
+  if (vista === 'tables') {
+    vT.style.display = '';
+    vD.style.display = 'none';
+    buscador.style.display = '';
+  } else {
+    vT.style.display = 'none';
+    vD.style.display = '';
+    buscador.style.display = 'none';
+  }
+  dbExpRenderBreadcrumbs();
+}
+
+function dbExpRenderBreadcrumbs() {
+  const cont = document.getElementById('dbExpBreadcrumbs');
+  let html = '<button class="db-exp-crumb" onclick="dbExpVolverATablas()">'
+           + '<i class="fa-solid fa-database"></i> ' + esc(dbExpDbName || 'base de datos') + '</button>';
+  if (dbExpTablaActual) {
+    html += '<span class="db-exp-crumb-sep">/</span>'
+          + '<span class="db-exp-crumb current">' + esc(dbExpTablaActual) + '</span>';
+  }
+  cont.innerHTML = html;
+}
+
+function dbExpVolverATablas() {
+  dbExpTablaActual = null;
+  dbExpMostrarVista('tables');
+  dbExpRenderTablas();
+}
+
+async function dbExpCargarTablas() {
+  if (dbExpCargando) return;
+  dbExpCargando = true;
+  const tbody = document.getElementById('dbExpTablesTbody');
+  tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:24px"><div class="spin"></div></td></tr>';
+  try {
+    const data = await apiGet('api/herramientas_db_tables.php');
+    dbExpTablas = data.tablas || [];
+    dbExpDbName = data.database || '';
+    dbExpEnv    = data.env || '';
+    document.getElementById('dbExpDbName').textContent = dbExpDbName || '—';
+    const envBadge = document.getElementById('dbExpEnvBadge');
+    envBadge.textContent = dbExpEnv;
+    envBadge.className = 'badge ' + (dbExpEnv === 'production' ? 'badge-danger' : 'badge-success');
+    dbExpRenderBreadcrumbs();
+    dbExpRenderTablas();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="4" class="db-exp-empty">✗ ' + esc(e.message) + '</td></tr>';
+  } finally {
+    dbExpCargando = false;
+  }
+}
+
+function dbExpRenderTablas() {
+  const tbody = document.getElementById('dbExpTablesTbody');
+  const info  = document.getElementById('dbExpTablesInfo');
+  const q     = (dbExpFiltro || '').toLowerCase();
+  const lista = q
+    ? dbExpTablas.filter((t) => (t.nombre || '').toLowerCase().includes(q))
+    : dbExpTablas;
+  if (!lista.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="db-exp-empty">'
+                    + (dbExpTablas.length ? 'Sin resultados para el filtro.' : 'No hay tablas en esta base.')
+                    + '</td></tr>';
+    info.textContent = '';
+    return;
+  }
+  let html = '';
+  lista.forEach((t) => {
+    const nombre = t.nombre || '';
+    const filas  = (t.filas_aprox == null) ? '—' : fmtNum(t.filas_aprox);
+    const engine = t.engine || '—';
+    html +=
+      '<tr class="row-clickable" onclick="dbExpAbrirTabla(\'' + esc(nombre) + '\')">'
+      + '<td><i class="fa-solid fa-table" style="color:var(--info)"></i></td>'
+      + '<td><div class="db-exp-nombre">' + esc(nombre) + '</div>'
+      + (t.comentario ? '<div class="db-exp-coment">' + esc(t.comentario) + '</div>' : '')
+      + '</td>'
+      + '<td class="db-exp-num">' + filas + '</td>'
+      + '<td class="db-exp-mono">' + esc(engine) + '</td>'
+      + '</tr>';
+  });
+  tbody.innerHTML = html;
+  info.textContent = lista.length + ' tabla' + (lista.length === 1 ? '' : 's')
+                   + (q ? ' (filtradas de ' + dbExpTablas.length + ')' : '');
+}
+
+function dbExpFiltrarTablas() {
+  dbExpFiltro = document.getElementById('dbExpSearch').value || '';
+  dbExpRenderTablas();
+}
+
+function dbExpLimpiarBuscador() {
+  const inp = document.getElementById('dbExpSearch');
+  inp.value = '';
+  dbExpFiltro = '';
+  dbExpRenderTablas();
+  inp.focus();
+}
+
+async function dbExpAbrirTabla(nombre) {
+  dbExpTablaActual = nombre;
+  dbExpMostrarVista('detail');
+  dbExpCambiarTab('recs');
+  // Reset del filtro de registros al cambiar de tabla (el límite se mantiene).
+  dbExpFiltroRegs = '';
+  const inpSearch = document.getElementById('dbExpRecsSearch');
+  if (inpSearch) inpSearch.value = '';
+
+  const colsTbody = document.getElementById('dbExpColsTbody');
+  document.getElementById('dbExpColsMeta').textContent = '';
+  colsTbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px"><div class="spin"></div></td></tr>';
+
+  const [colsRes] = await Promise.allSettled([
+    apiGet('api/herramientas_db_describe.php?tabla=' + encodeURIComponent(nombre)),
+    dbExpCargarRegistros(nombre),
+  ]);
+
+  if (colsRes.status === 'fulfilled') {
+    dbExpRenderColumnas(colsRes.value.columnas || []);
+  } else {
+    colsTbody.innerHTML = '<tr><td colspan="7" class="db-exp-empty">✗ ' + esc(colsRes.reason.message) + '</td></tr>';
+  }
+}
+
+async function dbExpCargarRegistros(nombre) {
+  const recsTable = document.getElementById('dbExpRecsTable');
+  const recsTbody = document.getElementById('dbExpRecsTbody');
+  document.getElementById('dbExpRecsMeta').textContent = '';
+  recsTable.querySelector('thead').innerHTML = '<tr><th></th></tr>';
+  recsTbody.innerHTML = '<tr><td style="text-align:center;padding:24px"><div class="spin"></div></td></tr>';
+  try {
+    const data = await apiGet('api/herramientas_db_records.php?tabla='
+      + encodeURIComponent(nombre) + '&limite=' + dbExpLimite);
+    dbExpRenderRegistros(data);
+  } catch (e) {
+    recsTbody.innerHTML = '<tr><td class="db-exp-empty">✗ ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function dbExpCambiarLimite() {
+  const sel = document.getElementById('dbExpLimite');
+  dbExpLimite = parseInt(sel.value, 10) || 50;
+  if (dbExpTablaActual) dbExpCargarRegistros(dbExpTablaActual);
+}
+
+function dbExpFiltrarRegistros() {
+  dbExpFiltroRegs = document.getElementById('dbExpRecsSearch').value || '';
+  dbExpPintarRegistros();
+}
+
+function dbExpLimpiarBuscadorRegs() {
+  const inp = document.getElementById('dbExpRecsSearch');
+  inp.value = '';
+  dbExpFiltroRegs = '';
+  dbExpPintarRegistros();
+  inp.focus();
+}
+
+function dbExpCambiarTab(tab) {
+  $$('.db-exp-tab').forEach((b) => {
+    b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+  });
+  const cols = document.getElementById('dbExpTabCols');
+  const recs = document.getElementById('dbExpTabRecs');
+  cols.hidden = (tab !== 'cols');
+  recs.hidden = (tab !== 'recs');
+}
+
+function dbExpRenderColumnas(columnas) {
+  const tbody = document.getElementById('dbExpColsTbody');
+  const meta  = document.getElementById('dbExpColsMeta');
+  if (!columnas.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="db-exp-empty">Sin columnas.</td></tr>';
+    meta.textContent = '';
+    return;
+  }
+  let html = '';
+  columnas.forEach((c) => {
+    const claveBadge = dbExpClaveBadge(c.clave);
+    const nullable   = c.nullable === 'YES'
+      ? '<span class="badge badge-warn">YES</span>'
+      : '<span class="badge" style="background:rgba(255,255,255,.06);color:var(--muted)">NO</span>';
+    const def = (c.predeterminado === null || c.predeterminado === undefined)
+      ? '<span class="db-exp-null">NULL</span>'
+      : '<code>' + esc(c.predeterminado) + '</code>';
+    const extra = c.extra ? '<code>' + esc(c.extra) + '</code>' : '';
+    html +=
+      '<tr>'
+      + '<td class="db-exp-num">' + esc(c.posicion) + '</td>'
+      + '<td><div class="db-exp-col-nombre">' + esc(c.nombre) + '</div>'
+      + (c.comentario ? '<div class="db-exp-coment">' + esc(c.comentario) + '</div>' : '')
+      + '</td>'
+      + '<td class="db-exp-mono">' + esc(c.tipo) + '</td>'
+      + '<td>' + nullable + '</td>'
+      + '<td>' + claveBadge + '</td>'
+      + '<td class="db-exp-mono">' + def + '</td>'
+      + '<td class="db-exp-mono">' + extra + '</td>'
+      + '</tr>';
+  });
+  tbody.innerHTML = html;
+  meta.textContent = String(columnas.length);
+}
+
+function dbExpClaveBadge(k) {
+  if (k === 'PRI') return '<span class="badge badge-warn" title="Primary key">PK</span>';
+  if (k === 'UNI') return '<span class="badge badge-info" title="Unique">UQ</span>';
+  if (k === 'MUL') return '<span class="badge" style="background:rgba(139,92,246,.18);color:#c4b5fd" title="Index">IDX</span>';
+  return '';
+}
+
+function dbExpRenderRegistros(payload) {
+  dbExpRegistros    = payload.registros || [];
+  dbExpPkCols       = payload.pk || [];
+  dbExpAutoIncCols  = payload.auto_inc || [];
+  dbExpNullableCols = payload.nullable || [];
+  dbExpColsTabla    = payload.columnas || [];
+  dbExpRegsTotal    = payload.total || 0;
+
+  const thead = document.getElementById('dbExpRecsTable').querySelector('thead');
+  if (!dbExpColsTabla.length) {
+    thead.innerHTML = '<tr><th></th></tr>';
+  } else {
+    thead.innerHTML = '<tr>' + dbExpColsTabla.map((c) => {
+      const tag = dbExpPkCols.includes(c)
+        ? ' <i class="fa-solid fa-key" title="Primary key" style="color:var(--warn);font-size:.7rem"></i>'
+        : '';
+      return '<th>' + esc(c) + tag + '</th>';
+    }).join('') + '</tr>';
+  }
+  dbExpPintarRegistros();
+}
+
+function dbExpPintarRegistros() {
+  const tbody = document.getElementById('dbExpRecsTbody');
+  const meta  = document.getElementById('dbExpRecsMeta');
+  const cols  = dbExpColsTabla;
+  const pk    = dbExpPkCols;
+  const ai    = dbExpAutoIncCols;
+
+  if (!cols.length) {
+    tbody.innerHTML = '<tr><td class="db-exp-empty">Sin columnas.</td></tr>';
+    meta.textContent = '';
+    return;
+  }
+
+  // Filtro client-side: match case-insensitive contra cualquier columna.
+  const q = (dbExpFiltroRegs || '').trim().toLowerCase();
+  const visible = [];
+  dbExpRegistros.forEach((r, idx) => {
+    if (!q) { visible.push(idx); return; }
+    for (const c of cols) {
+      const v = r[c];
+      if (v == null) continue;
+      if (String(v).toLowerCase().includes(q)) { visible.push(idx); return; }
+    }
+  });
+
+  if (!dbExpRegistros.length) {
+    tbody.innerHTML = '<tr><td colspan="' + cols.length + '" class="db-exp-empty">Esta tabla está vacía.</td></tr>';
+  } else if (!visible.length) {
+    tbody.innerHTML = '<tr><td colspan="' + cols.length + '" class="db-exp-empty">Sin resultados para "' + esc(dbExpFiltroRegs) + '".</td></tr>';
+  } else {
+    const editable = pk.length > 0;
+    let html = '';
+    visible.forEach((rowIdx) => {
+      const r = dbExpRegistros[rowIdx];
+      html += '<tr data-row="' + rowIdx + '">' + cols.map((c) => {
+        const esPk = pk.includes(c);
+        const esAi = ai.includes(c);
+        const lock = esPk || esAi || !editable;
+        const cls  = lock ? 'db-exp-cell-lock' : 'db-exp-cell-edit';
+        const title = !editable    ? 'No editable: la tabla no tiene PK'
+                    : esPk          ? 'No editable: forma parte de la PK'
+                    : esAi          ? 'No editable: auto_increment'
+                                    : 'Doble click para editar';
+        return '<td class="' + cls + '" data-col="' + esc(c) + '" title="' + esc(title) + '"'
+             + (lock ? '' : ' ondblclick="dbExpEditarCelda(this)"')
+             + '>' + dbExpFmtValor(r[c]) + '</td>';
+      }).join('') + '</tr>';
+    });
+    tbody.innerHTML = html;
+  }
+
+  let metaTxt = visible.length + '/' + fmtNum(dbExpRegsTotal);
+  if (q && visible.length !== dbExpRegistros.length) {
+    metaTxt += ' (filtrados de ' + dbExpRegistros.length + ')';
+  }
+  if (!pk.length && dbExpRegistros.length) metaTxt += ' · solo lectura';
+  meta.textContent = metaTxt;
+}
+
+function dbExpFmtValor(v) {
+  if (v === null || v === undefined) return '<span class="db-exp-null">NULL</span>';
+  if (v === '') return '<span class="db-exp-null">""</span>';
+  if (typeof v === 'boolean') return v ? '1' : '0';
+  return esc(String(v));
+}
+
+// ----- Edición inline de celdas -----
+function dbExpEditarCelda(td) {
+  if (td.querySelector('input, textarea')) return;
+  const rowIdx = +td.parentElement.getAttribute('data-row');
+  const col    = td.getAttribute('data-col');
+  const reg    = dbExpRegistros[rowIdx];
+  if (!reg) return;
+  const valOrig = reg[col];
+
+  td.classList.add('db-exp-cell-editing');
+  const isNull = (valOrig === null || valOrig === undefined);
+  const valTxt = isNull ? '' : String(valOrig);
+
+  td.innerHTML =
+    '<div class="db-exp-edit-wrap">'
+    + '<input type="text" class="db-exp-edit-input" value="' + esc(valTxt) + '">'
+    + '<div class="db-exp-edit-actions">'
+    +   '<button type="button" class="btn-icon-sm" data-act="guardar" title="Guardar (Enter)"><i class="fa-solid fa-check" style="color:var(--success)"></i></button>'
+    +   '<button type="button" class="btn-icon-sm" data-act="cancelar" title="Cancelar (Esc)"><i class="fa-solid fa-xmark"></i></button>'
+    +   (dbExpNullableCols.includes(col)
+          ? '<button type="button" class="btn-icon-sm" data-act="null" title="Setear NULL"><i class="fa-solid fa-ban" style="color:var(--muted)"></i></button>'
+          : '')
+    + '</div>'
+    + '</div>';
+
+  const input = td.querySelector('input');
+  input.focus();
+  input.select();
+
+  const cerrar = () => {
+    td.classList.remove('db-exp-cell-editing');
+    td.innerHTML = dbExpFmtValor(reg[col]);
+  };
+  const guardar = async (nuevoValor) => {
+    if (nuevoValor === valOrig) { cerrar(); return; }
+    td.classList.add('db-exp-cell-saving');
+    try {
+      const data = await apiSend('api/herramientas_db_update.php', 'POST', {
+        tabla:   dbExpTablaActual,
+        columna: col,
+        pk:      Object.fromEntries(dbExpPkCols.map((c) => [c, reg[c]])),
+        valor:   nuevoValor,
+      });
+      reg[col] = (data.valor_guardado === undefined ? nuevoValor : data.valor_guardado);
+      td.classList.remove('db-exp-cell-editing', 'db-exp-cell-saving');
+      td.innerHTML = dbExpFmtValor(reg[col]);
+      td.classList.add('db-exp-cell-ok');
+      setTimeout(() => td.classList.remove('db-exp-cell-ok'), 800);
+    } catch (e) {
+      td.classList.remove('db-exp-cell-saving');
+      toast(e.message || 'No se pudo actualizar', { error: true });
+      const inp = td.querySelector('input');
+      if (inp) inp.focus();
+    }
+  };
+
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter')      { ev.preventDefault(); ev.stopPropagation(); guardar(input.value); }
+    else if (ev.key === 'Escape'){ ev.preventDefault(); ev.stopPropagation(); cerrar(); }
+  });
+  td.querySelector('[data-act="guardar"]').addEventListener('click', () => guardar(input.value));
+  td.querySelector('[data-act="cancelar"]').addEventListener('click', cerrar);
+  const btnNull = td.querySelector('[data-act="null"]');
+  if (btnNull) btnNull.addEventListener('click', () => guardar(null));
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const back = document.getElementById('dbExpModalBackdrop');
+  if (back && back.classList.contains('open')) cerrarExploradorDB();
+});
+
+// ------------------------- Vista: Datacount > Comprobantes (ABM) -------------------------
+const dcCompFiltrosDefaults = {
+  q: '', codigo: '', tipo: '', punto: '', serie: '', cliente: '',
+  razon: '', cuit: '', estado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const dcCompFiltros = { ...dcCompFiltrosDefaults };
+let dcCompBuscadorTimer  = null;
+let dcCompFiltrosSnapshot = null;
+
+function dcCompFmtComprobante(punto, serie) {
+  const p = punto != null && punto !== '' ? String(punto).padStart(4, '0') : '----';
+  const s = serie != null && serie !== '' ? String(serie).padStart(8, '0') : '--------';
+  return `${p}-${s}`;
+}
+
+function dcCompFmtImporte(v) {
+  if (v == null || v === '' || isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function dcCompEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const map = {
+    A: { label: 'Autorizado', cls: 'badge-success' },
+    P: { label: 'Pendiente',  cls: 'badge-warn'    },
+    C: { label: 'Cancelado',  cls: 'badge-danger'  },
+    B: { label: 'Baja',       cls: 'badge-danger'  },
+  };
+  const m = map[e];
+  if (m) return `<span class="badge ${m.cls}">${esc(m.label)}</span>`;
+  return `<span class="badge badge-info">${esc(e)}</span>`;
+}
+
+route('/datacountcomprobantes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">🧾</div>
+        <div class="module-help-text">
+          Los comprobantes son las facturas, recibos y demás documentos que Datacount
+          emite a los clientes, con su numeración, importes, datos fiscales y estado de autorización.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dcCompStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Importe total</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcCompSearch"
+                   placeholder="🔍 Buscar razón, CUIT, correo o CAE…">
+            <button class="search-clear" id="dcCompSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcCompFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcCompFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcCompRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcCompNuevoBtn">+ Nuevo comprobante</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Tipo</th>
+              <th>Comprobante</th>
+              <th>Emisión</th>
+              <th>Razón social</th>
+              <th>CUIT</th>
+              <th style="text-align:right">Total</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcCompTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dcCompCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros -->
+    <div class="modal-backdrop" id="filtrosDcCompBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcComp()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDcComp()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcCompCodigo" min="1" placeholder="ID …" oninput="onFiltroDcComp('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Tipo</label>
+              <input type="text" id="fDcCompTipo" maxlength="2" oninput="onFiltroDcComp('tipo', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Punto</label>
+              <input type="number" id="fDcCompPunto" min="0" oninput="onFiltroDcComp('punto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Serie</label>
+              <input type="number" id="fDcCompSerie" min="0" oninput="onFiltroDcComp('serie', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Cliente (ID)</label>
+              <input type="number" id="fDcCompCliente" min="1" oninput="onFiltroDcComp('cliente', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Razón social</label>
+              <input type="text" id="fDcCompRazon" oninput="onFiltroDcComp('razon', this.value)">
+            </div>
+            <div class="form-group">
+              <label>CUIT</label>
+              <input type="text" id="fDcCompCuit" oninput="onFiltroDcComp('cuit', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado del comprobante</label>
+            <div id="fDcCompEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-estado="" >Todos</button>
+              <button type="button" class="filter-chip" data-estado="A">Autorizado</button>
+              <button type="button" class="filter-chip" data-estado="P">Pendiente</button>
+              <button type="button" class="filter-chip" data-estado="C">Cancelado</button>
+              <button type="button" class="filter-chip" data-estado="B">Baja</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcCompLimite" min="1" max="1000" value="100" onchange="onFiltroDcComp('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcCompOrderBy" onchange="onFiltroDcComp('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="emision">Emisión</option>
+                <option value="vencimiento">Vencimiento</option>
+                <option value="tipo">Tipo</option>
+                <option value="punto">Punto</option>
+                <option value="serie">Serie</option>
+                <option value="razon">Razón social</option>
+                <option value="cuit">CUIT</option>
+                <option value="total">Total</option>
+                <option value="registrado">Fecha de registro</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcCompDir" onchange="onFiltroDcComp('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcComp()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcComp()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcComp()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#dcCompNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcComp(null));
+  $('#dcCompFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDcComp());
+  $('#dcCompRefrescarBtn').addEventListener('click', () => cargarDcComp());
+
+  const inp = $('#dcCompSearch');
+  const clr = $('#dcCompSearchClear');
+  inp.value = dcCompFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcCompFiltros.q = inp.value.trim();
+    clearTimeout(dcCompBuscadorTimer);
+    dcCompBuscadorTimer = setTimeout(() => { cargarDcComp(); refrescarBadgeFiltrosDcComp(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    dcCompFiltros.q = '';
+    cargarDcComp();
+    refrescarBadgeFiltrosDcComp();
+  });
+
+  // Acciones del menú contextual
+  $('#dcCompCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDcComp(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDcComp(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDcComp(data.id);
+  });
+
+  // Clic en fila → consultar; clic en hamburguesa → menú
+  $('#dcCompTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dcCompCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDcComp(Number(tr.dataset.id));
+  });
+  $('#dcCompTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dcCompCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDcComp();
+  await cargarDcComp();
+}, 'Comprobantes');
+
+async function cargarDcComp() {
+  const tbody = $('#dcCompTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(dcCompFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/datacountcomprobantes.php?' + qs.toString());
+    pintarStatsDcComp(data.stats);
+    pintarTablaDcComp(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcComp(s) {
+  const cards = $$('#dcCompStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = '$ ' + dcCompFmtImporte(s.importe_total);
+}
+
+function pintarTablaDcComp(rows) {
+  const tbody = $('#dcCompTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin comprobantes.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-id">#${esc(c.id)}</td>
+      <td>${esc(c.tipo || '—')}</td>
+      <td style="font-family:monospace">${esc(dcCompFmtComprobante(c.punto, c.serie))}</td>
+      <td>${esc(c.emision || '—')}</td>
+      <td class="td-nombre">${esc(c.razon || '—')}</td>
+      <td>${esc(c.cuit || '—')}</td>
+      <td style="text-align:right">${c.total != null ? '$ ' + dcCompFmtImporte(c.total) : '—'}</td>
+      <td>${dcCompEstadoBadge(c.estado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de Filtros ----
+function onFiltroDcComp(key, value) {
+  if (key === 'tipo' || key === 'razon' || key === 'cuit') {
+    dcCompFiltros[key] = String(value).trim();
+  } else if (key === 'codigo' || key === 'punto' || key === 'serie' || key === 'cliente') {
+    const v = String(value).trim();
+    dcCompFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    dcCompFiltros.limite = n;
+  } else {
+    dcCompFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDcComp();
+  cargarDcComp();
+}
+
+function refrescarBadgeFiltrosDcComp() {
+  const btn   = $('#dcCompFiltrosBtn');
+  const badge = $('#dcCompFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(dcCompFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(dcCompFiltros[k]) !== String(dcCompFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDcComp() {
+  const f = dcCompFiltros;
+  $('#fDcCompCodigo').value  = f.codigo;
+  $('#fDcCompTipo').value    = f.tipo;
+  $('#fDcCompPunto').value   = f.punto;
+  $('#fDcCompSerie').value   = f.serie;
+  $('#fDcCompCliente').value = f.cliente;
+  $('#fDcCompRazon').value   = f.razon;
+  $('#fDcCompCuit').value    = f.cuit;
+  $('#fDcCompLimite').value  = f.limite;
+  $('#fDcCompOrderBy').value = f.order_by;
+  $('#fDcCompDir').value     = f.dir;
+  $$('#fDcCompEstadoChips .filter-chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.estado || '') === (f.estado || ''));
+  });
+}
+
+function abrirModalFiltrosDcComp() {
+  dcCompFiltrosSnapshot = { ...dcCompFiltros };
+  sincronizarControlesFiltrosDcComp();
+  $$('#fDcCompEstadoChips .filter-chip').forEach((c) => {
+    c.onclick = () => { onFiltroDcComp('estado', c.dataset.estado || ''); sincronizarControlesFiltrosDcComp(); };
+  });
+  $('#filtrosDcCompBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDcComp() {
+  $('#filtrosDcCompBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDcComp() {
+  if (dcCompFiltrosSnapshot) {
+    Object.assign(dcCompFiltros, dcCompFiltrosSnapshot);
+    refrescarBadgeFiltrosDcComp();
+    cargarDcComp();
+  }
+  cerrarModalFiltrosDcComp();
+}
+
+function limpiarFiltrosDcComp() {
+  Object.assign(dcCompFiltros, dcCompFiltrosDefaults);
+  dcCompFiltros.q = $('#dcCompSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDcComp();
+  refrescarBadgeFiltrosDcComp();
+  cargarDcComp();
+}
+
+// Exponer para los onclick del HTML
+window.onFiltroDcComp           = onFiltroDcComp;
+window.cancelarFiltrosDcComp    = cancelarFiltrosDcComp;
+window.limpiarFiltrosDcComp     = limpiarFiltrosDcComp;
+window.cerrarModalFiltrosDcComp = cerrarModalFiltrosDcComp;
+
+// ---- Modal Consultar (formato factura) ----
+async function abrirConsultarDcComp(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1400px">
+      <div class="modal-header">
+        <div class="modal-title">Comprobante <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcComp(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/datacountcomprobantes.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDcComp(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDcComp(c) {
+  const numero  = dcCompFmtComprobante(c.punto, c.serie);
+  const tipoEnc = [c.tipo, c.fiscal].filter(Boolean).join(' ') || '—';
+  const money   = (v) => (v == null || v === '') ? '—' : '$ ' + dcCompFmtImporte(v);
+  const cantidad = (v) => (v == null || v === '') ? '—' : dcCompFmtImporte(v);
+
+  // Tarjetas tipo data-row (mismo estilo que ABM consultar).
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  // Línea "Etiqueta: valor" dentro de una tarjeta agrupadora.
+  const linea = (label, value) => {
+    const empty = value == null || value === '';
+    const valHtml = empty
+      ? `<span style="color:var(--muted);font-style:italic">Sin dato</span>`
+      : esc(value);
+    return `
+      <div style="font-size:.9rem;line-height:1.55;padding:3px 0">
+        <span style="color:var(--muted);font-weight:600">${esc(label)}:</span>
+        ${valHtml}
+      </div>`;
+  };
+
+  // Renglones
+  const renglones = c.renglones || [];
+  const renglonesHtml = !renglones.length
+    ? `<tr><td colspan="6" class="table-empty">Este comprobante no tiene renglones.</td></tr>`
+    : renglones.map((r, i) => `
+        <tr>
+          <td class="td-id" style="text-align:center">${esc(r.orden ?? i + 1)}</td>
+          <td style="text-align:right">${cantidad(r.cantidad)}</td>
+          <td>${esc(r.detalle || '—')}</td>
+          <td style="text-align:right">${money(r.unitario)}</td>
+          <td style="text-align:right">${money(r.iva)}</td>
+          <td style="text-align:right;font-weight:600">${money(r.monto)}</td>
+        </tr>
+      `).join('');
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  return `
+    <!-- Encabezado tipo factura -->
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.5rem;font-weight:700">${esc(tipoEnc)}</span>
+          <span style="font-family:monospace;font-size:1.2rem;color:var(--muted)">${esc(numero)}</span>
+        </div>
+        <div style="font-size:.78rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;min-width:180px">
+        <div>${dcCompEstadoBadge(c.estado)}</div>
+        <div style="margin-top:10px;font-size:.85rem;line-height:1.6">
+          <div><span style="color:var(--muted)">Emisión:</span> ${esc(c.emision || '—')}</div>
+          <div><span style="color:var(--muted)">Vencimiento:</span> ${esc(c.vencimiento || '—')}</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Cliente</div>
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;padding:14px 18px">
+          ${linea('Razón social',  c.razon)}
+          ${linea('Domicilio',     c.domicilio)}
+          ${linea('Correo',        c.correo)}
+          ${linea('Celular',       c.celular)}
+          ${linea('CUIT',          c.cuit)}
+          ${linea('Condición IVA', c.condicion)}
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Datos fiscales</div>
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;padding:14px 18px">
+          ${linea('CAE',            c.caenro)}
+          ${linea('Vto. CAE',       c.caevto)}
+          ${linea('Talonario',      c.talonario)}
+          ${linea('Punto de venta', c.punto)}
+          ${linea('Proyecto',       c.proyecto)}
+          ${linea('Empresa',        c.empresa)}
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Detalle')}
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:48px;text-align:center">#</th>
+            <th style="width:90px;text-align:right">Cant.</th>
+            <th>Detalle</th>
+            <th style="width:120px;text-align:right">Unitario</th>
+            <th style="width:110px;text-align:right">IVA</th>
+            <th style="width:130px;text-align:right">Monto</th>
+          </tr>
+        </thead>
+        <tbody>${renglonesHtml}</tbody>
+      </table>
+    </div>
+
+    <!-- Totales -->
+    <div style="display:flex;justify-content:flex-end">
+      <table style="width:340px;font-size:.9rem">
+        <tr>
+          <td style="padding:6px 12px;color:var(--muted)">Neto</td>
+          <td style="padding:6px 12px;text-align:right;font-family:monospace">${money(c.neto)}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 12px;color:var(--muted)">IVA</td>
+          <td style="padding:6px 12px;text-align:right;font-family:monospace">${money(c.iva)}</td>
+        </tr>
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em">Total</td>
+          <td style="padding:12px;text-align:right;font-weight:700;font-size:1.2rem;font-family:monospace;color:var(--primary)">${money(c.total)}</td>
+        </tr>
+      </table>
+    </div>
+
+    ${seccion('Notas y referencias')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
+      ${card('Observaciones', c.observaciones)}
+      ${card('Comentarios',   c.comentarios)}
+    </div>
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Medio de pago', c.medio)}
+      ${card('Asociado',      c.asociado)}
+      ${card('Contrato',      c.contrato)}
+      ${card('Registrado',    fmtFecha(c.registrado))}
+      ${card('Autorizado',    fmtFecha(c.autorizado))}
+      ${card('Respuesta CAE', c.caeres, true)}
+    </dl>
+  `;
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDcComp(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar comprobante <span class="modal-subtitle">#${id}</span>` : 'Nuevo comprobante'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formDcCompHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/datacountcomprobantes.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formDcCompHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDcComp(id, a);
+  });
+}
+
+function formDcCompHtml(c) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  // datetime-local quiere 'YYYY-MM-DDTHH:MM'
+  const dt  = (k) => {
+    const raw = c?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Tipo</label>
+        <input type="text" id="dcTipo" maxlength="2" value="${v('tipo')}">
+      </div>
+      <div class="form-group">
+        <label>Punto de venta</label>
+        <input type="number" id="dcPunto" min="0" value="${v('punto')}">
+      </div>
+      <div class="form-group">
+        <label>Número</label>
+        <input type="number" id="dcSerie" min="0" value="${v('serie')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Fiscal</label>
+        <input type="text" id="dcFiscal" maxlength="1" value="${v('fiscal')}">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="dcEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="A" ${sel('estado','A')}>Autorizado</option>
+          <option value="P" ${sel('estado','P')}>Pendiente</option>
+          <option value="C" ${sel('estado','C')}>Cancelado</option>
+          <option value="B" ${sel('estado','B')}>Baja</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Talonario</label>
+        <input type="number" id="dcTalonario" min="1" value="${v('talonario')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto</label>
+        <input type="number" id="dcProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Empresa</label>
+        <input type="number" id="dcEmpresa" min="1" value="${v('empresa')}">
+      </div>
+      <div class="form-group">
+        <label>Medio</label>
+        <input type="number" id="dcMedio" min="1" value="${v('medio')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Emisión</label>
+        <input type="date" id="dcEmision" value="${v('emision')}">
+      </div>
+      <div class="form-group">
+        <label>Vencimiento</label>
+        <input type="date" id="dcVencimiento" value="${v('vencimiento')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Asociado</label>
+        <input type="number" id="dcAsociado" min="1" value="${v('asociado')}">
+      </div>
+      <div class="form-group">
+        <label>Contrato</label>
+        <input type="number" id="dcContrato" min="1" value="${v('contrato')}">
+      </div>
+      <div class="form-group">
+        <label>Cliente (ID)</label>
+        <input type="number" id="dcCliente" min="1" value="${v('cliente')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Razón social</label>
+      <input type="text" id="dcRazon" maxlength="250" value="${v('razon')}">
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Condición IVA</label>
+        <input type="text" id="dcCondicion" maxlength="2" value="${v('condicion')}">
+      </div>
+      <div class="form-group">
+        <label>CUIT</label>
+        <input type="text" id="dcCuit" maxlength="50" value="${v('cuit')}">
+      </div>
+      <div class="form-group">
+        <label>Correo</label>
+        <input type="email" id="dcCorreo" maxlength="100" value="${v('correo')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Celular</label>
+        <input type="text" id="dcCelular" maxlength="100" value="${v('celular')}">
+      </div>
+      <div class="form-group">
+        <label>Domicilio</label>
+        <input type="text" id="dcDomicilio" maxlength="250" value="${v('domicilio')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Neto</label>
+        <input type="number" id="dcNeto" step="0.01" value="${v('neto')}">
+      </div>
+      <div class="form-group">
+        <label>IVA</label>
+        <input type="number" id="dcIva" step="0.01" value="${v('iva')}">
+      </div>
+      <div class="form-group">
+        <label>Total</label>
+        <input type="number" id="dcTotal" step="0.01" value="${v('total')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>CAE (Nº)</label>
+        <input type="text" id="dcCaenro" maxlength="50" value="${v('caenro')}">
+      </div>
+      <div class="form-group">
+        <label>CAE (Vto.)</label>
+        <input type="text" id="dcCaevto" maxlength="50" value="${v('caevto')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Respuesta CAE</label>
+      <textarea id="dcCaeres">${v('caeres')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Observaciones</label>
+      <textarea id="dcObservaciones" maxlength="2000">${v('observaciones')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Comentarios</label>
+      <textarea id="dcComentarios" maxlength="2000">${v('comentarios')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Autorizado</label>
+      <input type="datetime-local" id="dcAutorizado" value="${dt('autorizado')}">
+    </div>
+    <div class="field-error" id="dcError" style="display:none"></div>
+  `;
+}
+
+async function guardarDcComp(id, btn) {
+  const err = $('#dcError');
+  err.style.display = 'none';
+
+  const payload = {
+    tipo:          $('#dcTipo').value.trim(),
+    punto:         $('#dcPunto').value,
+    serie:         $('#dcSerie').value,
+    fiscal:        $('#dcFiscal').value.trim(),
+    estado:        $('#dcEstado').value,
+    talonario:     $('#dcTalonario').value,
+    proyecto:      $('#dcProyecto').value,
+    empresa:       $('#dcEmpresa').value,
+    medio:         $('#dcMedio').value,
+    emision:       $('#dcEmision').value || null,
+    vencimiento:   $('#dcVencimiento').value || null,
+    asociado:      $('#dcAsociado').value,
+    contrato:      $('#dcContrato').value,
+    cliente:       $('#dcCliente').value,
+    razon:         $('#dcRazon').value.trim(),
+    condicion:     $('#dcCondicion').value.trim(),
+    cuit:          $('#dcCuit').value.trim(),
+    correo:        $('#dcCorreo').value.trim(),
+    celular:       $('#dcCelular').value.trim(),
+    domicilio:     $('#dcDomicilio').value.trim(),
+    neto:          $('#dcNeto').value,
+    iva:           $('#dcIva').value,
+    total:         $('#dcTotal').value,
+    caenro:        $('#dcCaenro').value.trim(),
+    caevto:        $('#dcCaevto').value.trim(),
+    caeres:        $('#dcCaeres').value,
+    observaciones: $('#dcObservaciones').value,
+    comentarios:   $('#dcComentarios').value,
+    autorizado:    $('#dcAutorizado').value || null,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/datacountcomprobantes.php', 'POST', payload);
+      toast('Comprobante creado.');
+    } else {
+      await apiSend(`api/datacountcomprobantes.php?id=${id}`, 'PUT', payload);
+      toast('Comprobante actualizado.');
+    }
+    closeModal();
+    cargarDcComp();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDcComp(id) {
+  const ok = await confirmar({
+    title: 'Eliminar comprobante',
+    message: `Se eliminará el comprobante #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datacountcomprobantes.php?id=${id}`, 'DELETE');
+    toast('Comprobante eliminado.');
+    cargarDcComp();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
 
 // ------------------------- Chrome (sidebar / topbar / dropdown) -------------------------
 function bindChrome() {

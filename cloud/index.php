@@ -60,6 +60,19 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
           </div>
         </div>
 
+        <div class="nav-group-wrap" data-group="datacount">
+          <button type="button" class="nav-item nav-group-toggle">
+            <span class="nav-icon">📒</span>
+            <span class="nav-group-label">Datacount</span>
+            <span class="nav-group-arrow">+</span>
+          </button>
+          <div class="nav-sub">
+            <a href="#/datacountcomprobantes" class="nav-item nav-sub-item" data-route="/datacountcomprobantes">
+              <span class="nav-icon">🧾</span> Comprobantes
+            </a>
+          </div>
+        </div>
+
         <div class="nav-group-wrap" data-group="seguridad">
           <button type="button" class="nav-item nav-group-toggle">
             <span class="nav-icon">🔐</span>
@@ -186,6 +199,128 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
     <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
       <i class="fa-solid fa-trash"></i><span>Eliminar</span>
     </button>
+  </div>
+
+  <!-- ===== Modal Explorador DB ===== -->
+  <div class="modal-backdrop" id="dbExpModalBackdrop"
+       onclick="if(event.target===this)cerrarExploradorDB()">
+    <div class="modal db-exp-modal">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span style="font-size:1.2rem">🗄️</span>
+          <span>Explorador DB</span>
+          <span class="badge badge-info" id="dbExpDbName" style="font-family:monospace">—</span>
+          <span class="badge" id="dbExpEnvBadge" style="font-family:monospace">—</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarExploradorDB()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="db-exp-toolbar">
+          <div class="db-exp-breadcrumbs" id="dbExpBreadcrumbs"></div>
+          <div class="db-exp-toolbar-right">
+            <button class="btn btn-ghost btn-icon" title="Refrescar" onclick="dbExpRecargar()">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+            <div class="search-wrap" id="dbExpSearchWrap" style="display:none">
+              <input type="search" id="dbExpSearch" class="search-input"
+                     placeholder="Buscar tabla…" oninput="dbExpFiltrarTablas()">
+              <button class="search-clear" onclick="dbExpLimpiarBuscador()">×</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Vista 1: listado de tablas -->
+        <div class="db-exp-view" id="dbExpViewTables">
+          <div class="table-card db-exp-table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:36px"></th>
+                  <th>Tabla</th>
+                  <th style="width:140px">Filas (aprox.)</th>
+                  <th style="width:120px">Engine</th>
+                </tr>
+              </thead>
+              <tbody id="dbExpTablesTbody">
+                <tr><td colspan="4" style="text-align:center;padding:24px"><div class="spin"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="db-exp-footer-info" id="dbExpTablesInfo"></div>
+        </div>
+
+        <!-- Vista 2: detalle de tabla (tabs: campos / registros) -->
+        <div class="db-exp-view db-exp-view-detail" id="dbExpViewDetail" style="display:none">
+          <div class="db-exp-tabs" role="tablist">
+            <button type="button" class="db-exp-tab active" role="tab"
+                    data-tab="recs" onclick="dbExpCambiarTab('recs')">
+              <i class="fa-solid fa-table"></i> Registros
+              <span class="db-exp-tab-count" id="dbExpRecsMeta"></span>
+            </button>
+            <button type="button" class="db-exp-tab" role="tab"
+                    data-tab="cols" onclick="dbExpCambiarTab('cols')">
+              <i class="fa-solid fa-list-ul"></i> Campos
+              <span class="db-exp-tab-count" id="dbExpColsMeta"></span>
+            </button>
+          </div>
+
+          <div class="db-exp-tabpanel" id="dbExpTabRecs" role="tabpanel">
+            <div class="db-exp-recs-toolbar">
+              <div class="db-exp-recs-toolbar-left">
+                <label class="db-exp-limite-label">Límite
+                  <select id="dbExpLimite" onchange="dbExpCambiarLimite()">
+                    <option value="10">10</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+              </div>
+              <div class="db-exp-recs-toolbar-right">
+                <div class="search-wrap">
+                  <input type="search" id="dbExpRecsSearch" class="search-input"
+                         placeholder="Buscar en los registros…" oninput="dbExpFiltrarRegistros()">
+                  <button class="search-clear" onclick="dbExpLimpiarBuscadorRegs()">×</button>
+                </div>
+              </div>
+            </div>
+            <div class="table-card db-exp-table-card db-exp-recs-card db-exp-fill">
+              <table id="dbExpRecsTable">
+                <thead><tr><th></th></tr></thead>
+                <tbody id="dbExpRecsTbody">
+                  <tr><td style="text-align:center;padding:24px"><div class="spin"></div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="db-exp-tabpanel" id="dbExpTabCols" role="tabpanel" hidden>
+            <div class="table-card db-exp-table-card db-exp-fill">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:36px">#</th>
+                    <th>Campo</th>
+                    <th>Tipo</th>
+                    <th style="width:70px">Null</th>
+                    <th style="width:70px">Clave</th>
+                    <th>Default</th>
+                    <th>Extra</th>
+                  </tr>
+                </thead>
+                <tbody id="dbExpColsTbody">
+                  <tr><td colspan="7" style="text-align:center;padding:24px"><div class="spin"></div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="cerrarExploradorDB()">Cerrar</button>
+      </div>
+    </div>
   </div>
 
   <script src="assets/js/app.js?v=<?= $jsVer ?>"></script>
