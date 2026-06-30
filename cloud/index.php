@@ -426,6 +426,120 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
     </div>
   </div>
 
+  <!-- ===== Modal Editor de estados ===== -->
+  <div class="modal-backdrop" id="estadosBackdrop"
+       onclick="if(event.target===this)cerrarEstados()">
+    <div class="modal" style="max-width:960px">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:1.2rem">🎚️</span>
+          <span>Editor de estados</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarEstados()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px">
+        <div class="toolbar" style="margin-bottom:0">
+          <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+            <div class="search-wrap">
+              <input class="search-input" type="search" id="estadosSearch"
+                     placeholder="🔍 Buscar campo, texto, valor…"
+                     oninput="estadosOnSearch(this.value)">
+              <button class="search-clear" id="estadosSearchClear" style="display:none"
+                      onclick="estadosLimpiarBusqueda()">×</button>
+            </div>
+            <select id="estadosCampoFiltro" onchange="cargarEstados()" style="min-width:200px">
+              <option value="">— Todos los campos —</option>
+            </select>
+            <button class="btn btn-ghost btn-icon" title="Refrescar" onclick="cargarEstados()">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn btn-primary" onclick="abrirNuevoEstado()">+ Nuevo estado</button>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:80px">Código</th>
+                <th style="width:240px">Campo</th>
+                <th style="width:120px">Valor</th>
+                <th>Texto</th>
+                <th style="width:80px;text-align:center">Orden</th>
+                <th style="width:60px;text-align:center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="estadosTbody">
+              <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="cerrarEstados()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Alta / Edición de estado -->
+  <div class="modal-backdrop" id="formEstadoBackdrop"
+       onclick="if(event.target===this)this.classList.remove('open')">
+    <div class="modal" style="max-width:560px">
+      <div class="modal-header">
+        <div class="modal-title" id="formEstadoTitulo" style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:1.2rem">🎚️</span>
+          <span>Nuevo estado</span>
+        </div>
+        <button class="btn-icon-sm" type="button"
+                onclick="document.getElementById('formEstadoBackdrop').classList.remove('open')"
+                title="Cerrar">×</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="formEstadoId" value="">
+        <div class="form-group">
+          <label for="formEstadoCampo">Campo</label>
+          <input type="text" id="formEstadoCampo"
+                 placeholder="ej. datacountcomprobantes.estado"
+                 autocomplete="off" autocapitalize="none" spellcheck="false"
+                 maxlength="255" style="font-family:monospace" list="formEstadoCampoLista">
+          <datalist id="formEstadoCampoLista"></datalist>
+          <div class="field-error" id="formEstadoCampoError" style="display:none"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="formEstadoValor">Valor</label>
+            <input type="text" id="formEstadoValor"
+                   placeholder="ej. A, 1, B…"
+                   autocomplete="off" autocapitalize="none" spellcheck="false"
+                   maxlength="255" style="font-family:monospace">
+            <div class="field-error" id="formEstadoValorError" style="display:none"></div>
+          </div>
+          <div class="form-group">
+            <label for="formEstadoOrden">
+              Orden <span style="font-weight:400;color:var(--muted)">— opcional</span>
+            </label>
+            <input type="number" id="formEstadoOrden" placeholder="0" step="1">
+            <div class="field-error" id="formEstadoOrdenError" style="display:none"></div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="formEstadoTexto">Texto</label>
+          <input type="text" id="formEstadoTexto"
+                 placeholder="ej. Activo, Pendiente, Anulado…"
+                 maxlength="255">
+          <div class="field-error" id="formEstadoTextoError" style="display:none"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"
+                onclick="document.getElementById('formEstadoBackdrop').classList.remove('open')">Cancelar</button>
+        <button class="btn btn-primary" id="btnGuardarEstado" onclick="guardarEstado()">Guardar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== Modal Migrador DB ===== -->
   <div class="modal-backdrop" id="migracionesBackdrop"
        onclick="if(event.target===this)cerrarMigraciones()">
@@ -639,6 +753,23 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
     </button>
     <button type="button" data-action="copiar-variable" role="menuitem">
       <i class="fa-solid fa-copy"></i><span>Copiar variable</span>
+    </button>
+    <div class="ctx-menu-sep"></div>
+    <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+      <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+    </button>
+  </div>
+
+  <!-- Menú contextual del Editor de estados -->
+  <div id="estadosCtxMenu" class="ctx-menu" role="menu">
+    <button type="button" data-action="editar" role="menuitem">
+      <i class="fa-solid fa-pen"></i><span>Editar</span>
+    </button>
+    <button type="button" data-action="copiar-campo" role="menuitem">
+      <i class="fa-solid fa-copy"></i><span>Copiar campo</span>
+    </button>
+    <button type="button" data-action="copiar-valor" role="menuitem">
+      <i class="fa-solid fa-copy"></i><span>Copiar valor</span>
     </button>
     <div class="ctx-menu-sep"></div>
     <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">

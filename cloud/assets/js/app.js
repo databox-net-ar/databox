@@ -1930,6 +1930,11 @@ route('/herramientas', async (mount) => {
         <span class="tile-title">Editor de parámetros</span>
         <span class="tile-desc">Variables runtime (variable / valor) que el resto del sistema lee para configurarse sin redeploy.</span>
       </button>
+      <button type="button" class="tile-card" onclick="abrirEstados()">
+        <span class="tile-icon">🎚️</span>
+        <span class="tile-title">Editor de estados</span>
+        <span class="tile-desc">Catálogo de valores posibles (<code>campo</code> / <code>valor</code> / <code>texto</code>) para columnas de estado de las distintas tablas.</span>
+      </button>
       <button type="button" class="tile-card" onclick="abrirMigraciones()">
         <span class="tile-icon">📜</span>
         <span class="tile-title">Migrador DB</span>
@@ -2731,6 +2736,42 @@ const dcCompFiltrosDefaults = {
 const dcCompFiltros = { ...dcCompFiltrosDefaults };
 let dcCompBuscadorTimer  = null;
 let dcCompFiltrosSnapshot = null;
+// Catalogo de estados posibles para comprobantes, leido de la tabla `estados`
+// donde `campo = 'datacount_comprobante_estado'`. Se cachea entre navegaciones.
+let dcCompEstadosCatalogo = null;
+let dcCompEstadosPromesa  = null;
+
+async function dcCompCargarCatalogoEstados() {
+  if (dcCompEstadosCatalogo) return dcCompEstadosCatalogo;
+  if (dcCompEstadosPromesa)  return dcCompEstadosPromesa;
+  dcCompEstadosPromesa = (async () => {
+    const data = await apiGet('api/estados.php?campo=datacount_comprobante_estado&order_by=campo_orden&dir=asc&limite=500');
+    dcCompEstadosCatalogo = (data.items || []).map((r) => ({
+      valor: String(r.valor ?? ''),
+      texto: String(r.texto ?? '').trim() || String(r.valor ?? ''),
+    }));
+    return dcCompEstadosCatalogo;
+  })();
+  try { return await dcCompEstadosPromesa; }
+  finally { dcCompEstadosPromesa = null; }
+}
+
+function dcCompPintarChipsEstado() {
+  const box = document.getElementById('fDcCompEstadoChips');
+  if (!box) return;
+  const actual = dcCompFiltros.estado || '';
+  const items  = dcCompEstadosCatalogo || [];
+  box.innerHTML =
+    `<button type="button" class="filter-chip${actual === '' ? ' active' : ''}" data-estado="">Todos</button>` +
+    items.map((e) =>
+      `<button type="button" class="filter-chip${actual === e.valor ? ' active' : ''}" data-estado="${esc(e.valor)}">${esc(e.texto)}</button>`
+    ).join('');
+  // Re-vincular click si el modal esta abierto (sincronizarControlesFiltrosDcComp
+  // ya hace el toggle .active; aca solo conectamos onclick).
+  box.querySelectorAll('.filter-chip').forEach((c) => {
+    c.onclick = () => { onFiltroDcComp('estado', c.dataset.estado || ''); sincronizarControlesFiltrosDcComp(); };
+  });
+}
 
 function dcCompFmtComprobante(punto, serie) {
   const p = punto != null && punto !== '' ? String(punto).padStart(4, '0') : '----';
@@ -2874,11 +2915,7 @@ route('/datacountcomprobantes', async (mount) => {
           <div class="form-group">
             <label>Estado del comprobante</label>
             <div id="fDcCompEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
-              <button type="button" class="filter-chip" data-estado="" >Todos</button>
-              <button type="button" class="filter-chip" data-estado="A">Autorizado</button>
-              <button type="button" class="filter-chip" data-estado="P">Pendiente</button>
-              <button type="button" class="filter-chip" data-estado="C">Cancelado</button>
-              <button type="button" class="filter-chip" data-estado="B">Baja</button>
+              <button type="button" class="filter-chip active" data-estado="">Todos</button>
             </div>
           </div>
           <div class="form-row form-row-3">
@@ -2976,6 +3013,9 @@ route('/datacountcomprobantes', async (mount) => {
   });
 
   refrescarBadgeFiltrosDcComp();
+  // Cargamos el catalogo de estados en paralelo con el listado, asi los chips
+  // del modal de filtros ya estan listos cuando el usuario lo abre.
+  dcCompCargarCatalogoEstados().then(dcCompPintarChipsEstado).catch(() => {});
   await cargarDcComp();
 }, 'Comprobantes');
 
@@ -3080,6 +3120,12 @@ function sincronizarControlesFiltrosDcComp() {
 
 function abrirModalFiltrosDcComp() {
   dcCompFiltrosSnapshot = { ...dcCompFiltros };
+  // Si el catalogo aun no llego, reintentamos (mantiene visible "Todos" mientras tanto).
+  if (!dcCompEstadosCatalogo) {
+    dcCompCargarCatalogoEstados().then(dcCompPintarChipsEstado).catch(() => {});
+  } else {
+    dcCompPintarChipsEstado();
+  }
   sincronizarControlesFiltrosDcComp();
   $$('#fDcCompEstadoChips .filter-chip').forEach((c) => {
     c.onclick = () => { onFiltroDcComp('estado', c.dataset.estado || ''); sincronizarControlesFiltrosDcComp(); };
@@ -4073,6 +4119,307 @@ document.addEventListener('keydown', (e) => {
   if (ctx && ctx.classList.contains('open')) { parametrosCerrarMenu(); return; }
   if (form && form.classList.contains('open')) { form.classList.remove('open'); return; }
   if (listado && listado.classList.contains('open')) { cerrarParametros(); }
+});
+
+// ------------------------- Herramientas: Editor de estados -------------------------
+// CRUD sobre la tabla `estados` (id / campo / texto / valor / orden). Cada fila
+// mapea un `valor` crudo guardado en `<campo>` (formato `tabla.columna`) con su
+// `texto` amigable. Unicidad logica por (campo, valor) — enforce en backend.
+let estadosCache         = [];
+let estadosCampos        = [];
+let estadosFiltroQ       = '';
+let estadosFiltroCampo   = '';
+let estadosCtxRegistroId = null;
+let _estadosSearchTimer  = null;
+let _estadosGuardando    = false;
+
+function abrirEstados() {
+  document.getElementById('estadosBackdrop').classList.add('open');
+  cargarEstados();
+}
+
+function cerrarEstados() {
+  document.getElementById('estadosBackdrop').classList.remove('open');
+  estadosCerrarMenu();
+}
+
+function estadosOnSearch(v) {
+  estadosFiltroQ = String(v ?? '');
+  const clearBtn = document.getElementById('estadosSearchClear');
+  if (clearBtn) clearBtn.style.display = estadosFiltroQ ? '' : 'none';
+  clearTimeout(_estadosSearchTimer);
+  _estadosSearchTimer = setTimeout(cargarEstados, 250);
+}
+
+function estadosLimpiarBusqueda() {
+  estadosFiltroQ = '';
+  const input = document.getElementById('estadosSearch');
+  if (input) input.value = '';
+  document.getElementById('estadosSearchClear').style.display = 'none';
+  cargarEstados();
+}
+
+async function cargarEstados() {
+  const tbody = document.getElementById('estadosTbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
+
+  estadosFiltroCampo = document.getElementById('estadosCampoFiltro').value || '';
+
+  const params = new URLSearchParams();
+  if (estadosFiltroQ)     params.set('q',     estadosFiltroQ);
+  if (estadosFiltroCampo) params.set('campo', estadosFiltroCampo);
+  params.set('limite', '2000');
+  params.set('order_by', 'campo_orden');
+  params.set('dir', 'asc');
+
+  try {
+    const data = await apiGet('api/estados.php?' + params.toString());
+    estadosCache  = data.items  || [];
+    estadosCampos = data.campos || [];
+    estadosRefrescarCombos();
+    renderEstados(estadosCache);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="6" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function estadosRefrescarCombos() {
+  const sel = document.getElementById('estadosCampoFiltro');
+  if (sel) {
+    const actual = sel.value;
+    sel.innerHTML = '<option value="">— Todos los campos —</option>' +
+      estadosCampos.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    if (actual && estadosCampos.includes(actual)) sel.value = actual;
+  }
+  const dl = document.getElementById('formEstadoCampoLista');
+  if (dl) {
+    dl.innerHTML = estadosCampos.map((c) => `<option value="${esc(c)}">`).join('');
+  }
+}
+
+function renderEstados(rows) {
+  const tbody = document.getElementById('estadosTbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="table-empty">Sin estados para mostrar.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((s) => {
+    const campo = esc(s.campo || '');
+    const valor = esc(s.valor || '');
+    const texto = esc(s.texto || '');
+    const orden = s.orden == null ? '<span style="color:var(--muted)">—</span>' : String(s.orden);
+    return `
+      <tr class="row-clickable" data-id="${s.id}"
+          onclick="abrirEditarEstado(${s.id})"
+          oncontextmenu="event.preventDefault();estadosAbrirCtx(event, ${s.id})">
+        <td class="td-id">${s.id}</td>
+        <td style="font-family:monospace;font-weight:600">${campo}</td>
+        <td style="font-family:monospace">${valor || '<span style="color:var(--muted);font-style:italic">— vacío —</span>'}</td>
+        <td>${texto}</td>
+        <td style="text-align:center;color:var(--muted);font-family:monospace">${orden}</td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones"
+                    onclick="event.stopPropagation();estadosAbrirCtx(event, ${s.id})">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function abrirNuevoEstado() {
+  limpiarErroresFormEstado();
+  document.getElementById('formEstadoTitulo').innerHTML =
+    '<span style="font-size:1.2rem">🎚️</span><span>Nuevo estado</span>';
+  document.getElementById('formEstadoId').value    = '';
+  document.getElementById('formEstadoCampo').value = estadosFiltroCampo || '';
+  document.getElementById('formEstadoValor').value = '';
+  document.getElementById('formEstadoTexto').value = '';
+  document.getElementById('formEstadoOrden').value = '';
+  document.getElementById('formEstadoBackdrop').classList.add('open');
+  const focusTarget = estadosFiltroCampo ? 'formEstadoValor' : 'formEstadoCampo';
+  setTimeout(() => document.getElementById(focusTarget).focus(), 50);
+}
+
+function abrirEditarEstado(id) {
+  const s = estadosCache.find((x) => x.id === id);
+  if (!s) { toast('No se encontró el estado.', { error: true }); return; }
+  limpiarErroresFormEstado();
+  document.getElementById('formEstadoTitulo').innerHTML =
+    '<span style="font-size:1.2rem">🎚️</span><span>Editar estado</span>';
+  document.getElementById('formEstadoId').value    = s.id;
+  document.getElementById('formEstadoCampo').value = s.campo || '';
+  document.getElementById('formEstadoValor').value = s.valor || '';
+  document.getElementById('formEstadoTexto').value = s.texto || '';
+  document.getElementById('formEstadoOrden').value = s.orden == null ? '' : s.orden;
+  document.getElementById('formEstadoBackdrop').classList.add('open');
+  setTimeout(() => document.getElementById('formEstadoTexto').focus(), 50);
+}
+
+function limpiarErroresFormEstado() {
+  ['Campo', 'Valor', 'Texto', 'Orden'].forEach((c) => {
+    const input = document.getElementById('formEstado' + c);
+    const err   = document.getElementById('formEstado' + c + 'Error');
+    if (input) input.classList.remove('input-invalid');
+    if (err)   { err.style.display = 'none'; err.textContent = ''; }
+  });
+}
+
+function mostrarErrorEstado(campo, msg) {
+  const input = document.getElementById('formEstado' + campo);
+  const err   = document.getElementById('formEstado' + campo + 'Error');
+  if (input) { input.classList.add('input-invalid'); input.focus(); }
+  if (err)   { err.style.display = ''; err.textContent = msg; }
+}
+
+async function guardarEstado() {
+  if (_estadosGuardando) return;
+  limpiarErroresFormEstado();
+
+  const idRaw    = document.getElementById('formEstadoId').value;
+  const id       = idRaw ? parseInt(idRaw, 10) : 0;
+  const campo    = document.getElementById('formEstadoCampo').value.trim();
+  const valor    = document.getElementById('formEstadoValor').value;
+  const texto    = document.getElementById('formEstadoTexto').value.trim();
+  const ordenRaw = document.getElementById('formEstadoOrden').value.trim();
+
+  if (!campo) {
+    mostrarErrorEstado('Campo', 'El campo es obligatorio.');
+    return;
+  }
+  if (!/^[A-Za-z0-9_.\-]+$/.test(campo)) {
+    mostrarErrorEstado('Campo', 'Sólo letras, números, punto, guión y guión bajo (ej. tabla.columna).');
+    return;
+  }
+  if (campo.length > 255) {
+    mostrarErrorEstado('Campo', 'Máximo 255 caracteres.');
+    return;
+  }
+  if (!texto) {
+    mostrarErrorEstado('Texto', 'El texto es obligatorio.');
+    return;
+  }
+  if (texto.length > 255) {
+    mostrarErrorEstado('Texto', 'Máximo 255 caracteres.');
+    return;
+  }
+  if (valor.length > 255) {
+    mostrarErrorEstado('Valor', 'Máximo 255 caracteres.');
+    return;
+  }
+  if (ordenRaw !== '' && !/^-?\d+$/.test(ordenRaw)) {
+    mostrarErrorEstado('Orden', 'Debe ser un número entero.');
+    return;
+  }
+
+  const btn = document.getElementById('btnGuardarEstado');
+  _estadosGuardando = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+
+  try {
+    const payload = {
+      campo,
+      valor,
+      texto,
+      orden: ordenRaw === '' ? null : parseInt(ordenRaw, 10),
+    };
+    if (id > 0) {
+      await apiSend('api/estados.php?id=' + id, 'PUT', payload);
+      toast('Estado actualizado.');
+    } else {
+      await apiSend('api/estados.php', 'POST', payload);
+      toast('Estado creado.');
+    }
+    document.getElementById('formEstadoBackdrop').classList.remove('open');
+    cargarEstados();
+  } catch (e) {
+    const msg = e.message || 'Error al guardar.';
+    if (/ya existe/i.test(msg)) {
+      mostrarErrorEstado('Valor', msg);
+    } else {
+      toast(msg, { error: true });
+    }
+  } finally {
+    _estadosGuardando = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+  }
+}
+
+async function eliminarEstado(id) {
+  const s = estadosCache.find((x) => x.id === id);
+  if (!s) return;
+  const ok = await confirmar({
+    title: 'Eliminar estado',
+    message: `Vas a eliminar el estado «${s.campo} = ${s.valor || '∅'}» (${s.texto}). Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend('api/estados.php?id=' + id, 'DELETE');
+    toast('Estado eliminado.');
+    cargarEstados();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+function estadosAbrirCtx(ev, id) {
+  estadosCtxRegistroId = id;
+  const menu = document.getElementById('estadosCtxMenu');
+  if (!menu) return;
+  let x = ev.clientX, y = ev.clientY;
+  if ((!x && !y) && ev.currentTarget && ev.currentTarget.getBoundingClientRect) {
+    const r = ev.currentTarget.getBoundingClientRect();
+    x = r.right; y = r.bottom;
+  }
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+function estadosCerrarMenu() {
+  estadosCtxRegistroId = null;
+  cerrarCtxMenu();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const menu = document.getElementById('estadosCtxMenu');
+  if (!menu) return;
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const id     = estadosCtxRegistroId;
+    estadosCerrarMenu();
+    if (!id) return;
+    if (action === 'editar') {
+      abrirEditarEstado(id);
+    } else if (action === 'eliminar') {
+      eliminarEstado(id);
+    } else if (action === 'copiar-campo' || action === 'copiar-valor') {
+      const s = estadosCache.find((x) => x.id === id);
+      if (!s || !navigator.clipboard) return;
+      const txt = action === 'copiar-campo' ? (s.campo || '') : (s.valor || '');
+      navigator.clipboard.writeText(txt).then(
+        () => toast((action === 'copiar-campo' ? 'Campo' : 'Valor') + ' copiado.'),
+        () => toast('No se pudo copiar.', { error: true }),
+      );
+    }
+  });
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const ctx     = document.getElementById('estadosCtxMenu');
+  const form    = document.getElementById('formEstadoBackdrop');
+  const listado = document.getElementById('estadosBackdrop');
+  if (ctx && ctx.classList.contains('open')) { estadosCerrarMenu(); return; }
+  if (form && form.classList.contains('open')) { form.classList.remove('open'); return; }
+  if (listado && listado.classList.contains('open')) { cerrarEstados(); }
 });
 
 // ------------------------- Herramientas: Migrador DB -------------------------
