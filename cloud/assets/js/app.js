@@ -284,6 +284,12 @@ route('/dashboard', async (mount) => {
             <span class="tile-title">Evolution API</span>
             <span class="tile-desc">Manager de instancias.</span>
           </a>
+          <a href="http://localhost:9000/#!/home"
+             target="_blank" rel="noopener noreferrer" class="tile-card">
+            <span class="tile-icon">🐳</span>
+            <span class="tile-title">Portainer</span>
+            <span class="tile-desc">Gestión de contenedores Docker.</span>
+          </a>
         </div>
       </div>
     </div>
