@@ -59,7 +59,8 @@ function toast(msg, opts = {}) {
   t.classList.toggle('error', !!opts.error);
   t.classList.add('show');
   clearTimeout(toast._h);
-  toast._h = setTimeout(() => t.classList.remove('show'), 2400);
+  const duration = typeof opts.duration === 'number' ? opts.duration : 2400;
+  toast._h = setTimeout(() => t.classList.remove('show'), duration);
 }
 
 // ------------------------- Modal helpers -------------------------
@@ -196,6 +197,125 @@ async function render() {
   }
 }
 
+// ------------------------- Catálogo de enlaces externos -------------------------
+// Datos hardcodeados que alimentan el launcher cascada de la topbar
+// (setupEnlacesMenu). La agrupación replica la del legacy
+// databox-admin/plataformas|herramientas/inicio.php.
+
+const PLATAFORMAS_GRUPOS = [
+  {
+    id: 'alojamiento', label: 'Alojamiento', icono: '☁️',
+    items: [
+      { icono: '☁️', titulo: 'AWS',           desc: 'Consola EC2 (us-east-1).',           url: 'https://us-east-1.console.aws.amazon.com/ec2/v2/home?region=us-east-1#Instances:' },
+      { icono: '🌩️', titulo: 'Google Cloud',  desc: 'Consola GCP.',                       url: 'https://console.cloud.google.com/' },
+      { icono: '🌐', titulo: 'Cloudflare',    desc: 'Panel principal.',                   url: 'https://dash.cloudflare.com/' },
+      { icono: '🖥️', titulo: 'LatinCloud',    desc: 'WHM cPanel.',                        url: 'https://ar151.xvserver.com:2087/cpsess3116822283/scripts4/listaccts' },
+      { icono: '🖥️', titulo: 'DonWeb',        desc: 'Panel de hosting.',                  url: 'https://donweb.com/clientes/' },
+      { icono: '🎮', titulo: 'Play Console',  desc: 'Google Play — publicación Android.', url: 'https://play.google.com/console/u/0/developers/6570590227569156980/inbox' },
+      { icono: '🐳', titulo: 'Portainer',     desc: 'Gestión de contenedores Docker.',    url: 'http://localhost:9000/#!/home' },
+    ],
+  },
+  {
+    id: 'automatizacion', label: 'Automatización', icono: '🤖',
+    items: [
+      { icono: '⚙️', titulo: 'Make',            desc: 'Escenarios de automatización.',      url: 'https://us2.make.com/organization/2163125' },
+      { icono: '🧠', titulo: 'OpenAI Platform', desc: 'API, uso y claves de OpenAI.',       url: 'https://platform.openai.com/docs/overview' },
+      { icono: '💬', titulo: 'ChatGPT',         desc: 'Chat de OpenAI.',                    url: 'https://chatgpt.com/' },
+      { icono: '🔎', titulo: 'Perplexity',      desc: 'Búsqueda conversacional.',           url: 'https://www.perplexity.ai/' },
+    ],
+  },
+  {
+    id: 'comunicaciones', label: 'Comunicaciones', icono: '📨',
+    items: [
+      { icono: '📧', titulo: 'AWS SES',        desc: 'Simple Email Service — envío de correos.', url: 'https://console.aws.amazon.com/ses/' },
+      { icono: '📧', titulo: 'Mailjet',        desc: 'Panel de envío de correos.',               url: 'https://app.mailjet.com/' },
+      { icono: '💬', titulo: 'Evolution API',  desc: 'Manager de instancias WhatsApp.',          url: 'https://evolution.york.databox.net.ar/manager/' },
+      { icono: '💬', titulo: 'Whapi',          desc: 'API WhatsApp — panel.',                    url: 'https://panel.whapi.cloud/' },
+      { icono: '💬', titulo: 'Ultramsg',       desc: 'API WhatsApp — panel de usuarios.',        url: 'https://user.ultramsg.com/' },
+      { icono: '📱', titulo: 'SMS Masivos',    desc: 'Envío de SMS a Argentina.',                url: 'https://www.smsmasivos.com.ar/' },
+      { icono: '📱', titulo: 'Gobsoa',         desc: 'SMS y notificaciones.',                    url: 'https://www.gobsoa.com.ar/' },
+      { icono: '📱', titulo: 'Twilio',         desc: 'SMS / Voz / WhatsApp — consola.',          url: 'https://console.twilio.com/' },
+      { icono: '🔔', titulo: 'Airship',        desc: 'Push notifications.',                      url: 'https://go.airship.com/' },
+      { icono: '🔔', titulo: 'Firebase',       desc: 'Push, hosting y BD — consola.',            url: 'https://console.firebase.google.com/' },
+      { icono: '📡', titulo: 'Movistar M2M',   desc: 'Kite — gestión de SIMs M2M.',              url: 'https://kite.telefonica.com/' },
+      { icono: '📡', titulo: 'Claro M2M',      desc: 'Autogestión empresas.',                    url: 'https://autogestion-empresas.claro.com.ar/sites/launchpad#Shell-home' },
+    ],
+  },
+  {
+    id: 'diseno', label: 'Diseño', icono: '🎨',
+    items: [
+      { icono: '🎨', titulo: 'Canva',           desc: 'Diseño gráfico online.',             url: 'https://www.canva.com/' },
+      { icono: '🔤', titulo: 'Google Fonts',    desc: 'Tipografías libres.',                url: 'https://fonts.google.com/' },
+      { icono: '⭐', titulo: 'FontAwesome 4',   desc: 'Iconos v4 (legacy).',                url: 'https://fontawesome.com/v4/icons/' },
+      { icono: '⭐', titulo: 'FontAwesome 5',   desc: 'Iconos v5 (free).',                  url: 'https://fontawesome.com/v5/search?ic=free-collection' },
+      { icono: '⭐', titulo: 'FontAwesome 6',   desc: 'Iconos v6 (free) — el que usamos.',  url: 'https://fontawesome.com/v6/search?ic=free' },
+      { icono: '🧱', titulo: 'Elementor',       desc: 'Builder de WordPress.',              url: 'https://my.elementor.com/websites/' },
+      { icono: '🔣', titulo: 'Unicode Map',     desc: 'Símbolos y pictogramas Unicode.',    url: 'https://symbl.cc/es/unicode/blocks/miscellaneous-symbols-and-pictographs/#subblock-1F58E' },
+      { icono: '📄', titulo: 'Templates',       desc: 'Plantillas Databox.',                url: 'https://www.databox.net.ar/templates' },
+    ],
+  },
+  {
+    id: 'dominios', label: 'Dominios', icono: '🌍',
+    items: [
+      { icono: '🇦🇷', titulo: 'NIC Argentina',    desc: 'Registro de dominios .ar.',   url: 'https://www.nic.ar' },
+      { icono: '🏷️', titulo: 'Namecheap',        desc: 'Registrador internacional.',   url: 'https://ap.www.namecheap.com/' },
+      { icono: '🏷️', titulo: 'Network Solutions', desc: 'Registrador legacy.',         url: 'https://www.networksolutions.com/' },
+    ],
+  },
+  {
+    id: 'marketing', label: 'Marketing', icono: '📢',
+    items: [
+      { icono: '📈', titulo: 'Google Ads',            desc: 'Campañas de Ads.',                     url: 'https://ads.google.com/aw/overview' },
+      { icono: '📊', titulo: 'Google Analytics',      desc: 'Analítica web.',                       url: 'https://analytics.google.com/analytics/web/#/p402561541/reports/intelligenthome' },
+      { icono: '🏬', titulo: 'Google Negocios',       desc: 'Perfiles de Empresa.',                 url: 'https://business.google.com/locations' },
+      { icono: '🔍', titulo: 'Google Search Console', desc: 'Indexación y búsqueda.',               url: 'https://search.google.com/search-console?resource_id=https%3A%2F%2Fwww.repo.com.ar%2F&hl=es' },
+      { icono: '📘', titulo: 'Meta Business',         desc: 'Facebook / Instagram — administración.', url: 'https://business.facebook.com/latest/home?nav_ref=pages_you_manage_navigation' },
+    ],
+  },
+  {
+    id: 'logistica', label: 'Logística', icono: '🚚',
+    items: [
+      { icono: '📦', titulo: 'Correo Argentino', desc: 'Mi Correo — dashboard.', url: 'https://www.correoargentino.com.ar/MiCorreo/public/dashboard' },
+      { icono: '📦', titulo: 'Aerobox',          desc: 'Logística internacional.', url: 'https://aeroboxarg.logisticainbox.com/client/new_home.php' },
+    ],
+  },
+  {
+    id: 'administracion', label: 'Administración', icono: '💼',
+    items: [
+      { icono: '🏛️', titulo: 'AFIP',        desc: 'Servicios con clave fiscal.', url: 'https://www.afip.gob.ar/' },
+      { icono: '💳', titulo: 'MercadoPago', desc: 'Panel de vendedor.',          url: 'https://www.mercadopago.com.ar/' },
+      { icono: '💵', titulo: 'DolarHoy',    desc: 'Cotizaciones del día.',       url: 'https://dolarhoy.com/' },
+    ],
+  },
+];
+
+// El legacy de "Herramientas" tiene un único grupo (Privacidad, mal rotulado):
+// lo dejamos plano en la vista y usamos un rótulo más honesto.
+const UTILIDADES_GRUPOS = [
+  {
+    id: 'utilidades', label: 'Utilidades web', icono: '🧰',
+    items: [
+      { icono: '🎨', titulo: 'AI WebDesign',          desc: 'bolt.new — sitios generados por IA.',        url: 'https://bolt.new/' },
+      { icono: '🖼️', titulo: 'Favicon Generator',    desc: 'Genera todos los tamaños de favicon.',       url: 'https://www.favicon-generator.org/' },
+      { icono: '📧', titulo: 'Internxt Temp Mail',    desc: 'Correo temporal descartable.',               url: 'https://internxt.com/es/temporary-email' },
+      { icono: '🧾', titulo: 'JSON Designer',         desc: 'Editor visual de JSON.',                     url: 'https://jsoneditoronline.org' },
+      { icono: '👁️', titulo: 'JSON Viewer',          desc: 'Formatea y colorea JSON.',                   url: 'https://jsonviewer.stack.hu/' },
+      { icono: '🔑', titulo: 'JWT Testing',           desc: 'Decodificar y firmar JWTs.',                 url: 'https://jwt.io/' },
+      { icono: '📮', titulo: 'Mail Tester',           desc: 'Testeá la reputación de tu correo.',         url: 'https://www.mail-tester.com/' },
+      { icono: '🔐', titulo: 'Password Generator',    desc: 'Contraseñas aleatorias — Avast.',            url: 'https://www.avast.com/random-password-generator#pc' },
+      { icono: '📱', titulo: 'PWA Can Do Today',      desc: 'Capacidades disponibles en PWAs.',           url: 'https://whatpwacando.today/' },
+      { icono: '🔳', titulo: 'QR Codes',              desc: 'Generador de QR — variante EN.',             url: 'https://www.codigos-qr.com/en/qr-code-generator/' },
+      { icono: '🔳', titulo: 'QR Generator Basic',    desc: 'Generador de QR — variante ES.',             url: 'https://www.codigos-qr.com/generador-de-codigos-qr/' },
+      { icono: '🔳', titulo: 'QR Generator Monkey',   desc: 'QRs personalizados con logo.',               url: 'https://www.qrcode-monkey.com/es/' },
+      { icono: '🗺️', titulo: 'Sitemap Generator',    desc: 'Genera sitemap.xml.',                        url: 'https://www.xml-sitemaps.com/' },
+      { icono: '📄', titulo: 'Small PDF Tools',       desc: 'Convertir, comprimir y firmar PDFs.',        url: 'https://smallpdf.com/es' },
+      { icono: '🎤', titulo: 'TTS VozFly',            desc: 'Text-to-speech en español.',                 url: 'https://vozfly.com/' },
+      { icono: '✅', titulo: 'Web Check',             desc: 'Auditoría técnica de un dominio.',           url: 'https://www.web-check.xyz' },
+      { icono: '🪝', titulo: 'Webhook Cool',          desc: 'Endpoint efímero para inspeccionar webhooks.', url: 'https://webhook.cool' },
+    ],
+  },
+];
+
 // ------------------------- Vista: Dashboard -------------------------
 route('/dashboard', async (mount) => {
   mount.innerHTML = `<div style="text-align:center;padding:60px 0"><div class="spin"></div></div>`;
@@ -251,46 +371,6 @@ route('/dashboard', async (mount) => {
           </thead>
           <tbody>${renderMensajes(data.ultimos_mensajes)}</tbody>
         </table>
-      </div>
-    </div>
-
-    <div class="table-card" style="margin-top:20px">
-      <div class="dash-table-header">
-        <span>Plataformas</span>
-      </div>
-      <div style="padding:20px">
-        <div class="tile-grid">
-          <a href="https://us-east-1.console.aws.amazon.com/ec2/v2/home?region=us-east-1#Instances:"
-             target="_blank" rel="noopener noreferrer" class="tile-card">
-            <span class="tile-icon">☁️</span>
-            <span class="tile-title">AWS</span>
-            <span class="tile-desc">Consola EC2 (us-east-1).</span>
-          </a>
-          <a href="https://dash.cloudflare.com/"
-             target="_blank" rel="noopener noreferrer" class="tile-card">
-            <span class="tile-icon">🌐</span>
-            <span class="tile-title">Cloudflare</span>
-            <span class="tile-desc">Panel principal.</span>
-          </a>
-          <a href="https://ar151.xvserver.com:2087/cpsess3116822283/scripts4/listaccts"
-             target="_blank" rel="noopener noreferrer" class="tile-card">
-            <span class="tile-icon">🖥️</span>
-            <span class="tile-title">Latincloud</span>
-            <span class="tile-desc">WHM cPanel.</span>
-          </a>
-          <a href="https://evolution.york.databox.net.ar/manager/"
-             target="_blank" rel="noopener noreferrer" class="tile-card">
-            <span class="tile-icon">🤖</span>
-            <span class="tile-title">Evolution API</span>
-            <span class="tile-desc">Manager de instancias.</span>
-          </a>
-          <a href="http://localhost:9000/#!/home"
-             target="_blank" rel="noopener noreferrer" class="tile-card">
-            <span class="tile-icon">🐳</span>
-            <span class="tile-title">Portainer</span>
-            <span class="tile-desc">Gestión de contenedores Docker.</span>
-          </a>
-        </div>
       </div>
     </div>
   `;
@@ -903,7 +983,7 @@ async function eliminarUsuario(id) {
 
 // ------------------------- Vista: Roles (ABM) -------------------------
 const rolesFiltrosDefaults = {
-  q: '', codigo: '', nombre: '', descripcion: '',
+  q: '', codigo: '', slug: '', nombre: '', descripcion: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const rolesFiltros = { ...rolesFiltrosDefaults };
@@ -947,7 +1027,7 @@ route('/roles', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="rolSearch"
-                   placeholder="🔍 Buscar nombre o descripción…">
+                   placeholder="🔍 Buscar slug, nombre o descripción…">
             <button class="search-clear" id="rolSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="rolFiltrosBtn" title="Filtros">
@@ -968,6 +1048,7 @@ route('/roles', async (mount) => {
           <thead>
             <tr>
               <th>Código</th>
+              <th>Slug</th>
               <th>Nombre</th>
               <th>Descripción</th>
               <th style="text-align:right">Permisos</th>
@@ -975,7 +1056,7 @@ route('/roles', async (mount) => {
             </tr>
           </thead>
           <tbody id="rolTbody">
-            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -1010,9 +1091,13 @@ route('/roles', async (mount) => {
               <input type="number" id="fRolCodigo" min="1" placeholder="ID …" oninput="onFiltroRoles('codigo', this.value)">
             </div>
             <div class="form-group">
-              <label>Nombre</label>
-              <input type="text" id="fRolNombre" oninput="onFiltroRoles('nombre', this.value)">
+              <label>Slug</label>
+              <input type="text" id="fRolSlug" style="font-family:var(--font-mono,monospace)" oninput="onFiltroRoles('slug', this.value)">
             </div>
+          </div>
+          <div class="form-group">
+            <label>Nombre</label>
+            <input type="text" id="fRolNombre" oninput="onFiltroRoles('nombre', this.value)">
           </div>
           <div class="form-group">
             <label>Descripción</label>
@@ -1027,6 +1112,7 @@ route('/roles', async (mount) => {
               <label>Ordenar por</label>
               <select id="fRolOrderBy" onchange="onFiltroRoles('order_by', this.value)">
                 <option value="id">Código</option>
+                <option value="slug">Slug</option>
                 <option value="nombre">Nombre</option>
                 <option value="descripcion">Descripción</option>
               </select>
@@ -1109,7 +1195,7 @@ route('/roles', async (mount) => {
 async function cargarRoles() {
   const tbody = $('#rolTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(rolesFiltros).forEach(([k, v]) => {
@@ -1120,7 +1206,7 @@ async function cargarRoles() {
     pintarStatsRoles(data.stats);
     pintarTablaRoles(data.items);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1134,12 +1220,13 @@ function pintarStatsRoles(s) {
 function pintarTablaRoles(rows) {
   const tbody = $('#rolTbody');
   if (!rows || !rows.length) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin roles.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin roles.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
+      <td>${r.slug ? `<code>${esc(r.slug)}</code>` : '—'}</td>
       <td class="td-nombre">${esc(r.nombre || '—')}</td>
       <td>${esc(r.descripcion || '—')}</td>
       <td style="text-align:right">${fmtNum(r.permisos_count || 0)}</td>
@@ -1158,6 +1245,8 @@ function pintarTablaRoles(rows) {
 function onFiltroRoles(key, value) {
   if (key === 'codigo' || key === 'nombre' || key === 'descripcion') {
     rolesFiltros[key] = String(value).trim();
+  } else if (key === 'slug') {
+    rolesFiltros.slug = String(value).trim().toLowerCase();
   } else if (key === 'limite') {
     let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
     rolesFiltros.limite = n;
@@ -1184,6 +1273,7 @@ function refrescarBadgeFiltrosRoles() {
 function sincronizarControlesFiltrosRoles() {
   const f = rolesFiltros;
   $('#fRolCodigo').value      = f.codigo;
+  $('#fRolSlug').value        = f.slug;
   $('#fRolNombre').value      = f.nombre;
   $('#fRolDescripcion').value = f.descripcion;
   $('#fRolLimite').value      = f.limite;
@@ -1274,9 +1364,10 @@ async function abrirConsultarRol(id) {
     $('#modalRoot .modal-body').innerHTML = `
       <dl class="data-list">
         ${fila('Código',      '#' + r.id)}
-        ${fila('Permisos',    String(ids.length), false, false)}
+        ${fila('Slug',        r.slug, false, true)}
         ${fila('Nombre',      r.nombre, true, false)}
         ${fila('Descripción', r.descripcion, true, false)}
+        ${fila('Permisos',    String(ids.length), false, false)}
         ${fila('Detalle de permisos', null, true, false, chips || '<span class="data-value muted">Sin permisos asignados</span>')}
       </dl>
     `;
@@ -1346,13 +1437,24 @@ function formRolHtml(r, catalogo) {
   return `
     <div class="form-row">
       <div class="form-group">
-        <label>Nombre *</label>
-        <input type="text" id="rNombre" value="${v('nombre')}" required>
-      </div>
-      <div class="form-group">
         <label>Código</label>
         <input type="text" value="${r?.id ? '#' + r.id : '(se asigna al crear)'}" readonly>
       </div>
+      <div class="form-group">
+        <label class="label-with-help">
+          <span>Slug *</span>
+          <i class="fa-solid fa-circle-question label-help" tabindex="0"
+             title="Identificador que la aplicación usa para validar los permisos a las distintas áreas del sistema. Minúsculas, números, guion y guion bajo."></i>
+        </label>
+        <input type="text" id="rSlug" value="${v('slug')}" required
+               style="font-family:var(--font-mono,monospace)"
+               placeholder="ej: admin, editor, vendedor"
+               pattern="^[a-z0-9][a-z0-9_-]*$" maxlength="50">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Nombre *</label>
+      <input type="text" id="rNombre" value="${v('nombre')}" required>
     </div>
     <div class="form-group">
       <label>Descripción</label>
@@ -1396,11 +1498,25 @@ function marcarPermisos(checked) {
 }
 
 async function guardarRol(id, btn) {
+  const slug   = $('#rSlug').value.trim().toLowerCase();
   const nombre = $('#rNombre').value.trim();
   const err    = $('#rError');
   err.style.display = 'none';
+  $('#rSlug').classList.remove('input-invalid');
   $('#rNombre').classList.remove('input-invalid');
 
+  if (!slug) {
+    $('#rSlug').classList.add('input-invalid');
+    err.textContent = 'El slug es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(slug)) {
+    $('#rSlug').classList.add('input-invalid');
+    err.textContent = 'El slug solo admite minúsculas, números, guion y guion bajo, y debe empezar con letra o número.';
+    err.style.display = '';
+    return;
+  }
   if (!nombre) {
     $('#rNombre').classList.add('input-invalid');
     err.textContent = 'El nombre es obligatorio.';
@@ -1413,6 +1529,7 @@ async function guardarRol(id, btn) {
     .map((c) => c.value);
 
   const payload = {
+    slug,
     nombre,
     descripcion: $('#rDescripcion').value.trim(),
     permisos:    ids.join(','),
@@ -1454,7 +1571,7 @@ async function eliminarRol(id) {
 
 // ------------------------- Vista: Permisos (ABM) -------------------------
 const permisosFiltrosDefaults = {
-  q: '', codigo: '', nombre: '', descripcion: '',
+  q: '', codigo: '', slug: '', nombre: '', descripcion: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const permisosFiltros = { ...permisosFiltrosDefaults };
@@ -1481,7 +1598,7 @@ route('/permisos', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="permSearch"
-                   placeholder="🔍 Buscar nombre o descripción…">
+                   placeholder="🔍 Buscar slug, nombre o descripción…">
             <button class="search-clear" id="permSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="permFiltrosBtn" title="Filtros">
@@ -1502,13 +1619,14 @@ route('/permisos', async (mount) => {
           <thead>
             <tr>
               <th>Código</th>
+              <th>Slug</th>
               <th>Nombre</th>
               <th>Descripción</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="permTbody">
-            <tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -1543,9 +1661,13 @@ route('/permisos', async (mount) => {
               <input type="number" id="fPermCodigo" min="1" placeholder="ID …" oninput="onFiltroPermisos('codigo', this.value)">
             </div>
             <div class="form-group">
-              <label>Nombre</label>
-              <input type="text" id="fPermNombre" oninput="onFiltroPermisos('nombre', this.value)">
+              <label>Slug</label>
+              <input type="text" id="fPermSlug" style="font-family:var(--font-mono,monospace)" oninput="onFiltroPermisos('slug', this.value)">
             </div>
+          </div>
+          <div class="form-group">
+            <label>Nombre</label>
+            <input type="text" id="fPermNombre" oninput="onFiltroPermisos('nombre', this.value)">
           </div>
           <div class="form-group">
             <label>Descripción</label>
@@ -1560,6 +1682,7 @@ route('/permisos', async (mount) => {
               <label>Ordenar por</label>
               <select id="fPermOrderBy" onchange="onFiltroPermisos('order_by', this.value)">
                 <option value="id">Código</option>
+                <option value="slug">Slug</option>
                 <option value="nombre">Nombre</option>
                 <option value="descripcion">Descripción</option>
               </select>
@@ -1642,7 +1765,7 @@ route('/permisos', async (mount) => {
 async function cargarPermisos() {
   const tbody = $('#permTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(permisosFiltros).forEach(([k, v]) => {
@@ -1653,7 +1776,7 @@ async function cargarPermisos() {
     pintarStatsPermisos(data.stats);
     pintarTablaPermisos(data.items);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1667,12 +1790,13 @@ function pintarStatsPermisos(s) {
 function pintarTablaPermisos(rows) {
   const tbody = $('#permTbody');
   if (!rows || !rows.length) {
-    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Sin permisos.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin permisos.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((p) => `
     <tr data-id="${p.id}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
+      <td>${p.slug ? `<code>${esc(p.slug)}</code>` : '—'}</td>
       <td class="td-nombre">${esc(p.nombre || '—')}</td>
       <td>${esc(p.descripcion || '—')}</td>
       <td style="text-align:center">
@@ -1690,6 +1814,8 @@ function pintarTablaPermisos(rows) {
 function onFiltroPermisos(key, value) {
   if (key === 'codigo' || key === 'nombre' || key === 'descripcion') {
     permisosFiltros[key] = String(value).trim();
+  } else if (key === 'slug') {
+    permisosFiltros.slug = String(value).trim().toLowerCase();
   } else if (key === 'limite') {
     let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
     permisosFiltros.limite = n;
@@ -1716,6 +1842,7 @@ function refrescarBadgeFiltrosPermisos() {
 function sincronizarControlesFiltrosPermisos() {
   const f = permisosFiltros;
   $('#fPermCodigo').value      = f.codigo;
+  $('#fPermSlug').value        = f.slug;
   $('#fPermNombre').value      = f.nombre;
   $('#fPermDescripcion').value = f.descripcion;
   $('#fPermLimite').value      = f.limite;
@@ -1777,9 +1904,11 @@ async function abrirConsultarPermiso(id) {
 
   try {
     const p = await apiGet(`api/permisos.php?id=${id}`);
-    const fila = (label, value, full = false) => {
+    const fila = (label, value, full = false, isCode = false) => {
       const empty = value == null || value === '';
-      const inner = empty ? 'Sin dato' : esc(value);
+      const inner = empty ? 'Sin dato'
+                  : isCode ? `<code>${esc(value)}</code>`
+                  : esc(value);
       return `
         <div class="data-row${full ? ' full' : ''}">
           <span class="data-label">${esc(label)}</span>
@@ -1790,6 +1919,7 @@ async function abrirConsultarPermiso(id) {
     $('#modalRoot .modal-body').innerHTML = `
       <dl class="data-list">
         ${fila('Código',      '#' + p.id)}
+        ${fila('Slug',        p.slug,        false, true)}
         ${fila('Nombre',      p.nombre,      true)}
         ${fila('Descripción', p.descripcion, true)}
       </dl>
@@ -1842,13 +1972,24 @@ function formPermisoHtml(p) {
   return `
     <div class="form-row">
       <div class="form-group">
-        <label>Nombre *</label>
-        <input type="text" id="pNombre" value="${v('nombre')}" required>
-      </div>
-      <div class="form-group">
         <label>Código</label>
         <input type="text" value="${p?.id ? '#' + p.id : '(se asigna al crear)'}" readonly>
       </div>
+      <div class="form-group">
+        <label class="label-with-help">
+          <span>Slug *</span>
+          <i class="fa-solid fa-circle-question label-help" tabindex="0"
+             title="Identificador que la aplicación usa para validar los permisos a las distintas áreas del sistema. Minúsculas, números, punto, guion y guion bajo."></i>
+        </label>
+        <input type="text" id="pSlug" value="${v('slug')}" required
+               style="font-family:var(--font-mono,monospace)"
+               placeholder="ej: usuarios.editar, campanas.enviar"
+               pattern="^[a-z0-9][a-z0-9._-]*$" maxlength="50">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Nombre *</label>
+      <input type="text" id="pNombre" value="${v('nombre')}" required>
     </div>
     <div class="form-group">
       <label>Descripción</label>
@@ -1859,11 +2000,25 @@ function formPermisoHtml(p) {
 }
 
 async function guardarPermiso(id, btn) {
+  const slug   = $('#pSlug').value.trim().toLowerCase();
   const nombre = $('#pNombre').value.trim();
   const err    = $('#pError');
   err.style.display = 'none';
+  $('#pSlug').classList.remove('input-invalid');
   $('#pNombre').classList.remove('input-invalid');
 
+  if (!slug) {
+    $('#pSlug').classList.add('input-invalid');
+    err.textContent = 'El slug es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(slug)) {
+    $('#pSlug').classList.add('input-invalid');
+    err.textContent = 'El slug solo admite minúsculas, números, punto, guion y guion bajo, y debe empezar con letra o número.';
+    err.style.display = '';
+    return;
+  }
   if (!nombre) {
     $('#pNombre').classList.add('input-invalid');
     err.textContent = 'El nombre es obligatorio.';
@@ -1872,6 +2027,7 @@ async function guardarPermiso(id, btn) {
   }
 
   const payload = {
+    slug,
     nombre,
     descripcion: $('#pDescripcion').value.trim(),
   };
@@ -1912,6 +2068,735 @@ async function eliminarPermiso(id) {
   }
 }
 
+// ------------------------- Vista: AWS (grilla de herramientas) -------------------------
+route('/aws', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">AWS</div>
+      <div class="page-subtitle">Herramientas y recursos de la plataforma AWS.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/awscuentas'">
+        <span class="tile-icon">🔐</span>
+        <span class="tile-title">Cuentas</span>
+        <span class="tile-desc">Cuentas de AWS: usuario, número, credenciales de acceso (access key + secreto) y contraseña de consola.</span>
+      </button>
+    </div>
+  `;
+}, 'AWS');
+
+// ------------------------- Vista: AWS Cuentas (ABM) -------------------------
+const awsCuentasFiltrosDefaults = {
+  q: '', codigo: '', nombre: '', numero: '', accesskey: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const awsCuentasFiltros = { ...awsCuentasFiltrosDefaults };
+let awsCuentasBuscadorTimer  = null;
+let awsCuentasFiltrosSnapshot = null;
+
+route('/awscuentas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">☁️</div>
+        <div class="module-help-text">
+          Las cuentas AWS son los accesos a las cuentas de Amazon Web Services que usan
+          las apps del grupo, con su número de cuenta, contraseña de consola y
+          credenciales programáticas (access key + secreto).
+        </div>
+      </div>
+
+      <div class="stats-bar" id="awsCuentasStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="awsCuentasSearch"
+                   placeholder="🔍 Buscar nombre, número o access key…">
+            <button class="search-clear" id="awsCuentasSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="awsCuentasFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="awsCuentasFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="awsCuentasRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="awsCuentasNuevoBtn">+ Nueva cuenta</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Número</th>
+              <th>Usuario</th>
+              <th style="text-align:right">Facturas</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="awsCuentasTbody">
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="awsCuentasCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md §Modal de filtros) -->
+    <div class="modal-backdrop" id="filtrosAwsCuentasBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosAwsCuentas()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAwsCuentas()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fAwsCuentasCodigo" min="1" placeholder="ID …" oninput="onFiltroAwsCuentas('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fAwsCuentasNombre" oninput="onFiltroAwsCuentas('nombre', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Número</label>
+              <input type="text" id="fAwsCuentasNumero" oninput="onFiltroAwsCuentas('numero', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Access Key</label>
+              <input type="text" id="fAwsCuentasAccessKey" oninput="onFiltroAwsCuentas('accesskey', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAwsCuentasLimite" min="1" max="1000" value="100" onchange="onFiltroAwsCuentas('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAwsCuentasOrderBy" onchange="onFiltroAwsCuentas('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="numero">Número</option>
+                <option value="accesskey">Access Key</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAwsCuentasDir" onchange="onFiltroAwsCuentas('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAwsCuentas()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAwsCuentas()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAwsCuentas()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#awsCuentasNuevoBtn').addEventListener('click', () => abrirAltaEdicionAwsCuenta(null));
+  $('#awsCuentasFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsCuentas());
+  $('#awsCuentasRefrescarBtn').addEventListener('click', () => cargarAwsCuentas());
+
+  const inp = $('#awsCuentasSearch');
+  const clr = $('#awsCuentasSearchClear');
+  inp.value = awsCuentasFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    awsCuentasFiltros.q = inp.value.trim();
+    clearTimeout(awsCuentasBuscadorTimer);
+    awsCuentasBuscadorTimer = setTimeout(() => { cargarAwsCuentas(); refrescarBadgeFiltrosAwsCuentas(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    awsCuentasFiltros.q = '';
+    cargarAwsCuentas();
+    refrescarBadgeFiltrosAwsCuentas();
+  });
+
+  $('#awsCuentasCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarAwsCuenta(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionAwsCuenta(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarAwsCuenta(data.id);
+  });
+
+  $('#awsCuentasTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#awsCuentasCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAwsCuenta(Number(tr.dataset.id));
+  });
+  $('#awsCuentasTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#awsCuentasCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosAwsCuentas();
+  await cargarAwsCuentas();
+}, 'AWS Cuentas');
+
+async function cargarAwsCuentas() {
+  const tbody = $('#awsCuentasTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(awsCuentasFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/awscuentas.php?' + qs.toString());
+    pintarStatsAwsCuentas(data.stats);
+    pintarTablaAwsCuentas(data.items);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAwsCuentas(s) {
+  const cards = $$('#awsCuentasStats .stat-card .stat-value');
+  if (!cards.length) return;
+  cards[0].textContent = fmtNum(s.total);
+}
+
+function pintarTablaAwsCuentas(rows) {
+  const tbody = $('#awsCuentasTbody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin cuentas AWS.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => {
+    const sinData    = r.facturas_actualizado == null;
+    const cantidad   = r.facturas_cantidad != null ? Number(r.facturas_cantidad) : 0;
+    const total      = r.facturas_total    != null ? Number(r.facturas_total)    : 0;
+    let cellHtml;
+    if (sinData) {
+      cellHtml = '<span style="color:var(--muted)">—</span>';
+    } else {
+      // Sincronizada. Si hay deuda pero no matcheo con facturas, cantidad='?'.
+      const cantTxt = (cantidad === 0 && total > 0) ? '?' : cantidad;
+      const moneda  = r.facturas_moneda || 'USD';
+      cellHtml = `${esc(cantTxt)} x ${esc(moneda)} ${esc(total.toFixed(2))}`;
+    }
+    return `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td class="td-id">#${esc(r.id)}</td>
+      <td class="td-nombre">${esc(r.nombre || '—')}</td>
+      <td><code>${esc(r.numero || '—')}</code></td>
+      <td><code>${esc(r.usuario || '—')}</code></td>
+      <td style="text-align:right;white-space:nowrap">${cellHtml}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+// ---- Modal de Filtros (AWS Cuentas) ----
+function onFiltroAwsCuentas(key, value) {
+  if (key === 'codigo' || key === 'nombre' || key === 'numero' || key === 'accesskey') {
+    awsCuentasFiltros[key] = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    awsCuentasFiltros.limite = n;
+  } else {
+    awsCuentasFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAwsCuentas();
+  cargarAwsCuentas();
+}
+
+function refrescarBadgeFiltrosAwsCuentas() {
+  const btn   = $('#awsCuentasFiltrosBtn');
+  const badge = $('#awsCuentasFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(awsCuentasFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(awsCuentasFiltros[k]) !== String(awsCuentasFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosAwsCuentas() {
+  const f = awsCuentasFiltros;
+  $('#fAwsCuentasCodigo').value    = f.codigo;
+  $('#fAwsCuentasNombre').value    = f.nombre;
+  $('#fAwsCuentasNumero').value    = f.numero;
+  $('#fAwsCuentasAccessKey').value = f.accesskey;
+  $('#fAwsCuentasLimite').value    = f.limite;
+  $('#fAwsCuentasOrderBy').value   = f.order_by;
+  $('#fAwsCuentasDir').value       = f.dir;
+}
+
+function abrirModalFiltrosAwsCuentas() {
+  awsCuentasFiltrosSnapshot = { ...awsCuentasFiltros };
+  sincronizarControlesFiltrosAwsCuentas();
+  $('#filtrosAwsCuentasBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosAwsCuentas() {
+  $('#filtrosAwsCuentasBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosAwsCuentas() {
+  if (awsCuentasFiltrosSnapshot) {
+    Object.assign(awsCuentasFiltros, awsCuentasFiltrosSnapshot);
+    refrescarBadgeFiltrosAwsCuentas();
+    cargarAwsCuentas();
+  }
+  cerrarModalFiltrosAwsCuentas();
+}
+
+function limpiarFiltrosAwsCuentas() {
+  Object.assign(awsCuentasFiltros, awsCuentasFiltrosDefaults);
+  awsCuentasFiltros.q = $('#awsCuentasSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosAwsCuentas();
+  refrescarBadgeFiltrosAwsCuentas();
+  cargarAwsCuentas();
+}
+
+window.onFiltroAwsCuentas           = onFiltroAwsCuentas;
+window.cancelarFiltrosAwsCuentas    = cancelarFiltrosAwsCuentas;
+window.limpiarFiltrosAwsCuentas     = limpiarFiltrosAwsCuentas;
+window.cerrarModalFiltrosAwsCuentas = cerrarModalFiltrosAwsCuentas;
+
+// ---- Modal Consultar (cuenta AWS) ----
+async function abrirConsultarAwsCuenta(id) {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Consultar cuenta AWS <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))    closeModal();
+    if (ev.target.closest('[data-act="editar"]'))   { closeModal(); abrirAltaEdicionAwsCuenta(id); }
+    if (ev.target.closest('[data-act="facturas"]')) consultarFacturasAwsCuenta(id, ev.target.closest('[data-act="facturas"]'));
+
+    const tabBtn = ev.target.closest('[data-tab]');
+    if (tabBtn) {
+      const target = tabBtn.dataset.tab;
+      $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+      $$('#modalRoot .modal-tabpanel').forEach((p) => p.hidden = p.dataset.panel !== target);
+    }
+  });
+
+  try {
+    const r = await apiGet(`api/awscuentas.php?id=${id}`);
+    const fila = (label, value, full = false, isCode = false) => {
+      const empty = value == null || value === '';
+      const inner = empty ? 'Sin dato' : (isCode ? `<code>${esc(value)}</code>` : esc(value));
+      return `
+        <div class="data-row${full ? ' full' : ''}">
+          <span class="data-label">${esc(label)}</span>
+          <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+        </div>
+      `;
+    };
+    const facturasHtml = (() => {
+      const cantidad = r.facturas_cantidad != null ? Number(r.facturas_cantidad) : 0;
+      const total    = r.facturas_total    != null ? Number(r.facturas_total)    : 0;
+      if (r.facturas_actualizado == null) {
+        return '<span class="muted">—</span>';
+      }
+      const cantTxt = (cantidad === 0 && total > 0) ? '?' : cantidad;
+      const moneda  = r.facturas_moneda || 'USD';
+      return `${esc(cantTxt)} x ${esc(moneda)} ${esc(total.toFixed(2))}`;
+    })();
+    $('#modalRoot .modal-body').innerHTML = `
+      <div class="modal-tabs">
+        <button type="button" class="modal-tab active" data-tab="general">General</button>
+        <button type="button" class="modal-tab"        data-tab="facturacion">Facturación</button>
+      </div>
+
+      <div class="modal-tabpanel" data-panel="general">
+        <dl class="data-list">
+          ${fila('Código',      '#' + r.id)}
+          ${fila('Nombre',      r.nombre)}
+          ${fila('Número',      r.numero, false, true)}
+          ${fila('Usuario',     r.usuario, false, true)}
+          ${fila('Contraseña',  r.contrasena, false, true)}
+          ${fila('Access Key',  r.accesskey, true, true)}
+          ${fila('Secreto',     r.secreto, true, true)}
+          <div class="data-row full">
+            <span class="data-label">Facturas</span>
+            <span class="data-value">${facturasHtml}</span>
+          </div>
+        </dl>
+      </div>
+
+      <div class="modal-tabpanel" data-panel="facturacion" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px">
+          <div id="awsFacturasSubtitulo" style="color:var(--muted);font-size:.85rem">
+            ${r.facturas_json
+              ? 'Última sincronización: ' + esc(fmtFechaCorta(r.facturas_actualizado)) + '. Actualizá para consultar de nuevo a AWS.'
+              : 'Presioná «Consultar en AWS» para traer BCM (deuda) + Invoicing (facturas).'}
+          </div>
+          <button class="btn btn-primary btn-sm" data-act="facturas">
+            ${r.facturas_json ? 'Actualizar' : 'Consultar en AWS'}
+          </button>
+        </div>
+        <div id="awsFacturasResult"${r.facturas_json ? '' : ' class="table-empty"'}>
+          ${r.facturas_json
+            ? renderFacturasAwsCuenta(r.facturas_json)
+            : 'Sin datos cacheados de AWS todavía.'}
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function fmtFechaCorta(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso.replace(' ', 'T'));
+  if (isNaN(d)) return iso;
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function consultarFacturasAwsCuenta(id, btn) {
+  const box = $('#awsFacturasResult');
+  if (!box) return;
+  btn.disabled = true;
+  btn.textContent = 'Consultando…';
+  box.className = '';
+  box.style.padding = '';
+  box.innerHTML = `<div style="text-align:center;padding:24px"><div class="spin"></div></div>`;
+
+  try {
+    const r = await apiGet(`api/awscuentas_facturas.php?id=${id}`);
+    box.innerHTML = renderFacturasAwsCuenta(r);
+    const sub = $('#awsFacturasSubtitulo');
+    if (sub) {
+      const ahora = new Date();
+      const pad   = (x) => String(x).padStart(2, '0');
+      const stamp = `${pad(ahora.getDate())}/${pad(ahora.getMonth()+1)}/${ahora.getFullYear()} ${pad(ahora.getHours())}:${pad(ahora.getMinutes())}`;
+      sub.textContent = `Última sincronización: ${stamp}. Actualizá para consultar de nuevo a AWS.`;
+    }
+    btn.textContent = 'Actualizar';
+  } catch (e) {
+    box.className = 'table-empty';
+    box.style.padding = '12px';
+    box.textContent = 'Error: ' + e.message;
+    btn.textContent = 'Reintentar';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderFacturasAwsCuenta(r) {
+  const adeudadas = new Set();
+  (r.match?.matches || []).forEach((m) => (m.invoice_ids || []).forEach((id) => adeudadas.add(id)));
+  return renderPaymentsAwsCuenta(r.payments, r.match)
+       + renderInvoicingAwsCuenta(r.invoicing, adeudadas);
+}
+
+function renderPaymentsAwsCuenta(p, match) {
+  const titulo = `<div style="font-weight:600;margin:4px 0 6px;color:var(--text)">💳 Deuda actual (AWS Billing Recommended Actions)</div>`;
+  if (!p || !p.ok) {
+    return titulo + `<div class="table-empty">AWS BCM no respondió: ${esc(p?.error || 'desconocido')}</div>`;
+  }
+  if (!p.actions.length) {
+    return titulo + `<div class="table-empty" style="background:rgba(34,197,94,.10);color:var(--success)">
+      ✅ Sin acciones de pago pendientes. AWS no reporta deuda vencida ni por vencer.
+    </div>`;
+  }
+  const filas = p.actions.map((a) => {
+    const critico = a.type === 'PAYMENTS_PAST_DUE' || a.severity === 'CRITICAL' || a.severity === 'HIGH';
+    const monto = a.amount != null
+      ? `${esc(a.amount)}${a.currency ? ' ' + esc(a.currency) : ''}`
+      : '—';
+    return `
+      <tr${critico ? ' style="background:rgba(230,42,42,.12)"' : ''}>
+        <td>
+          <div style="font-family:monospace;font-size:.85rem">${esc(a.type || '—')}</div>
+          ${critico ? '<span class="badge badge-danger" style="font-size:.7rem">crítico</span>' : ''}
+        </td>
+        <td>${esc(a.severity || '—')}</td>
+        <td style="text-align:right;white-space:nowrap;font-weight:600">${monto}</td>
+        <td style="font-size:.85rem">${esc(a.next_steps || '—')}</td>
+      </tr>
+    `;
+  }).join('');
+  const notaMatch = (match?.matches?.length)
+    ? `<div style="font-size:.8rem;color:var(--success);margin-top:6px">
+         ✓ La deuda coincide exactamente con ${match.matches[0].invoice_ids.length} factura${match.matches[0].invoice_ids.length === 1 ? '' : 's'} emitida${match.matches[0].invoice_ids.length === 1 ? '' : 's'} — marcadas abajo.
+       </div>`
+    : (p.actions.length
+        ? `<div style="font-size:.8rem;color:var(--muted);margin-top:6px">
+             Sin match exacto contra facturas emitidas: podría ser saldo parcial de una factura mayor.
+           </div>`
+        : '');
+  return titulo + `
+    <div class="table-card" style="margin-bottom:8px">
+      <table>
+        <thead>
+          <tr>
+            <th>Tipo</th>
+            <th>Severidad</th>
+            <th style="text-align:right">Monto</th>
+            <th>Acción sugerida</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+    ${notaMatch}
+    <div style="height:16px"></div>
+  `;
+}
+
+function renderInvoicingAwsCuenta(inv, adeudadas) {
+  const titulo = `<div style="font-weight:600;margin:4px 0 6px;color:var(--text)">🧾 Facturas emitidas (AWS Invoicing)</div>`;
+  if (!inv || !inv.ok) {
+    return titulo + `<div class="table-empty">AWS Invoicing no respondió: ${esc(inv?.error || 'desconocido')}</div>`;
+  }
+  if (!inv.invoices || !inv.invoices.length) {
+    return titulo + `<div class="table-empty">
+      Sin facturas emitidas en el rango ${esc(inv.range.start)} — ${esc(inv.range.end)}.
+    </div>`;
+  }
+  const hoy = new Date().toISOString().slice(0, 10);
+  const fmt = (iso) => {
+    if (!iso) return '—';
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  };
+  const filas = inv.invoices.map((f) => {
+    const adeudada = adeudadas && adeudadas.has(f.invoice_id);
+    const vencida  = !adeudada && f.due_date && f.due_date <= hoy;
+    const bg = adeudada
+      ? 'background:rgba(230,42,42,.15)'
+      : (vencida ? 'background:rgba(245,158,11,.10)' : '');
+    const monto = f.total != null
+      ? `${esc(f.total)}${f.currency ? ' ' + esc(f.currency) : ''}`
+      : '—';
+    return `
+      <tr${bg ? ' style="' + bg + '"' : ''}>
+        <td>
+          <code>${esc(f.invoice_id || '—')}</code>
+          ${adeudada ? ' <span class="badge badge-danger" style="font-size:.7rem">adeudada</span>' : ''}
+        </td>
+        <td>${esc(fmt(f.issued_date))}</td>
+        <td>${esc(fmt(f.due_date))}</td>
+        <td>${esc(f.invoice_type || '—')}</td>
+        <td style="text-align:right;white-space:nowrap;${adeudada ? 'font-weight:600' : ''}">${monto}</td>
+      </tr>
+    `;
+  }).join('');
+  return titulo + `
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:6px">
+      ${inv.count} factura${inv.count === 1 ? '' : 's'} entre ${esc(inv.range.start)} y ${esc(inv.range.end)}.
+    </div>
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>Factura</th>
+            <th>Emisión</th>
+            <th>Vencimiento</th>
+            <th>Tipo</th>
+            <th style="text-align:right">Total</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ---- Modal Alta / Edición (cuenta AWS) ----
+async function abrirAltaEdicionAwsCuenta(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar cuenta AWS <span class="modal-subtitle">#${id}</span>` : 'Nueva cuenta AWS'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const r = esEdicion ? await apiGet(`api/awscuentas.php?id=${id}`) : {};
+    $('#modalRoot .modal-body').innerHTML = formAwsCuentaHtml(r);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarAwsCuenta(id, a);
+  });
+}
+
+function formAwsCuentaHtml(r) {
+  const v = (k) => esc(r?.[k] ?? '');
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre *</label>
+        <input type="text" id="awsNombre" value="${v('nombre')}" required>
+      </div>
+      <div class="form-group">
+        <label>Código</label>
+        <input type="text" value="${r?.id ? '#' + r.id : '(se asigna al crear)'}" readonly>
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Número</label>
+        <input type="text" id="awsNumero" value="${v('numero')}" maxlength="20" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Usuario</label>
+        <input type="text" id="awsUsuario" value="${v('usuario')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Contraseña</label>
+        <input type="text" id="awsContrasena" value="${v('contrasena')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Access Key</label>
+      <input type="text" id="awsAccessKey" value="${v('accesskey')}" style="font-family:monospace">
+    </div>
+    <div class="form-group">
+      <label>Secreto</label>
+      <input type="text" id="awsSecreto" value="${v('secreto')}" style="font-family:monospace">
+    </div>
+    <div class="field-error" id="awsError" style="display:none"></div>
+  `;
+}
+
+async function guardarAwsCuenta(id, btn) {
+  const nombre = $('#awsNombre').value.trim();
+  const err    = $('#awsError');
+  err.style.display = 'none';
+  $('#awsNombre').classList.remove('input-invalid');
+
+  if (!nombre) {
+    $('#awsNombre').classList.add('input-invalid');
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+
+  const payload = {
+    nombre,
+    numero:     $('#awsNumero').value.trim(),
+    usuario:    $('#awsUsuario').value.trim(),
+    contrasena: $('#awsContrasena').value.trim(),
+    accesskey:  $('#awsAccessKey').value.trim(),
+    secreto:    $('#awsSecreto').value.trim(),
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/awscuentas.php', 'POST', payload);
+      toast('Cuenta AWS creada.');
+    } else {
+      await apiSend(`api/awscuentas.php?id=${id}`, 'PUT', payload);
+      toast('Cuenta AWS actualizada.');
+    }
+    closeModal();
+    cargarAwsCuentas();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarAwsCuenta(id) {
+  const ok = await confirmar({
+    title: 'Eliminar cuenta AWS',
+    message: `Se eliminará la cuenta AWS #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awscuentas.php?id=${id}`, 'DELETE');
+    toast('Cuenta AWS eliminada.');
+    cargarAwsCuentas();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 // ------------------------- Vista: Herramientas -------------------------
 route('/herramientas', async (mount) => {
   mount.innerHTML = `
@@ -1945,6 +2830,11 @@ route('/herramientas', async (mount) => {
         <span class="tile-icon">📜</span>
         <span class="tile-title">Migrador DB</span>
         <span class="tile-desc">Aplicá las migraciones pendientes de <code>cloud/sql/migrations/</code> contra la BD del entorno actual.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirSincronizador()">
+        <span class="tile-icon">🔄</span>
+        <span class="tile-title">Sincronizador de tablas</span>
+        <span class="tile-desc">Copiá una tabla entera entre desarrollo y producción preservando los IDs. Solo disponible en el panel de dev.</span>
       </button>
       <button type="button" class="tile-card" onclick="abrirVisorSucesos()">
         <span class="tile-icon">📰</span>
@@ -3820,6 +4710,116 @@ function showAppShell(user) {
   document.body.classList.add('is-app');
   $('#loginScreen').hidden = true;
   $('#userBtnName').textContent = user?.nombre || user?.correo || '—';
+  setupEnlacesMenu();
+}
+
+// ------------------------- Launcher de enlaces (topbar) -------------------------
+// Menú cascada de 2 columnas anclado al botón "Enlaces" de la topbar.
+// Flujo: 1 click abre el panel → hover sobre categoría muestra sus items a la
+// derecha → 1 click en el item lo abre en pestaña nueva y cierra el panel.
+let _enlacesMenuInit = false;
+
+function setupEnlacesMenu() {
+  if (_enlacesMenuInit) return;
+  const btn     = document.getElementById('enlacesBtn');
+  const menu    = document.getElementById('enlacesMenu');
+  const catsEl  = document.getElementById('enlacesMenuCats');
+  const itemsEl = document.getElementById('enlacesMenuItems');
+  if (!btn || !menu || !catsEl || !itemsEl) return;
+  _enlacesMenuInit = true;
+
+  // Aplano las 2 fuentes en una sola lista de categorías con un separador visual.
+  const cats = [
+    { kind: 'header', label: 'Plataformas' },
+    ...PLATAFORMAS_GRUPOS,
+    { kind: 'header', label: 'Herramientas web' },
+    ...UTILIDADES_GRUPOS,
+  ];
+  // Mapa idx → índice dentro de PLATAFORMAS_GRUPOS/UTILIDADES_GRUPOS para no
+  // depender de la posición absoluta en `cats` (headers desplazan índices).
+  catsEl.innerHTML = cats.map((c, i) => {
+    if (c.kind === 'header') {
+      return `<div class="enlaces-menu-cat-header">${esc(c.label)}</div>`;
+    }
+    return `
+      <button type="button" class="enlaces-menu-item" data-cat="${i}" role="menuitem">
+        <span class="enlaces-menu-arrow">◀</span>
+        <span class="enlaces-menu-icon">${c.icono}</span>
+        <span class="enlaces-menu-item-label">${esc(c.label)}</span>
+      </button>`;
+  }).join('');
+
+  let hoverTimer = null;
+  let activeIdx  = -1;
+
+  const mostrarCategoria = (idx) => {
+    if (idx === activeIdx) return;
+    const cat = cats[idx];
+    if (!cat || cat.kind === 'header') return;
+    activeIdx = idx;
+    catsEl.querySelectorAll('[data-cat]').forEach((el) => {
+      el.classList.toggle('active', Number(el.dataset.cat) === idx);
+    });
+    itemsEl.innerHTML = cat.items.map((it) => `
+      <a href="${esc(it.url)}" target="_blank" rel="noopener noreferrer"
+         class="enlaces-menu-item" data-item title="${esc(it.desc)}">
+        <span class="enlaces-menu-icon">${it.icono}</span>
+        <span class="enlaces-menu-item-label">${esc(it.titulo)}</span>
+      </a>
+    `).join('');
+    itemsEl.scrollTop = 0;
+  };
+
+  // Hover con delay corto para no dispararlo al pasar rápido de largo.
+  catsEl.addEventListener('mouseover', (ev) => {
+    const el = ev.target.closest('[data-cat]');
+    if (!el) return;
+    clearTimeout(hoverTimer);
+    const idx = Number(el.dataset.cat);
+    hoverTimer = setTimeout(() => mostrarCategoria(idx), 80);
+  });
+  // Click en categoría → adelanta el timer del hover (útil en touch / accesibilidad).
+  catsEl.addEventListener('click', (ev) => {
+    const el = ev.target.closest('[data-cat]');
+    if (!el) return;
+    clearTimeout(hoverTimer);
+    mostrarCategoria(Number(el.dataset.cat));
+  });
+
+  const primeraCategoriaIdx = cats.findIndex((c) => c.kind !== 'header');
+
+  const abrirMenu = () => {
+    menu.classList.add('open');
+    btn.classList.add('open');
+    activeIdx = -1;
+    if (primeraCategoriaIdx >= 0) mostrarCategoria(primeraCategoriaIdx);
+  };
+  const cerrarMenu = () => {
+    menu.classList.remove('open');
+    btn.classList.remove('open');
+    clearTimeout(hoverTimer);
+  };
+
+  btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (menu.classList.contains('open')) cerrarMenu(); else abrirMenu();
+  });
+  itemsEl.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-item]')) cerrarMenu();
+  });
+  document.addEventListener('click', (ev) => {
+    if (!menu.classList.contains('open')) return;
+    if (menu.contains(ev.target) || btn.contains(ev.target)) return;
+    cerrarMenu();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && menu.classList.contains('open')) cerrarMenu();
+    // Alt+E como acelerador de teclado.
+    if (ev.altKey && !ev.ctrlKey && !ev.metaKey && ev.key.toLowerCase() === 'e') {
+      ev.preventDefault();
+      menu.classList.contains('open') ? cerrarMenu() : abrirMenu();
+    }
+  });
 }
 
 function bindLogin() {
@@ -4508,7 +5508,16 @@ function renderMigraciones(rows) {
     tbody.innerHTML = '<tr><td colspan="6" class="table-empty">No hay archivos en <code style="font-family:monospace">cloud/sql/migrations/</code>.</td></tr>';
     return;
   }
-  tbody.innerHTML = rows.map((m) => {
+  // Orden de visualización: pendientes arriba (en orden cronológico de
+  // aplicación, para que se lea igual que como se van a aplicar), luego las
+  // aplicadas ordenadas por `id` DESC (última aplicada arriba). El cache
+  // queda intacto en orden ascendente para que aplicarPendientesMigraciones()
+  // siga aplicando en orden cronológico (vieja → nueva).
+  const pendientes = rows.filter((m) => m.estado === 'pendiente');
+  const aplicadas  = rows.filter((m) => m.estado === 'aplicada')
+                          .sort((a, b) => (b.id || 0) - (a.id || 0));
+  const ordenadas  = pendientes.concat(aplicadas);
+  tbody.innerHTML = ordenadas.map((m) => {
     const nombre   = esc(m.nombre || '');
     const tamano   = formatearTamanoBytes(m.tamano || 0);
     const hashCorto = (m.hash || '').slice(0, 8);
@@ -4612,7 +5621,7 @@ async function aplicarMigracionSinConfirmar(nombre) {
     toast(`«${nombre}» aplicada en ${data.duracion_ms} ms.`);
     return true;
   } catch (e) {
-    toast(e.message || 'Error al aplicar.', { error: true });
+    toast(e.message || 'Error al aplicar.', { error: true, duration: 10000 });
     return false;
   } finally {
     _migrAplicando = false;
@@ -4650,14 +5659,14 @@ async function aplicarPendientesMigraciones() {
       exito = true;
       aplicadas++;
     } catch (e) {
-      toast(`Falló «${nombre}»: ${e.message}`, { error: true });
+      toast(`Falló «${nombre}»: ${e.message}`, { error: true, duration: 10000 });
     }
     if (!exito) break;
   }
   if (aplicadas === pendientes.length) {
     toast(`Aplicadas ${aplicadas} migración${aplicadas === 1 ? '' : 'es'}.`);
   } else if (aplicadas > 0) {
-    toast(`Corrida parcial: ${aplicadas} de ${pendientes.length} aplicadas.`, { error: true });
+    toast(`Corrida parcial: ${aplicadas} de ${pendientes.length} aplicadas.`, { error: true, duration: 10000 });
   }
   await cargarMigraciones();
 }
@@ -4670,12 +5679,186 @@ document.addEventListener('keydown', (e) => {
   if (listado && listado.classList.contains('open')) { cerrarMigraciones(); }
 });
 
+// ------------------------- Herramientas: Sincronizador de tablas -------------------------
+// Copia una tabla completa entre dev y prod preservando los IDs de origen.
+// Solo funciona en el panel de desarrollo (los endpoints devuelven 403 en prod).
+// Progreso streameado via SSE (Server-Sent Events).
+let _sincEnEjecucion = false;
+let _sincEventSource = null;
+
+function abrirSincronizador() {
+  document.getElementById('sincOrigen').value  = '';
+  document.getElementById('sincDestino').value = '';
+  const selT = document.getElementById('sincTabla');
+  selT.innerHTML = '<option value="">— Elegí primero el origen —</option>';
+  selT.disabled = true;
+  document.getElementById('sincBtnEjecutar').disabled = true;
+  document.getElementById('sincResumen').textContent = '';
+  document.getElementById('sincLog').innerHTML =
+    '<span class="term-info">Elegí origen y tabla, y hacé click en «Ejecutar sincronización» para empezar.</span>';
+  document.getElementById('sincTablaError').style.display = 'none';
+  document.getElementById('sincTablaError').textContent = '';
+  document.getElementById('sincronizadorBackdrop').classList.add('open');
+}
+
+function cerrarSincronizador() {
+  if (_sincEnEjecucion) {
+    toast('Esperá a que termine la sincronización en curso.', { error: true });
+    return;
+  }
+  document.getElementById('sincronizadorBackdrop').classList.remove('open');
+}
+
+async function sincOnCambioOrigen() {
+  const origen = document.getElementById('sincOrigen').value;
+  const selT   = document.getElementById('sincTabla');
+  const inpD   = document.getElementById('sincDestino');
+  const btn    = document.getElementById('sincBtnEjecutar');
+
+  btn.disabled = true;
+  selT.disabled = true;
+  selT.innerHTML = '<option value="">Cargando tablas…</option>';
+  document.getElementById('sincTablaError').style.display = 'none';
+
+  if (!origen) {
+    selT.innerHTML = '<option value="">— Elegí primero el origen —</option>';
+    inpD.value = '';
+    return;
+  }
+  inpD.value = origen === 'dev' ? 'Producción (databox)' : 'Desarrollo (databox_dev)';
+
+  try {
+    const data = await apiGet('api/herramientas_sincronizador_tables.php?origen=' + encodeURIComponent(origen));
+    const tablas = data.tablas || [];
+    if (!tablas.length) {
+      selT.innerHTML = '<option value="">No hay tablas en el origen</option>';
+      return;
+    }
+    selT.innerHTML = '<option value="">— Elegí una tabla —</option>' +
+      tablas.map((t) => {
+        const filas = (t.filas_aprox != null) ? ` (~${fmtNum(t.filas_aprox)} filas)` : '';
+        return `<option value="${esc(t.nombre)}">${esc(t.nombre)}${filas}</option>`;
+      }).join('');
+    selT.disabled = false;
+    selT.onchange = () => {
+      btn.disabled = !selT.value;
+    };
+    const meta = data.origen || {};
+    document.getElementById('sincResumen').textContent =
+      `${meta.host || '?'} · ${meta.database || '?'} · ${tablas.length} tabla${tablas.length === 1 ? '' : 's'}`;
+  } catch (e) {
+    selT.innerHTML = '<option value="">Error al cargar tablas</option>';
+    const err = document.getElementById('sincTablaError');
+    err.textContent = e.message || 'Error desconocido';
+    err.style.display = '';
+  }
+}
+
+function sincLogAppend(type, msg) {
+  const log = document.getElementById('sincLog');
+  const cls = ({
+    error:   'term-error',
+    warn:    'term-warn',
+    success: 'term-success',
+    done:    'term-info',
+  })[type] || 'term-info';
+  const prefix = ({
+    error:   '✗ ',
+    warn:    '⚠ ',
+    success: '✓ ',
+  })[type] || '';
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = prefix + msg;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sincEjecutar() {
+  if (_sincEnEjecucion) return;
+
+  const origen  = document.getElementById('sincOrigen').value;
+  const tabla   = document.getElementById('sincTabla').value;
+  if (!origen || !tabla) return;
+  const destino = origen === 'dev' ? 'prod' : 'dev';
+
+  const esProd = destino === 'prod';
+  const ok = await confirmar({
+    title: esProd ? '⚠ Sincronizar a PRODUCCIÓN' : 'Sincronizar a desarrollo',
+    message: `Vas a copiar la tabla «${tabla}» desde ${origen} a ${destino} preservando los IDs. ` +
+             `Si la tabla existe en destino, se vaciará (TRUNCATE) antes de insertar. ¿Continuar?`,
+    confirmText: esProd ? 'Copiar a prod' : 'Copiar a dev',
+    danger: esProd,
+  });
+  if (!ok) return;
+
+  _sincEnEjecucion = true;
+  document.getElementById('sincBtnEjecutar').disabled = true;
+  document.getElementById('sincOrigen').disabled = true;
+  document.getElementById('sincTabla').disabled  = true;
+  document.getElementById('sincLog').innerHTML = '';
+
+  const url = 'api/herramientas_sincronizador_run.php'
+    + '?origen='  + encodeURIComponent(origen)
+    + '&destino=' + encodeURIComponent(destino)
+    + '&tabla='   + encodeURIComponent(tabla);
+
+  // EventSource envia GET con cookies (same-origin) => auth por cookie OK.
+  const es = new EventSource(url, { withCredentials: true });
+  _sincEventSource = es;
+
+  const finalizar = () => {
+    if (_sincEventSource) {
+      try { _sincEventSource.close(); } catch (_) {}
+      _sincEventSource = null;
+    }
+    _sincEnEjecucion = false;
+    document.getElementById('sincBtnEjecutar').disabled = false;
+    document.getElementById('sincOrigen').disabled = false;
+    document.getElementById('sincTabla').disabled  = false;
+  };
+
+  es.onmessage = (ev) => {
+    let obj;
+    try { obj = JSON.parse(ev.data); }
+    catch (_) { sincLogAppend('info', ev.data); return; }
+    sincLogAppend(obj.type || 'info', obj.msg || '');
+    if (obj.type === 'done') finalizar();
+  };
+  es.onerror = () => {
+    sincLogAppend('error', 'Conexión con el servidor interrumpida.');
+    finalizar();
+  };
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const b = document.getElementById('sincronizadorBackdrop');
+  if (b && b.classList.contains('open')) cerrarSincronizador();
+});
+
 // ------------------------- Herramientas: Visor de sucesos -------------------------
 // Visor read-only de la tabla `sucesos`. Los distintos modulos del panel
-// escriben ahi su log de actividad (id / fecha / origen / detalle).
+// escriben ahi su log de actividad (id / fecha / origen / tipo / detalle).
 let sucesosCache         = [];
 let sucesosFiltroQ       = '';
+let sucesosFiltroTipo    = '';
 let _sucesosSearchTimer  = null;
+
+// Mapa de estilos por tipo -- usado por chips, celda de listado y detalle.
+const SUCESOS_TIPOS = {
+  info:   { label: 'Info',   icon: 'fa-circle-info',          color: 'var(--info)'   },
+  alerta: { label: 'Alerta', icon: 'fa-triangle-exclamation', color: 'var(--warn)'   },
+  error:  { label: 'Error',  icon: 'fa-circle-exclamation',   color: 'var(--danger)' },
+};
+
+function sucesoTipoHtml(tipo) {
+  const meta = SUCESOS_TIPOS[tipo] || SUCESOS_TIPOS.info;
+  return '<span style="display:inline-flex;align-items:center;gap:6px">' +
+           '<i class="fa-solid ' + meta.icon + '" style="color:' + meta.color + '"></i>' +
+           '<span>' + meta.label + '</span>' +
+         '</span>';
+}
 
 function abrirVisorSucesos() {
   document.getElementById('sucesosBackdrop').classList.add('open');
@@ -4702,19 +5885,27 @@ function sucesosLimpiarBusqueda() {
   cargarSucesos();
 }
 
+function setFiltroTipoSucesos(chip, valor) {
+  sucesosFiltroTipo = valor || '';
+  const chips = document.querySelectorAll('#sucesosTipoChips .filter-chip');
+  chips.forEach((c) => c.classList.toggle('active', c === chip));
+  cargarSucesos();
+}
+
 async function cargarSucesos() {
   const tbody = document.getElementById('sucesosTbody');
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
 
   const desde  = document.getElementById('sucesosDesde')?.value  || '';
   const hasta  = document.getElementById('sucesosHasta')?.value  || '';
   const limite = document.getElementById('sucesosLimite')?.value || '200';
 
   const params = new URLSearchParams();
-  if (sucesosFiltroQ) params.set('q', sucesosFiltroQ);
-  if (desde)          params.set('desde', desde);
-  if (hasta)          params.set('hasta', hasta);
+  if (sucesosFiltroQ)    params.set('q', sucesosFiltroQ);
+  if (sucesosFiltroTipo) params.set('tipo', sucesosFiltroTipo);
+  if (desde)             params.set('desde', desde);
+  if (hasta)             params.set('hasta', hasta);
   params.set('limite', limite);
 
   try {
@@ -4728,7 +5919,7 @@ async function cargarSucesos() {
     }
     renderSucesos(sucesosCache);
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
   }
 }
 
@@ -4736,9 +5927,10 @@ function renderSucesos(rows) {
   const tbody = document.getElementById('sucesosTbody');
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">Sin sucesos para mostrar.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="table-empty">Sin sucesos para mostrar.</td></tr>';
     return;
   }
+  const dashVacio = '<span style="color:var(--muted);font-style:italic">—</span>';
   tbody.innerHTML = rows.map((s) => {
     const fecha   = esc(s.fecha   || '');
     const origen  = esc(s.origen  || '');
@@ -4746,8 +5938,9 @@ function renderSucesos(rows) {
     return `
       <tr class="row-clickable" data-id="${s.id}" onclick="sucesosVerDetalle(${s.id})">
         <td class="td-id">${s.id}</td>
-        <td style="font-family:monospace;white-space:nowrap">${fecha || '<span style="color:var(--muted);font-style:italic">—</span>'}</td>
-        <td style="font-family:monospace;font-weight:600">${origen || '<span style="color:var(--muted);font-style:italic">—</span>'}</td>
+        <td style="font-family:monospace;white-space:nowrap">${fecha || dashVacio}</td>
+        <td style="font-family:monospace;font-weight:600">${origen || dashVacio}</td>
+        <td>${sucesoTipoHtml(s.tipo)}</td>
         <td style="color:var(--muted);max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
             title="${detalle}">${detalle}</td>
       </tr>
@@ -4761,6 +5954,7 @@ function sucesosVerDetalle(id) {
   document.getElementById('sucesoDetalleId').textContent     = s.id;
   document.getElementById('sucesoDetalleFecha').textContent  = s.fecha  || '—';
   document.getElementById('sucesoDetalleOrigen').textContent = s.origen || '—';
+  document.getElementById('sucesoDetalleTipo').innerHTML     = sucesoTipoHtml(s.tipo);
   document.getElementById('sucesoDetalleTexto').value        = s.detalle || '';
   document.getElementById('sucesoDetalleBackdrop').classList.add('open');
 }

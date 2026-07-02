@@ -241,6 +241,17 @@ textarea { resize: vertical; min-height: 60px; }
 .form-group select,
 .form-group textarea { width: 100%; }
 
+/* Etiqueta con ícono de ayuda al costado (tooltip via title=""). */
+.form-group label.label-with-help { display: inline-flex; align-items: center; gap: 6px; }
+.form-group label.label-with-help .label-help {
+  font-size: .85rem; color: var(--muted); cursor: help; opacity: .8;
+  transition: opacity .15s, color .15s;
+}
+.form-group label.label-with-help .label-help:hover,
+.form-group label.label-with-help .label-help:focus {
+  opacity: 1; color: var(--primary); outline: none;
+}
+
 /* 9. Toolbar */
 .toolbar       { display: flex; align-items: center; gap: 12px;
                  flex-wrap: wrap; margin-bottom: 20px; }
@@ -303,6 +314,19 @@ textarea { resize: vertical; min-height: 60px; }
                   display: flex; gap: 10px; justify-content: flex-end; align-items: center; }
 .modal.modal-wide { max-width: 760px; }
 
+/* Tabs genericas para modales (Consultar con secciones, etc). */
+.modal-tabs      { display: flex; gap: 4px; border-bottom: 1px solid var(--border);
+                   margin: -4px -4px 0; padding: 0 4px; }
+.modal-tab       { background: none; border: none; cursor: pointer;
+                   font-family: inherit; font-size: .85rem; font-weight: 600;
+                   color: var(--muted); padding: 10px 14px;
+                   border-bottom: 2px solid transparent; margin-bottom: -1px;
+                   display: inline-flex; align-items: center; gap: 8px;
+                   transition: color .15s, border-color .15s; }
+.modal-tab:hover { color: var(--text); }
+.modal-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+.modal-tabpanel[hidden] { display: none; }
+
 /* 15. Confirm dialog */
 .confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5);
                     display: flex; align-items: center; justify-content: center;
@@ -350,6 +374,59 @@ textarea { resize: vertical; min-height: 60px; }
 .tile-icon  { font-size: 1.6rem; line-height: 1; margin-bottom: 4px; }
 .tile-title { font-weight: 600; font-size: .95rem; color: var(--text); }
 .tile-desc  { font-size: .8rem; color: var(--muted); }
+
+/* Launcher cascada en topbar (2 columnas: categorías | items).
+   Click en el botón → abre. Hover sobre categoría → derecha muestra items.
+   Click en item → abre en pestaña nueva y cierra. */
+.topbar-enlaces          { position: relative; display: inline-flex; margin-right: 4px; }
+.topbar-enlaces-btn      { background: transparent; border: 1px solid rgba(0,0,0,.25);
+                           color: rgba(255,255,255,.85);
+                           font-size: .82rem; padding: 6px 10px; border-radius: 8px;
+                           cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+                           transition: background .15s, color .15s; font-family: inherit; }
+.topbar-enlaces-btn:hover,
+.topbar-enlaces-btn.open { background: rgba(0,0,0,.18); color: #fff; }
+
+.enlaces-menu            { display: none; position: absolute;
+                           top: calc(100% + 6px); right: 0;
+                           background: var(--surface); border: 1px solid var(--border);
+                           border-radius: 10px; box-shadow: var(--shadow-lg);
+                           z-index: 300; overflow: hidden;
+                           min-width: 500px;
+                           /* flex se activa al abrir para que no rompa el display:none */ }
+.enlaces-menu.open       { display: flex; flex-direction: row-reverse; }
+.enlaces-menu-cats       { width: 210px; border-left: 1px solid var(--border);
+                           padding: 4px 0; max-height: 70vh; overflow-y: auto;
+                           background: var(--bg); }
+.enlaces-menu-items      { flex: 1; padding: 4px 0; max-height: 70vh; overflow-y: auto; }
+.enlaces-menu-item       { display: flex; align-items: center; gap: 8px;
+                           padding: 7px 12px; font-size: .84rem; color: var(--text);
+                           cursor: pointer; text-decoration: none;
+                           background: none; border: none; width: 100%;
+                           text-align: left; font-family: inherit;
+                           transition: background .1s, color .1s; }
+.enlaces-menu-item:hover     { background: var(--row-hover); color: var(--primary); }
+.enlaces-menu-item.active    { background: var(--row-hover); color: var(--primary); font-weight: 600; }
+.enlaces-menu-item-label     { flex: 1; white-space: nowrap; overflow: hidden;
+                               text-overflow: ellipsis; }
+.enlaces-menu-icon           { font-size: .95rem; width: 18px; text-align: center;
+                               line-height: 1; flex-shrink: 0; }
+.enlaces-menu-arrow          { color: var(--muted); font-size: .65rem;
+                               flex-shrink: 0; width: 10px; text-align: center; }
+.enlaces-menu-item.active .enlaces-menu-arrow { color: var(--primary); }
+.enlaces-menu-empty          { padding: 20px 16px; font-size: .8rem; color: var(--muted);
+                               font-style: italic; text-align: center; }
+.enlaces-menu-cat-header     { padding: 8px 12px 4px; font-size: .68rem; font-weight: 700;
+                               color: var(--muted); text-transform: uppercase;
+                               letter-spacing: .05em; border-top: 1px solid var(--border);
+                               margin-top: 4px; }
+.enlaces-menu-cat-header:first-child { border-top: none; margin-top: 0; padding-top: 6px; }
+
+@media (max-width: 768px) {
+  .topbar-enlaces-label { display: none; }   /* solo ícono en mobile */
+  .enlaces-menu         { min-width: 320px; right: -60px; }
+  .enlaces-menu-cats    { width: 150px; }
+}
 
 /* 16. Toasts */
 .toast { position: fixed; bottom: 24px; left: 50%;
@@ -447,8 +524,10 @@ tbody tr.row-clickable { cursor: pointer; }
                 cursor: pointer; transition: background .15s; }
 .perm-item:last-child { border-bottom: none; }
 .perm-item:hover      { background: var(--row-hover); }
-.perm-check   { width: 16px; height: 16px; accent-color: var(--primary);
-                cursor: pointer; flex-shrink: 0; }
+/* especificidad extra: .form-group input { width: 100% } (línea 240) le gana a
+   .perm-check con selector de una sola clase; se ancla con el contenedor. */
+.perm-list .perm-check { width: 16px; height: 16px; accent-color: var(--primary);
+                         cursor: pointer; flex-shrink: 0; }
 .perm-text    { flex: 1; display: flex; flex-direction: column; gap: 2px;
                 min-width: 0; }
 .perm-name    { font-size: .88rem; color: var(--text); font-weight: 500; }
@@ -657,4 +736,22 @@ tbody tr.row-clickable { cursor: pointer; }
 .term-log-line .lvl-ok    { color: #86efac; }
 .term-log-line .lvl-warn  { color: #fcd34d; }
 .term-log-line .lvl-error { color: #f5a8a8; }
+
+/* ---- Log estilo terminal (Sincronizador de tablas) ----
+ * Verde por defecto, rojo para advertencias/errores. Salida en tiempo
+ * real via SSE — se hace scroll automatico al final del stream.
+ */
+.terminal-log             { background: #0d0d0d; color: #86efac;
+                            border: 1px solid var(--border);
+                            border-radius: var(--radius);
+                            padding: 12px 14px; margin: 0;
+                            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                            font-size: .82rem; line-height: 1.55;
+                            height: 320px; overflow-y: auto;
+                            white-space: pre-wrap; word-break: break-word;
+                            box-shadow: var(--shadow); }
+.terminal-log .term-info    { color: #86efac; display: block; }
+.terminal-log .term-success { color: #4ade80; display: block; font-weight: 600; }
+.terminal-log .term-warn    { color: #f5a8a8; display: block; }
+.terminal-log .term-error   { color: #f87171; display: block; font-weight: 600; }
 

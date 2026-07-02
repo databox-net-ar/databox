@@ -32,6 +32,7 @@ require_once __DIR__ . '/lib/auth_check.php';
 requireAuth();
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/migraciones.php';
+require_once __DIR__ . '/lib/sucesos.php';
 
 try {
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -70,6 +71,8 @@ try {
     try {
         $pdo->exec($sql);
     } catch (Throwable $e) {
+        registrarSuceso($pdo, 'Migrador DB', 'error',
+            "Falló la migración «{$nombre}»: " . $e->getMessage());
         jsonError('Error al ejecutar la migracion: ' . $e->getMessage(), 500);
     }
 

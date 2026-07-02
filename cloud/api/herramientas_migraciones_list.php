@@ -43,7 +43,7 @@ try {
     $archivos = glob($dir . '/*.sql') ?: [];
     sort($archivos, SORT_STRING);
 
-    $stmt = $pdo->query('SELECT nombre, hash, aplicada FROM migraciones');
+    $stmt = $pdo->query('SELECT id, nombre, hash, aplicada FROM migraciones');
     $aplicadas = [];
     foreach ($stmt->fetchAll() as $r) {
         $aplicadas[(string)$r['nombre']] = $r;
@@ -59,6 +59,7 @@ try {
         $apl = $aplicadas[$nombre] ?? null;
         if ($apl) {
             $items[] = [
+                'id'          => (int)$apl['id'],
                 'nombre'      => $nombre,
                 'hash'        => $hashAct,
                 'tamano'      => $tamano,
@@ -68,6 +69,7 @@ try {
             ];
         } else {
             $items[] = [
+                'id'          => null,
                 'nombre'      => $nombre,
                 'hash'        => $hashAct,
                 'tamano'      => $tamano,

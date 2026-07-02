@@ -76,6 +76,19 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
           </div>
         </div>
 
+        <div class="nav-group-wrap" data-group="plataformas">
+          <button type="button" class="nav-item nav-group-toggle">
+            <span class="nav-icon">🌐</span>
+            <span class="nav-group-label">Plataformas</span>
+            <span class="nav-group-arrow">+</span>
+          </button>
+          <div class="nav-sub">
+            <a href="#/aws" class="nav-item nav-sub-item" data-route="/aws">
+              <span class="nav-icon">☁️</span> AWS
+            </a>
+          </div>
+        </div>
+
         <div class="nav-group-wrap" data-group="seguridad">
           <button type="button" class="nav-item nav-group-toggle">
             <span class="nav-icon">🔐</span>
@@ -117,6 +130,21 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
       <div class="topbar">
         <button class="hamburger" id="hamburger" aria-label="Menú">☰</button>
         <div class="topbar-title" id="topbarTitle">Dashboard</div>
+        <div class="topbar-enlaces">
+          <button type="button" class="topbar-enlaces-btn" id="enlacesBtn"
+                  title="Enlaces externos (Alt+E)">
+            <i class="fa-solid fa-link"></i>
+            <span class="topbar-enlaces-label">Enlaces</span>
+            <i class="fa-solid fa-chevron-down" style="font-size:.65rem;opacity:.7"></i>
+          </button>
+          <div class="enlaces-menu" id="enlacesMenu" role="menu" aria-label="Enlaces externos">
+            <div class="enlaces-menu-cats" id="enlacesMenuCats" role="none"></div>
+            <div class="enlaces-menu-items" id="enlacesMenuItems" role="none">
+              <div class="enlaces-menu-empty">Pasá el mouse sobre una categoría.</div>
+            </div>
+          </div>
+        </div>
+
         <div class="topbar-user">
           <button class="topbar-username" id="userBtn">
             <span id="userBtnName">—</span> <i class="fa-solid fa-chevron-down" style="font-size:.7rem"></i>
@@ -569,16 +597,16 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
           </div>
         </div>
 
-        <div class="table-card">
+        <div class="table-card" style="max-height:52vh;overflow-y:auto">
           <table>
             <thead>
               <tr>
-                <th style="width:110px">Estado</th>
-                <th>Archivo</th>
-                <th style="width:90px">Tamaño</th>
-                <th style="width:110px">Hash</th>
-                <th style="width:160px">Aplicada</th>
-                <th style="width:160px;text-align:center">Acciones</th>
+                <th style="width:110px;position:sticky;top:0;background:var(--bg);z-index:1">Estado</th>
+                <th style="position:sticky;top:0;background:var(--bg);z-index:1">Archivo</th>
+                <th style="width:90px;position:sticky;top:0;background:var(--bg);z-index:1">Tamaño</th>
+                <th style="width:110px;position:sticky;top:0;background:var(--bg);z-index:1">Hash</th>
+                <th style="width:160px;position:sticky;top:0;background:var(--bg);z-index:1">Aplicada</th>
+                <th style="width:160px;text-align:center;position:sticky;top:0;background:var(--bg);z-index:1">Acciones</th>
               </tr>
             </thead>
             <tbody id="migrTbody">
@@ -633,6 +661,62 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
     </div>
   </div>
 
+  <!-- ===== Modal Sincronizador de tablas ===== -->
+  <div class="modal-backdrop" id="sincronizadorBackdrop"
+       onclick="if(event.target===this)cerrarSincronizador()">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:1.2rem">🔄</span>
+          <span>Sincronizador de tablas</span>
+          <span id="sincResumen" class="modal-subtitle"></span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarSincronizador()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:16px">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="sincOrigen">Origen</label>
+            <select id="sincOrigen" onchange="sincOnCambioOrigen()">
+              <option value="">— Elegí origen —</option>
+              <option value="dev">Desarrollo (databox_dev)</option>
+              <option value="prod">Producción (databox)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="sincDestino">Destino</label>
+            <input type="text" id="sincDestino" readonly placeholder="Se completa automáticamente">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="sincTabla">Tabla</label>
+          <select id="sincTabla" disabled>
+            <option value="">— Elegí primero el origen —</option>
+          </select>
+          <div class="field-error" id="sincTablaError" style="display:none"></div>
+        </div>
+        <div>
+          <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">
+            Log de ejecución
+          </label>
+          <pre class="terminal-log" id="sincLog"><span class="term-info">Elegí origen y tabla, y hacé click en «Ejecutar sincronización» para empezar.</span></pre>
+        </div>
+        <div style="font-size:.78rem;color:var(--muted);line-height:1.5">
+          Copia la tabla completa del origen al destino <strong>preservando los IDs de origen</strong>.
+          Si la tabla no existe en destino, se crea con el DDL del origen.
+          Si existe, se <code style="font-family:monospace">TRUNCATE</code>a antes de insertar.
+          Esta herramienta <strong>solo funciona en el panel de desarrollo</strong>.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="cerrarSincronizador()">Cerrar</button>
+        <button class="btn btn-primary" id="sincBtnEjecutar" onclick="sincEjecutar()" disabled>
+          Ejecutar sincronización
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== Modal Visor de sucesos ===== -->
   <div class="modal-backdrop" id="sucesosBackdrop"
        onclick="if(event.target===this)cerrarVisorSucesos()">
@@ -654,6 +738,12 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
                      oninput="sucesosOnSearch(this.value)">
               <button class="search-clear" id="sucesosSearchClear" style="display:none"
                       onclick="sucesosLimpiarBusqueda()">×</button>
+            </div>
+            <div id="sucesosTipoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip active" data-val=""       onclick="setFiltroTipoSucesos(this, '')">Todos</button>
+              <button type="button" class="filter-chip"        data-val="info"   onclick="setFiltroTipoSucesos(this, 'info')"><i class="fa-solid fa-circle-info" style="color:var(--info)"></i> Info</button>
+              <button type="button" class="filter-chip"        data-val="alerta" onclick="setFiltroTipoSucesos(this, 'alerta')"><i class="fa-solid fa-triangle-exclamation" style="color:var(--warn)"></i> Alerta</button>
+              <button type="button" class="filter-chip"        data-val="error"  onclick="setFiltroTipoSucesos(this, 'error')"><i class="fa-solid fa-circle-exclamation" style="color:var(--danger)"></i> Error</button>
             </div>
             <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted)">
               Desde
@@ -685,12 +775,13 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
               <tr>
                 <th style="width:80px">ID</th>
                 <th style="width:170px">Fecha</th>
-                <th style="width:220px">Origen</th>
+                <th style="width:180px">Origen</th>
+                <th style="width:120px">Tipo</th>
                 <th>Detalle</th>
               </tr>
             </thead>
             <tbody id="sucesosTbody">
-              <tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+              <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -728,9 +819,13 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
             <div id="sucesoDetalleFecha" style="font-family:monospace">—</div>
           </div>
           <div class="form-group">
-            <label>Origen</label>
-            <div id="sucesoDetalleOrigen" style="font-family:monospace">—</div>
+            <label>Tipo</label>
+            <div id="sucesoDetalleTipo" style="display:flex;align-items:center;gap:6px">—</div>
           </div>
+        </div>
+        <div class="form-group">
+          <label>Origen</label>
+          <div id="sucesoDetalleOrigen" style="font-family:monospace">—</div>
         </div>
         <div class="form-group">
           <label>Detalle</label>

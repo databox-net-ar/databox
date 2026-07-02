@@ -46,6 +46,7 @@ try {
 
 function handleList(PDO $pdo, array $q): void {
     $codigo      = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
+    $slug        = trim((string)($q['slug']        ?? ''));
     $nombre      = trim((string)($q['nombre']      ?? ''));
     $descripcion = trim((string)($q['descripcion'] ?? ''));
     $search      = trim((string)($q['q']           ?? ''));
@@ -56,7 +57,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'nombre', 'descripcion'];
+    $allowedOrder = ['id', 'slug', 'nombre', 'descripcion'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
 
@@ -64,11 +65,12 @@ function handleList(PDO $pdo, array $q): void {
     $params = [];
 
     if ($codigo !== null) { $where[] = 'id = :codigo';                  $params[':codigo']      = $codigo; }
+    if ($slug        !== '') { $where[] = 'slug        LIKE :slug';         $params[':slug']        = "%{$slug}%"; }
     if ($nombre      !== '') { $where[] = 'nombre      LIKE :nombre';       $params[':nombre']      = "%{$nombre}%"; }
     if ($descripcion !== '') { $where[] = 'descripcion LIKE :descripcion';  $params[':descripcion'] = "%{$descripcion}%"; }
 
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s OR descripcion LIKE :s)';
+        $where[] = '(slug LIKE :s OR nombre LIKE :s OR descripcion LIKE :s)';
         $params[':s'] = "%{$search}%";
     }
 
@@ -82,7 +84,7 @@ function handleList(PDO $pdo, array $q): void {
     ")->fetch();
 
     $sql = "
-        SELECT id, nombre, descripcion, permisos
+        SELECT id, slug, nombre, descripcion, permisos
         FROM roles
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
@@ -107,7 +109,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('SELECT id, nombre, descripcion, permisos FROM roles WHERE id = :id');
+    $stmt = $pdo->prepare('SELECT id, slug, nombre, descripcion, permisos FROM roles WHERE id = :id');
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Rol no encontrado', 404);
@@ -128,20 +130,42 @@ function sanitizePayload(array $in): array {
     $nombre = trim((string)($in['nombre'] ?? ''));
     if ($nombre === '') jsonError('El nombre es obligatorio', 400);
 
+    $slug = strtolower(trim((string)($in['slug'] ?? '')));
+    if ($slug === '') jsonError('El slug es obligatorio', 400);
+    if (strlen($slug) > 50) jsonError('El slug no puede superar los 50 caracteres', 400);
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $slug)) {
+        jsonError('El slug solo admite minusculas, numeros, guion y guion bajo, y debe empezar con letra o numero', 400);
+    }
+
     return [
+        'slug'        => $slug,
         'nombre'      => $nombre,
         'descripcion' => trim((string)($in['descripcion'] ?? '')) ?: null,
         'permisos'    => trim((string)($in['permisos']    ?? '')) ?: null,
     ];
 }
 
+function assertSlugDisponible(PDO $pdo, string $slug, ?int $exceptoId = null): void {
+    $sql    = 'SELECT id FROM roles WHERE slug = :slug';
+    $params = [':slug' => $slug];
+    if ($exceptoId !== null) {
+        $sql             .= ' AND id <> :id';
+        $params[':id']    = $exceptoId;
+    }
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    if ($stmt->fetch()) jsonError('Ya existe otro rol con ese slug', 400);
+}
+
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
+    assertSlugDisponible($pdo, $p['slug']);
     $stmt = $pdo->prepare('
-        INSERT INTO roles (nombre, descripcion, permisos)
-        VALUES (:nombre, :descripcion, :permisos)
+        INSERT INTO roles (slug, nombre, descripcion, permisos)
+        VALUES (:slug, :nombre, :descripcion, :permisos)
     ');
     $stmt->execute([
+        ':slug'        => $p['slug'],
         ':nombre'      => $p['nombre'],
         ':descripcion' => $p['descripcion'],
         ':permisos'    => $p['permisos'],
@@ -155,12 +179,14 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (!$exists->fetch()) jsonError('Rol no encontrado', 404);
 
     $p = sanitizePayload($in);
+    assertSlugDisponible($pdo, $p['slug'], $id);
     $stmt = $pdo->prepare('
         UPDATE roles
-           SET nombre = :nombre, descripcion = :descripcion, permisos = :permisos
+           SET slug = :slug, nombre = :nombre, descripcion = :descripcion, permisos = :permisos
          WHERE id = :id
     ');
     $stmt->execute([
+        ':slug'        => $p['slug'],
         ':nombre'      => $p['nombre'],
         ':descripcion' => $p['descripcion'],
         ':permisos'    => $p['permisos'],

@@ -8,10 +8,17 @@ services:
       dockerfile: docker/Dockerfile
     ports:
       - "8091:8091"
+      - "8094:8094"
     volumes:
       - ./cloud:/var/www/html
+      - ./robot:/var/www/robot
       - ./env.php:/var/www/env.php:ro
       - ./.env.development:/var/www/.env.development:ro
+      # Montamos el .env.production tambien en desarrollo (read-only) para que
+      # el Sincronizador de tablas pueda abrir una segunda conexion contra RDS
+      # sin cambiar APP_ENV. Solo se usa desde ese endpoint; el loader normal
+      # (env.php) sigue eligiendo development por la regla de deteccion.
+      - ./.env.production:/var/www/.env.production:ro
     environment:
       APP_ENV: development
     extra_hosts:

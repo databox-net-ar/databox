@@ -64,6 +64,26 @@ CREATE TABLE `articuloscategorias`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 103 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for awscuentas
+-- ----------------------------
+DROP TABLE IF EXISTS `awscuentas`;
+CREATE TABLE `awscuentas`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `numero` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `usuario` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `contrasena` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `accesskey` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `secreto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `facturas_cantidad` int(11) NULL DEFAULT NULL,
+  `facturas_total` decimal(11, 2) NULL DEFAULT NULL,
+  `facturas_moneda` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `facturas_actualizado` datetime(0) NULL DEFAULT NULL,
+  `facturas_json` json NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 100 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for awssescanales
 -- ----------------------------
 DROP TABLE IF EXISTS `awssescanales`;
@@ -1685,6 +1705,7 @@ CREATE TABLE `parametros`  (
 DROP TABLE IF EXISTS `permisos`;
 CREATE TABLE `permisos`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `slug` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
@@ -1741,6 +1762,7 @@ CREATE TABLE `remuneraciones`  (
 DROP TABLE IF EXISTS `roles`;
 CREATE TABLE `roles`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `slug` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `permisos` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
@@ -1777,7 +1799,8 @@ DROP TABLE IF EXISTS `sucesos`;
 CREATE TABLE `sucesos`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `fecha` datetime(0) NULL DEFAULT NULL,
-  `origen` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `origen` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `tipo` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'info',
   `detalle` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;

@@ -1,7 +1,7 @@
 <?php
 // api/sucesos.php
 // Visor read-only de la tabla `sucesos` (log de actividad de los distintos
-// modulos del panel). Columnas: id / fecha / origen / detalle (text).
+// modulos del panel). Columnas: id / fecha / origen / tipo / detalle.
 // Otros modulos escriben aqui; el panel solo lee.
 //
 //   GET api/sucesos.php          -> listado con filtros (query string)
@@ -13,6 +13,8 @@ require_once __DIR__ . '/lib/auth_check.php';
 
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
+
+const TIPOS_SUCESO = ['info', 'error', 'alerta'];
 
 try {
     $pdo    = db();
@@ -31,16 +33,20 @@ try {
 }
 
 function normalizarFila(array $r): array {
+    $tipo = (string)($r['tipo'] ?? 'info');
+    if (!in_array($tipo, TIPOS_SUCESO, true)) $tipo = 'info';
     return [
         'id'      => (int)($r['id'] ?? 0),
         'fecha'   => $r['fecha']   !== null ? (string)$r['fecha']   : null,
         'origen'  => $r['origen']  !== null ? (string)$r['origen']  : null,
+        'tipo'    => $tipo,
         'detalle' => $r['detalle'] !== null ? (string)$r['detalle'] : null,
     ];
 }
 
 function handleList(PDO $pdo, array $q): void {
     $search = trim((string)($q['q']     ?? ''));
+    $tipo   = trim((string)($q['tipo']  ?? ''));
     $desde  = trim((string)($q['desde'] ?? ''));
     $hasta  = trim((string)($q['hasta'] ?? ''));
     $limite = isset($q['limite']) ? (int)$q['limite'] : 200;
@@ -57,6 +63,10 @@ function handleList(PDO $pdo, array $q): void {
         $params[':s1'] = $like;
         $params[':s2'] = $like;
     }
+    if ($tipo !== '' && in_array($tipo, TIPOS_SUCESO, true)) {
+        $where[] = 'tipo = :tipo';
+        $params[':tipo'] = $tipo;
+    }
     if ($desde !== '') {
         $where[] = 'fecha >= :desde';
         $params[':desde'] = $desde . ' 00:00:00';
@@ -71,7 +81,7 @@ function handleList(PDO $pdo, array $q): void {
     $total = (int)$pdo->query('SELECT COUNT(*) FROM sucesos')->fetchColumn();
 
     $sql = "
-        SELECT id, fecha, origen, detalle
+        SELECT id, fecha, origen, tipo, detalle
         FROM sucesos
         {$sqlWhere}
         ORDER BY id DESC
@@ -91,7 +101,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('SELECT id, fecha, origen, detalle FROM sucesos WHERE id = :id');
+    $stmt = $pdo->prepare('SELECT id, fecha, origen, tipo, detalle FROM sucesos WHERE id = :id');
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Suceso no encontrado', 404);
