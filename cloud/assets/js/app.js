@@ -2619,7 +2619,6 @@ function renderInvoicingAwsCuenta(inv, adeudadas) {
       Sin facturas emitidas en el rango ${esc(inv.range.start)} — ${esc(inv.range.end)}.
     </div>`;
   }
-  const hoy = new Date().toISOString().slice(0, 10);
   const fmt = (iso) => {
     if (!iso) return '—';
     const [y, m, d] = iso.split('-');
@@ -2627,15 +2626,11 @@ function renderInvoicingAwsCuenta(inv, adeudadas) {
   };
   const filas = inv.invoices.map((f) => {
     const adeudada = adeudadas && adeudadas.has(f.invoice_id);
-    const vencida  = !adeudada && f.due_date && f.due_date <= hoy;
-    const bg = adeudada
-      ? 'background:rgba(230,42,42,.15)'
-      : (vencida ? 'background:rgba(245,158,11,.10)' : '');
     const monto = f.total != null
       ? `${esc(f.total)}${f.currency ? ' ' + esc(f.currency) : ''}`
       : '—';
     return `
-      <tr${bg ? ' style="' + bg + '"' : ''}>
+      <tr${adeudada ? ' style="background:rgba(230,42,42,.15)"' : ''}>
         <td>
           <code>${esc(f.invoice_id || '—')}</code>
           ${adeudada ? ' <span class="badge badge-danger" style="font-size:.7rem">adeudada</span>' : ''}
@@ -2840,6 +2835,11 @@ route('/herramientas', async (mount) => {
         <span class="tile-icon">📰</span>
         <span class="tile-title">Visor de sucesos</span>
         <span class="tile-desc">Recorré el log de actividad (tabla <code>sucesos</code>) que los distintos módulos van registrando al trabajar.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirEditorCron()">
+        <span class="tile-icon">🕒</span>
+        <span class="tile-title">Editor de cron</span>
+        <span class="tile-desc">Consultá y editá el crontab del worker Robot que corre las tareas programadas dentro del contenedor.</span>
       </button>
     </div>
   `;
@@ -5965,6 +5965,113 @@ document.addEventListener('keydown', (e) => {
   const listado = document.getElementById('sucesosBackdrop');
   if (detalle && detalle.classList.contains('open')) { detalle.classList.remove('open'); return; }
   if (listado && listado.classList.contains('open')) { cerrarVisorSucesos(); }
+});
+
+// ------------------------- Herramientas: Editor de cron -------------------------
+// Lee/escribe el archivo /etc/cron.d/databox del contenedor (bind-mount de
+// ./robot/crontab). Formato /etc/cron.d/: min hora dom mes dow USUARIO CMD.
+let _cronCargando = false;
+let _cronGuardando = false;
+
+function abrirEditorCron() {
+  document.getElementById('cronBackdrop').classList.add('open');
+  cargarEditorCron();
+}
+
+function cerrarEditorCron() {
+  document.getElementById('cronBackdrop').classList.remove('open');
+}
+
+async function cargarEditorCron() {
+  if (_cronCargando) return;
+  _cronCargando = true;
+  const ta = document.getElementById('cronContenido');
+  ta.value = 'Cargando…';
+  ta.disabled = true;
+  document.getElementById('cronBtnGuardar').disabled = true;
+  try {
+    const data = await apiGet('api/herramientas_cron.php');
+    ta.value = data.contenido || '';
+    ta.disabled = false;
+    document.getElementById('cronRuta').textContent = data.ruta || '—';
+
+    const envBadge = document.getElementById('cronEnvBadge');
+    const env = (data.env || 'unknown').toLowerCase();
+    envBadge.textContent = env;
+    envBadge.className = 'badge ' + (env === 'production' ? 'badge-danger'
+                                    : env === 'development' ? 'badge-success'
+                                    : 'badge-warn');
+
+    actualizarResumenCron(data);
+    renderWarningsCron(data.warnings || []);
+    document.getElementById('cronBtnGuardar').disabled = false;
+  } catch (e) {
+    ta.value = '# Error al cargar: ' + e.message;
+    ta.disabled = false;
+  } finally {
+    _cronCargando = false;
+  }
+}
+
+function actualizarResumenCron(data) {
+  const activas = data.activas ?? 0;
+  const lineas  = data.lineas  ?? 0;
+  const tamano  = data.tamano  ?? 0;
+  const mod     = data.modificado ? ` · guardado ${data.modificado}` : '';
+  document.getElementById('cronResumen').textContent =
+    `${activas} tarea${activas === 1 ? '' : 's'} activa${activas === 1 ? '' : 's'} · ` +
+    `${lineas} línea${lineas === 1 ? '' : 's'} · ${tamano} B${mod}`;
+}
+
+function renderWarningsCron(warnings) {
+  const cont = document.getElementById('cronWarnings');
+  const tbody = document.getElementById('cronWarningsTbody');
+  if (!warnings.length) {
+    cont.style.display = 'none';
+    tbody.innerHTML = '';
+    return;
+  }
+  cont.style.display = '';
+  tbody.innerHTML = warnings.map((w) => `
+    <tr>
+      <td style="text-align:center;font-family:monospace;color:var(--warn)">${w.linea || '—'}</td>
+      <td style="font-size:.82rem">${esc(w.mensaje || '')}</td>
+    </tr>
+  `).join('');
+}
+
+async function guardarEditorCron() {
+  if (_cronGuardando) return;
+  _cronGuardando = true;
+  const btn = document.getElementById('cronBtnGuardar');
+  const textoOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Guardando…';
+  try {
+    const contenido = document.getElementById('cronContenido').value;
+    const data = await apiSend('api/herramientas_cron.php', 'POST', { contenido });
+    actualizarResumenCron(data);
+    renderWarningsCron(data.warnings || []);
+    const warns = (data.warnings || []).length;
+    if (warns > 0) {
+      toast(`Guardado con ${warns} advertencia${warns === 1 ? '' : 's'}. Revisá el panel de abajo.`,
+            { duration: 6000 });
+    } else {
+      toast('Crontab guardado. Cron lo relee automáticamente.');
+    }
+  } catch (e) {
+    toast(e.message || 'Error al guardar.', { error: true, duration: 10000 });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = textoOriginal;
+    _cronGuardando = false;
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const b = document.getElementById('cronBackdrop');
+  if (b && b.classList.contains('open')) cerrarEditorCron();
 });
 
 // ------------------------- Boot -------------------------

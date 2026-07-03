@@ -69,7 +69,7 @@ tar \
     --exclude='*.log' \
     --exclude='*.pem' \
     --exclude='*.key' \
-    -czf - cloud docker $INCLUDE_DB env.php .env.production | \
+    -czf - cloud robot docker $INCLUDE_DB env.php .env.production | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar -xzf - -C '$BASE_REMOTE/'"

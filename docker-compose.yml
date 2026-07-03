@@ -19,6 +19,11 @@ services:
       # sin cambiar APP_ENV. Solo se usa desde ese endpoint; el loader normal
       # (env.php) sigue eligiendo development por la regla de deteccion.
       - ./.env.production:/var/www/.env.production:ro
+      # Crontab del worker (tareas programadas contra /var/www/robot/*.php).
+      # El entrypoint le ajusta permisos al arrancar para que cron lo acepte
+      # y para que el endpoint del panel (que corre como www-data) pueda
+      # re-escribirlo desde el "Editor de cron" en Herramientas.
+      - ./robot/crontab:/etc/cron.d/databox
     environment:
       APP_ENV: development
     extra_hosts:

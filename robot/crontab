@@ -1,0 +1,32 @@
+# Crontab del worker Robot — se ejecuta dentro del contenedor `databox-apache`.
+# Bind-mounteado en /etc/cron.d/databox (formato /etc/cron.d/, con user field).
+#
+# Editable desde:  Panel cloud → Herramientas → Editor de cron
+# Reload:          automatico. Cron re-lee este archivo cuando cambia el mtime,
+#                  sin necesidad de reiniciar el contenedor.
+#
+# Formato de cada linea (SIETE campos separados por espacios/tabs):
+#
+#   min  hora  dia-del-mes  mes  dia-semana  USUARIO  COMANDO
+#
+#   min           0-59            (o */5, 0,15,30,45, 10-20)
+#   hora          0-23
+#   dia-del-mes   1-31
+#   mes           1-12            (o jan-dec)
+#   dia-semana    0-6             (0 = domingo, o sun-sat)
+#   USUARIO       www-data / root (el user con el que se ejecuta el comando)
+#   COMANDO       lo que se ejecuta
+#
+# Atajos permitidos (reemplazan los 5 campos de tiempo):
+#   @reboot   @hourly   @daily   @weekly   @monthly   @yearly
+#
+# Ejemplos:
+#   */5  *  *  *  *  www-data  php /var/www/robot/latidos.php
+#   0    3  *  *  *  www-data  curl -fsS http://localhost:8094/backup.php > /dev/null
+#   @daily             www-data  php /var/www/robot/limpieza_diaria.php
+
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# --- Tareas del worker ---
+# (agrega tus tareas debajo)

@@ -88,14 +88,22 @@ services:
   databox:
     container_name: databox-apache
     build:
-      context: ./docker
-      dockerfile: Dockerfile
+      # context = raiz del repo (igual que dev). El Dockerfile hace
+      # COPY docker/entrypoint.sh, asi que necesita ver la carpeta docker/.
+      context: .
+      dockerfile: docker/Dockerfile
     ports:
       - "127.0.0.1:${APP_PORT}:${APP_PORT}"
     volumes:
       - ./cloud:/var/www/html
+      - ./robot:/var/www/robot
       - ./env.php:/var/www/env.php:ro
       - ./.env.production:/var/www/.env.production:ro
+      # Crontab del worker Robot (tareas programadas contra /var/www/robot/*.php).
+      # Editable desde el "Editor de cron" del panel. El entrypoint le ajusta
+      # permisos al arrancar para que cron lo acepte y para que www-data pueda
+      # re-escribirlo desde el endpoint del panel.
+      - ./robot/crontab:/etc/cron.d/databox
     env_file:
       - .env.production
     restart: unless-stopped
