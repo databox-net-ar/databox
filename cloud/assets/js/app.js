@@ -21,6 +21,15 @@ function fmtFecha(iso) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// YYYY-MM-DD HH:MM:SS — para listados donde importa el segundo (log de mensajes).
+function fmtFechaLarga(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -4646,6 +4655,3473 @@ route('/datacountfacturacion', async (mount) => {
     factCargarLog();
   }, FACT_REFRESH_MS);
 }, 'Facturación');
+
+// ------------------------- Vista: Datarocket > Mensajes (ABM) -------------------------
+const drMsgFiltrosDefaults = {
+  q: '', codigo: '', medio: '', proyecto: '', canal: '', campana: '', contacto: '',
+  estado: '', resultado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const drMsgFiltros = { ...drMsgFiltrosDefaults };
+let drMsgBuscadorTimer   = null;
+let drMsgFiltrosSnapshot = null;
+
+const DR_MSG_MEDIO_MAP = {
+  C: { label: 'Correo',   icon: 'fa-envelope' },
+  W: { label: 'WhatsApp', icon: 'fa-whatsapp' },
+  S: { label: 'SMS',      icon: 'fa-comment-sms' },
+  T: { label: 'Telegram', icon: 'fa-telegram' },
+  P: { label: 'Push',     icon: 'fa-bell' },
+};
+const DR_MSG_FORMATO_MAP = {
+  T: 'Texto plano',
+  H: 'HTML',
+  M: 'Markdown',
+};
+const DR_MSG_PRIORIDAD_MAP = {
+  A: 'Alta',
+  N: 'Normal',
+  B: 'Baja',
+};
+
+function drMsgMedioBadge(m) {
+  if (m == null || m === '') return `<span class="badge badge-info">—</span>`;
+  const info = DR_MSG_MEDIO_MAP[m];
+  if (!info) return `<span class="badge badge-info">${esc(m)}</span>`;
+  return `<span class="badge badge-info"><i class="fa-solid ${info.icon}"></i> ${esc(info.label)}</span>`;
+}
+
+function drMsgEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    P: 'badge-warn',   // Pendiente
+    E: 'badge-success',// Enviado
+    F: 'badge-danger', // Fallado
+    C: 'badge-danger', // Cancelado
+    R: 'badge-info',   // Reintento
+  };
+  const labelMap = {
+    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
+  };
+  const cls = colorMap[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+}
+
+function drMsgResultadoBadge(r) {
+  if (r == null || r === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = { O: 'badge-success', F: 'badge-danger', P: 'badge-warn' };
+  const labelMap = { O: 'OK', F: 'Fallo', P: 'Pendiente' };
+  const cls = colorMap[r] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[r] || r)}</span>`;
+}
+
+function drMsgFmtDemora(seg) {
+  if (seg == null || seg === '' || isNaN(Number(seg))) return '—';
+  const n = Number(seg);
+  if (n < 60)    return `${n}s`;
+  if (n < 3600)  return `${Math.round(n / 60)}m`;
+  return `${(n / 3600).toFixed(1)}h`;
+}
+
+route('/datarocketmensajes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">✉️</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los mensajes de Datarocket son los envíos individuales de correo, WhatsApp,
+          SMS y demás medios que el motor genera a partir de las campañas y
+          plantillas, con su destinatario, cuerpo, estado y resultado del envío.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drMsgStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drMsgSearch"
+                   placeholder="🔍 Buscar destinatario, destino, asunto o remitente…">
+            <button class="search-clear" id="drMsgSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drMsgFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drMsgFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drMsgRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drMsgNuevoBtn">+ Nuevo mensaje</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Medio</th>
+              <th>Destinatario</th>
+              <th>Destino</th>
+              <th>Asunto</th>
+              <th>Estado</th>
+              <th>Resultado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drMsgTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="drMsgCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros -->
+    <div class="modal-backdrop" id="filtrosDrMsgBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrMsg()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrMsg()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroDrMsg('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Medio</label>
+              <select id="fDrMsgMedio" onchange="onFiltroDrMsg('medio', this.value)">
+                <option value="">— Todos —</option>
+                <option value="C">Correo</option>
+                <option value="W">WhatsApp</option>
+                <option value="S">SMS</option>
+                <option value="T">Telegram</option>
+                <option value="P">Push</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fDrMsgProyecto" min="1" oninput="onFiltroDrMsg('proyecto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Canal (ID)</label>
+              <input type="number" id="fDrMsgCanal" min="1" oninput="onFiltroDrMsg('canal', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Campaña (ID)</label>
+              <input type="number" id="fDrMsgCampana" min="1" oninput="onFiltroDrMsg('campana', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Contacto (ID)</label>
+              <input type="number" id="fDrMsgContacto" min="1" oninput="onFiltroDrMsg('contacto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fDrMsgEstado" onchange="onFiltroDrMsg('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="P">Pendiente</option>
+                <option value="E">Enviado</option>
+                <option value="F">Fallado</option>
+                <option value="C">Cancelado</option>
+                <option value="R">Reintento</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Resultado</label>
+              <select id="fDrMsgResultado" onchange="onFiltroDrMsg('resultado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="O">OK</option>
+                <option value="F">Fallo</option>
+                <option value="P">Pendiente</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fDrMsgDesde" onchange="onFiltroDrMsg('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fDrMsgHasta" onchange="onFiltroDrMsg('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrMsgLimite" min="1" max="1000" value="100" onchange="onFiltroDrMsg('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrMsgOrderBy" onchange="onFiltroDrMsg('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="medio">Medio</option>
+                <option value="destinatario">Destinatario</option>
+                <option value="destino">Destino</option>
+                <option value="asunto">Asunto</option>
+                <option value="estado">Estado</option>
+                <option value="resultado">Resultado</option>
+                <option value="enviado">Enviado</option>
+                <option value="demora">Demora</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrMsgDir" onchange="onFiltroDrMsg('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrMsg()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrMsg()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrMsg()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#drMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrMsg(null));
+  $('#drMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrMsg());
+  $('#drMsgRefrescarBtn').addEventListener('click', () => cargarDrMsg());
+
+  const inp = $('#drMsgSearch');
+  const clr = $('#drMsgSearchClear');
+  inp.value = drMsgFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drMsgFiltros.q = inp.value.trim();
+    clearTimeout(drMsgBuscadorTimer);
+    drMsgBuscadorTimer = setTimeout(() => { cargarDrMsg(); refrescarBadgeFiltrosDrMsg(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    drMsgFiltros.q = '';
+    cargarDrMsg();
+    refrescarBadgeFiltrosDrMsg();
+  });
+
+  // Acciones del menú contextual
+  $('#drMsgCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDrMsg(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDrMsg(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDrMsg(data.id);
+  });
+
+  // Clic en fila → consultar; clic en hamburguesa → menú
+  $('#drMsgTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#drMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDrMsg(Number(tr.dataset.id));
+  });
+  $('#drMsgTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#drMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDrMsg();
+  await cargarDrMsg();
+}, 'Mensajes');
+
+async function cargarDrMsg() {
+  const tbody = $('#drMsgTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(drMsgFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/datarocketmensajes.php?' + qs.toString());
+    pintarStatsDrMsg(data.stats);
+    pintarTablaDrMsg(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDrMsg(s) {
+  const cards = $$('#drMsgStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.enviados);
+  cards[2].textContent = fmtNum(s.con_error);
+}
+
+function pintarTablaDrMsg(rows) {
+  const tbody = $('#drMsgTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin mensajes.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((m) => `
+    <tr data-id="${m.id}" class="row-clickable">
+      <td class="td-id">#${esc(m.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
+      <td>${drMsgMedioBadge(m.medio)}</td>
+      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
+      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
+      <td>${esc(m.asunto || '—')}</td>
+      <td>${drMsgEstadoBadge(m.estado)}</td>
+      <td>${drMsgResultadoBadge(m.resultado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de Filtros ----
+function onFiltroDrMsg(key, value) {
+  if (['medio', 'estado', 'resultado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    drMsgFiltros[key] = value;
+  } else if (['codigo', 'proyecto', 'canal', 'campana', 'contacto'].includes(key)) {
+    const v = String(value).trim();
+    drMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    drMsgFiltros.limite = n;
+  } else {
+    drMsgFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDrMsg();
+  cargarDrMsg();
+}
+
+function refrescarBadgeFiltrosDrMsg() {
+  const btn   = $('#drMsgFiltrosBtn');
+  const badge = $('#drMsgFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(drMsgFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(drMsgFiltros[k]) !== String(drMsgFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDrMsg() {
+  const f = drMsgFiltros;
+  $('#fDrMsgCodigo').value    = f.codigo;
+  $('#fDrMsgMedio').value     = f.medio;
+  $('#fDrMsgProyecto').value  = f.proyecto;
+  $('#fDrMsgCanal').value     = f.canal;
+  $('#fDrMsgCampana').value   = f.campana;
+  $('#fDrMsgContacto').value  = f.contacto;
+  $('#fDrMsgEstado').value    = f.estado;
+  $('#fDrMsgResultado').value = f.resultado;
+  $('#fDrMsgDesde').value     = f.desde;
+  $('#fDrMsgHasta').value     = f.hasta;
+  $('#fDrMsgLimite').value    = f.limite;
+  $('#fDrMsgOrderBy').value   = f.order_by;
+  $('#fDrMsgDir').value       = f.dir;
+}
+
+function abrirModalFiltrosDrMsg() {
+  drMsgFiltrosSnapshot = { ...drMsgFiltros };
+  sincronizarControlesFiltrosDrMsg();
+  $('#filtrosDrMsgBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDrMsg() {
+  $('#filtrosDrMsgBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDrMsg() {
+  if (drMsgFiltrosSnapshot) {
+    Object.assign(drMsgFiltros, drMsgFiltrosSnapshot);
+    refrescarBadgeFiltrosDrMsg();
+    cargarDrMsg();
+  }
+  cerrarModalFiltrosDrMsg();
+}
+
+function limpiarFiltrosDrMsg() {
+  Object.assign(drMsgFiltros, drMsgFiltrosDefaults);
+  drMsgFiltros.q = $('#drMsgSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDrMsg();
+  refrescarBadgeFiltrosDrMsg();
+  cargarDrMsg();
+}
+
+// Exponer para los onclick del HTML
+window.onFiltroDrMsg           = onFiltroDrMsg;
+window.cancelarFiltrosDrMsg    = cancelarFiltrosDrMsg;
+window.limpiarFiltrosDrMsg     = limpiarFiltrosDrMsg;
+window.cerrarModalFiltrosDrMsg = cerrarModalFiltrosDrMsg;
+
+// ---- Modal Consultar ----
+async function abrirConsultarDrMsg(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1200px">
+      <div class="modal-header">
+        <div class="modal-title">Mensaje <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrMsg(id); }
+  });
+
+  try {
+    const m = await apiGet(`api/datarocketmensajes.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrMsg(m);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDrMsg(m) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
+    ? (m.formato === 'H'
+        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
+        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
+    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
+
+  return `
+    <!-- Encabezado -->
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">${esc(m.destinatario || '—')}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(m.destino || '')}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)} · UUID <code>${esc(m.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${drMsgMedioBadge(m.medio)}</div>
+        <div>${drMsgEstadoBadge(m.estado)} ${drMsgResultadoBadge(m.resultado)}</div>
+        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
+          <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
+          <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Cuerpo del mensaje')}
+    ${cuerpoHtml}
+
+    ${seccion('Remitente y destinatario')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Remitente',    m.remitente)}
+      ${card('Remite',       m.remite, false, true)}
+      ${card('Destinatario', m.destinatario)}
+      ${card('Destino',      m.destino, false, true)}
+    </dl>
+
+    ${seccion('Contexto de envío')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Proyecto',    m.proyecto)}
+      ${card('Canal',       m.canal)}
+      ${card('Servicio',    m.servicio)}
+      ${card('Campaña',     m.campana)}
+      ${card('Plantilla',   m.plantilla)}
+      ${card('Contacto',    m.contacto)}
+      ${card('Suscripción', m.suscripcion)}
+      ${card('Prioridad',   DR_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
+      ${card('Formato',     DR_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+    </dl>
+
+    ${seccion('Tiempos y resultado')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Fecha',        fmtFecha(m.fecha))}
+      ${card('Transmitido',  fmtFecha(m.transmitido))}
+      ${card('Enviado',      fmtFecha(m.enviado))}
+      ${card('Demora',       drMsgFmtDemora(m.demora))}
+      ${card('Estado',       m.estado)}
+      ${card('Resultado',    m.resultado)}
+    </dl>
+
+    ${seccion('Media y errores')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Media',  m.media, true, true)}
+      ${card('Error',  m.error, true)}
+    </dl>
+  `;
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDrMsg(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formDrMsgHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const m = await apiGet(`api/datarocketmensajes.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formDrMsgHtml(m);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDrMsg(id, a);
+  });
+}
+
+function formDrMsgHtml(m) {
+  const v   = (k) => esc(m?.[k] ?? '');
+  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = m?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="drmFecha" value="${dt('fecha')}">
+      </div>
+      <div class="form-group">
+        <label>Medio</label>
+        <select id="drmMedio">
+          <option value=""  ${sel('medio','')}>—</option>
+          <option value="C" ${sel('medio','C')}>Correo</option>
+          <option value="W" ${sel('medio','W')}>WhatsApp</option>
+          <option value="S" ${sel('medio','S')}>SMS</option>
+          <option value="T" ${sel('medio','T')}>Telegram</option>
+          <option value="P" ${sel('medio','P')}>Push</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="drmPrioridad">
+          <option value=""  ${sel('prioridad','')}>—</option>
+          <option value="A" ${sel('prioridad','A')}>Alta</option>
+          <option value="N" ${sel('prioridad','N')}>Normal</option>
+          <option value="B" ${sel('prioridad','B')}>Baja</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="drmProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Servicio (ID)</label>
+        <input type="number" id="drmServicio" min="1" value="${v('servicio')}">
+      </div>
+      <div class="form-group">
+        <label>Canal (ID)</label>
+        <input type="number" id="drmCanal" min="1" value="${v('canal')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Campaña (ID)</label>
+        <input type="number" id="drmCampana" min="1" value="${v('campana')}">
+      </div>
+      <div class="form-group">
+        <label>Plantilla (ID)</label>
+        <input type="number" id="drmPlantilla" min="1" value="${v('plantilla')}">
+      </div>
+      <div class="form-group">
+        <label>Suscripción (ID)</label>
+        <input type="number" id="drmSuscripcion" min="1" value="${v('suscripcion')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Contacto (ID)</label>
+      <input type="number" id="drmContacto" min="1" value="${v('contacto')}">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Remitente</label>
+        <input type="text" id="drmRemitente" maxlength="255" value="${v('remitente')}">
+      </div>
+      <div class="form-group">
+        <label>Remite</label>
+        <input type="text" id="drmRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Destinatario</label>
+        <input type="text" id="drmDestinatario" maxlength="255" value="${v('destinatario')}">
+      </div>
+      <div class="form-group">
+        <label>Destino</label>
+        <input type="text" id="drmDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Asunto</label>
+      <input type="text" id="drmAsunto" maxlength="500" value="${v('asunto')}">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Formato</label>
+        <select id="drmFormato">
+          <option value=""  ${sel('formato','')}>—</option>
+          <option value="T" ${sel('formato','T')}>Texto plano</option>
+          <option value="H" ${sel('formato','H')}>HTML</option>
+          <option value="M" ${sel('formato','M')}>Markdown</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Media (URL/JSON)</label>
+        <input type="text" id="drmMedia" maxlength="1000" value="${v('media')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cuerpo</label>
+      <textarea id="drmCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="drmEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="P" ${sel('estado','P')}>Pendiente</option>
+          <option value="E" ${sel('estado','E')}>Enviado</option>
+          <option value="F" ${sel('estado','F')}>Fallado</option>
+          <option value="C" ${sel('estado','C')}>Cancelado</option>
+          <option value="R" ${sel('estado','R')}>Reintento</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Resultado</label>
+        <select id="drmResultado">
+          <option value=""  ${sel('resultado','')}>—</option>
+          <option value="O" ${sel('resultado','O')}>OK</option>
+          <option value="F" ${sel('resultado','F')}>Fallo</option>
+          <option value="P" ${sel('resultado','P')}>Pendiente</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Demora (seg.)</label>
+        <input type="number" id="drmDemora" min="0" value="${v('demora')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Error</label>
+      <textarea id="drmErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Transmitido</label>
+        <input type="datetime-local" id="drmTransmitido" value="${dt('transmitido')}">
+      </div>
+      <div class="form-group">
+        <label>Enviado</label>
+        <input type="datetime-local" id="drmEnviado" value="${dt('enviado')}">
+      </div>
+    </div>
+    <div class="field-error" id="drmFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarDrMsg(id, btn) {
+  const err = $('#drmFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    fecha:        $('#drmFecha').value || null,
+    medio:        $('#drmMedio').value,
+    prioridad:    $('#drmPrioridad').value,
+    proyecto:     $('#drmProyecto').value,
+    servicio:     $('#drmServicio').value,
+    canal:        $('#drmCanal').value,
+    campana:      $('#drmCampana').value,
+    plantilla:    $('#drmPlantilla').value,
+    suscripcion:  $('#drmSuscripcion').value,
+    contacto:     $('#drmContacto').value,
+    remitente:    $('#drmRemitente').value.trim(),
+    remite:       $('#drmRemite').value.trim(),
+    destinatario: $('#drmDestinatario').value.trim(),
+    destino:      $('#drmDestino').value.trim(),
+    asunto:       $('#drmAsunto').value.trim(),
+    formato:      $('#drmFormato').value,
+    media:        $('#drmMedia').value.trim(),
+    cuerpo:       $('#drmCuerpo').value,
+    estado:       $('#drmEstado').value,
+    resultado:    $('#drmResultado').value,
+    demora:       $('#drmDemora').value,
+    error:        $('#drmErrorTxt').value,
+    transmitido:  $('#drmTransmitido').value || null,
+    enviado:      $('#drmEnviado').value || null,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/datarocketmensajes.php', 'POST', payload);
+      toast('Mensaje creado.');
+    } else {
+      await apiSend(`api/datarocketmensajes.php?id=${id}`, 'PUT', payload);
+      toast('Mensaje actualizado.');
+    }
+    closeModal();
+    cargarDrMsg();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDrMsg(id) {
+  const ok = await confirmar({
+    title: 'Eliminar mensaje',
+    message: `Se eliminará el mensaje #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datarocketmensajes.php?id=${id}`, 'DELETE');
+    toast('Mensaje eliminado.');
+    cargarDrMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: AWS SES (landing) -------------------------
+route('/awsses', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">AWS SES</div>
+      <div class="page-subtitle">Servicio de correo de Amazon: mensajes registrados, canales SMTP y consola de la plataforma.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/awssesmensajes'">
+        <span class="tile-icon">✉️</span>
+        <span class="tile-title">Mensajes</span>
+        <span class="tile-desc">Cada envío individual de correo procesado por AWS SES, con destinatario, cuerpo, estado y tiempo de entrega.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/awssescanales'">
+        <span class="tile-icon">📡</span>
+        <span class="tile-title">Canales</span>
+        <span class="tile-desc">Los canales SMTP de AWS SES: servidor, usuario, contraseña y correo remitente por canal.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://us-east-1.console.aws.amazon.com/ses/home?region=us-east-1#/account', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre la consola oficial de AWS SES (region us-east-1) en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'AWS SES');
+
+// ------------------------- Vista: AWS SES > Mensajes (ABM) -------------------------
+const sesMsgFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', canal: '', plantilla: '',
+  estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const sesMsgFiltros = { ...sesMsgFiltrosDefaults };
+let sesMsgBuscadorTimer   = null;
+let sesMsgFiltrosSnapshot = null;
+
+const SES_MSG_FORMATO_MAP = {
+  T: 'Texto plano',
+  H: 'HTML',
+  M: 'Markdown',
+};
+const SES_MSG_PRIORIDAD_MAP = {
+  A: 'Alta',
+  N: 'Normal',
+  B: 'Baja',
+};
+
+function sesMsgEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    P: 'badge-warn',
+    E: 'badge-success',
+    F: 'badge-danger',
+    C: 'badge-danger',
+    R: 'badge-info',
+  };
+  const labelMap = {
+    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
+  };
+  const cls = colorMap[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+}
+
+function sesMsgFmtDemora(seg) {
+  if (seg == null || seg === '' || isNaN(Number(seg))) return '—';
+  const n = Number(seg);
+  if (n < 60)    return `${n}s`;
+  if (n < 3600)  return `${Math.round(n / 60)}m`;
+  return `${(n / 3600).toFixed(1)}h`;
+}
+
+route('/awssesmensajes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">✉️</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los mensajes AWS SES son cada correo individual que el motor SES procesa,
+          con su remitente, destinatario, asunto, cuerpo y el estado del envío
+          registrado por Amazon.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="sesMsgStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="sesMsgSearch"
+                   placeholder="🔍 Buscar destinatario, destino, asunto o tags…">
+            <button class="search-clear" id="sesMsgSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="sesMsgFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="sesMsgFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="sesMsgRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="sesMsgNuevoBtn">+ Nuevo mensaje</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Canal</th>
+              <th>Destinatario</th>
+              <th>Destino</th>
+              <th>Asunto</th>
+              <th>Estado</th>
+              <th>Enviado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="sesMsgTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="sesMsgCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosSesMsgBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosSesMsg()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosSesMsg()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fSesMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroSesMsg('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fSesMsgEstado" onchange="onFiltroSesMsg('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="P">Pendiente</option>
+                <option value="E">Enviado</option>
+                <option value="F">Fallado</option>
+                <option value="C">Cancelado</option>
+                <option value="R">Reintento</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fSesMsgProyecto" min="1" oninput="onFiltroSesMsg('proyecto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Canal (ID)</label>
+              <input type="number" id="fSesMsgCanal" min="1" oninput="onFiltroSesMsg('canal', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Plantilla (ID)</label>
+              <input type="number" id="fSesMsgPlantilla" min="1" oninput="onFiltroSesMsg('plantilla', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fSesMsgDesde" onchange="onFiltroSesMsg('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fSesMsgHasta" onchange="onFiltroSesMsg('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fSesMsgLimite" min="1" max="1000" value="100" onchange="onFiltroSesMsg('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fSesMsgOrderBy" onchange="onFiltroSesMsg('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="destinatario">Destinatario</option>
+                <option value="destino">Destino</option>
+                <option value="asunto">Asunto</option>
+                <option value="estado">Estado</option>
+                <option value="enviado">Enviado</option>
+                <option value="demora">Demora</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fSesMsgDir" onchange="onFiltroSesMsg('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosSesMsg()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosSesMsg()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosSesMsg()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#sesMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionSesMsg(null));
+  $('#sesMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosSesMsg());
+  $('#sesMsgRefrescarBtn').addEventListener('click', () => cargarSesMsg());
+
+  const inp = $('#sesMsgSearch');
+  const clr = $('#sesMsgSearchClear');
+  inp.value = sesMsgFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    sesMsgFiltros.q = inp.value.trim();
+    clearTimeout(sesMsgBuscadorTimer);
+    sesMsgBuscadorTimer = setTimeout(() => { cargarSesMsg(); refrescarBadgeFiltrosSesMsg(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    sesMsgFiltros.q = '';
+    cargarSesMsg();
+    refrescarBadgeFiltrosSesMsg();
+  });
+
+  $('#sesMsgCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarSesMsg(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionSesMsg(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarSesMsg(data.id);
+  });
+
+  $('#sesMsgTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#sesMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarSesMsg(Number(tr.dataset.id));
+  });
+  $('#sesMsgTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#sesMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosSesMsg();
+  await cargarSesMsg();
+}, 'Mensajes');
+
+async function cargarSesMsg() {
+  const tbody = $('#sesMsgTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(sesMsgFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/awssesmensajes.php?' + qs.toString());
+    pintarStatsSesMsg(data.stats);
+    pintarTablaSesMsg(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsSesMsg(s) {
+  const cards = $$('#sesMsgStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.enviados);
+  cards[2].textContent = fmtNum(s.con_error);
+}
+
+function pintarTablaSesMsg(rows) {
+  const tbody = $('#sesMsgTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin mensajes.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((m) => `
+    <tr data-id="${m.id}" class="row-clickable">
+      <td class="td-id">#${esc(m.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
+      <td>${esc(m.canal_nombre || (m.canal != null ? '#' + m.canal : '—'))}</td>
+      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
+      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
+      <td>${esc(m.asunto || '—')}</td>
+      <td>${sesMsgEstadoBadge(m.estado)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroSesMsg(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    sesMsgFiltros[key] = value;
+  } else if (['codigo', 'proyecto', 'canal', 'plantilla'].includes(key)) {
+    const v = String(value).trim();
+    sesMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    sesMsgFiltros.limite = n;
+  } else {
+    sesMsgFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosSesMsg();
+  cargarSesMsg();
+}
+
+function refrescarBadgeFiltrosSesMsg() {
+  const btn   = $('#sesMsgFiltrosBtn');
+  const badge = $('#sesMsgFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(sesMsgFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(sesMsgFiltros[k]) !== String(sesMsgFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosSesMsg() {
+  const f = sesMsgFiltros;
+  $('#fSesMsgCodigo').value    = f.codigo;
+  $('#fSesMsgEstado').value    = f.estado;
+  $('#fSesMsgProyecto').value  = f.proyecto;
+  $('#fSesMsgCanal').value     = f.canal;
+  $('#fSesMsgPlantilla').value = f.plantilla;
+  $('#fSesMsgDesde').value     = f.desde;
+  $('#fSesMsgHasta').value     = f.hasta;
+  $('#fSesMsgLimite').value    = f.limite;
+  $('#fSesMsgOrderBy').value   = f.order_by;
+  $('#fSesMsgDir').value       = f.dir;
+}
+
+function abrirModalFiltrosSesMsg() {
+  sesMsgFiltrosSnapshot = { ...sesMsgFiltros };
+  sincronizarControlesFiltrosSesMsg();
+  $('#filtrosSesMsgBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosSesMsg() { $('#filtrosSesMsgBackdrop').classList.remove('open'); }
+function cancelarFiltrosSesMsg() {
+  if (sesMsgFiltrosSnapshot) {
+    Object.assign(sesMsgFiltros, sesMsgFiltrosSnapshot);
+    refrescarBadgeFiltrosSesMsg();
+    cargarSesMsg();
+  }
+  cerrarModalFiltrosSesMsg();
+}
+function limpiarFiltrosSesMsg() {
+  Object.assign(sesMsgFiltros, sesMsgFiltrosDefaults);
+  sesMsgFiltros.q = $('#sesMsgSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosSesMsg();
+  refrescarBadgeFiltrosSesMsg();
+  cargarSesMsg();
+}
+window.onFiltroSesMsg           = onFiltroSesMsg;
+window.cancelarFiltrosSesMsg    = cancelarFiltrosSesMsg;
+window.limpiarFiltrosSesMsg     = limpiarFiltrosSesMsg;
+window.cerrarModalFiltrosSesMsg = cerrarModalFiltrosSesMsg;
+
+async function abrirConsultarSesMsg(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1200px">
+      <div class="modal-header">
+        <div class="modal-title">Mensaje SES <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionSesMsg(id); }
+  });
+
+  try {
+    const m = await apiGet(`api/awssesmensajes.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaSesMsg(m);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaSesMsg(m) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
+    ? (m.formato === 'H'
+        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
+        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
+    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">${esc(m.destinatario || '—')}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(m.destino || '')}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${sesMsgEstadoBadge(m.estado)}</div>
+        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
+          <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
+          <div><span style="color:var(--muted)">Encolado:</span> ${esc(fmtFecha(m.encolado))}</div>
+          <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Cuerpo del mensaje')}
+    ${cuerpoHtml}
+
+    ${seccion('Remitente y destinatario')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Remitente',    m.remitente)}
+      ${card('Remite',       m.remite, false, true)}
+      ${card('Destinatario', m.destinatario)}
+      ${card('Destino',      m.destino, false, true)}
+    </dl>
+
+    ${seccion('Contexto de envío')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Proyecto',   m.proyecto)}
+      ${card('Canal',      m.canal)}
+      ${card('Plantilla',  m.plantilla)}
+      ${card('Prioridad',  SES_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
+      ${card('Formato',    SES_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+      ${card('Codificado', m.codificado)}
+    </dl>
+
+    ${seccion('Tiempos y resultado')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Fecha',    fmtFecha(m.fecha))}
+      ${card('Encolado', fmtFecha(m.encolado))}
+      ${card('Enviado',  fmtFecha(m.enviado))}
+      ${card('Demora',   sesMsgFmtDemora(m.demora))}
+      ${card('Estado',   m.estado)}
+      ${card('Tags',     m.tags)}
+    </dl>
+
+    ${seccion('Adjunto, variables y errores')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Adjunto',    m.adjunto, true, true)}
+      ${card('Variables',  m.variables, true, true)}
+      ${card('Parámetros', m.parametros, true, true)}
+      ${card('Error',      m.error, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionSesMsg(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formSesMsgHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const m = await apiGet(`api/awssesmensajes.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formSesMsgHtml(m);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarSesMsg(id, a);
+  });
+}
+
+function formSesMsgHtml(m) {
+  const v   = (k) => esc(m?.[k] ?? '');
+  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = m?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="sesFecha" value="${dt('fecha')}">
+      </div>
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="sesPrioridad">
+          <option value=""  ${sel('prioridad','')}>—</option>
+          <option value="A" ${sel('prioridad','A')}>Alta</option>
+          <option value="N" ${sel('prioridad','N')}>Normal</option>
+          <option value="B" ${sel('prioridad','B')}>Baja</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="sesEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="P" ${sel('estado','P')}>Pendiente</option>
+          <option value="E" ${sel('estado','E')}>Enviado</option>
+          <option value="F" ${sel('estado','F')}>Fallado</option>
+          <option value="C" ${sel('estado','C')}>Cancelado</option>
+          <option value="R" ${sel('estado','R')}>Reintento</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="sesProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Canal (ID)</label>
+        <input type="number" id="sesCanal" min="1" value="${v('canal')}">
+      </div>
+      <div class="form-group">
+        <label>Plantilla (ID)</label>
+        <input type="number" id="sesPlantilla" min="1" value="${v('plantilla')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Remitente</label>
+        <input type="text" id="sesRemitente" maxlength="255" value="${v('remitente')}">
+      </div>
+      <div class="form-group">
+        <label>Remite</label>
+        <input type="text" id="sesRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Destinatario</label>
+        <input type="text" id="sesDestinatario" maxlength="255" value="${v('destinatario')}">
+      </div>
+      <div class="form-group">
+        <label>Destino</label>
+        <input type="text" id="sesDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Asunto</label>
+      <input type="text" id="sesAsunto" maxlength="255" value="${v('asunto')}">
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Formato</label>
+        <select id="sesFormato">
+          <option value=""  ${sel('formato','')}>—</option>
+          <option value="T" ${sel('formato','T')}>Texto plano</option>
+          <option value="H" ${sel('formato','H')}>HTML</option>
+          <option value="M" ${sel('formato','M')}>Markdown</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Codificado</label>
+        <input type="text" id="sesCodificado" maxlength="1" value="${v('codificado')}">
+      </div>
+      <div class="form-group">
+        <label>Tags</label>
+        <input type="text" id="sesTags" maxlength="255" value="${v('tags')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cuerpo</label>
+      <textarea id="sesCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Variables</label>
+      <textarea id="sesVariables" rows="3" style="font-family:monospace">${v('variables')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Parámetros</label>
+      <textarea id="sesParametros" rows="3" style="font-family:monospace">${v('parametros')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Adjunto (URL/ruta)</label>
+      <input type="text" id="sesAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
+    </div>
+    <div class="form-group">
+      <label>Error</label>
+      <textarea id="sesErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Encolado</label>
+        <input type="datetime-local" id="sesEncolado" value="${dt('encolado')}">
+      </div>
+      <div class="form-group">
+        <label>Enviado</label>
+        <input type="datetime-local" id="sesEnviado" value="${dt('enviado')}">
+      </div>
+      <div class="form-group">
+        <label>Demora (seg.)</label>
+        <input type="number" id="sesDemora" min="0" value="${v('demora')}">
+      </div>
+    </div>
+    <div class="field-error" id="sesFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarSesMsg(id, btn) {
+  const err = $('#sesFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    fecha:        $('#sesFecha').value || null,
+    prioridad:    $('#sesPrioridad').value,
+    estado:       $('#sesEstado').value,
+    proyecto:     $('#sesProyecto').value,
+    canal:        $('#sesCanal').value,
+    plantilla:    $('#sesPlantilla').value,
+    remitente:    $('#sesRemitente').value.trim(),
+    remite:       $('#sesRemite').value.trim(),
+    destinatario: $('#sesDestinatario').value.trim(),
+    destino:      $('#sesDestino').value.trim(),
+    asunto:       $('#sesAsunto').value.trim(),
+    formato:      $('#sesFormato').value,
+    codificado:   $('#sesCodificado').value.trim(),
+    tags:         $('#sesTags').value.trim(),
+    cuerpo:       $('#sesCuerpo').value,
+    variables:    $('#sesVariables').value,
+    parametros:   $('#sesParametros').value,
+    adjunto:      $('#sesAdjunto').value.trim(),
+    error:        $('#sesErrorTxt').value,
+    encolado:     $('#sesEncolado').value || null,
+    enviado:      $('#sesEnviado').value || null,
+    demora:       $('#sesDemora').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/awssesmensajes.php', 'POST', payload);
+      toast('Mensaje creado.');
+    } else {
+      await apiSend(`api/awssesmensajes.php?id=${id}`, 'PUT', payload);
+      toast('Mensaje actualizado.');
+    }
+    closeModal();
+    cargarSesMsg();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarSesMsg(id) {
+  const ok = await confirmar({
+    title: 'Eliminar mensaje',
+    message: `Se eliminará el mensaje #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awssesmensajes.php?id=${id}`, 'DELETE');
+    toast('Mensaje eliminado.');
+    cargarSesMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: AWS SES > Canales (ABM) -------------------------
+const sesChFiltrosDefaults = {
+  q: '', codigo: '', habilitado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const sesChFiltros = { ...sesChFiltrosDefaults };
+let sesChBuscadorTimer   = null;
+let sesChFiltrosSnapshot = null;
+
+function sesChHabilitadoBadge(h) {
+  if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
+  if (h === '0') return `<span class="badge badge-danger">Deshabilitado</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+route('/awssescanales', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">📡</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los canales AWS SES son cada configuración SMTP que el motor puede usar
+          para despachar correos, con su servidor, usuario, contraseña y correo
+          remitente asociado.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="sesChStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Habilitados</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="sesChSearch"
+                   placeholder="🔍 Buscar nombre, correo, servidor o usuario…">
+            <button class="search-clear" id="sesChSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="sesChFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="sesChFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="sesChRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="sesChNuevoBtn">+ Nuevo canal</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Correo</th>
+              <th>Servidor</th>
+              <th>Usuario</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="sesChTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="sesChCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosSesChBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosSesCh()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosSesCh()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fSesChCodigo" min="1" placeholder="ID …" oninput="onFiltroSesCh('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Habilitado</label>
+              <select id="fSesChHabilitado" onchange="onFiltroSesCh('habilitado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Habilitados</option>
+                <option value="0">Deshabilitados</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fSesChLimite" min="1" max="1000" value="100" onchange="onFiltroSesCh('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fSesChOrderBy" onchange="onFiltroSesCh('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="correo">Correo</option>
+                <option value="servidor">Servidor</option>
+                <option value="usuario">Usuario</option>
+                <option value="habilitado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fSesChDir" onchange="onFiltroSesCh('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosSesCh()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosSesCh()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosSesCh()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#sesChNuevoBtn').addEventListener('click', () => abrirAltaEdicionSesCh(null));
+  $('#sesChFiltrosBtn').addEventListener('click', () => abrirModalFiltrosSesCh());
+  $('#sesChRefrescarBtn').addEventListener('click', () => cargarSesCh());
+
+  const inp = $('#sesChSearch');
+  const clr = $('#sesChSearchClear');
+  inp.value = sesChFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    sesChFiltros.q = inp.value.trim();
+    clearTimeout(sesChBuscadorTimer);
+    sesChBuscadorTimer = setTimeout(() => { cargarSesCh(); refrescarBadgeFiltrosSesCh(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    sesChFiltros.q = '';
+    cargarSesCh();
+    refrescarBadgeFiltrosSesCh();
+  });
+
+  $('#sesChCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarSesCh(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionSesCh(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarSesCh(data.id);
+  });
+
+  $('#sesChTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#sesChCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarSesCh(Number(tr.dataset.id));
+  });
+  $('#sesChTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#sesChCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosSesCh();
+  await cargarSesCh();
+}, 'Canales');
+
+async function cargarSesCh() {
+  const tbody = $('#sesChTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(sesChFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/awssescanales.php?' + qs.toString());
+    pintarStatsSesCh(data.stats);
+    pintarTablaSesCh(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsSesCh(s) {
+  const cards = $$('#sesChStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.habilitados);
+}
+
+function pintarTablaSesCh(rows) {
+  const tbody = $('#sesChTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin canales.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-id">#${esc(c.id)}</td>
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td>${esc(c.correo || '—')}</td>
+      <td style="font-family:monospace">${esc(c.servidor || '—')}</td>
+      <td style="font-family:monospace">${esc(c.usuario || '—')}</td>
+      <td>${sesChHabilitadoBadge(c.habilitado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroSesCh(key, value) {
+  if (['habilitado', 'order_by', 'dir'].includes(key)) {
+    sesChFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    sesChFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    sesChFiltros.limite = n;
+  } else {
+    sesChFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosSesCh();
+  cargarSesCh();
+}
+
+function refrescarBadgeFiltrosSesCh() {
+  const btn   = $('#sesChFiltrosBtn');
+  const badge = $('#sesChFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(sesChFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(sesChFiltros[k]) !== String(sesChFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosSesCh() {
+  const f = sesChFiltros;
+  $('#fSesChCodigo').value     = f.codigo;
+  $('#fSesChHabilitado').value = f.habilitado;
+  $('#fSesChLimite').value     = f.limite;
+  $('#fSesChOrderBy').value    = f.order_by;
+  $('#fSesChDir').value        = f.dir;
+}
+
+function abrirModalFiltrosSesCh() {
+  sesChFiltrosSnapshot = { ...sesChFiltros };
+  sincronizarControlesFiltrosSesCh();
+  $('#filtrosSesChBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosSesCh() { $('#filtrosSesChBackdrop').classList.remove('open'); }
+function cancelarFiltrosSesCh() {
+  if (sesChFiltrosSnapshot) {
+    Object.assign(sesChFiltros, sesChFiltrosSnapshot);
+    refrescarBadgeFiltrosSesCh();
+    cargarSesCh();
+  }
+  cerrarModalFiltrosSesCh();
+}
+function limpiarFiltrosSesCh() {
+  Object.assign(sesChFiltros, sesChFiltrosDefaults);
+  sesChFiltros.q = $('#sesChSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosSesCh();
+  refrescarBadgeFiltrosSesCh();
+  cargarSesCh();
+}
+window.onFiltroSesCh           = onFiltroSesCh;
+window.cancelarFiltrosSesCh    = cancelarFiltrosSesCh;
+window.limpiarFiltrosSesCh     = limpiarFiltrosSesCh;
+window.cerrarModalFiltrosSesCh = cerrarModalFiltrosSesCh;
+
+async function abrirConsultarSesCh(id) {
+  openModal(`
+    <div class="modal" style="max-width:760px">
+      <div class="modal-header">
+        <div class="modal-title">Canal SES <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionSesCh(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/awssescanales.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaSesCh(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaSesCh(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code>
+        </div>
+      </div>
+      <div>${sesChHabilitadoBadge(c.habilitado)}</div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',   c.nombre)}
+      ${card('Correo',   c.correo)}
+      ${card('Servidor', c.servidor, false, true)}
+      ${card('Usuario',  c.usuario, false, true)}
+      ${card('Contraseña', c.contrasena ? '••••••••' : null, false, true)}
+      ${card('Habilitado', c.habilitado === '1' ? 'Sí' : (c.habilitado === '0' ? 'No' : '—'))}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionSesCh(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal" style="max-width:680px">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar canal <span class="modal-subtitle">#${id}</span>` : 'Nuevo canal'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formSesChHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/awssescanales.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formSesChHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarSesCh(id, a);
+  });
+}
+
+function formSesChHtml(c) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="sesChNombre" maxlength="255" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Correo</label>
+        <input type="email" id="sesChCorreo" maxlength="255" value="${v('correo')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Servidor (SMTP host)</label>
+      <input type="text" id="sesChServidor" maxlength="255" value="${v('servidor')}" style="font-family:monospace"
+             placeholder="ej. email-smtp.us-east-1.amazonaws.com">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Usuario (SMTP)</label>
+        <input type="text" id="sesChUsuario" maxlength="255" value="${v('usuario')}" style="font-family:monospace"
+               autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Contraseña (SMTP)</label>
+        <input type="password" id="sesChContrasena" maxlength="255" value="${v('contrasena')}" style="font-family:monospace"
+               autocomplete="new-password">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Estado</label>
+      <select id="sesChHabilitado">
+        <option value=""  ${sel('habilitado','')}>—</option>
+        <option value="1" ${sel('habilitado','1')}>Habilitado</option>
+        <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
+      </select>
+    </div>
+    <div class="field-error" id="sesChFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarSesCh(id, btn) {
+  const err = $('#sesChFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:     $('#sesChNombre').value.trim(),
+    correo:     $('#sesChCorreo').value.trim(),
+    servidor:   $('#sesChServidor').value.trim(),
+    usuario:    $('#sesChUsuario').value.trim(),
+    contrasena: $('#sesChContrasena').value,
+    habilitado: $('#sesChHabilitado').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/awssescanales.php', 'POST', payload);
+      toast('Canal creado.');
+    } else {
+      await apiSend(`api/awssescanales.php?id=${id}`, 'PUT', payload);
+      toast('Canal actualizado.');
+    }
+    closeModal();
+    cargarSesCh();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarSesCh(id) {
+  const ok = await confirmar({
+    title: 'Eliminar canal',
+    message: `Se eliminará el canal #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awssescanales.php?id=${id}`, 'DELETE');
+    toast('Canal eliminado.');
+    cargarSesCh();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Evolution API (landing) -------------------------
+route('/evolution', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Evolution API</div>
+      <div class="page-subtitle">Motor de WhatsApp: mensajes registrados, canales conectados y consola de la plataforma.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/evolutionmensajes'">
+        <span class="tile-icon">✉️</span>
+        <span class="tile-title">Mensajes</span>
+        <span class="tile-desc">Cada envío individual de WhatsApp procesado por Evolution API, con destinatario, cuerpo, estado y tiempo de entrega.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/evolutioncanales'">
+        <span class="tile-icon">📡</span>
+        <span class="tile-title">Canales</span>
+        <span class="tile-desc">Los canales de Evolution API: número, token, prefijo, webhook y estado de conexión por canal.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('http://evolution.york.databox.net.ar/manager', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre el manager de Evolution API en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'Evolution API');
+
+// ------------------------- Vista: Evolution API > Mensajes (ABM) -------------------------
+const evoMsgFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', canal: '', plantilla: '',
+  estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const evoMsgFiltros = { ...evoMsgFiltrosDefaults };
+let evoMsgBuscadorTimer   = null;
+let evoMsgFiltrosSnapshot = null;
+
+const EVO_MSG_FORMATO_MAP = {
+  T: 'Texto plano',
+  H: 'HTML',
+  M: 'Markdown',
+};
+const EVO_MSG_PRIORIDAD_MAP = {
+  A: 'Alta',
+  N: 'Normal',
+  B: 'Baja',
+};
+
+function evoMsgEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    P: 'badge-warn',
+    E: 'badge-success',
+    F: 'badge-danger',
+    C: 'badge-danger',
+    R: 'badge-info',
+  };
+  const labelMap = {
+    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
+  };
+  const cls = colorMap[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+}
+
+function evoMsgFmtDemora(seg) {
+  if (seg == null || seg === '' || isNaN(Number(seg))) return '—';
+  const n = Number(seg);
+  if (n < 60)    return `${n}s`;
+  if (n < 3600)  return `${Math.round(n / 60)}m`;
+  return `${(n / 3600).toFixed(1)}h`;
+}
+
+route('/evolutionmensajes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">✉️</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los mensajes de Evolution API son cada WhatsApp individual que el motor
+          procesa, con su remitente, destinatario, asunto, cuerpo y el estado del
+          envío registrado por la plataforma.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="evoMsgStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="evoMsgSearch"
+                   placeholder="🔍 Buscar destinatario, destino, asunto o tags…">
+            <button class="search-clear" id="evoMsgSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="evoMsgFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="evoMsgFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="evoMsgRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="evoMsgNuevoBtn">+ Nuevo mensaje</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Destinatario</th>
+              <th>Destino</th>
+              <th>Asunto</th>
+              <th>Estado</th>
+              <th>Enviado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="evoMsgTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="evoMsgCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosEvoMsgBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosEvoMsg()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosEvoMsg()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fEvoMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroEvoMsg('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fEvoMsgEstado" onchange="onFiltroEvoMsg('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="P">Pendiente</option>
+                <option value="E">Enviado</option>
+                <option value="F">Fallado</option>
+                <option value="C">Cancelado</option>
+                <option value="R">Reintento</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fEvoMsgProyecto" min="1" oninput="onFiltroEvoMsg('proyecto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Canal (ID)</label>
+              <input type="number" id="fEvoMsgCanal" min="1" oninput="onFiltroEvoMsg('canal', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Plantilla (ID)</label>
+              <input type="number" id="fEvoMsgPlantilla" min="1" oninput="onFiltroEvoMsg('plantilla', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fEvoMsgDesde" onchange="onFiltroEvoMsg('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fEvoMsgHasta" onchange="onFiltroEvoMsg('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fEvoMsgLimite" min="1" max="1000" value="100" onchange="onFiltroEvoMsg('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fEvoMsgOrderBy" onchange="onFiltroEvoMsg('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="destinatario">Destinatario</option>
+                <option value="destino">Destino</option>
+                <option value="asunto">Asunto</option>
+                <option value="estado">Estado</option>
+                <option value="enviado">Enviado</option>
+                <option value="demora">Demora</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fEvoMsgDir" onchange="onFiltroEvoMsg('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosEvoMsg()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosEvoMsg()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosEvoMsg()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#evoMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionEvoMsg(null));
+  $('#evoMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosEvoMsg());
+  $('#evoMsgRefrescarBtn').addEventListener('click', () => cargarEvoMsg());
+
+  const inp = $('#evoMsgSearch');
+  const clr = $('#evoMsgSearchClear');
+  inp.value = evoMsgFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    evoMsgFiltros.q = inp.value.trim();
+    clearTimeout(evoMsgBuscadorTimer);
+    evoMsgBuscadorTimer = setTimeout(() => { cargarEvoMsg(); refrescarBadgeFiltrosEvoMsg(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    evoMsgFiltros.q = '';
+    cargarEvoMsg();
+    refrescarBadgeFiltrosEvoMsg();
+  });
+
+  $('#evoMsgCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarEvoMsg(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionEvoMsg(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarEvoMsg(data.id);
+  });
+
+  $('#evoMsgTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#evoMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarEvoMsg(Number(tr.dataset.id));
+  });
+  $('#evoMsgTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#evoMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosEvoMsg();
+  await cargarEvoMsg();
+}, 'Mensajes');
+
+async function cargarEvoMsg() {
+  const tbody = $('#evoMsgTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(evoMsgFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/evolutionmensajes.php?' + qs.toString());
+    pintarStatsEvoMsg(data.stats);
+    pintarTablaEvoMsg(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsEvoMsg(s) {
+  const cards = $$('#evoMsgStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.enviados);
+  cards[2].textContent = fmtNum(s.con_error);
+}
+
+function pintarTablaEvoMsg(rows) {
+  const tbody = $('#evoMsgTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin mensajes.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((m) => `
+    <tr data-id="${m.id}" class="row-clickable">
+      <td class="td-id">#${esc(m.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
+      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
+      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
+      <td>${esc(m.asunto || '—')}</td>
+      <td>${evoMsgEstadoBadge(m.estado)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroEvoMsg(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    evoMsgFiltros[key] = value;
+  } else if (['codigo', 'proyecto', 'canal', 'plantilla'].includes(key)) {
+    const v = String(value).trim();
+    evoMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    evoMsgFiltros.limite = n;
+  } else {
+    evoMsgFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosEvoMsg();
+  cargarEvoMsg();
+}
+
+function refrescarBadgeFiltrosEvoMsg() {
+  const btn   = $('#evoMsgFiltrosBtn');
+  const badge = $('#evoMsgFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(evoMsgFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(evoMsgFiltros[k]) !== String(evoMsgFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosEvoMsg() {
+  const f = evoMsgFiltros;
+  $('#fEvoMsgCodigo').value    = f.codigo;
+  $('#fEvoMsgEstado').value    = f.estado;
+  $('#fEvoMsgProyecto').value  = f.proyecto;
+  $('#fEvoMsgCanal').value     = f.canal;
+  $('#fEvoMsgPlantilla').value = f.plantilla;
+  $('#fEvoMsgDesde').value     = f.desde;
+  $('#fEvoMsgHasta').value     = f.hasta;
+  $('#fEvoMsgLimite').value    = f.limite;
+  $('#fEvoMsgOrderBy').value   = f.order_by;
+  $('#fEvoMsgDir').value       = f.dir;
+}
+
+function abrirModalFiltrosEvoMsg() {
+  evoMsgFiltrosSnapshot = { ...evoMsgFiltros };
+  sincronizarControlesFiltrosEvoMsg();
+  $('#filtrosEvoMsgBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosEvoMsg() { $('#filtrosEvoMsgBackdrop').classList.remove('open'); }
+function cancelarFiltrosEvoMsg() {
+  if (evoMsgFiltrosSnapshot) {
+    Object.assign(evoMsgFiltros, evoMsgFiltrosSnapshot);
+    refrescarBadgeFiltrosEvoMsg();
+    cargarEvoMsg();
+  }
+  cerrarModalFiltrosEvoMsg();
+}
+function limpiarFiltrosEvoMsg() {
+  Object.assign(evoMsgFiltros, evoMsgFiltrosDefaults);
+  evoMsgFiltros.q = $('#evoMsgSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosEvoMsg();
+  refrescarBadgeFiltrosEvoMsg();
+  cargarEvoMsg();
+}
+window.onFiltroEvoMsg           = onFiltroEvoMsg;
+window.cancelarFiltrosEvoMsg    = cancelarFiltrosEvoMsg;
+window.limpiarFiltrosEvoMsg     = limpiarFiltrosEvoMsg;
+window.cerrarModalFiltrosEvoMsg = cerrarModalFiltrosEvoMsg;
+
+async function abrirConsultarEvoMsg(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1200px">
+      <div class="modal-header">
+        <div class="modal-title">Mensaje Evolution <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionEvoMsg(id); }
+  });
+
+  try {
+    const m = await apiGet(`api/evolutionmensajes.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaEvoMsg(m);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaEvoMsg(m) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
+    ? (m.formato === 'H'
+        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
+        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
+    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">${esc(m.destinatario || '—')}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(m.destino || '')}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${evoMsgEstadoBadge(m.estado)}</div>
+        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
+          <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
+          <div><span style="color:var(--muted)">Encolado:</span> ${esc(fmtFecha(m.encolado))}</div>
+          <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Cuerpo del mensaje')}
+    ${cuerpoHtml}
+
+    ${seccion('Remitente y destinatario')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Remitente',    m.remitente)}
+      ${card('Remite',       m.remite, false, true)}
+      ${card('Destinatario', m.destinatario)}
+      ${card('Destino',      m.destino, false, true)}
+    </dl>
+
+    ${seccion('Contexto de envío')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Proyecto',   m.proyecto)}
+      ${card('Canal',      m.canal)}
+      ${card('Plantilla',  m.plantilla)}
+      ${card('Prioridad',  EVO_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
+      ${card('Formato',    EVO_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+      ${card('Codificado', m.codificado)}
+    </dl>
+
+    ${seccion('Tiempos y resultado')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Fecha',    fmtFecha(m.fecha))}
+      ${card('Encolado', fmtFecha(m.encolado))}
+      ${card('Enviado',  fmtFecha(m.enviado))}
+      ${card('Demora',   evoMsgFmtDemora(m.demora))}
+      ${card('Estado',   m.estado)}
+      ${card('Tags',     m.tags)}
+    </dl>
+
+    ${seccion('Adjunto, variables y errores')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Adjunto',    m.adjunto, true, true)}
+      ${card('Variables',  m.variables, true, true)}
+      ${card('Parámetros', m.parametros, true, true)}
+      ${card('Error',      m.error, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionEvoMsg(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formEvoMsgHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const m = await apiGet(`api/evolutionmensajes.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formEvoMsgHtml(m);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarEvoMsg(id, a);
+  });
+}
+
+function formEvoMsgHtml(m) {
+  const v   = (k) => esc(m?.[k] ?? '');
+  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = m?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="evoFecha" value="${dt('fecha')}">
+      </div>
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="evoPrioridad">
+          <option value=""  ${sel('prioridad','')}>—</option>
+          <option value="A" ${sel('prioridad','A')}>Alta</option>
+          <option value="N" ${sel('prioridad','N')}>Normal</option>
+          <option value="B" ${sel('prioridad','B')}>Baja</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="evoEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="P" ${sel('estado','P')}>Pendiente</option>
+          <option value="E" ${sel('estado','E')}>Enviado</option>
+          <option value="F" ${sel('estado','F')}>Fallado</option>
+          <option value="C" ${sel('estado','C')}>Cancelado</option>
+          <option value="R" ${sel('estado','R')}>Reintento</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="evoProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Canal (ID)</label>
+        <input type="number" id="evoCanal" min="1" value="${v('canal')}">
+      </div>
+      <div class="form-group">
+        <label>Plantilla (ID)</label>
+        <input type="number" id="evoPlantilla" min="1" value="${v('plantilla')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Remitente</label>
+        <input type="text" id="evoRemitente" maxlength="255" value="${v('remitente')}">
+      </div>
+      <div class="form-group">
+        <label>Remite</label>
+        <input type="text" id="evoRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Destinatario</label>
+        <input type="text" id="evoDestinatario" maxlength="255" value="${v('destinatario')}">
+      </div>
+      <div class="form-group">
+        <label>Destino</label>
+        <input type="text" id="evoDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Asunto</label>
+      <input type="text" id="evoAsunto" maxlength="255" value="${v('asunto')}">
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Formato</label>
+        <select id="evoFormato">
+          <option value=""  ${sel('formato','')}>—</option>
+          <option value="T" ${sel('formato','T')}>Texto plano</option>
+          <option value="H" ${sel('formato','H')}>HTML</option>
+          <option value="M" ${sel('formato','M')}>Markdown</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Codificado</label>
+        <input type="text" id="evoCodificado" maxlength="1" value="${v('codificado')}">
+      </div>
+      <div class="form-group">
+        <label>Tags</label>
+        <input type="text" id="evoTags" maxlength="255" value="${v('tags')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cuerpo</label>
+      <textarea id="evoCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Variables</label>
+      <textarea id="evoVariables" rows="3" style="font-family:monospace">${v('variables')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Parámetros</label>
+      <textarea id="evoParametros" rows="3" style="font-family:monospace">${v('parametros')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Adjunto (URL/ruta)</label>
+      <input type="text" id="evoAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
+    </div>
+    <div class="form-group">
+      <label>Error</label>
+      <textarea id="evoErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Encolado</label>
+        <input type="datetime-local" id="evoEncolado" value="${dt('encolado')}">
+      </div>
+      <div class="form-group">
+        <label>Enviado</label>
+        <input type="datetime-local" id="evoEnviado" value="${dt('enviado')}">
+      </div>
+      <div class="form-group">
+        <label>Demora (seg.)</label>
+        <input type="number" id="evoDemora" min="0" value="${v('demora')}">
+      </div>
+    </div>
+    <div class="field-error" id="evoFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarEvoMsg(id, btn) {
+  const err = $('#evoFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    fecha:        $('#evoFecha').value || null,
+    prioridad:    $('#evoPrioridad').value,
+    estado:       $('#evoEstado').value,
+    proyecto:     $('#evoProyecto').value,
+    canal:        $('#evoCanal').value,
+    plantilla:    $('#evoPlantilla').value,
+    remitente:    $('#evoRemitente').value.trim(),
+    remite:       $('#evoRemite').value.trim(),
+    destinatario: $('#evoDestinatario').value.trim(),
+    destino:      $('#evoDestino').value.trim(),
+    asunto:       $('#evoAsunto').value.trim(),
+    formato:      $('#evoFormato').value,
+    codificado:   $('#evoCodificado').value.trim(),
+    tags:         $('#evoTags').value.trim(),
+    cuerpo:       $('#evoCuerpo').value,
+    variables:    $('#evoVariables').value,
+    parametros:   $('#evoParametros').value,
+    adjunto:      $('#evoAdjunto').value.trim(),
+    error:        $('#evoErrorTxt').value,
+    encolado:     $('#evoEncolado').value || null,
+    enviado:      $('#evoEnviado').value || null,
+    demora:       $('#evoDemora').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/evolutionmensajes.php', 'POST', payload);
+      toast('Mensaje creado.');
+    } else {
+      await apiSend(`api/evolutionmensajes.php?id=${id}`, 'PUT', payload);
+      toast('Mensaje actualizado.');
+    }
+    closeModal();
+    cargarEvoMsg();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarEvoMsg(id) {
+  const ok = await confirmar({
+    title: 'Eliminar mensaje',
+    message: `Se eliminará el mensaje #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/evolutionmensajes.php?id=${id}`, 'DELETE');
+    toast('Mensaje eliminado.');
+    cargarEvoMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Evolution API > Canales (ABM) -------------------------
+const evoChFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', habilitado: '', online: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const evoChFiltros = { ...evoChFiltrosDefaults };
+let evoChBuscadorTimer   = null;
+let evoChFiltrosSnapshot = null;
+
+function evoChHabilitadoBadge(h) {
+  if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
+  if (h === '0') return `<span class="badge badge-danger">Deshabilitado</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+function evoChOnlineBadge(o) {
+  if (o === '1') return `<span class="badge badge-success">Online</span>`;
+  if (o === '0') return `<span class="badge badge-danger">Offline</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+route('/evolutioncanales', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">📡</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los canales de Evolution API son cada instancia conectada de WhatsApp,
+          con su número, token, webhook, intervalos de envío y estado de conexión
+          con la plataforma.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="evoChStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Habilitados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Online</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="evoChSearch"
+                   placeholder="🔍 Buscar nombre, número, celular o token…">
+            <button class="search-clear" id="evoChSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="evoChFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="evoChFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="evoChRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="evoChNuevoBtn">+ Nuevo canal</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Proyecto</th>
+              <th>Número</th>
+              <th>Celular</th>
+              <th>Enviados</th>
+              <th>Habilitado</th>
+              <th>Online</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="evoChTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="evoChCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosEvoChBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosEvoCh()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosEvoCh()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fEvoChCodigo" min="1" placeholder="ID …" oninput="onFiltroEvoCh('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fEvoChProyecto" min="1" oninput="onFiltroEvoCh('proyecto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Habilitado</label>
+              <select id="fEvoChHabilitado" onchange="onFiltroEvoCh('habilitado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Habilitados</option>
+                <option value="0">Deshabilitados</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Online</label>
+              <select id="fEvoChOnline" onchange="onFiltroEvoCh('online', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Online</option>
+                <option value="0">Offline</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fEvoChLimite" min="1" max="1000" value="100" onchange="onFiltroEvoCh('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fEvoChOrderBy" onchange="onFiltroEvoCh('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="proyecto">Proyecto</option>
+                <option value="numero">Número</option>
+                <option value="celular">Celular</option>
+                <option value="enviados">Enviados</option>
+                <option value="habilitado">Habilitado</option>
+                <option value="online">Online</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fEvoChDir" onchange="onFiltroEvoCh('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosEvoCh()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosEvoCh()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosEvoCh()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#evoChNuevoBtn').addEventListener('click', () => abrirAltaEdicionEvoCh(null));
+  $('#evoChFiltrosBtn').addEventListener('click', () => abrirModalFiltrosEvoCh());
+  $('#evoChRefrescarBtn').addEventListener('click', () => cargarEvoCh());
+
+  const inp = $('#evoChSearch');
+  const clr = $('#evoChSearchClear');
+  inp.value = evoChFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    evoChFiltros.q = inp.value.trim();
+    clearTimeout(evoChBuscadorTimer);
+    evoChBuscadorTimer = setTimeout(() => { cargarEvoCh(); refrescarBadgeFiltrosEvoCh(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    evoChFiltros.q = '';
+    cargarEvoCh();
+    refrescarBadgeFiltrosEvoCh();
+  });
+
+  $('#evoChCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarEvoCh(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionEvoCh(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarEvoCh(data.id);
+  });
+
+  $('#evoChTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#evoChCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarEvoCh(Number(tr.dataset.id));
+  });
+  $('#evoChTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#evoChCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosEvoCh();
+  await cargarEvoCh();
+}, 'Canales');
+
+async function cargarEvoCh() {
+  const tbody = $('#evoChTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(evoChFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/evolutioncanales.php?' + qs.toString());
+    pintarStatsEvoCh(data.stats);
+    pintarTablaEvoCh(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsEvoCh(s) {
+  const cards = $$('#evoChStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.habilitados);
+  cards[2].textContent = fmtNum(s.online);
+}
+
+function pintarTablaEvoCh(rows) {
+  const tbody = $('#evoChTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin canales.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-id">#${esc(c.id)}</td>
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td>${esc(c.proyecto ?? '—')}</td>
+      <td style="font-family:monospace">${esc((c.prefijo ? '+' + c.prefijo + ' ' : '') + (c.numero || '—'))}</td>
+      <td style="font-family:monospace">${esc(c.celular || '—')}</td>
+      <td style="font-family:monospace">${esc(fmtNum(c.enviados ?? 0))}</td>
+      <td>${evoChHabilitadoBadge(c.habilitado)}</td>
+      <td>${evoChOnlineBadge(c.online)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroEvoCh(key, value) {
+  if (['habilitado', 'online', 'order_by', 'dir'].includes(key)) {
+    evoChFiltros[key] = value;
+  } else if (['codigo', 'proyecto'].includes(key)) {
+    const v = String(value).trim();
+    evoChFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    evoChFiltros.limite = n;
+  } else {
+    evoChFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosEvoCh();
+  cargarEvoCh();
+}
+
+function refrescarBadgeFiltrosEvoCh() {
+  const btn   = $('#evoChFiltrosBtn');
+  const badge = $('#evoChFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(evoChFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(evoChFiltros[k]) !== String(evoChFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosEvoCh() {
+  const f = evoChFiltros;
+  $('#fEvoChCodigo').value     = f.codigo;
+  $('#fEvoChProyecto').value   = f.proyecto;
+  $('#fEvoChHabilitado').value = f.habilitado;
+  $('#fEvoChOnline').value     = f.online;
+  $('#fEvoChLimite').value     = f.limite;
+  $('#fEvoChOrderBy').value    = f.order_by;
+  $('#fEvoChDir').value        = f.dir;
+}
+
+function abrirModalFiltrosEvoCh() {
+  evoChFiltrosSnapshot = { ...evoChFiltros };
+  sincronizarControlesFiltrosEvoCh();
+  $('#filtrosEvoChBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosEvoCh() { $('#filtrosEvoChBackdrop').classList.remove('open'); }
+function cancelarFiltrosEvoCh() {
+  if (evoChFiltrosSnapshot) {
+    Object.assign(evoChFiltros, evoChFiltrosSnapshot);
+    refrescarBadgeFiltrosEvoCh();
+    cargarEvoCh();
+  }
+  cerrarModalFiltrosEvoCh();
+}
+function limpiarFiltrosEvoCh() {
+  Object.assign(evoChFiltros, evoChFiltrosDefaults);
+  evoChFiltros.q = $('#evoChSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosEvoCh();
+  refrescarBadgeFiltrosEvoCh();
+  cargarEvoCh();
+}
+window.onFiltroEvoCh           = onFiltroEvoCh;
+window.cancelarFiltrosEvoCh    = cancelarFiltrosEvoCh;
+window.limpiarFiltrosEvoCh     = limpiarFiltrosEvoCh;
+window.cerrarModalFiltrosEvoCh = cerrarModalFiltrosEvoCh;
+
+async function abrirConsultarEvoCh(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1100px">
+      <div class="modal-header">
+        <div class="modal-title">Canal Evolution <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionEvoCh(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/evolutioncanales.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaEvoCh(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaEvoCh(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const numeroFull = (c.prefijo ? '+' + c.prefijo + ' ' : '') + (c.numero || '');
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${evoChHabilitadoBadge(c.habilitado)}
+        ${evoChOnlineBadge(c.online)}
+      </div>
+    </div>
+
+    ${seccion('Identificación')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',   c.nombre)}
+      ${card('Proyecto', c.proyecto)}
+      ${card('Número',   numeroFull, false, true)}
+      ${card('Celular',  c.celular, false, true)}
+      ${card('Token',    c.token ? '••••••••' : null, false, true)}
+      ${card('Webhook',  c.webhook, false, true)}
+    </dl>
+
+    ${seccion('Comportamiento')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Prompt',          c.prompt)}
+      ${card('Intervalo corto', c.intervaloCorto)}
+      ${card('Intervalo largo', c.intervaloLargo)}
+      ${card('Alerta',          c.alerta)}
+      ${card('Límite',          c.limite)}
+      ${card('Último',          c.ultimo)}
+    </dl>
+
+    ${seccion('Contadores')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Enviados',   fmtNum(c.enviados ?? 0))}
+      ${card('Acumulados', fmtNum(c.acumulados ?? 0))}
+    </dl>
+
+    ${seccion('Estado interno')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Canal estado',  c.canalEstado, true, true)}
+      ${card('Grupos estado', c.gruposEstado, true, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionEvoCh(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar canal <span class="modal-subtitle">#${id}</span>` : 'Nuevo canal'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formEvoChHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/evolutioncanales.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formEvoChHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarEvoCh(id, a);
+  });
+}
+
+function formEvoChHtml(c) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="evoChNombre" maxlength="255" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="evoChProyecto" min="1" value="${v('proyecto')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Prefijo</label>
+        <input type="text" id="evoChPrefijo" maxlength="10" value="${v('prefijo')}"
+               placeholder="ej. 54" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Número</label>
+        <input type="text" id="evoChNumero" maxlength="15" value="${v('numero')}"
+               style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Celular</label>
+        <input type="text" id="evoChCelular" maxlength="20" value="${v('celular')}"
+               style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Token</label>
+        <input type="text" id="evoChToken" maxlength="50" value="${v('token')}"
+               style="font-family:monospace" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Prompt</label>
+        <input type="text" id="evoChPrompt" maxlength="100" value="${v('prompt')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Webhook</label>
+      <input type="text" id="evoChWebhook" maxlength="1000" value="${v('webhook')}"
+             style="font-family:monospace" placeholder="https://…">
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Intervalo corto (seg.)</label>
+        <input type="number" id="evoChIntervaloCorto" min="0" value="${v('intervaloCorto')}">
+      </div>
+      <div class="form-group">
+        <label>Intervalo largo (seg.)</label>
+        <input type="number" id="evoChIntervaloLargo" min="0" value="${v('intervaloLargo')}">
+      </div>
+      <div class="form-group">
+        <label>Último</label>
+        <input type="number" id="evoChUltimo" min="0" value="${v('ultimo')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Alerta</label>
+        <input type="number" id="evoChAlerta" min="0" value="${v('alerta')}">
+      </div>
+      <div class="form-group">
+        <label>Límite</label>
+        <input type="number" id="evoChLimite" min="0" value="${v('limite')}">
+      </div>
+      <div class="form-group">
+        <label>Enviados</label>
+        <input type="number" id="evoChEnviados" min="0" value="${v('enviados')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Acumulados</label>
+        <input type="number" id="evoChAcumulados" min="0" value="${v('acumulados')}">
+      </div>
+      <div class="form-group">
+        <label>Habilitado</label>
+        <select id="evoChHabilitado">
+          <option value=""  ${sel('habilitado','')}>—</option>
+          <option value="1" ${sel('habilitado','1')}>Habilitado</option>
+          <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Online</label>
+        <select id="evoChOnline">
+          <option value=""  ${sel('online','')}>—</option>
+          <option value="1" ${sel('online','1')}>Online</option>
+          <option value="0" ${sel('online','0')}>Offline</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Canal estado</label>
+      <textarea id="evoChCanalEstado" rows="3" style="font-family:monospace">${v('canalEstado')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Grupos estado</label>
+      <textarea id="evoChGruposEstado" rows="3" style="font-family:monospace">${v('gruposEstado')}</textarea>
+    </div>
+    <div class="field-error" id="evoChFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarEvoCh(id, btn) {
+  const err = $('#evoChFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:         $('#evoChNombre').value.trim(),
+    proyecto:       $('#evoChProyecto').value,
+    prefijo:        $('#evoChPrefijo').value.trim(),
+    numero:         $('#evoChNumero').value.trim(),
+    celular:        $('#evoChCelular').value.trim(),
+    token:          $('#evoChToken').value.trim(),
+    prompt:         $('#evoChPrompt').value.trim(),
+    webhook:        $('#evoChWebhook').value.trim(),
+    intervaloCorto: $('#evoChIntervaloCorto').value,
+    intervaloLargo: $('#evoChIntervaloLargo').value,
+    ultimo:         $('#evoChUltimo').value,
+    alerta:         $('#evoChAlerta').value,
+    limite:         $('#evoChLimite').value,
+    enviados:       $('#evoChEnviados').value,
+    acumulados:     $('#evoChAcumulados').value,
+    habilitado:     $('#evoChHabilitado').value,
+    online:         $('#evoChOnline').value,
+    canalEstado:    $('#evoChCanalEstado').value,
+    gruposEstado:   $('#evoChGruposEstado').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/evolutioncanales.php', 'POST', payload);
+      toast('Canal creado.');
+    } else {
+      await apiSend(`api/evolutioncanales.php?id=${id}`, 'PUT', payload);
+      toast('Canal actualizado.');
+    }
+    closeModal();
+    cargarEvoCh();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarEvoCh(id) {
+  const ok = await confirmar({
+    title: 'Eliminar canal',
+    message: `Se eliminará el canal #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/evolutioncanales.php?id=${id}`, 'DELETE');
+    toast('Canal eliminado.');
+    cargarEvoCh();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
 
 // ------------------------- Chrome (sidebar / topbar / dropdown) -------------------------
 function bindChrome() {

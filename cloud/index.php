@@ -76,6 +76,19 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
           </div>
         </div>
 
+        <div class="nav-group-wrap" data-group="datarocket">
+          <button type="button" class="nav-item nav-group-toggle">
+            <span class="nav-icon">🚀</span>
+            <span class="nav-group-label">Datarocket</span>
+            <span class="nav-group-arrow">+</span>
+          </button>
+          <div class="nav-sub">
+            <a href="#/datarocketmensajes" class="nav-item nav-sub-item" data-route="/datarocketmensajes">
+              <span class="nav-icon">✉️</span> Mensajes
+            </a>
+          </div>
+        </div>
+
         <div class="nav-group-wrap" data-group="plataformas">
           <button type="button" class="nav-item nav-group-toggle">
             <span class="nav-icon">🌐</span>
@@ -85,6 +98,12 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
           <div class="nav-sub">
             <a href="#/aws" class="nav-item nav-sub-item" data-route="/aws">
               <span class="nav-icon">☁️</span> AWS
+            </a>
+            <a href="#/awsses" class="nav-item nav-sub-item" data-route="/awsses">
+              <span class="nav-icon">📧</span> AWS SES
+            </a>
+            <a href="#/evolution" class="nav-item nav-sub-item" data-route="/evolution">
+              <span class="nav-icon">💬</span> Evolution API
             </a>
           </div>
         </div>
