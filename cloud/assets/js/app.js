@@ -2108,6 +2108,9 @@ route('/awscuentas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a AWS" onclick="location.hash='#/aws'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div class="module-help-icon">☁️</div>
         <div class="module-help-text">
           Las cuentas AWS son los accesos a las cuentas de Amazon Web Services que usan
@@ -7143,6 +7146,9 @@ route('/awssesmensajes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a AWS SES" onclick="location.hash='#/awsses'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">✉️</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los mensajes AWS SES son cada correo individual que el motor SES procesa,
@@ -7837,6 +7843,9 @@ route('/awssescanales', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a AWS SES" onclick="location.hash='#/awsses'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">📡</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los canales AWS SES son cada configuración SMTP que el motor puede usar
@@ -8402,6 +8411,9 @@ route('/evolutionmensajes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Evolution API" onclick="location.hash='#/evolution'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">✉️</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los mensajes de Evolution API son cada WhatsApp individual que el motor
@@ -9100,6 +9112,9 @@ route('/evolutioncanales', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Evolution API" onclick="location.hash='#/evolution'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">📡</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los canales de Evolution API son cada instancia conectada de WhatsApp,
@@ -9747,6 +9762,9 @@ route('/evolutioncontactos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Evolution API" onclick="location.hash='#/evolution'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">👥</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los contactos de Evolution API son los destinos que la plataforma verifica
@@ -10311,6 +10329,9 @@ route('/dolarhoycotizaciones', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Dolarhoy" onclick="location.hash='#/dolarhoy'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">💵</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Las cotizaciones de Dolarhoy son el registro histórico del tipo de cambio
@@ -10820,6 +10841,9 @@ route('/mercadopagopagos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">💳</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los pagos de Mercadopago son cada cobro procesado por la pasarela,
@@ -11450,6 +11474,9 @@ route('/mercadopagocuentas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">🏦</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Las cuentas Mercadopago concentran las credenciales (public key y access
@@ -12063,6 +12090,9 @@ route('/mercadopagoregistros', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">📰</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los registros de Mercadopago son el log crudo de eventos y notificaciones
@@ -12555,6 +12585,9 @@ route('/mercadopagosuscripciones', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">🔁</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Las suscripciones de Mercadopago definen los cobros recurrentes de la
@@ -13239,6 +13272,9 @@ route('/mercadopagodebitos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
         <div style="font-size:1.6rem;line-height:1">📉</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
           Los débitos son cada ejecución de cobro que Mercadopago aplica sobre una
