@@ -83,8 +83,24 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
+            <a href="#/datarocketcontactos" class="nav-item nav-sub-item" data-route="/datarocketcontactos">
+              <span class="nav-icon">👥</span> Contactos
+            </a>
             <a href="#/datarocketmensajes" class="nav-item nav-sub-item" data-route="/datarocketmensajes">
               <span class="nav-icon">✉️</span> Mensajes
+            </a>
+          </div>
+        </div>
+
+        <div class="nav-group-wrap" data-group="datasale">
+          <button type="button" class="nav-item nav-group-toggle">
+            <span class="nav-icon">💰</span>
+            <span class="nav-group-label">Datasale</span>
+            <span class="nav-group-arrow">+</span>
+          </button>
+          <div class="nav-sub">
+            <a href="#/prospectos" class="nav-item nav-sub-item" data-route="/prospectos">
+              <span class="nav-icon">🎯</span> Prospectos
             </a>
           </div>
         </div>
@@ -104,6 +120,12 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
             </a>
             <a href="#/evolution" class="nav-item nav-sub-item" data-route="/evolution">
               <span class="nav-icon">💬</span> Evolution API
+            </a>
+            <a href="#/mercadopago" class="nav-item nav-sub-item" data-route="/mercadopago">
+              <span class="nav-icon">💳</span> Mercadopago
+            </a>
+            <a href="#/dolarhoy" class="nav-item nav-sub-item" data-route="/dolarhoy">
+              <span class="nav-icon">💵</span> Dolarhoy
             </a>
           </div>
         </div>

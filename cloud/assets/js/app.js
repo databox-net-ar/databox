@@ -5475,6 +5475,1596 @@ async function eliminarDrMsg(id) {
   }
 }
 
+// ------------------------- Vista: Datarocket > Contactos (ABM) -------------------------
+const drCtFiltrosDefaults = {
+  q: '', codigo: '', estado: '', verificacion: '', genero: '',
+  origen: '', pais: '', provincia: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const drCtFiltros = { ...drCtFiltrosDefaults };
+let drCtBuscadorTimer   = null;
+let drCtFiltrosSnapshot = null;
+
+const DR_CT_GENERO_MAP = { M: 'Masculino', F: 'Femenino', X: 'Otro' };
+
+function drCtEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  return `<span class="badge badge-info">${esc(e)}</span>`;
+}
+
+function drCtVerificacionBadge(v) {
+  if (v == null || v === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    O: 'badge-success',
+    V: 'badge-success',
+    E: 'badge-danger',
+    F: 'badge-danger',
+    P: 'badge-warn',
+  };
+  const labelMap = { O: 'OK', V: 'Válido', E: 'Error', F: 'Fallado', P: 'Pendiente' };
+  const cls = colorMap[v] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[v] || v)}</span>`;
+}
+
+route('/datarocketcontactos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">👥</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los contactos de Datarocket son las personas y empresas registradas en la
+          base del motor de envíos, con sus datos personales, medios de contacto,
+          suscripciones a listas y el resultado de la verificación previa al envío.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drCtStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Verificados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drCtSearch"
+                   placeholder="🔍 Buscar nombre, empresa, correo, teléfono, celular, whatsapp, DNI o UUID…">
+            <button class="search-clear" id="drCtSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drCtFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drCtFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drCtRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drCtNuevoBtn">+ Nuevo contacto</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Empresa</th>
+              <th>Correo</th>
+              <th>Teléfono</th>
+              <th>País</th>
+              <th>Estado</th>
+              <th>Verificación</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drCtTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="drCtCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDrCtBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrCt()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrCt()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrCtCodigo" min="1" placeholder="ID …" oninput="onFiltroDrCt('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Origen</label>
+              <input type="text" id="fDrCtOrigen" maxlength="255" placeholder="ej. web, importado…"
+                     oninput="onFiltroDrCt('origen', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Estado</label>
+              <input type="text" id="fDrCtEstado" maxlength="1" style="font-family:monospace"
+                     placeholder="A/I/…" oninput="onFiltroDrCt('estado', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Verificación</label>
+              <input type="text" id="fDrCtVerificacion" maxlength="1" style="font-family:monospace"
+                     placeholder="O/V/E/P…" oninput="onFiltroDrCt('verificacion', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Género</label>
+              <select id="fDrCtGenero" onchange="onFiltroDrCt('genero', this.value)">
+                <option value="">— Todos —</option>
+                <option value="M">Masculino</option>
+                <option value="F">Femenino</option>
+                <option value="X">Otro</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>País</label>
+              <input type="text" id="fDrCtPais" maxlength="255" oninput="onFiltroDrCt('pais', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Provincia</label>
+              <input type="text" id="fDrCtProvincia" maxlength="255" oninput="onFiltroDrCt('provincia', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde (registrado)</label>
+              <input type="date" id="fDrCtDesde" onchange="onFiltroDrCt('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta (registrado)</label>
+              <input type="date" id="fDrCtHasta" onchange="onFiltroDrCt('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrCtLimite" min="1" max="1000" value="100" onchange="onFiltroDrCt('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrCtOrderBy" onchange="onFiltroDrCt('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="empresa">Empresa</option>
+                <option value="correo">Correo</option>
+                <option value="registrado">Registrado</option>
+                <option value="completado">Completado</option>
+                <option value="estado">Estado</option>
+                <option value="verificacion">Verificación</option>
+                <option value="pais">País</option>
+                <option value="provincia">Provincia</option>
+                <option value="origen">Origen</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrCtDir" onchange="onFiltroDrCt('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrCt()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrCt()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrCt()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#drCtNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrCt(null));
+  $('#drCtFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrCt());
+  $('#drCtRefrescarBtn').addEventListener('click', () => cargarDrCt());
+
+  const inp = $('#drCtSearch');
+  const clr = $('#drCtSearchClear');
+  inp.value = drCtFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drCtFiltros.q = inp.value.trim();
+    clearTimeout(drCtBuscadorTimer);
+    drCtBuscadorTimer = setTimeout(() => { cargarDrCt(); refrescarBadgeFiltrosDrCt(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    drCtFiltros.q = '';
+    cargarDrCt();
+    refrescarBadgeFiltrosDrCt();
+  });
+
+  $('#drCtCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDrCt(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDrCt(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDrCt(data.id);
+  });
+
+  $('#drCtTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#drCtCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDrCt(Number(tr.dataset.id));
+  });
+  $('#drCtTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#drCtCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDrCt();
+  await cargarDrCt();
+}, 'Contactos');
+
+async function cargarDrCt() {
+  const tbody = $('#drCtTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(drCtFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/datarocketcontactos.php?' + qs.toString());
+    pintarStatsDrCt(data.stats);
+    pintarTablaDrCt(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDrCt(s) {
+  const cards = $$('#drCtStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.verificados);
+  cards[2].textContent = fmtNum(s.con_error);
+}
+
+function pintarTablaDrCt(rows) {
+  const tbody = $('#drCtTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin contactos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-id">#${esc(c.id)}</td>
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td>${esc(c.empresa || '—')}</td>
+      <td style="font-family:monospace">${esc(c.correo || '—')}</td>
+      <td style="font-family:monospace">${esc(c.telefono || c.celular || c.whatsapp || '—')}</td>
+      <td>${esc(c.pais || '—')}</td>
+      <td>${drCtEstadoBadge(c.estado)}</td>
+      <td>${drCtVerificacionBadge(c.verificacion)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroDrCt(key, value) {
+  if (['estado', 'verificacion', 'genero', 'origen', 'pais', 'provincia',
+       'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    drCtFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    drCtFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    drCtFiltros.limite = n;
+  } else {
+    drCtFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDrCt();
+  cargarDrCt();
+}
+
+function refrescarBadgeFiltrosDrCt() {
+  const btn   = $('#drCtFiltrosBtn');
+  const badge = $('#drCtFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(drCtFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(drCtFiltros[k]) !== String(drCtFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDrCt() {
+  const f = drCtFiltros;
+  $('#fDrCtCodigo').value       = f.codigo;
+  $('#fDrCtOrigen').value       = f.origen;
+  $('#fDrCtEstado').value       = f.estado;
+  $('#fDrCtVerificacion').value = f.verificacion;
+  $('#fDrCtGenero').value       = f.genero;
+  $('#fDrCtPais').value         = f.pais;
+  $('#fDrCtProvincia').value    = f.provincia;
+  $('#fDrCtDesde').value        = f.desde;
+  $('#fDrCtHasta').value        = f.hasta;
+  $('#fDrCtLimite').value       = f.limite;
+  $('#fDrCtOrderBy').value      = f.order_by;
+  $('#fDrCtDir').value          = f.dir;
+}
+
+function abrirModalFiltrosDrCt() {
+  drCtFiltrosSnapshot = { ...drCtFiltros };
+  sincronizarControlesFiltrosDrCt();
+  $('#filtrosDrCtBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosDrCt() { $('#filtrosDrCtBackdrop').classList.remove('open'); }
+function cancelarFiltrosDrCt() {
+  if (drCtFiltrosSnapshot) {
+    Object.assign(drCtFiltros, drCtFiltrosSnapshot);
+    refrescarBadgeFiltrosDrCt();
+    cargarDrCt();
+  }
+  cerrarModalFiltrosDrCt();
+}
+function limpiarFiltrosDrCt() {
+  Object.assign(drCtFiltros, drCtFiltrosDefaults);
+  drCtFiltros.q = $('#drCtSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDrCt();
+  refrescarBadgeFiltrosDrCt();
+  cargarDrCt();
+}
+window.onFiltroDrCt           = onFiltroDrCt;
+window.cancelarFiltrosDrCt    = cancelarFiltrosDrCt;
+window.limpiarFiltrosDrCt     = limpiarFiltrosDrCt;
+window.cerrarModalFiltrosDrCt = cerrarModalFiltrosDrCt;
+
+async function abrirConsultarDrCt(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1000px">
+      <div class="modal-header">
+        <div class="modal-title">Contacto Datarocket <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrCt(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/datarocketcontactos.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrCt(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDrCt(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const linkCard = (label, value) => {
+    const empty = value == null || value === '';
+    const href  = empty ? '' : (String(value).match(/^https?:\/\//i) ? value : ('https://' + value));
+    const inner = empty
+      ? 'Sin dato'
+      : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">${esc(value)}</a>`;
+    return `
+      <div class="data-row">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.3rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:.9rem;color:var(--muted);margin-top:4px">${esc(c.empresa || '')}${c.empresa && c.cargo ? ' · ' : ''}${esc(c.cargo || '')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${drCtEstadoBadge(c.estado)} ${drCtVerificacionBadge(c.verificacion)}</div>
+        <div style="font-size:.85rem;color:var(--muted)">Registrado: ${esc(fmtFecha(c.registrado))}</div>
+        ${c.completado ? `<div style="font-size:.85rem;color:var(--muted)">Completado: ${esc(fmtFecha(c.completado))}</div>` : ''}
+      </div>
+    </div>
+
+    ${seccion('Identidad')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',     c.nombre)}
+      ${card('Empresa',    c.empresa)}
+      ${card('Rubro',      c.rubro)}
+      ${card('Actividad',  c.actividad)}
+      ${card('Cargo',      c.cargo)}
+      ${card('Persona',    c.persona)}
+      ${card('Género',     DR_CT_GENERO_MAP[c.genero] || c.genero)}
+      ${card('Nacimiento', c.nacimiento)}
+      ${card('DNI',        c.dni, false, true)}
+      ${card('Origen',     c.origen)}
+    </dl>
+
+    ${seccion('Ubicación')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Domicilio', c.domicilio, true)}
+      ${card('Ciudad',    c.ciudad)}
+      ${card('Localidad', c.localidad)}
+      ${card('Provincia', c.provincia)}
+      ${card('País',      c.pais)}
+      ${card('Ubicación', c.ubicacion, true, true)}
+    </dl>
+
+    ${seccion('Contacto')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Teléfono', c.telefono, false, true)}
+      ${card('Celular',  c.celular,  false, true)}
+      ${card('WhatsApp', c.whatsapp, false, true)}
+      ${card('Correo',   c.correo,   false, true)}
+    </dl>
+
+    ${seccion('Web y redes')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${linkCard('Web',       c.web)}
+      ${linkCard('Facebook',  c.facebook)}
+      ${linkCard('Instagram', c.instagram)}
+      ${linkCard('TikTok',    c.tiktok)}
+    </dl>
+
+    ${seccion('Comentarios y clasificación')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Comentarios', c.comentarios, true)}
+      ${card('Tags',        c.tags,        true)}
+      ${card('Listas',      c.listas,      true)}
+    </dl>
+
+    ${seccion('Estado y verificación')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Suscripciones', c.suscripciones)}
+      ${card('Estado',        c.estado)}
+      ${card('Verificación',  c.verificacion)}
+      ${card('Error',         c.error, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionDrCt(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar contacto <span class="modal-subtitle">#${id}</span>` : 'Nuevo contacto'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formDrCtHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/datarocketcontactos.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formDrCtHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDrCt(id, a);
+  });
+}
+
+function formDrCtHtml(c) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = c?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="drcNombre" maxlength="255" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Empresa</label>
+        <input type="text" id="drcEmpresa" maxlength="255" value="${v('empresa')}">
+      </div>
+      <div class="form-group">
+        <label>Cargo</label>
+        <input type="text" id="drcCargo" maxlength="255" value="${v('cargo')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Rubro</label>
+        <input type="text" id="drcRubro" maxlength="255" value="${v('rubro')}">
+      </div>
+      <div class="form-group">
+        <label>Actividad</label>
+        <input type="text" id="drcActividad" maxlength="255" value="${v('actividad')}">
+      </div>
+      <div class="form-group">
+        <label>Origen</label>
+        <input type="text" id="drcOrigen" maxlength="255" value="${v('origen')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Persona</label>
+        <input type="text" id="drcPersona" maxlength="255" value="${v('persona')}">
+      </div>
+      <div class="form-group">
+        <label>Género</label>
+        <select id="drcGenero">
+          <option value=""  ${sel('genero','')}>—</option>
+          <option value="M" ${sel('genero','M')}>Masculino</option>
+          <option value="F" ${sel('genero','F')}>Femenino</option>
+          <option value="X" ${sel('genero','X')}>Otro</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Nacimiento</label>
+        <input type="text" id="drcNacimiento" maxlength="255" value="${v('nacimiento')}" placeholder="AAAA-MM-DD">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>DNI</label>
+      <input type="text" id="drcDni" maxlength="255" value="${v('dni')}" style="font-family:monospace">
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Domicilio</label>
+        <input type="text" id="drcDomicilio" maxlength="255" value="${v('domicilio')}">
+      </div>
+      <div class="form-group">
+        <label>Ciudad</label>
+        <input type="text" id="drcCiudad" maxlength="255" value="${v('ciudad')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Localidad</label>
+        <input type="text" id="drcLocalidad" maxlength="255" value="${v('localidad')}">
+      </div>
+      <div class="form-group">
+        <label>Provincia</label>
+        <input type="text" id="drcProvincia" maxlength="255" value="${v('provincia')}">
+      </div>
+      <div class="form-group">
+        <label>País</label>
+        <input type="text" id="drcPais" maxlength="255" value="${v('pais')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Ubicación</label>
+      <input type="text" id="drcUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace">
+    </div>
+
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Teléfono</label>
+        <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Celular</label>
+        <input type="text" id="drcCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>WhatsApp</label>
+        <input type="text" id="drcWhatsapp" maxlength="255" value="${v('whatsapp')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Correo</label>
+      <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
+    </div>
+
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Web</label>
+        <input type="text" id="drcWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Facebook</label>
+        <input type="text" id="drcFacebook" maxlength="255" value="${v('facebook')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Instagram</label>
+        <input type="text" id="drcInstagram" maxlength="255" value="${v('instagram')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>TikTok</label>
+      <input type="text" id="drcTiktok" maxlength="255" value="${v('tiktok')}" style="font-family:monospace">
+    </div>
+
+    <div class="form-group">
+      <label>Comentarios</label>
+      <textarea id="drcComentarios" rows="3" maxlength="500">${v('comentarios')}</textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Tags</label>
+        <input type="text" id="drcTags" maxlength="500" value="${v('tags')}">
+      </div>
+      <div class="form-group">
+        <label>Listas</label>
+        <input type="text" id="drcListas" maxlength="500" value="${v('listas')}">
+      </div>
+    </div>
+
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Estado</label>
+        <input type="text" id="drcEstado" maxlength="1" value="${v('estado')}"
+               style="font-family:monospace" placeholder="A/I/…">
+      </div>
+      <div class="form-group">
+        <label>Verificación</label>
+        <input type="text" id="drcVerificacion" maxlength="1" value="${v('verificacion')}"
+               style="font-family:monospace" placeholder="O/V/E/P…">
+      </div>
+      <div class="form-group">
+        <label>Suscripciones</label>
+        <input type="number" id="drcSuscripciones" min="0" value="${v('suscripciones')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Registrado</label>
+        <input type="datetime-local" id="drcRegistrado" value="${dt('registrado')}">
+      </div>
+      <div class="form-group">
+        <label>Completado</label>
+        <input type="datetime-local" id="drcCompletado" value="${dt('completado')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Error</label>
+      <textarea id="drcErrorTxt" rows="2" maxlength="255">${v('error')}</textarea>
+    </div>
+    <div class="field-error" id="drcFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarDrCt(id, btn) {
+  const err = $('#drcFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:        $('#drcNombre').value.trim(),
+    empresa:       $('#drcEmpresa').value.trim(),
+    cargo:         $('#drcCargo').value.trim(),
+    rubro:         $('#drcRubro').value.trim(),
+    actividad:     $('#drcActividad').value.trim(),
+    origen:        $('#drcOrigen').value.trim(),
+    persona:       $('#drcPersona').value.trim(),
+    genero:        $('#drcGenero').value,
+    nacimiento:    $('#drcNacimiento').value.trim(),
+    dni:           $('#drcDni').value.trim(),
+    domicilio:     $('#drcDomicilio').value.trim(),
+    ciudad:        $('#drcCiudad').value.trim(),
+    ubicacion:     $('#drcUbicacion').value.trim(),
+    localidad:     $('#drcLocalidad').value.trim(),
+    provincia:     $('#drcProvincia').value.trim(),
+    pais:          $('#drcPais').value.trim(),
+    telefono:      $('#drcTelefono').value.trim(),
+    celular:       $('#drcCelular').value.trim(),
+    whatsapp:      $('#drcWhatsapp').value.trim(),
+    correo:        $('#drcCorreo').value.trim(),
+    web:           $('#drcWeb').value.trim(),
+    facebook:      $('#drcFacebook').value.trim(),
+    instagram:     $('#drcInstagram').value.trim(),
+    tiktok:        $('#drcTiktok').value.trim(),
+    comentarios:   $('#drcComentarios').value,
+    tags:          $('#drcTags').value.trim(),
+    listas:        $('#drcListas').value.trim(),
+    suscripciones: $('#drcSuscripciones').value,
+    estado:        $('#drcEstado').value.trim(),
+    verificacion:  $('#drcVerificacion').value.trim(),
+    registrado:    $('#drcRegistrado').value || null,
+    completado:    $('#drcCompletado').value || null,
+    error:         $('#drcErrorTxt').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/datarocketcontactos.php', 'POST', payload);
+      toast('Contacto creado.');
+    } else {
+      await apiSend(`api/datarocketcontactos.php?id=${id}`, 'PUT', payload);
+      toast('Contacto actualizado.');
+    }
+    closeModal();
+    cargarDrCt();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDrCt(id) {
+  const ok = await confirmar({
+    title: 'Eliminar contacto',
+    message: `Se eliminará el contacto #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datarocketcontactos.php?id=${id}`, 'DELETE');
+    toast('Contacto eliminado.');
+    cargarDrCt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datasale > Prospectos (ABM) -------------------------
+const dsProFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', estado: '', asignado: '', atendido: '',
+  sentido: '', tipo: '', origen: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const dsProFiltros = { ...dsProFiltrosDefaults };
+let dsProBuscadorTimer   = null;
+let dsProFiltrosSnapshot = null;
+
+const DS_PRO_SENTIDO_MAP = {
+  I: 'Entrante',
+  S: 'Saliente',
+};
+const DS_PRO_TIPO_MAP = {
+  F: 'Persona física',
+  J: 'Persona jurídica',
+};
+
+function dsProSentidoBadge(s) {
+  if (s == null || s === '') return `<span class="badge badge-info">—</span>`;
+  const label = DS_PRO_SENTIDO_MAP[s] || s;
+  return `<span class="badge badge-info">${esc(label)}</span>`;
+}
+
+function dsProTipoBadge(t) {
+  if (t == null || t === '') return `<span class="badge badge-info">—</span>`;
+  const label = DS_PRO_TIPO_MAP[t] || t;
+  return `<span class="badge badge-info">${esc(label)}</span>`;
+}
+
+function dsProEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  return `<span class="badge badge-info">${esc(e)}</span>`;
+}
+
+function dsProCalificacion(n) {
+  const num = Number(n);
+  if (!num || num < 1) return `<span style="color:var(--muted)">—</span>`;
+  const stars = Math.max(0, Math.min(5, Math.round(num)));
+  return `<span style="color:#f5a623;letter-spacing:1px">${'★'.repeat(stars)}${'☆'.repeat(5 - stars)}</span>`;
+}
+
+route('/prospectos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">🎯</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los prospectos son los interesados que llegan al equipo comercial desde los distintos
+          canales de captación, con sus datos de contacto, producto de interés, estado del
+          seguimiento y el usuario asignado para atenderlos.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dsProStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin atender</span><span class="stat-value orange">—</span></div>
+        <div class="stat-card"><span class="stat-label">Asignados</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dsProSearch"
+                   placeholder="🔍 Buscar nombre, organización, contacto, correo, asunto…">
+            <button class="search-clear" id="dsProSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dsProFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dsProFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dsProRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dsProNuevoBtn">+ Nuevo prospecto</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Ingreso</th>
+              <th>Nombre</th>
+              <th>Organización</th>
+              <th>Contacto</th>
+              <th>Producto</th>
+              <th>Estado</th>
+              <th style="text-align:center">Calificación</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dsProTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dsProCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros -->
+    <div class="modal-backdrop" id="filtrosDsProBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDsPro()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDsPro()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDsProCodigo" min="1" placeholder="ID …" oninput="onFiltroDsPro('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fDsProProyecto" min="1" oninput="onFiltroDsPro('proyecto', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Sentido</label>
+              <select id="fDsProSentido" onchange="onFiltroDsPro('sentido', this.value)">
+                <option value="">— Todos —</option>
+                <option value="I">Entrante</option>
+                <option value="S">Saliente</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Tipo</label>
+              <select id="fDsProTipo" onchange="onFiltroDsPro('tipo', this.value)">
+                <option value="">— Todos —</option>
+                <option value="F">Persona física</option>
+                <option value="J">Persona jurídica</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Origen</label>
+              <input type="text" id="fDsProOrigen" maxlength="10" oninput="onFiltroDsPro('origen', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Estado</label>
+              <input type="number" id="fDsProEstado" min="0" oninput="onFiltroDsPro('estado', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Asignado (ID)</label>
+              <input type="number" id="fDsProAsignado" min="1" oninput="onFiltroDsPro('asignado', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Atendido (ID)</label>
+              <input type="number" id="fDsProAtendido" min="1" oninput="onFiltroDsPro('atendido', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fDsProDesde" onchange="onFiltroDsPro('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fDsProHasta" onchange="onFiltroDsPro('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDsProLimite" min="1" max="1000" value="100" onchange="onFiltroDsPro('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDsProOrderBy" onchange="onFiltroDsPro('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="ingreso">Ingreso</option>
+                <option value="proyecto">Proyecto</option>
+                <option value="sentido">Sentido</option>
+                <option value="origen">Origen</option>
+                <option value="tipo">Tipo</option>
+                <option value="producto">Producto</option>
+                <option value="organizacion">Organización</option>
+                <option value="nombre">Nombre</option>
+                <option value="estado">Estado</option>
+                <option value="calificacion">Calificación</option>
+                <option value="asignado">Asignado</option>
+                <option value="atendido">Atendido</option>
+                <option value="actualizado">Actualizado</option>
+                <option value="aplazado">Aplazado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDsProDir" onchange="onFiltroDsPro('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDsPro()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDsPro()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDsPro()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#dsProNuevoBtn').addEventListener('click', () => abrirAltaEdicionDsPro(null));
+  $('#dsProFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDsPro());
+  $('#dsProRefrescarBtn').addEventListener('click', () => cargarDsPro());
+
+  const inp = $('#dsProSearch');
+  const clr = $('#dsProSearchClear');
+  inp.value = dsProFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dsProFiltros.q = inp.value.trim();
+    clearTimeout(dsProBuscadorTimer);
+    dsProBuscadorTimer = setTimeout(() => { cargarDsPro(); refrescarBadgeFiltrosDsPro(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    dsProFiltros.q = '';
+    cargarDsPro();
+    refrescarBadgeFiltrosDsPro();
+  });
+
+  // Acciones del menú contextual
+  $('#dsProCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDsPro(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDsPro(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDsPro(data.id);
+  });
+
+  // Clic en fila → consultar; clic en hamburguesa → menú
+  $('#dsProTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dsProCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDsPro(Number(tr.dataset.id));
+  });
+  $('#dsProTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dsProCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDsPro();
+  await cargarDsPro();
+}, 'Prospectos');
+
+async function cargarDsPro() {
+  const tbody = $('#dsProTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(dsProFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/datasaleprospectos.php?' + qs.toString());
+    pintarStatsDsPro(data.stats);
+    pintarTablaDsPro(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDsPro(s) {
+  const cards = $$('#dsProStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.sin_atender);
+  cards[2].textContent = fmtNum(s.asignados);
+}
+
+function pintarTablaDsPro(rows) {
+  const tbody = $('#dsProTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin prospectos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((p) => {
+    const contactoLinea = [p.correo, p.celular].filter(Boolean).join(' · ') || '—';
+    return `
+    <tr data-id="${p.id}" class="row-clickable">
+      <td class="td-id">#${esc(p.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(p.ingreso))}</td>
+      <td class="td-nombre">${esc(p.nombre || '—')}</td>
+      <td>${esc(p.organizacion || '—')}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(contactoLinea)}</td>
+      <td>${esc(p.producto || '—')}</td>
+      <td>${dsProEstadoBadge(p.estado)}</td>
+      <td style="text-align:center">${dsProCalificacion(p.calificacion)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+// ---- Modal de Filtros ----
+function onFiltroDsPro(key, value) {
+  if (['sentido', 'tipo', 'origen', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    dsProFiltros[key] = value;
+  } else if (['codigo', 'proyecto', 'estado', 'asignado', 'atendido'].includes(key)) {
+    const v = String(value).trim();
+    dsProFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    dsProFiltros.limite = n;
+  } else {
+    dsProFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDsPro();
+  cargarDsPro();
+}
+
+function refrescarBadgeFiltrosDsPro() {
+  const btn   = $('#dsProFiltrosBtn');
+  const badge = $('#dsProFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(dsProFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(dsProFiltros[k]) !== String(dsProFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDsPro() {
+  const f = dsProFiltros;
+  $('#fDsProCodigo').value   = f.codigo;
+  $('#fDsProProyecto').value = f.proyecto;
+  $('#fDsProSentido').value  = f.sentido;
+  $('#fDsProTipo').value     = f.tipo;
+  $('#fDsProOrigen').value   = f.origen;
+  $('#fDsProEstado').value   = f.estado;
+  $('#fDsProAsignado').value = f.asignado;
+  $('#fDsProAtendido').value = f.atendido;
+  $('#fDsProDesde').value    = f.desde;
+  $('#fDsProHasta').value    = f.hasta;
+  $('#fDsProLimite').value   = f.limite;
+  $('#fDsProOrderBy').value  = f.order_by;
+  $('#fDsProDir').value      = f.dir;
+}
+
+function abrirModalFiltrosDsPro() {
+  dsProFiltrosSnapshot = { ...dsProFiltros };
+  sincronizarControlesFiltrosDsPro();
+  $('#filtrosDsProBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDsPro() {
+  $('#filtrosDsProBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDsPro() {
+  if (dsProFiltrosSnapshot) {
+    Object.assign(dsProFiltros, dsProFiltrosSnapshot);
+    refrescarBadgeFiltrosDsPro();
+    cargarDsPro();
+  }
+  cerrarModalFiltrosDsPro();
+}
+
+function limpiarFiltrosDsPro() {
+  Object.assign(dsProFiltros, dsProFiltrosDefaults);
+  dsProFiltros.q = $('#dsProSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDsPro();
+  refrescarBadgeFiltrosDsPro();
+  cargarDsPro();
+}
+
+// Exponer para los onclick del HTML
+window.onFiltroDsPro           = onFiltroDsPro;
+window.cancelarFiltrosDsPro    = cancelarFiltrosDsPro;
+window.limpiarFiltrosDsPro     = limpiarFiltrosDsPro;
+window.cerrarModalFiltrosDsPro = cerrarModalFiltrosDsPro;
+
+// ---- Modal Consultar ----
+async function abrirConsultarDsPro(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1100px">
+      <div class="modal-header">
+        <div class="modal-title">Prospecto <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDsPro(id); }
+  });
+
+  try {
+    const p = await apiGet(`api/datasaleprospectos.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDsPro(p);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDsPro(p) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const accionesTxt = p.acciones && String(p.acciones).trim() !== ''
+    ? `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(p.acciones)}</pre>`
+    : `<div style="color:var(--muted);font-style:italic">Sin historial de acciones</div>`;
+
+  return `
+    <!-- Encabezado -->
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-size:1.3rem;font-weight:700">${esc(p.nombre || '—')}</span>
+          <span style="font-size:.95rem;color:var(--muted)">${esc(p.organizacion || '')}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(p.asunto || 'Sin asunto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">
+          #${esc(p.id)} · Ingreso ${esc(fmtFecha(p.ingreso))}
+        </div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${dsProSentidoBadge(p.sentido)} ${dsProTipoBadge(p.tipo)}</div>
+        <div>${dsProEstadoBadge(p.estado)}</div>
+        <div style="margin-top:6px">${dsProCalificacion(p.calificacion)}</div>
+      </div>
+    </div>
+
+    ${seccion('Contacto')}
+    <dl class="data-list">
+      ${card('Nombre',       p.nombre)}
+      ${card('Organización', p.organizacion)}
+      ${card('Contacto',     p.contacto)}
+      ${card('Celular',      p.celular, false, true)}
+      ${card('Correo',       p.correo,  false, true)}
+      ${card('Web',          p.web,     false, true)}
+    </dl>
+
+    ${seccion('Ubicación')}
+    <dl class="data-list">
+      ${card('Domicilio',  p.domicilio, true)}
+      ${card('Ciudad',     p.ciudad)}
+      ${card('Localidad',  p.localidad)}
+      ${card('Provincia',  p.provincia)}
+      ${card('País',       p.pais)}
+      ${card('Ubicación',  p.ubicacion, true, true)}
+    </dl>
+
+    ${seccion('Oportunidad')}
+    <dl class="data-list">
+      ${card('Proyecto (ID)', p.proyecto)}
+      ${card('Producto',      p.producto)}
+      ${card('Asunto',        p.asunto,  true)}
+      ${card('Sentido',       DS_PRO_SENTIDO_MAP[p.sentido] || p.sentido)}
+      ${card('Tipo',          DS_PRO_TIPO_MAP[p.tipo]       || p.tipo)}
+      ${card('Origen',        p.origen)}
+      ${card('Estado',        p.estado)}
+      ${card('Calificación',  p.calificacion)}
+    </dl>
+
+    ${seccion('Seguimiento')}
+    <dl class="data-list">
+      ${card('Asignado a (ID)', p.asignado)}
+      ${card('Atendido por (ID)', p.atendido)}
+      ${card('Ingreso',      fmtFecha(p.ingreso))}
+      ${card('Actualizado',  fmtFecha(p.actualizado))}
+      ${card('Aplazado hasta', fmtFecha(p.aplazado))}
+    </dl>
+
+    ${seccion('Comentarios')}
+    <dl class="data-list">
+      ${card('Comentarios', p.comentarios, true)}
+    </dl>
+
+    ${seccion('Historial de acciones')}
+    ${accionesTxt}
+  `;
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDsPro(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar prospecto <span class="modal-subtitle">#${id}</span>` : 'Nuevo prospecto'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formDsProHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const p = await apiGet(`api/datasaleprospectos.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formDsProHtml(p);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDsPro(id, a);
+  });
+}
+
+function formDsProHtml(p) {
+  const v   = (k) => esc(p?.[k] ?? '');
+  const sel = (k, val) => (p?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = p?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Ingreso</label>
+        <input type="datetime-local" id="dspIngreso" value="${dt('ingreso')}">
+      </div>
+      <div class="form-group">
+        <label>Sentido</label>
+        <select id="dspSentido">
+          <option value=""  ${sel('sentido','')}>—</option>
+          <option value="I" ${sel('sentido','I')}>Entrante</option>
+          <option value="S" ${sel('sentido','S')}>Saliente</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tipo</label>
+        <select id="dspTipo">
+          <option value=""  ${sel('tipo','')}>—</option>
+          <option value="F" ${sel('tipo','F')}>Persona física</option>
+          <option value="J" ${sel('tipo','J')}>Persona jurídica</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="dspProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Origen</label>
+        <input type="text" id="dspOrigen" maxlength="10" value="${v('origen')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Producto</label>
+        <input type="text" id="dspProducto" maxlength="100" value="${v('producto')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Asunto</label>
+      <input type="text" id="dspAsunto" maxlength="255" value="${v('asunto')}">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="dspNombre" maxlength="255" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Organización</label>
+        <input type="text" id="dspOrganizacion" maxlength="255" value="${v('organizacion')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Contacto</label>
+        <input type="text" id="dspContacto" maxlength="255" value="${v('contacto')}">
+      </div>
+      <div class="form-group">
+        <label>Celular</label>
+        <input type="text" id="dspCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Correo</label>
+        <input type="email" id="dspCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Web</label>
+      <input type="text" id="dspWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
+    </div>
+    <div class="form-group">
+      <label>Domicilio</label>
+      <input type="text" id="dspDomicilio" maxlength="255" value="${v('domicilio')}">
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Ciudad</label>
+        <input type="text" id="dspCiudad" maxlength="255" value="${v('ciudad')}">
+      </div>
+      <div class="form-group">
+        <label>Localidad</label>
+        <input type="text" id="dspLocalidad" maxlength="255" value="${v('localidad')}">
+      </div>
+      <div class="form-group">
+        <label>Provincia</label>
+        <input type="text" id="dspProvincia" maxlength="255" value="${v('provincia')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>País</label>
+        <input type="text" id="dspPais" maxlength="255" value="${v('pais')}">
+      </div>
+      <div class="form-group">
+        <label>Ubicación (coordenadas)</label>
+        <input type="text" id="dspUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace"
+               placeholder="lat,lng">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Calificación (0-5)</label>
+        <input type="number" id="dspCalificacion" min="0" max="5" value="${v('calificacion')}">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <input type="number" id="dspEstado" min="0" value="${v('estado')}">
+      </div>
+      <div class="form-group">
+        <label>Aplazado hasta</label>
+        <input type="datetime-local" id="dspAplazado" value="${dt('aplazado')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Asignado a (usuario ID)</label>
+        <input type="number" id="dspAsignado" min="1" value="${v('asignado')}">
+      </div>
+      <div class="form-group">
+        <label>Atendido por (usuario ID)</label>
+        <input type="number" id="dspAtendido" min="1" value="${v('atendido')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Comentarios</label>
+      <textarea id="dspComentarios" rows="3" maxlength="1000">${v('comentarios')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Historial de acciones</label>
+      <textarea id="dspAcciones" rows="4" style="font-family:monospace">${v('acciones')}</textarea>
+    </div>
+    <div class="field-error" id="dspFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarDsPro(id, btn) {
+  const err = $('#dspFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    ingreso:      $('#dspIngreso').value || null,
+    proyecto:     $('#dspProyecto').value,
+    sentido:      $('#dspSentido').value,
+    origen:       $('#dspOrigen').value.trim(),
+    tipo:         $('#dspTipo').value,
+    producto:     $('#dspProducto').value.trim(),
+    asunto:       $('#dspAsunto').value.trim(),
+    organizacion: $('#dspOrganizacion').value.trim(),
+    nombre:       $('#dspNombre').value.trim(),
+    contacto:     $('#dspContacto').value.trim(),
+    celular:      $('#dspCelular').value.trim(),
+    correo:       $('#dspCorreo').value.trim(),
+    web:          $('#dspWeb').value.trim(),
+    domicilio:    $('#dspDomicilio').value.trim(),
+    ciudad:       $('#dspCiudad').value.trim(),
+    localidad:    $('#dspLocalidad').value.trim(),
+    provincia:    $('#dspProvincia').value.trim(),
+    pais:         $('#dspPais').value.trim(),
+    ubicacion:    $('#dspUbicacion').value.trim(),
+    calificacion: $('#dspCalificacion').value,
+    estado:       $('#dspEstado').value,
+    asignado:     $('#dspAsignado').value,
+    atendido:     $('#dspAtendido').value,
+    aplazado:     $('#dspAplazado').value || null,
+    comentarios:  $('#dspComentarios').value,
+    acciones:     $('#dspAcciones').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/datasaleprospectos.php', 'POST', payload);
+      toast('Prospecto creado.');
+    } else {
+      await apiSend(`api/datasaleprospectos.php?id=${id}`, 'PUT', payload);
+      toast('Prospecto actualizado.');
+    }
+    closeModal();
+    cargarDsPro();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDsPro(id) {
+  const ok = await confirmar({
+    title: 'Eliminar prospecto',
+    message: `Se eliminará el prospecto #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datasaleprospectos.php?id=${id}`, 'DELETE');
+    toast('Prospecto eliminado.');
+    cargarDsPro();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 // ------------------------- Vista: AWS SES (landing) -------------------------
 route('/awsses', async (mount) => {
   mount.innerHTML = `
@@ -6747,6 +8337,11 @@ route('/evolution', async (mount) => {
         <span class="tile-icon">📡</span>
         <span class="tile-title">Canales</span>
         <span class="tile-desc">Los canales de Evolution API: número, token, prefijo, webhook y estado de conexión por canal.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/evolutioncontactos'">
+        <span class="tile-icon">👥</span>
+        <span class="tile-title">Contactos</span>
+        <span class="tile-desc">Registro de destinos verificados por Evolution API: fecha, número, estado y error de validación.</span>
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('http://evolution.york.databox.net.ar/manager', '_blank', 'noopener')">
@@ -8118,6 +9713,4111 @@ async function eliminarEvoCh(id) {
     await apiSend(`api/evolutioncanales.php?id=${id}`, 'DELETE');
     toast('Canal eliminado.');
     cargarEvoCh();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Evolution API > Contactos (ABM) -------------------------
+const evoCtFiltrosDefaults = {
+  q: '', codigo: '', estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const evoCtFiltros = { ...evoCtFiltrosDefaults };
+let evoCtBuscadorTimer   = null;
+let evoCtFiltrosSnapshot = null;
+
+function evoCtEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    O: 'badge-success',
+    V: 'badge-success',
+    E: 'badge-danger',
+    F: 'badge-danger',
+    P: 'badge-warn',
+  };
+  const labelMap = {
+    O: 'OK', V: 'Válido', E: 'Error', F: 'Fallado', P: 'Pendiente',
+  };
+  const cls = colorMap[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+}
+
+route('/evolutioncontactos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">👥</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los contactos de Evolution API son los destinos que la plataforma verifica
+          antes de enviar. Cada registro guarda el número consultado, el estado del
+          chequeo y el error si la verificación falló.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="evoCtStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="evoCtSearch"
+                   placeholder="🔍 Buscar destino o error…">
+            <button class="search-clear" id="evoCtSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="evoCtFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="evoCtFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="evoCtRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="evoCtNuevoBtn">+ Nuevo contacto</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Destino</th>
+              <th>Estado</th>
+              <th>Error</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="evoCtTbody">
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="evoCtCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosEvoCtBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosEvoCt()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosEvoCt()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fEvoCtCodigo" min="1" placeholder="ID …" oninput="onFiltroEvoCt('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <input type="text" id="fEvoCtEstado" maxlength="1" placeholder="ej. O, E, P…"
+                     style="font-family:monospace" oninput="onFiltroEvoCt('estado', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fEvoCtDesde" onchange="onFiltroEvoCt('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fEvoCtHasta" onchange="onFiltroEvoCt('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fEvoCtLimite" min="1" max="1000" value="100" onchange="onFiltroEvoCt('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fEvoCtOrderBy" onchange="onFiltroEvoCt('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="destino">Destino</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fEvoCtDir" onchange="onFiltroEvoCt('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosEvoCt()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosEvoCt()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosEvoCt()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#evoCtNuevoBtn').addEventListener('click', () => abrirAltaEdicionEvoCt(null));
+  $('#evoCtFiltrosBtn').addEventListener('click', () => abrirModalFiltrosEvoCt());
+  $('#evoCtRefrescarBtn').addEventListener('click', () => cargarEvoCt());
+
+  const inp = $('#evoCtSearch');
+  const clr = $('#evoCtSearchClear');
+  inp.value = evoCtFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    evoCtFiltros.q = inp.value.trim();
+    clearTimeout(evoCtBuscadorTimer);
+    evoCtBuscadorTimer = setTimeout(() => { cargarEvoCt(); refrescarBadgeFiltrosEvoCt(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    evoCtFiltros.q = '';
+    cargarEvoCt();
+    refrescarBadgeFiltrosEvoCt();
+  });
+
+  $('#evoCtCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarEvoCt(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionEvoCt(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarEvoCt(data.id);
+  });
+
+  $('#evoCtTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#evoCtCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarEvoCt(Number(tr.dataset.id));
+  });
+  $('#evoCtTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#evoCtCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosEvoCt();
+  await cargarEvoCt();
+}, 'Contactos');
+
+async function cargarEvoCt() {
+  const tbody = $('#evoCtTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(evoCtFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/evolutioncontactos.php?' + qs.toString());
+    pintarStatsEvoCt(data.stats);
+    pintarTablaEvoCt(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsEvoCt(s) {
+  const cards = $$('#evoCtStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.con_error);
+}
+
+function pintarTablaEvoCt(rows) {
+  const tbody = $('#evoCtTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin contactos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-id">#${esc(c.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(c.fecha))}</td>
+      <td style="font-family:monospace">${esc(c.destino || '—')}</td>
+      <td>${evoCtEstadoBadge(c.estado)}</td>
+      <td class="td-nombre" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.error || '—')}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroEvoCt(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    evoCtFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    evoCtFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    evoCtFiltros.limite = n;
+  } else {
+    evoCtFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosEvoCt();
+  cargarEvoCt();
+}
+
+function refrescarBadgeFiltrosEvoCt() {
+  const btn   = $('#evoCtFiltrosBtn');
+  const badge = $('#evoCtFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(evoCtFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(evoCtFiltros[k]) !== String(evoCtFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosEvoCt() {
+  const f = evoCtFiltros;
+  $('#fEvoCtCodigo').value  = f.codigo;
+  $('#fEvoCtEstado').value  = f.estado;
+  $('#fEvoCtDesde').value   = f.desde;
+  $('#fEvoCtHasta').value   = f.hasta;
+  $('#fEvoCtLimite').value  = f.limite;
+  $('#fEvoCtOrderBy').value = f.order_by;
+  $('#fEvoCtDir').value     = f.dir;
+}
+
+function abrirModalFiltrosEvoCt() {
+  evoCtFiltrosSnapshot = { ...evoCtFiltros };
+  sincronizarControlesFiltrosEvoCt();
+  $('#filtrosEvoCtBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosEvoCt() { $('#filtrosEvoCtBackdrop').classList.remove('open'); }
+function cancelarFiltrosEvoCt() {
+  if (evoCtFiltrosSnapshot) {
+    Object.assign(evoCtFiltros, evoCtFiltrosSnapshot);
+    refrescarBadgeFiltrosEvoCt();
+    cargarEvoCt();
+  }
+  cerrarModalFiltrosEvoCt();
+}
+function limpiarFiltrosEvoCt() {
+  Object.assign(evoCtFiltros, evoCtFiltrosDefaults);
+  evoCtFiltros.q = $('#evoCtSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosEvoCt();
+  refrescarBadgeFiltrosEvoCt();
+  cargarEvoCt();
+}
+window.onFiltroEvoCt           = onFiltroEvoCt;
+window.cancelarFiltrosEvoCt    = cancelarFiltrosEvoCt;
+window.limpiarFiltrosEvoCt     = limpiarFiltrosEvoCt;
+window.cerrarModalFiltrosEvoCt = cerrarModalFiltrosEvoCt;
+
+async function abrirConsultarEvoCt(id) {
+  openModal(`
+    <div class="modal" style="max-width:760px">
+      <div class="modal-header">
+        <div class="modal-title">Contacto Evolution <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionEvoCt(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/evolutioncontactos.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaEvoCt(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaEvoCt(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-family:monospace;font-size:1.15rem;font-weight:700">${esc(c.destino || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(c.id)} · ${esc(fmtFecha(c.fecha))}
+        </div>
+      </div>
+      <div>${evoCtEstadoBadge(c.estado)}</div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Fecha',   fmtFecha(c.fecha))}
+      ${card('Destino', c.destino, false, true)}
+      ${card('Estado',  c.estado)}
+    </dl>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      Error
+    </div>
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Error', c.error, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionEvoCt(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal" style="max-width:680px">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar contacto <span class="modal-subtitle">#${id}</span>` : 'Nuevo contacto'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formEvoCtHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/evolutioncontactos.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formEvoCtHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarEvoCt(id, a);
+  });
+}
+
+function formEvoCtHtml(c) {
+  const v  = (k) => esc(c?.[k] ?? '');
+  const dt = (k) => {
+    const raw = c?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="evoCtFecha" value="${dt('fecha')}">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <input type="text" id="evoCtEstado" maxlength="1" value="${v('estado')}"
+               style="font-family:monospace" placeholder="ej. O, E, P…">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Destino</label>
+      <input type="text" id="evoCtDestino" maxlength="50" value="${v('destino')}"
+             style="font-family:monospace" placeholder="ej. 5491112345678">
+    </div>
+    <div class="form-group">
+      <label>Error</label>
+      <textarea id="evoCtErrorTxt" rows="4" style="font-family:monospace">${v('error')}</textarea>
+    </div>
+    <div class="field-error" id="evoCtFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarEvoCt(id, btn) {
+  const err = $('#evoCtFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    fecha:   $('#evoCtFecha').value || null,
+    destino: $('#evoCtDestino').value.trim(),
+    estado:  $('#evoCtEstado').value.trim(),
+    error:   $('#evoCtErrorTxt').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/evolutioncontactos.php', 'POST', payload);
+      toast('Contacto creado.');
+    } else {
+      await apiSend(`api/evolutioncontactos.php?id=${id}`, 'PUT', payload);
+      toast('Contacto actualizado.');
+    }
+    closeModal();
+    cargarEvoCt();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarEvoCt(id) {
+  const ok = await confirmar({
+    title: 'Eliminar contacto',
+    message: `Se eliminará el contacto #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/evolutioncontactos.php?id=${id}`, 'DELETE');
+    toast('Contacto eliminado.');
+    cargarEvoCt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Mercadopago (landing) -------------------------
+route('/mercadopago', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Mercadopago</div>
+      <div class="page-subtitle">Pasarela de pagos: pagos registrados y consola de la plataforma.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/mercadopagocuentas'">
+        <span class="tile-icon">🏦</span>
+        <span class="tile-title">Cuentas</span>
+        <span class="tile-desc">Las cuentas Mercadopago configuradas: CVU, credenciales de producción y testing, webhooks e imputación contable.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/mercadopagopagos'">
+        <span class="tile-icon">💳</span>
+        <span class="tile-title">Pagos</span>
+        <span class="tile-desc">Cada pago procesado por Mercadopago, con cuenta, factura, monto, operación y estado del cobro.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/mercadopagosuscripciones'">
+        <span class="tile-icon">🔁</span>
+        <span class="tile-title">Suscripciones</span>
+        <span class="tile-desc">Suscripciones recurrentes de Mercadopago: suscriptor, período, monto, fechas de ciclo (inicio, pausa, fin) y estado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/mercadopagodebitos'">
+        <span class="tile-icon">📉</span>
+        <span class="tile-title">Débitos</span>
+        <span class="tile-desc">Débitos ejecutados sobre las suscripciones: cuenta, referencia, monto, operación y resultado del cobro.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/mercadopagoregistros'">
+        <span class="tile-icon">📰</span>
+        <span class="tile-title">Registros</span>
+        <span class="tile-desc">Log crudo de eventos y notificaciones recibidos desde Mercadopago, con fecha, tipo y cuerpo del evento.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://www.mercadopago.com.ar/developers', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre el portal de desarrolladores de Mercadopago en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'Mercadopago');
+
+// ------------------------- Vista: Dolarhoy (landing) -------------------------
+route('/dolarhoy', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Dolarhoy</div>
+      <div class="page-subtitle">Cotizaciones del dólar: registros históricos y consola de la plataforma.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/dolarhoycotizaciones'">
+        <span class="tile-icon">💵</span>
+        <span class="tile-title">Cotizaciones</span>
+        <span class="tile-desc">Cotizaciones históricas del dólar tomadas de Dolarhoy: fecha, precio de compra y precio de venta.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://dolarhoy.com/', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre el sitio de Dolarhoy en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'Dolarhoy');
+
+// ------------------------- Vista: Dolarhoy > Cotizaciones (ABM) -------------------------
+const dhCotFiltrosDefaults = {
+  q: '', codigo: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const dhCotFiltros = { ...dhCotFiltrosDefaults };
+let dhCotBuscadorTimer   = null;
+let dhCotFiltrosSnapshot = null;
+
+function dhCotFmtDec(v) {
+  if (v == null || v === '' || isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+route('/dolarhoycotizaciones', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">💵</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Las cotizaciones de Dolarhoy son el registro histórico del tipo de cambio
+          del dólar tomado de la plataforma — cada fila trae la fecha del día con el
+          precio de compra y el precio de venta publicados.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dhCotStats">
+        <div class="stat-card">
+          <span class="stat-label">Compra oficial <span style="font-size:.65rem;color:var(--muted);font-weight:500">realtime</span></span>
+          <span class="stat-value" data-slot="compra">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Venta oficial <span style="font-size:.65rem;color:var(--muted);font-weight:500">realtime</span></span>
+          <span class="stat-value" data-slot="venta">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Total registros</span>
+          <span class="stat-value" data-slot="total">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Actualizado</span>
+          <span class="stat-value" data-slot="actualizado" style="font-size:1rem">—</span>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dhCotSearch"
+                   placeholder="🔍 Buscar fecha o valor…">
+            <button class="search-clear" id="dhCotSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dhCotFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dhCotFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dhCotRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dhCotNuevoBtn">+ Nueva cotización</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:90px">Código</th>
+              <th style="width:160px">Fecha</th>
+              <th style="text-align:right">Compra</th>
+              <th style="text-align:right">Venta</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dhCotTbody">
+            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dhCotCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDhCotBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDhCot()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDhCot()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDhCotCodigo" min="1" placeholder="ID …" oninput="onFiltroDhCot('codigo', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fDhCotDesde" onchange="onFiltroDhCot('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fDhCotHasta" onchange="onFiltroDhCot('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDhCotLimite" min="1" max="2000" value="100" onchange="onFiltroDhCot('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDhCotOrderBy" onchange="onFiltroDhCot('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="compra">Compra</option>
+                <option value="venta">Venta</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDhCotDir" onchange="onFiltroDhCot('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDhCot()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDhCot()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDhCot()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#dhCotNuevoBtn').addEventListener('click', () => abrirAltaEdicionDhCot(null));
+  $('#dhCotFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDhCot());
+  $('#dhCotRefrescarBtn').addEventListener('click', () => cargarDhCot());
+
+  const inp = $('#dhCotSearch');
+  const clr = $('#dhCotSearchClear');
+  inp.value = dhCotFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dhCotFiltros.q = inp.value.trim();
+    clearTimeout(dhCotBuscadorTimer);
+    dhCotBuscadorTimer = setTimeout(() => { cargarDhCot(); refrescarBadgeFiltrosDhCot(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    dhCotFiltros.q = '';
+    cargarDhCot();
+    refrescarBadgeFiltrosDhCot();
+  });
+
+  $('#dhCotCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDhCot(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDhCot(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDhCot(data.id);
+  });
+
+  $('#dhCotTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dhCotCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDhCot(Number(tr.dataset.id));
+  });
+  $('#dhCotTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dhCotCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDhCot();
+  await cargarDhCot();
+}, 'Cotizaciones');
+
+async function cargarDhCot() {
+  const tbody = $('#dhCotTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(dhCotFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+
+  cargarDhCotRealtime();
+
+  try {
+    const data = await apiGet('api/dolarhoycotizaciones.php?' + qs.toString());
+    pintarTotalDhCot(data.stats);
+    pintarTablaDhCot(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function cargarDhCotRealtime() {
+  const setSlot = (name, val) => {
+    const el = document.querySelector(`#dhCotStats [data-slot="${name}"]`);
+    if (el) el.textContent = val;
+  };
+  setSlot('compra', '…');
+  setSlot('venta',  '…');
+  setSlot('actualizado', 'consultando…');
+  try {
+    const r = await apiGet('api/dolarhoy_realtime.php');
+    setSlot('compra', r?.compra != null ? '$ ' + dhCotFmtDec(r.compra) : '—');
+    setSlot('venta',  r?.venta  != null ? '$ ' + dhCotFmtDec(r.venta)  : '—');
+    const hora = r?.fecha ? String(r.fecha).slice(11, 16) : '—';
+    setSlot('actualizado', hora + (r?.cache ? ' (cache)' : ''));
+  } catch (e) {
+    setSlot('compra', '—');
+    setSlot('venta',  '—');
+    setSlot('actualizado', 'sin datos');
+  }
+}
+
+function pintarTotalDhCot(s) {
+  const el = document.querySelector('#dhCotStats [data-slot="total"]');
+  if (el) el.textContent = fmtNum(s?.total ?? 0);
+}
+
+function pintarTablaDhCot(rows) {
+  const tbody = $('#dhCotTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin cotizaciones.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td class="td-id">#${esc(r.id)}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(r.fecha || '—')}</td>
+      <td style="font-family:monospace;text-align:right">${dhCotFmtDec(r.compra)}</td>
+      <td style="font-family:monospace;text-align:right">${dhCotFmtDec(r.venta)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroDhCot(key, value) {
+  if (['order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    dhCotFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    dhCotFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 2000) n = 2000;
+    dhCotFiltros.limite = n;
+  } else {
+    dhCotFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDhCot();
+  cargarDhCot();
+}
+
+function refrescarBadgeFiltrosDhCot() {
+  const btn   = $('#dhCotFiltrosBtn');
+  const badge = $('#dhCotFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(dhCotFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(dhCotFiltros[k]) !== String(dhCotFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDhCot() {
+  const f = dhCotFiltros;
+  $('#fDhCotCodigo').value  = f.codigo;
+  $('#fDhCotDesde').value   = f.desde;
+  $('#fDhCotHasta').value   = f.hasta;
+  $('#fDhCotLimite').value  = f.limite;
+  $('#fDhCotOrderBy').value = f.order_by;
+  $('#fDhCotDir').value     = f.dir;
+}
+
+function abrirModalFiltrosDhCot() {
+  dhCotFiltrosSnapshot = { ...dhCotFiltros };
+  sincronizarControlesFiltrosDhCot();
+  $('#filtrosDhCotBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosDhCot() { $('#filtrosDhCotBackdrop').classList.remove('open'); }
+function cancelarFiltrosDhCot() {
+  if (dhCotFiltrosSnapshot) {
+    Object.assign(dhCotFiltros, dhCotFiltrosSnapshot);
+    refrescarBadgeFiltrosDhCot();
+    cargarDhCot();
+  }
+  cerrarModalFiltrosDhCot();
+}
+function limpiarFiltrosDhCot() {
+  Object.assign(dhCotFiltros, dhCotFiltrosDefaults);
+  dhCotFiltros.q = $('#dhCotSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDhCot();
+  refrescarBadgeFiltrosDhCot();
+  cargarDhCot();
+}
+window.onFiltroDhCot           = onFiltroDhCot;
+window.cancelarFiltrosDhCot    = cancelarFiltrosDhCot;
+window.limpiarFiltrosDhCot     = limpiarFiltrosDhCot;
+window.cerrarModalFiltrosDhCot = cerrarModalFiltrosDhCot;
+
+async function abrirConsultarDhCot(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">Cotización Dolarhoy <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDhCot(id); }
+  });
+
+  try {
+    const r = await apiGet(`api/dolarhoycotizaciones.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">Código</div>
+          <div style="font-family:monospace">#${esc(r.id)}</div>
+        </div>
+        <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">Fecha</div>
+          <div style="font-family:monospace">${esc(r.fecha || '—')}</div>
+        </div>
+        <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">Compra</div>
+          <div style="font-family:monospace">${dhCotFmtDec(r.compra)}</div>
+        </div>
+        <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">Venta</div>
+          <div style="font-family:monospace">${dhCotFmtDec(r.venta)}</div>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function abrirAltaEdicionDhCot(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal" style="max-width:560px">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar cotización <span class="modal-subtitle">#${id}</span>` : 'Nueva cotización'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formDhCotHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const r = await apiGet(`api/dolarhoycotizaciones.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formDhCotHtml(r);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDhCot(id, a);
+  });
+}
+
+function formDhCotHtml(r) {
+  const v = (k) => esc(r?.[k] ?? '');
+  return `
+    <div class="form-group">
+      <label>Fecha</label>
+      <input type="date" id="dhCotFecha" value="${v('fecha')}">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Compra</label>
+        <input type="number" id="dhCotCompra" step="0.01" min="0" value="${v('compra')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Venta</label>
+        <input type="number" id="dhCotVenta" step="0.01" min="0" value="${v('venta')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="field-error" id="dhCotFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarDhCot(id, btn) {
+  const err = $('#dhCotFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    fecha:  $('#dhCotFecha').value  || null,
+    compra: $('#dhCotCompra').value || null,
+    venta:  $('#dhCotVenta').value  || null,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/dolarhoycotizaciones.php', 'POST', payload);
+      toast('Cotización creada.');
+    } else {
+      await apiSend(`api/dolarhoycotizaciones.php?id=${id}`, 'PUT', payload);
+      toast('Cotización actualizada.');
+    }
+    closeModal();
+    cargarDhCot();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDhCot(id) {
+  const ok = await confirmar({
+    title: 'Eliminar cotización',
+    message: `Se eliminará la cotización #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/dolarhoycotizaciones.php?id=${id}`, 'DELETE');
+    toast('Cotización eliminada.');
+    cargarDhCot();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Mercadopago > Pagos (ABM) -------------------------
+const mpPagFiltrosDefaults = {
+  q: '', codigo: '', cuenta: '', factura: '', recibo: '',
+  estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const mpPagFiltros = { ...mpPagFiltrosDefaults };
+let mpPagBuscadorTimer   = null;
+let mpPagFiltrosSnapshot = null;
+
+function mpPagEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    A: 'badge-success',
+    P: 'badge-warn',
+    R: 'badge-danger',
+    C: 'badge-danger',
+    X: 'badge-danger',
+  };
+  const labelMap = {
+    A: 'Aprobado', P: 'Pendiente', R: 'Rechazado', C: 'Cancelado', X: 'Anulado',
+  };
+  const cls = colorMap[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+}
+
+function mpPagFmtMonto(v) {
+  if (v == null || v === '' || isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+route('/mercadopagopagos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">💳</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los pagos de Mercadopago son cada cobro procesado por la pasarela,
+          con la cuenta origen, factura o recibo asociado, monto, número de
+          operación y el estado devuelto por la plataforma.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="mpPagStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Finalizados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Monto cobrado</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="mpPagSearch"
+                   placeholder="🔍 Buscar UUID, concepto, operación o retorno…">
+            <button class="search-clear" id="mpPagSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="mpPagFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="mpPagFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="mpPagRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="mpPagNuevoBtn">+ Nuevo pago</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Iniciado</th>
+              <th>Cuenta</th>
+              <th>Factura</th>
+              <th>Concepto</th>
+              <th style="text-align:right">Monto</th>
+              <th>Operación</th>
+              <th>Estado</th>
+              <th>Finalizado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="mpPagTbody">
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="mpPagCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosMpPagBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosMpPag()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosMpPag()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fMpPagCodigo" min="1" placeholder="ID …" oninput="onFiltroMpPag('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fMpPagEstado" onchange="onFiltroMpPag('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="A">Aprobado</option>
+                <option value="P">Pendiente</option>
+                <option value="R">Rechazado</option>
+                <option value="C">Cancelado</option>
+                <option value="X">Anulado</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Cuenta (ID)</label>
+              <input type="number" id="fMpPagCuenta" min="1" oninput="onFiltroMpPag('cuenta', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Factura (ID)</label>
+              <input type="number" id="fMpPagFactura" min="1" oninput="onFiltroMpPag('factura', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Recibo (ID)</label>
+              <input type="number" id="fMpPagRecibo" min="1" oninput="onFiltroMpPag('recibo', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fMpPagDesde" onchange="onFiltroMpPag('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fMpPagHasta" onchange="onFiltroMpPag('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fMpPagLimite" min="1" max="1000" value="100" onchange="onFiltroMpPag('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fMpPagOrderBy" onchange="onFiltroMpPag('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="iniciado">Iniciado</option>
+                <option value="finalizado">Finalizado</option>
+                <option value="cuenta">Cuenta</option>
+                <option value="factura">Factura</option>
+                <option value="recibo">Recibo</option>
+                <option value="concepto">Concepto</option>
+                <option value="monto">Monto</option>
+                <option value="operacion">Operación</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fMpPagDir" onchange="onFiltroMpPag('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosMpPag()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosMpPag()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosMpPag()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#mpPagNuevoBtn').addEventListener('click', () => abrirAltaEdicionMpPag(null));
+  $('#mpPagFiltrosBtn').addEventListener('click', () => abrirModalFiltrosMpPag());
+  $('#mpPagRefrescarBtn').addEventListener('click', () => cargarMpPag());
+
+  const inp = $('#mpPagSearch');
+  const clr = $('#mpPagSearchClear');
+  inp.value = mpPagFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    mpPagFiltros.q = inp.value.trim();
+    clearTimeout(mpPagBuscadorTimer);
+    mpPagBuscadorTimer = setTimeout(() => { cargarMpPag(); refrescarBadgeFiltrosMpPag(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    mpPagFiltros.q = '';
+    cargarMpPag();
+    refrescarBadgeFiltrosMpPag();
+  });
+
+  $('#mpPagCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarMpPag(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionMpPag(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarMpPag(data.id);
+  });
+
+  $('#mpPagTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#mpPagCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarMpPag(Number(tr.dataset.id));
+  });
+  $('#mpPagTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#mpPagCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosMpPag();
+  await cargarMpPag();
+}, 'Pagos');
+
+async function cargarMpPag() {
+  const tbody = $('#mpPagTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(mpPagFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/mercadopagopagos.php?' + qs.toString());
+    pintarStatsMpPag(data.stats);
+    pintarTablaMpPag(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsMpPag(s) {
+  const cards = $$('#mpPagStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.finalizados);
+  cards[2].textContent = mpPagFmtMonto(s.monto_total);
+}
+
+function pintarTablaMpPag(rows) {
+  const tbody = $('#mpPagTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin pagos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((p) => `
+    <tr data-id="${p.id}" class="row-clickable">
+      <td class="td-id">#${esc(p.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(p.iniciado))}</td>
+      <td>${p.cuenta != null ? '#' + esc(p.cuenta) : '—'}</td>
+      <td>${p.factura != null ? '#' + esc(p.factura) : '—'}</td>
+      <td>${esc(p.concepto || '—')}</td>
+      <td style="text-align:right;font-family:monospace">${mpPagFmtMonto(p.monto)}</td>
+      <td style="font-family:monospace">${esc(p.operacion || '—')}</td>
+      <td>${mpPagEstadoBadge(p.estado)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(p.finalizado))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroMpPag(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    mpPagFiltros[key] = value;
+  } else if (['codigo', 'cuenta', 'factura', 'recibo'].includes(key)) {
+    const v = String(value).trim();
+    mpPagFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    mpPagFiltros.limite = n;
+  } else {
+    mpPagFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosMpPag();
+  cargarMpPag();
+}
+
+function refrescarBadgeFiltrosMpPag() {
+  const btn   = $('#mpPagFiltrosBtn');
+  const badge = $('#mpPagFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(mpPagFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(mpPagFiltros[k]) !== String(mpPagFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosMpPag() {
+  const f = mpPagFiltros;
+  $('#fMpPagCodigo').value  = f.codigo;
+  $('#fMpPagEstado').value  = f.estado;
+  $('#fMpPagCuenta').value  = f.cuenta;
+  $('#fMpPagFactura').value = f.factura;
+  $('#fMpPagRecibo').value  = f.recibo;
+  $('#fMpPagDesde').value   = f.desde;
+  $('#fMpPagHasta').value   = f.hasta;
+  $('#fMpPagLimite').value  = f.limite;
+  $('#fMpPagOrderBy').value = f.order_by;
+  $('#fMpPagDir').value     = f.dir;
+}
+
+function abrirModalFiltrosMpPag() {
+  mpPagFiltrosSnapshot = { ...mpPagFiltros };
+  sincronizarControlesFiltrosMpPag();
+  $('#filtrosMpPagBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosMpPag() { $('#filtrosMpPagBackdrop').classList.remove('open'); }
+function cancelarFiltrosMpPag() {
+  if (mpPagFiltrosSnapshot) {
+    Object.assign(mpPagFiltros, mpPagFiltrosSnapshot);
+    refrescarBadgeFiltrosMpPag();
+    cargarMpPag();
+  }
+  cerrarModalFiltrosMpPag();
+}
+function limpiarFiltrosMpPag() {
+  Object.assign(mpPagFiltros, mpPagFiltrosDefaults);
+  mpPagFiltros.q = $('#mpPagSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosMpPag();
+  refrescarBadgeFiltrosMpPag();
+  cargarMpPag();
+}
+window.onFiltroMpPag           = onFiltroMpPag;
+window.cancelarFiltrosMpPag    = cancelarFiltrosMpPag;
+window.limpiarFiltrosMpPag     = limpiarFiltrosMpPag;
+window.cerrarModalFiltrosMpPag = cerrarModalFiltrosMpPag;
+
+async function abrirConsultarMpPag(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1100px">
+      <div class="modal-header">
+        <div class="modal-title">Pago Mercadopago <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionMpPag(id); }
+  });
+
+  try {
+    const p = await apiGet(`api/mercadopagopagos.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaMpPag(p);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaMpPag(p) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">$ ${mpPagFmtMonto(p.monto)}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(p.operacion || '')}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(p.concepto || 'Sin concepto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(p.id)} · <code>${esc(p.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${mpPagEstadoBadge(p.estado)}</div>
+        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
+          <div><span style="color:var(--muted)">Iniciado:</span> ${esc(fmtFecha(p.iniciado))}</div>
+          <div><span style="color:var(--muted)">Finalizado:</span> ${esc(fmtFecha(p.finalizado))}</div>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Identificación')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Código',   p.id)}
+      ${card('UUID',     p.uuid, false, true)}
+      ${card('Cuenta',   p.cuenta)}
+      ${card('Factura',  p.factura)}
+      ${card('Recibo',   p.recibo)}
+      ${card('Operación', p.operacion, false, true)}
+    </dl>
+
+    ${seccion('Importe y estado')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Monto',      mpPagFmtMonto(p.monto))}
+      ${card('Estado',     p.estado)}
+      ${card('Concepto',   p.concepto)}
+      ${card('Iniciado',   fmtFecha(p.iniciado))}
+      ${card('Finalizado', fmtFecha(p.finalizado))}
+      ${card('Retorno',    p.retorno)}
+    </dl>
+
+    ${seccion('Notificación y propiedades')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Notificación', p.notificacion, true, true)}
+      ${card('Propiedades',  p.propiedades,  true, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionMpPag(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar pago <span class="modal-subtitle">#${id}</span>` : 'Nuevo pago'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formMpPagHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const p = await apiGet(`api/mercadopagopagos.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formMpPagHtml(p);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarMpPag(id, a);
+  });
+}
+
+function formMpPagHtml(p) {
+  const v   = (k) => esc(p?.[k] ?? '');
+  const sel = (k, val) => (p?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = p?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>UUID</label>
+        <input type="text" id="mpPagUuid" maxlength="50" value="${v('uuid')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Iniciado</label>
+        <input type="datetime-local" id="mpPagIniciado" value="${dt('iniciado')}">
+      </div>
+      <div class="form-group">
+        <label>Finalizado</label>
+        <input type="datetime-local" id="mpPagFinalizado" value="${dt('finalizado')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Cuenta (ID)</label>
+        <input type="number" id="mpPagCuenta" min="1" value="${v('cuenta')}">
+      </div>
+      <div class="form-group">
+        <label>Factura (ID)</label>
+        <input type="number" id="mpPagFactura" min="1" value="${v('factura')}">
+      </div>
+      <div class="form-group">
+        <label>Recibo (ID)</label>
+        <input type="number" id="mpPagRecibo" min="1" value="${v('recibo')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Concepto</label>
+      <input type="text" id="mpPagConcepto" maxlength="255" value="${v('concepto')}">
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Monto</label>
+        <input type="number" id="mpPagMonto" step="0.01" min="0" value="${v('monto')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Operación</label>
+        <input type="text" id="mpPagOperacion" maxlength="255" value="${v('operacion')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="mpPagEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="A" ${sel('estado','A')}>Aprobado</option>
+          <option value="P" ${sel('estado','P')}>Pendiente</option>
+          <option value="R" ${sel('estado','R')}>Rechazado</option>
+          <option value="C" ${sel('estado','C')}>Cancelado</option>
+          <option value="X" ${sel('estado','X')}>Anulado</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Retorno</label>
+      <textarea id="mpPagRetorno" rows="2" maxlength="1000" style="font-family:monospace">${v('retorno')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Notificación</label>
+      <textarea id="mpPagNotificacion" rows="4" style="font-family:monospace">${v('notificacion')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Propiedades</label>
+      <textarea id="mpPagPropiedades" rows="4" style="font-family:monospace">${v('propiedades')}</textarea>
+    </div>
+    <div class="field-error" id="mpPagFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarMpPag(id, btn) {
+  const err = $('#mpPagFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    uuid:         $('#mpPagUuid').value.trim(),
+    iniciado:     $('#mpPagIniciado').value || null,
+    finalizado:   $('#mpPagFinalizado').value || null,
+    cuenta:       $('#mpPagCuenta').value,
+    factura:      $('#mpPagFactura').value,
+    recibo:       $('#mpPagRecibo').value,
+    concepto:     $('#mpPagConcepto').value.trim(),
+    monto:        $('#mpPagMonto').value,
+    operacion:    $('#mpPagOperacion').value.trim(),
+    estado:       $('#mpPagEstado').value,
+    retorno:      $('#mpPagRetorno').value,
+    notificacion: $('#mpPagNotificacion').value,
+    propiedades:  $('#mpPagPropiedades').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/mercadopagopagos.php', 'POST', payload);
+      toast('Pago creado.');
+    } else {
+      await apiSend(`api/mercadopagopagos.php?id=${id}`, 'PUT', payload);
+      toast('Pago actualizado.');
+    }
+    closeModal();
+    cargarMpPag();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarMpPag(id) {
+  const ok = await confirmar({
+    title: 'Eliminar pago',
+    message: `Se eliminará el pago #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/mercadopagopagos.php?id=${id}`, 'DELETE');
+    toast('Pago eliminado.');
+    cargarMpPag();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Mercadopago > Cuentas (ABM) -------------------------
+const mpCtaFiltrosDefaults = {
+  q: '', codigo: '', estado: '', modo: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const mpCtaFiltros = { ...mpCtaFiltrosDefaults };
+let mpCtaBuscadorTimer   = null;
+let mpCtaFiltrosSnapshot = null;
+
+function mpCtaEstadoBadge(e) {
+  if (e === '1') return `<span class="badge badge-success">Habilitada</span>`;
+  if (e === '0') return `<span class="badge badge-danger">Deshabilitada</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+function mpCtaModoBadge(m) {
+  if (m === 'P') return `<span class="badge badge-success">Producción</span>`;
+  if (m === 'T') return `<span class="badge badge-warn">Testing</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+function mpCtaMask(s) {
+  if (s == null || s === '') return '—';
+  const str = String(s);
+  if (str.length <= 8) return '••••';
+  return str.slice(0, 4) + '…' + str.slice(-4);
+}
+
+route('/mercadopagocuentas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">🏦</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Las cuentas Mercadopago concentran las credenciales (public key y access
+          token, en producción y testing), el CVU / alias de acreditación, los
+          webhooks configurados y la imputación contable de cada cuenta.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="mpCtaStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Habilitadas</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Producción</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="mpCtaSearch"
+                   placeholder="🔍 Buscar nombre, alias, CVU, imputación o UUID…">
+            <button class="search-clear" id="mpCtaSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="mpCtaFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="mpCtaFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="mpCtaRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="mpCtaNuevoBtn">+ Nueva cuenta</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Alias</th>
+              <th>CVU</th>
+              <th>Imputación</th>
+              <th>Modo</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="mpCtaTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="mpCtaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosMpCtaBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosMpCta()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosMpCta()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fMpCtaCodigo" min="1" placeholder="ID …" oninput="onFiltroMpCta('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fMpCtaEstado" onchange="onFiltroMpCta('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Habilitada</option>
+                <option value="0">Deshabilitada</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Modo</label>
+              <select id="fMpCtaModo" onchange="onFiltroMpCta('modo', this.value)">
+                <option value="">— Todos —</option>
+                <option value="P">Producción</option>
+                <option value="T">Testing</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fMpCtaLimite" min="1" max="1000" value="100" onchange="onFiltroMpCta('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fMpCtaOrderBy" onchange="onFiltroMpCta('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="cvuAlias">Alias</option>
+                <option value="cvuNumero">CVU</option>
+                <option value="imputacion">Imputación</option>
+                <option value="modo">Modo</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Dirección</label>
+            <select id="fMpCtaDir" onchange="onFiltroMpCta('dir', this.value)">
+              <option value="desc">Descendente</option>
+              <option value="asc">Ascendente</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosMpCta()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosMpCta()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosMpCta()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#mpCtaNuevoBtn').addEventListener('click', () => abrirAltaEdicionMpCta(null));
+  $('#mpCtaFiltrosBtn').addEventListener('click', () => abrirModalFiltrosMpCta());
+  $('#mpCtaRefrescarBtn').addEventListener('click', () => cargarMpCta());
+
+  const inp = $('#mpCtaSearch');
+  const clr = $('#mpCtaSearchClear');
+  inp.value = mpCtaFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    mpCtaFiltros.q = inp.value.trim();
+    clearTimeout(mpCtaBuscadorTimer);
+    mpCtaBuscadorTimer = setTimeout(() => { cargarMpCta(); refrescarBadgeFiltrosMpCta(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    mpCtaFiltros.q = '';
+    cargarMpCta();
+    refrescarBadgeFiltrosMpCta();
+  });
+
+  $('#mpCtaCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarMpCta(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionMpCta(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarMpCta(data.id);
+  });
+
+  $('#mpCtaTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#mpCtaCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarMpCta(Number(tr.dataset.id));
+  });
+  $('#mpCtaTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#mpCtaCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosMpCta();
+  await cargarMpCta();
+}, 'Cuentas');
+
+async function cargarMpCta() {
+  const tbody = $('#mpCtaTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(mpCtaFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/mercadopagocuentas.php?' + qs.toString());
+    pintarStatsMpCta(data.stats);
+    pintarTablaMpCta(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsMpCta(s) {
+  const cards = $$('#mpCtaStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.habilitadas);
+  cards[2].textContent = fmtNum(s.produccion);
+}
+
+function pintarTablaMpCta(rows) {
+  const tbody = $('#mpCtaTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin cuentas.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-id">#${esc(c.id)}</td>
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td style="font-family:monospace">${esc(c.cvuAlias || '—')}</td>
+      <td style="font-family:monospace">${esc(c.cvuNumero || '—')}</td>
+      <td>${esc(c.imputacion || '—')}</td>
+      <td>${mpCtaModoBadge(c.modo)}</td>
+      <td>${mpCtaEstadoBadge(c.estado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroMpCta(key, value) {
+  if (['estado', 'modo', 'order_by', 'dir'].includes(key)) {
+    mpCtaFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    mpCtaFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    mpCtaFiltros.limite = n;
+  } else {
+    mpCtaFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosMpCta();
+  cargarMpCta();
+}
+
+function refrescarBadgeFiltrosMpCta() {
+  const btn   = $('#mpCtaFiltrosBtn');
+  const badge = $('#mpCtaFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(mpCtaFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(mpCtaFiltros[k]) !== String(mpCtaFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosMpCta() {
+  const f = mpCtaFiltros;
+  $('#fMpCtaCodigo').value  = f.codigo;
+  $('#fMpCtaEstado').value  = f.estado;
+  $('#fMpCtaModo').value    = f.modo;
+  $('#fMpCtaLimite').value  = f.limite;
+  $('#fMpCtaOrderBy').value = f.order_by;
+  $('#fMpCtaDir').value     = f.dir;
+}
+
+function abrirModalFiltrosMpCta() {
+  mpCtaFiltrosSnapshot = { ...mpCtaFiltros };
+  sincronizarControlesFiltrosMpCta();
+  $('#filtrosMpCtaBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosMpCta() { $('#filtrosMpCtaBackdrop').classList.remove('open'); }
+function cancelarFiltrosMpCta() {
+  if (mpCtaFiltrosSnapshot) {
+    Object.assign(mpCtaFiltros, mpCtaFiltrosSnapshot);
+    refrescarBadgeFiltrosMpCta();
+    cargarMpCta();
+  }
+  cerrarModalFiltrosMpCta();
+}
+function limpiarFiltrosMpCta() {
+  Object.assign(mpCtaFiltros, mpCtaFiltrosDefaults);
+  mpCtaFiltros.q = $('#mpCtaSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosMpCta();
+  refrescarBadgeFiltrosMpCta();
+  cargarMpCta();
+}
+window.onFiltroMpCta           = onFiltroMpCta;
+window.cancelarFiltrosMpCta    = cancelarFiltrosMpCta;
+window.limpiarFiltrosMpCta     = limpiarFiltrosMpCta;
+window.cerrarModalFiltrosMpCta = cerrarModalFiltrosMpCta;
+
+async function abrirConsultarMpCta(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1100px">
+      <div class="modal-header">
+        <div class="modal-title">Cuenta Mercadopago <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionMpCta(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/mercadopagocuentas.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaMpCta(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaMpCta(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-size:1.3rem;font-weight:700">${esc(c.nombre || '—')}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(c.cvuAlias || '')}</span>
+        </div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · <code>${esc(c.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;min-width:220px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${mpCtaEstadoBadge(c.estado)}</div>
+        <div>${mpCtaModoBadge(c.modo)}</div>
+      </div>
+    </div>
+
+    ${seccion('Identificación')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Código',      c.id)}
+      ${card('UUID',        c.uuid, false, true)}
+      ${card('Nombre',      c.nombre)}
+      ${card('Logo (URL)',  c.logo, false, true)}
+      ${card('Alias (CVU)', c.cvuAlias, false, true)}
+      ${card('CVU',         c.cvuNumero, false, true)}
+      ${card('Imputación',  c.imputacion)}
+      ${card('Modo',        c.modo === 'P' ? 'Producción' : c.modo === 'T' ? 'Testing' : c.modo)}
+    </dl>
+
+    ${seccion('Credenciales producción')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Public key',   c.publicKey,   false, true)}
+      ${card('Access token', c.accessToken, false, true)}
+    </dl>
+
+    ${seccion('Credenciales testing')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Public key',   c.publicKeyTesting,   false, true)}
+      ${card('Access token', c.accessTokenTesting, false, true)}
+    </dl>
+
+    ${seccion('Webhooks')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Endpoint prod',    c.webhookEndpoint,        false, true)}
+      ${card('Key prod',         c.webhookKey,             false, true)}
+      ${card('Endpoint testing', c.webhookEndpointTesting, false, true)}
+      ${card('Key testing',      c.webhookKeyTesting,      false, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionMpCta(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar cuenta <span class="modal-subtitle">#${id}</span>` : 'Nueva cuenta'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formMpCtaHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/mercadopagocuentas.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formMpCtaHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarMpCta(id, a);
+  });
+}
+
+function formMpCtaHtml(c) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>UUID</label>
+        <input type="text" id="mpCtaUuid" maxlength="50" value="${v('uuid')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Modo</label>
+        <select id="mpCtaModo">
+          <option value=""  ${sel('modo','')}>—</option>
+          <option value="P" ${sel('modo','P')}>Producción</option>
+          <option value="T" ${sel('modo','T')}>Testing</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="mpCtaEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="1" ${sel('estado','1')}>Habilitada</option>
+          <option value="0" ${sel('estado','0')}>Deshabilitada</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Nombre</label>
+      <input type="text" id="mpCtaNombre" maxlength="255" value="${v('nombre')}">
+    </div>
+    <div class="form-group">
+      <label>Logo (URL)</label>
+      <input type="text" id="mpCtaLogo" maxlength="255" value="${v('logo')}" style="font-family:monospace">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Alias (CVU)</label>
+        <input type="text" id="mpCtaCvuAlias" maxlength="255" value="${v('cvuAlias')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>CVU (número)</label>
+        <input type="text" id="mpCtaCvuNumero" maxlength="255" value="${v('cvuNumero')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Imputación</label>
+      <input type="text" id="mpCtaImputacion" maxlength="255" value="${v('imputacion')}">
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 4px">
+      Credenciales producción
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Public key</label>
+        <input type="text" id="mpCtaPublicKey" maxlength="255" value="${v('publicKey')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Access token</label>
+        <input type="text" id="mpCtaAccessToken" maxlength="255" value="${v('accessToken')}" style="font-family:monospace">
+      </div>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 4px">
+      Credenciales testing
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Public key testing</label>
+        <input type="text" id="mpCtaPublicKeyTesting" maxlength="255" value="${v('publicKeyTesting')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Access token testing</label>
+        <input type="text" id="mpCtaAccessTokenTesting" maxlength="255" value="${v('accessTokenTesting')}" style="font-family:monospace">
+      </div>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 4px">
+      Webhooks
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Endpoint (producción)</label>
+        <input type="text" id="mpCtaWebhookEndpoint" maxlength="255" value="${v('webhookEndpoint')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Key (producción)</label>
+        <input type="text" id="mpCtaWebhookKey" maxlength="255" value="${v('webhookKey')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Endpoint (testing)</label>
+        <input type="text" id="mpCtaWebhookEndpointTesting" maxlength="255" value="${v('webhookEndpointTesting')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Key (testing)</label>
+        <input type="text" id="mpCtaWebhookKeyTesting" maxlength="255" value="${v('webhookKeyTesting')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="field-error" id="mpCtaFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarMpCta(id, btn) {
+  const err = $('#mpCtaFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    uuid:                   $('#mpCtaUuid').value.trim(),
+    nombre:                 $('#mpCtaNombre').value.trim(),
+    logo:                   $('#mpCtaLogo').value.trim(),
+    cvuAlias:               $('#mpCtaCvuAlias').value.trim(),
+    cvuNumero:              $('#mpCtaCvuNumero').value.trim(),
+    publicKey:              $('#mpCtaPublicKey').value.trim(),
+    accessToken:            $('#mpCtaAccessToken').value.trim(),
+    publicKeyTesting:       $('#mpCtaPublicKeyTesting').value.trim(),
+    accessTokenTesting:     $('#mpCtaAccessTokenTesting').value.trim(),
+    webhookEndpoint:        $('#mpCtaWebhookEndpoint').value.trim(),
+    webhookKey:             $('#mpCtaWebhookKey').value.trim(),
+    webhookEndpointTesting: $('#mpCtaWebhookEndpointTesting').value.trim(),
+    webhookKeyTesting:      $('#mpCtaWebhookKeyTesting').value.trim(),
+    imputacion:             $('#mpCtaImputacion').value.trim(),
+    modo:                   $('#mpCtaModo').value,
+    estado:                 $('#mpCtaEstado').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/mercadopagocuentas.php', 'POST', payload);
+      toast('Cuenta creada.');
+    } else {
+      await apiSend(`api/mercadopagocuentas.php?id=${id}`, 'PUT', payload);
+      toast('Cuenta actualizada.');
+    }
+    closeModal();
+    cargarMpCta();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarMpCta(id) {
+  const ok = await confirmar({
+    title: 'Eliminar cuenta',
+    message: `Se eliminará la cuenta #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/mercadopagocuentas.php?id=${id}`, 'DELETE');
+    toast('Cuenta eliminada.');
+    cargarMpCta();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Mercadopago > Registros (ABM) -------------------------
+const mpRegFiltrosDefaults = {
+  q: '', codigo: '', tipo: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 200,
+};
+const mpRegFiltros = { ...mpRegFiltrosDefaults };
+let mpRegBuscadorTimer   = null;
+let mpRegFiltrosSnapshot = null;
+let mpRegTiposCache      = [];
+
+route('/mercadopagoregistros', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">📰</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los registros de Mercadopago son el log crudo de eventos y notificaciones
+          recibidos de la plataforma — cada línea trae fecha, tipo y el cuerpo
+          completo del evento tal como llegó al webhook.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="mpRegStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Tipos distintos</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="mpRegSearch"
+                   placeholder="🔍 Buscar tipo o cuerpo del evento…">
+            <button class="search-clear" id="mpRegSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="mpRegFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="mpRegFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="mpRegRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="mpRegNuevoBtn">+ Nuevo registro</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:90px">Código</th>
+              <th style="width:180px">Fecha</th>
+              <th style="width:180px">Tipo</th>
+              <th>Cuerpo</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="mpRegTbody">
+            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="mpRegCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosMpRegBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosMpReg()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosMpReg()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fMpRegCodigo" min="1" placeholder="ID …" oninput="onFiltroMpReg('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Tipo</label>
+              <select id="fMpRegTipo" onchange="onFiltroMpReg('tipo', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fMpRegDesde" onchange="onFiltroMpReg('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fMpRegHasta" onchange="onFiltroMpReg('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fMpRegLimite" min="1" max="2000" value="200" onchange="onFiltroMpReg('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fMpRegOrderBy" onchange="onFiltroMpReg('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="tipo">Tipo</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fMpRegDir" onchange="onFiltroMpReg('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosMpReg()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosMpReg()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosMpReg()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#mpRegNuevoBtn').addEventListener('click', () => abrirAltaEdicionMpReg(null));
+  $('#mpRegFiltrosBtn').addEventListener('click', () => abrirModalFiltrosMpReg());
+  $('#mpRegRefrescarBtn').addEventListener('click', () => cargarMpReg());
+
+  const inp = $('#mpRegSearch');
+  const clr = $('#mpRegSearchClear');
+  inp.value = mpRegFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    mpRegFiltros.q = inp.value.trim();
+    clearTimeout(mpRegBuscadorTimer);
+    mpRegBuscadorTimer = setTimeout(() => { cargarMpReg(); refrescarBadgeFiltrosMpReg(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    mpRegFiltros.q = '';
+    cargarMpReg();
+    refrescarBadgeFiltrosMpReg();
+  });
+
+  $('#mpRegCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarMpReg(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionMpReg(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarMpReg(data.id);
+  });
+
+  $('#mpRegTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#mpRegCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarMpReg(Number(tr.dataset.id));
+  });
+  $('#mpRegTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#mpRegCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosMpReg();
+  await cargarMpReg();
+}, 'Registros');
+
+async function cargarMpReg() {
+  const tbody = $('#mpRegTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(mpRegFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/mercadopagoregistros.php?' + qs.toString());
+    mpRegTiposCache = data.tipos || [];
+    pintarStatsMpReg(data.stats);
+    pintarTablaMpReg(data.items || []);
+    poblarSelectTiposMpReg();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsMpReg(s) {
+  const cards = $$('#mpRegStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.tipos_distintos);
+}
+
+function pintarTablaMpReg(rows) {
+  const tbody = $('#mpRegTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin registros.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => {
+    const cuerpoInline = String(r.cuerpo ?? '').replace(/\s+/g, ' ').trim();
+    return `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td class="td-id">#${esc(r.id)}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(fmtFechaLarga(r.fecha))}</td>
+      <td style="white-space:nowrap"><span class="badge badge-info">${esc(r.tipo || '—')}</span></td>
+      <td style="font-family:monospace;font-size:.82rem;color:var(--muted);max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${esc(cuerpoInline)}">${esc(cuerpoInline)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+function poblarSelectTiposMpReg() {
+  const sel = $('#fMpRegTipo');
+  if (!sel) return;
+  const actual = mpRegFiltros.tipo || '';
+  sel.innerHTML = `<option value="">— Todos —</option>` +
+    mpRegTiposCache.map((t) => `<option value="${esc(t)}" ${t === actual ? 'selected' : ''}>${esc(t)}</option>`).join('');
+}
+
+function onFiltroMpReg(key, value) {
+  if (['tipo', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    mpRegFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    mpRegFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 2000) n = 2000;
+    mpRegFiltros.limite = n;
+  } else {
+    mpRegFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosMpReg();
+  cargarMpReg();
+}
+
+function refrescarBadgeFiltrosMpReg() {
+  const btn   = $('#mpRegFiltrosBtn');
+  const badge = $('#mpRegFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(mpRegFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(mpRegFiltros[k]) !== String(mpRegFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosMpReg() {
+  const f = mpRegFiltros;
+  $('#fMpRegCodigo').value  = f.codigo;
+  poblarSelectTiposMpReg();
+  $('#fMpRegDesde').value   = f.desde;
+  $('#fMpRegHasta').value   = f.hasta;
+  $('#fMpRegLimite').value  = f.limite;
+  $('#fMpRegOrderBy').value = f.order_by;
+  $('#fMpRegDir').value     = f.dir;
+}
+
+function abrirModalFiltrosMpReg() {
+  mpRegFiltrosSnapshot = { ...mpRegFiltros };
+  sincronizarControlesFiltrosMpReg();
+  $('#filtrosMpRegBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosMpReg() { $('#filtrosMpRegBackdrop').classList.remove('open'); }
+function cancelarFiltrosMpReg() {
+  if (mpRegFiltrosSnapshot) {
+    Object.assign(mpRegFiltros, mpRegFiltrosSnapshot);
+    refrescarBadgeFiltrosMpReg();
+    cargarMpReg();
+  }
+  cerrarModalFiltrosMpReg();
+}
+function limpiarFiltrosMpReg() {
+  Object.assign(mpRegFiltros, mpRegFiltrosDefaults);
+  mpRegFiltros.q = $('#mpRegSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosMpReg();
+  refrescarBadgeFiltrosMpReg();
+  cargarMpReg();
+}
+window.onFiltroMpReg           = onFiltroMpReg;
+window.cancelarFiltrosMpReg    = cancelarFiltrosMpReg;
+window.limpiarFiltrosMpReg     = limpiarFiltrosMpReg;
+window.cerrarModalFiltrosMpReg = cerrarModalFiltrosMpReg;
+
+async function abrirConsultarMpReg(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1100px">
+      <div class="modal-header">
+        <div class="modal-title">Registro Mercadopago <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionMpReg(id); }
+  });
+
+  try {
+    const r = await apiGet(`api/mercadopagoregistros.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = `
+      <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+        <div style="font-family:monospace">${esc(fmtFechaLarga(r.fecha))}</div>
+        <span class="badge badge-info">${esc(r.tipo || '—')}</span>
+        <div style="margin-left:auto;font-size:.75rem;color:var(--muted)">#${esc(r.id)}</div>
+      </div>
+      <div class="form-group" style="margin-top:14px">
+        <label>Cuerpo</label>
+        <textarea class="json-editor" readonly spellcheck="false" autocomplete="off"
+                  style="min-height:340px;font-family:monospace">${esc(r.cuerpo || '')}</textarea>
+      </div>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function abrirAltaEdicionMpReg(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar registro <span class="modal-subtitle">#${id}</span>` : 'Nuevo registro'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formMpRegHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const r = await apiGet(`api/mercadopagoregistros.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formMpRegHtml(r);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarMpReg(id, a);
+  });
+}
+
+function formMpRegHtml(r) {
+  const v  = (k) => esc(r?.[k] ?? '');
+  const dt = (k) => {
+    const raw = r?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="mpRegFecha" value="${dt('fecha')}">
+      </div>
+      <div class="form-group">
+        <label>Tipo</label>
+        <input type="text" id="mpRegTipo" maxlength="50" value="${v('tipo')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cuerpo</label>
+      <textarea id="mpRegCuerpo" rows="12" style="font-family:monospace">${v('cuerpo')}</textarea>
+    </div>
+    <div class="field-error" id="mpRegFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarMpReg(id, btn) {
+  const err = $('#mpRegFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    fecha:  $('#mpRegFecha').value || null,
+    tipo:   $('#mpRegTipo').value.trim(),
+    cuerpo: $('#mpRegCuerpo').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/mercadopagoregistros.php', 'POST', payload);
+      toast('Registro creado.');
+    } else {
+      await apiSend(`api/mercadopagoregistros.php?id=${id}`, 'PUT', payload);
+      toast('Registro actualizado.');
+    }
+    closeModal();
+    cargarMpReg();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarMpReg(id) {
+  const ok = await confirmar({
+    title: 'Eliminar registro',
+    message: `Se eliminará el registro #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/mercadopagoregistros.php?id=${id}`, 'DELETE');
+    toast('Registro eliminado.');
+    cargarMpReg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Mercadopago > Suscripciones (ABM) -------------------------
+const mpSubFiltrosDefaults = {
+  q: '', codigo: '', cuenta: '', estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const mpSubFiltros = { ...mpSubFiltrosDefaults };
+let mpSubBuscadorTimer   = null;
+let mpSubFiltrosSnapshot = null;
+let mpSubEstadosCache    = [];
+
+function mpSubEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const lower = String(e).toLowerCase();
+  let cls = 'badge-info';
+  if (lower.startsWith('auth') || lower === 'active' || lower === 'activa')      cls = 'badge-success';
+  else if (lower.startsWith('paus'))                                             cls = 'badge-warn';
+  else if (lower === 'pending' || lower === 'pendiente')                         cls = 'badge-warn';
+  else if (lower.startsWith('cancel') || lower === 'finalized' || lower === 'finalizada') cls = 'badge-danger';
+  return `<span class="badge ${cls}">${esc(e)}</span>`;
+}
+
+function mpSubFmtMonto(v) {
+  if (v == null || v === '' || isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function mpSubFmtCiclo(s) {
+  const p = s.periodo || '';
+  const f = s.frecuencia || '';
+  if (!p && !f) return '—';
+  return `${esc(f || '?')} × ${esc(p || '?')}`;
+}
+
+route('/mercadopagosuscripciones', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">🔁</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Las suscripciones de Mercadopago definen los cobros recurrentes de la
+          plataforma — cada una lleva el suscriptor, el ciclo (frecuencia y período),
+          el monto, las fechas del ciclo de vida (inicio, pausa, reactivación, fin)
+          y el estado devuelto por Mercadopago.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="mpSubStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Pausadas</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="mpSubSearch"
+                   placeholder="🔍 Buscar nombre, correo, celular, referencia o UUID…">
+            <button class="search-clear" id="mpSubSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="mpSubFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="mpSubFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="mpSubRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="mpSubNuevoBtn">+ Nueva suscripción</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Registrada</th>
+              <th>Cuenta</th>
+              <th>Suscriptor</th>
+              <th>Concepto</th>
+              <th>Ciclo</th>
+              <th style="text-align:right">Monto</th>
+              <th>Estado</th>
+              <th>Iniciada</th>
+              <th>Finalizada</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="mpSubTbody">
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="mpSubCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosMpSubBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosMpSub()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosMpSub()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fMpSubCodigo" min="1" placeholder="ID …" oninput="onFiltroMpSub('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Cuenta (ID)</label>
+              <input type="number" id="fMpSubCuenta" min="1" oninput="onFiltroMpSub('cuenta', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <select id="fMpSubEstado" onchange="onFiltroMpSub('estado', this.value)">
+              <option value="">— Todos —</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde (registrada)</label>
+              <input type="date" id="fMpSubDesde" onchange="onFiltroMpSub('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta (registrada)</label>
+              <input type="date" id="fMpSubHasta" onchange="onFiltroMpSub('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fMpSubLimite" min="1" max="1000" value="100" onchange="onFiltroMpSub('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fMpSubOrderBy" onchange="onFiltroMpSub('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="registrada">Registrada</option>
+                <option value="actualizada">Actualizada</option>
+                <option value="iniciada">Iniciada</option>
+                <option value="finalizada">Finalizada</option>
+                <option value="cuenta">Cuenta</option>
+                <option value="nombre">Nombre</option>
+                <option value="correo">Correo</option>
+                <option value="concepto">Concepto</option>
+                <option value="monto">Monto</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fMpSubDir" onchange="onFiltroMpSub('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosMpSub()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosMpSub()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosMpSub()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#mpSubNuevoBtn').addEventListener('click', () => abrirAltaEdicionMpSub(null));
+  $('#mpSubFiltrosBtn').addEventListener('click', () => abrirModalFiltrosMpSub());
+  $('#mpSubRefrescarBtn').addEventListener('click', () => cargarMpSub());
+
+  const inp = $('#mpSubSearch');
+  const clr = $('#mpSubSearchClear');
+  inp.value = mpSubFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    mpSubFiltros.q = inp.value.trim();
+    clearTimeout(mpSubBuscadorTimer);
+    mpSubBuscadorTimer = setTimeout(() => { cargarMpSub(); refrescarBadgeFiltrosMpSub(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    mpSubFiltros.q = '';
+    cargarMpSub();
+    refrescarBadgeFiltrosMpSub();
+  });
+
+  $('#mpSubCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarMpSub(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionMpSub(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarMpSub(data.id);
+  });
+
+  $('#mpSubTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#mpSubCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarMpSub(Number(tr.dataset.id));
+  });
+  $('#mpSubTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#mpSubCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosMpSub();
+  await cargarMpSub();
+}, 'Suscripciones');
+
+async function cargarMpSub() {
+  const tbody = $('#mpSubTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(mpSubFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/mercadopagosuscripciones.php?' + qs.toString());
+    mpSubEstadosCache = data.estados || [];
+    pintarStatsMpSub(data.stats);
+    pintarTablaMpSub(data.items || []);
+    poblarSelectEstadosMpSub();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsMpSub(s) {
+  const cards = $$('#mpSubStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.activas);
+  cards[2].textContent = fmtNum(s.pausadas);
+}
+
+function pintarTablaMpSub(rows) {
+  const tbody = $('#mpSubTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin suscripciones.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((s) => `
+    <tr data-id="${s.id}" class="row-clickable">
+      <td class="td-id">#${esc(s.id)}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(fmtFechaLarga(s.registrada))}</td>
+      <td>${s.cuenta != null ? '#' + esc(s.cuenta) : '—'}</td>
+      <td class="td-nombre">${esc(s.nombre || s.correo || s.celular || '—')}</td>
+      <td>${esc(s.concepto || '—')}</td>
+      <td style="font-family:monospace">${mpSubFmtCiclo(s)}</td>
+      <td style="text-align:right;font-family:monospace">${mpSubFmtMonto(s.monto)}</td>
+      <td>${mpSubEstadoBadge(s.estado)}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(fmtFechaLarga(s.iniciada))}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(fmtFechaLarga(s.finalizada))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${s.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function poblarSelectEstadosMpSub() {
+  const sel = $('#fMpSubEstado');
+  if (!sel) return;
+  const actual = mpSubFiltros.estado || '';
+  sel.innerHTML = `<option value="">— Todos —</option>` +
+    mpSubEstadosCache.map((e) => `<option value="${esc(e)}" ${e === actual ? 'selected' : ''}>${esc(e)}</option>`).join('');
+}
+
+function onFiltroMpSub(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    mpSubFiltros[key] = value;
+  } else if (['codigo', 'cuenta'].includes(key)) {
+    const v = String(value).trim();
+    mpSubFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    mpSubFiltros.limite = n;
+  } else {
+    mpSubFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosMpSub();
+  cargarMpSub();
+}
+
+function refrescarBadgeFiltrosMpSub() {
+  const btn   = $('#mpSubFiltrosBtn');
+  const badge = $('#mpSubFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(mpSubFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(mpSubFiltros[k]) !== String(mpSubFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosMpSub() {
+  const f = mpSubFiltros;
+  $('#fMpSubCodigo').value  = f.codigo;
+  $('#fMpSubCuenta').value  = f.cuenta;
+  poblarSelectEstadosMpSub();
+  $('#fMpSubDesde').value   = f.desde;
+  $('#fMpSubHasta').value   = f.hasta;
+  $('#fMpSubLimite').value  = f.limite;
+  $('#fMpSubOrderBy').value = f.order_by;
+  $('#fMpSubDir').value     = f.dir;
+}
+
+function abrirModalFiltrosMpSub() {
+  mpSubFiltrosSnapshot = { ...mpSubFiltros };
+  sincronizarControlesFiltrosMpSub();
+  $('#filtrosMpSubBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosMpSub() { $('#filtrosMpSubBackdrop').classList.remove('open'); }
+function cancelarFiltrosMpSub() {
+  if (mpSubFiltrosSnapshot) {
+    Object.assign(mpSubFiltros, mpSubFiltrosSnapshot);
+    refrescarBadgeFiltrosMpSub();
+    cargarMpSub();
+  }
+  cerrarModalFiltrosMpSub();
+}
+function limpiarFiltrosMpSub() {
+  Object.assign(mpSubFiltros, mpSubFiltrosDefaults);
+  mpSubFiltros.q = $('#mpSubSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosMpSub();
+  refrescarBadgeFiltrosMpSub();
+  cargarMpSub();
+}
+window.onFiltroMpSub           = onFiltroMpSub;
+window.cancelarFiltrosMpSub    = cancelarFiltrosMpSub;
+window.limpiarFiltrosMpSub     = limpiarFiltrosMpSub;
+window.cerrarModalFiltrosMpSub = cerrarModalFiltrosMpSub;
+
+async function abrirConsultarMpSub(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1100px">
+      <div class="modal-header">
+        <div class="modal-title">Suscripción Mercadopago <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionMpSub(id); }
+  });
+
+  try {
+    const s = await apiGet(`api/mercadopagosuscripciones.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaMpSub(s);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaMpSub(s) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-size:1.3rem;font-weight:700">${esc(s.nombre || s.correo || '—')}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">$ ${mpSubFmtMonto(s.monto)}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(s.concepto || 'Sin concepto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(s.id)} · <code>${esc(s.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${mpSubEstadoBadge(s.estado)}</div>
+        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
+          <div><span style="color:var(--muted)">Ciclo:</span> ${mpSubFmtCiclo(s)}</div>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Suscriptor')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',     s.nombre)}
+      ${card('Correo',     s.correo, false, true)}
+      ${card('Celular',    s.celular, false, true)}
+      ${card('Referencia', s.referencia, false, true)}
+      ${card('Cuenta',     s.cuenta)}
+      ${card('UUID',       s.uuid, false, true)}
+    </dl>
+
+    ${seccion('Cobro recurrente')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Concepto',          s.concepto)}
+      ${card('Monto',             mpSubFmtMonto(s.monto))}
+      ${card('Frecuencia',        s.frecuencia)}
+      ${card('Período',           s.periodo)}
+      ${card('Frecuencia prueba', s.pruebaFrecuencia)}
+      ${card('Período prueba',    s.pruebaPeriodo)}
+    </dl>
+
+    ${seccion('Destino y estado')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Destino',     s.destino, true, true)}
+      ${card('Estado',      s.estado, true)}
+      ${card('Propiedades', s.propiedades, true, true)}
+    </dl>
+
+    ${seccion('Ciclo de vida')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Registrada',  fmtFecha(s.registrada))}
+      ${card('Actualizada', fmtFecha(s.actualizada))}
+      ${card('Iniciada',    fmtFecha(s.iniciada))}
+      ${card('Pausada',     fmtFecha(s.pausada))}
+      ${card('Reactivada',  fmtFecha(s.reactivada))}
+      ${card('Finalizada',  fmtFecha(s.finalizada))}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionMpSub(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar suscripción <span class="modal-subtitle">#${id}</span>` : 'Nueva suscripción'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formMpSubHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const s = await apiGet(`api/mercadopagosuscripciones.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formMpSubHtml(s);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarMpSub(id, a);
+  });
+}
+
+function formMpSubHtml(s) {
+  const v  = (k) => esc(s?.[k] ?? '');
+  const dt = (k) => {
+    const raw = s?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>UUID</label>
+        <input type="text" id="mpSubUuid" maxlength="100" value="${v('uuid')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Cuenta (ID)</label>
+        <input type="number" id="mpSubCuenta" min="1" value="${v('cuenta')}">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <input type="text" id="mpSubEstado" maxlength="50" value="${v('estado')}" placeholder="authorized, paused, cancelled…" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="mpSubNombre" maxlength="100" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Correo</label>
+        <input type="email" id="mpSubCorreo" maxlength="100" value="${v('correo')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Celular</label>
+        <input type="text" id="mpSubCelular" maxlength="100" value="${v('celular')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Referencia</label>
+        <input type="text" id="mpSubReferencia" maxlength="100" value="${v('referencia')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Concepto</label>
+        <input type="text" id="mpSubConcepto" maxlength="255" value="${v('concepto')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Monto</label>
+        <input type="number" id="mpSubMonto" step="0.01" min="0" value="${v('monto')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Frecuencia</label>
+        <input type="text" id="mpSubFrecuencia" maxlength="10" value="${v('frecuencia')}" placeholder="1" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Período</label>
+        <input type="text" id="mpSubPeriodo" maxlength="10" value="${v('periodo')}" placeholder="months" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Frecuencia prueba</label>
+        <input type="text" id="mpSubPruebaFrecuencia" maxlength="10" value="${v('pruebaFrecuencia')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Período prueba</label>
+        <input type="text" id="mpSubPruebaPeriodo" maxlength="10" value="${v('pruebaPeriodo')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Destino (URL de retorno)</label>
+      <textarea id="mpSubDestino" rows="2" maxlength="1000" style="font-family:monospace">${v('destino')}</textarea>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 4px">
+      Ciclo de vida
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Registrada</label>
+        <input type="datetime-local" id="mpSubRegistrada" value="${dt('registrada')}">
+      </div>
+      <div class="form-group">
+        <label>Actualizada</label>
+        <input type="datetime-local" id="mpSubActualizada" value="${dt('actualizada')}">
+      </div>
+      <div class="form-group">
+        <label>Iniciada</label>
+        <input type="datetime-local" id="mpSubIniciada" value="${dt('iniciada')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Pausada</label>
+        <input type="datetime-local" id="mpSubPausada" value="${dt('pausada')}">
+      </div>
+      <div class="form-group">
+        <label>Reactivada</label>
+        <input type="datetime-local" id="mpSubReactivada" value="${dt('reactivada')}">
+      </div>
+      <div class="form-group">
+        <label>Finalizada</label>
+        <input type="datetime-local" id="mpSubFinalizada" value="${dt('finalizada')}">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Propiedades</label>
+      <textarea id="mpSubPropiedades" rows="4" style="font-family:monospace">${v('propiedades')}</textarea>
+    </div>
+    <div class="field-error" id="mpSubFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarMpSub(id, btn) {
+  const err = $('#mpSubFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    uuid:             $('#mpSubUuid').value.trim(),
+    cuenta:           $('#mpSubCuenta').value,
+    nombre:           $('#mpSubNombre').value.trim(),
+    celular:          $('#mpSubCelular').value.trim(),
+    correo:           $('#mpSubCorreo').value.trim(),
+    referencia:       $('#mpSubReferencia').value.trim(),
+    concepto:         $('#mpSubConcepto').value.trim(),
+    monto:            $('#mpSubMonto').value,
+    periodo:          $('#mpSubPeriodo').value.trim(),
+    frecuencia:       $('#mpSubFrecuencia').value.trim(),
+    pruebaPeriodo:    $('#mpSubPruebaPeriodo').value.trim(),
+    pruebaFrecuencia: $('#mpSubPruebaFrecuencia').value.trim(),
+    destino:          $('#mpSubDestino').value.trim(),
+    registrada:       $('#mpSubRegistrada').value  || null,
+    actualizada:      $('#mpSubActualizada').value || null,
+    iniciada:         $('#mpSubIniciada').value    || null,
+    pausada:          $('#mpSubPausada').value     || null,
+    reactivada:       $('#mpSubReactivada').value  || null,
+    finalizada:       $('#mpSubFinalizada').value  || null,
+    estado:           $('#mpSubEstado').value.trim(),
+    propiedades:      $('#mpSubPropiedades').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/mercadopagosuscripciones.php', 'POST', payload);
+      toast('Suscripción creada.');
+    } else {
+      await apiSend(`api/mercadopagosuscripciones.php?id=${id}`, 'PUT', payload);
+      toast('Suscripción actualizada.');
+    }
+    closeModal();
+    cargarMpSub();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarMpSub(id) {
+  const ok = await confirmar({
+    title: 'Eliminar suscripción',
+    message: `Se eliminará la suscripción #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/mercadopagosuscripciones.php?id=${id}`, 'DELETE');
+    toast('Suscripción eliminada.');
+    cargarMpSub();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Mercadopago > Débitos (ABM) -------------------------
+const mpDebFiltrosDefaults = {
+  q: '', codigo: '', cuenta: '', suscripcion: '', recibo: '',
+  estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const mpDebFiltros = { ...mpDebFiltrosDefaults };
+let mpDebBuscadorTimer   = null;
+let mpDebFiltrosSnapshot = null;
+
+function mpDebEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    A: 'badge-success',
+    P: 'badge-warn',
+    R: 'badge-danger',
+    C: 'badge-danger',
+    X: 'badge-danger',
+  };
+  const labelMap = {
+    A: 'Aprobado', P: 'Pendiente', R: 'Rechazado', C: 'Cancelado', X: 'Anulado',
+  };
+  const cls = colorMap[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+}
+
+function mpDebFmtMonto(v) {
+  if (v == null || v === '' || isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+route('/mercadopagodebitos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">📉</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los débitos son cada ejecución de cobro que Mercadopago aplica sobre una
+          suscripción — con cuenta, suscripción, referencia, monto, número de
+          operación y el resultado del cobro (aprobado, rechazado, pendiente).
+        </div>
+      </div>
+
+      <div class="stats-bar" id="mpDebStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Aprobados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Monto cobrado</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="mpDebSearch"
+                   placeholder="🔍 Buscar UUID, referencia, concepto u operación…">
+            <button class="search-clear" id="mpDebSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="mpDebFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="mpDebFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="mpDebRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="mpDebNuevoBtn">+ Nuevo débito</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Cuenta</th>
+              <th>Suscripción</th>
+              <th>Referencia</th>
+              <th>Concepto</th>
+              <th style="text-align:right">Monto</th>
+              <th>Operación</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="mpDebTbody">
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="mpDebCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosMpDebBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosMpDeb()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosMpDeb()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fMpDebCodigo" min="1" placeholder="ID …" oninput="onFiltroMpDeb('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fMpDebEstado" onchange="onFiltroMpDeb('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="A">Aprobado</option>
+                <option value="P">Pendiente</option>
+                <option value="R">Rechazado</option>
+                <option value="C">Cancelado</option>
+                <option value="X">Anulado</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Cuenta (ID)</label>
+              <input type="number" id="fMpDebCuenta" min="1" oninput="onFiltroMpDeb('cuenta', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Suscripción (ID)</label>
+              <input type="number" id="fMpDebSuscripcion" min="1" oninput="onFiltroMpDeb('suscripcion', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Recibo (ID)</label>
+              <input type="number" id="fMpDebRecibo" min="1" oninput="onFiltroMpDeb('recibo', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fMpDebDesde" onchange="onFiltroMpDeb('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fMpDebHasta" onchange="onFiltroMpDeb('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fMpDebLimite" min="1" max="1000" value="100" onchange="onFiltroMpDeb('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fMpDebOrderBy" onchange="onFiltroMpDeb('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="cuenta">Cuenta</option>
+                <option value="suscripcion">Suscripción</option>
+                <option value="referencia">Referencia</option>
+                <option value="recibo">Recibo</option>
+                <option value="concepto">Concepto</option>
+                <option value="monto">Monto</option>
+                <option value="operacion">Operación</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fMpDebDir" onchange="onFiltroMpDeb('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosMpDeb()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosMpDeb()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosMpDeb()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#mpDebNuevoBtn').addEventListener('click', () => abrirAltaEdicionMpDeb(null));
+  $('#mpDebFiltrosBtn').addEventListener('click', () => abrirModalFiltrosMpDeb());
+  $('#mpDebRefrescarBtn').addEventListener('click', () => cargarMpDeb());
+
+  const inp = $('#mpDebSearch');
+  const clr = $('#mpDebSearchClear');
+  inp.value = mpDebFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    mpDebFiltros.q = inp.value.trim();
+    clearTimeout(mpDebBuscadorTimer);
+    mpDebBuscadorTimer = setTimeout(() => { cargarMpDeb(); refrescarBadgeFiltrosMpDeb(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    mpDebFiltros.q = '';
+    cargarMpDeb();
+    refrescarBadgeFiltrosMpDeb();
+  });
+
+  $('#mpDebCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarMpDeb(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionMpDeb(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarMpDeb(data.id);
+  });
+
+  $('#mpDebTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#mpDebCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarMpDeb(Number(tr.dataset.id));
+  });
+  $('#mpDebTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#mpDebCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosMpDeb();
+  await cargarMpDeb();
+}, 'Débitos');
+
+async function cargarMpDeb() {
+  const tbody = $('#mpDebTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(mpDebFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/mercadopagodebitos.php?' + qs.toString());
+    pintarStatsMpDeb(data.stats);
+    pintarTablaMpDeb(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsMpDeb(s) {
+  const cards = $$('#mpDebStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.aprobados);
+  cards[2].textContent = mpDebFmtMonto(s.monto_cobrado);
+}
+
+function pintarTablaMpDeb(rows) {
+  const tbody = $('#mpDebTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin débitos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((d) => `
+    <tr data-id="${d.id}" class="row-clickable">
+      <td class="td-id">#${esc(d.id)}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(fmtFechaLarga(d.fecha))}</td>
+      <td>${d.cuenta      != null ? '#' + esc(d.cuenta)      : '—'}</td>
+      <td>${d.suscripcion != null ? '#' + esc(d.suscripcion) : '—'}</td>
+      <td style="font-family:monospace">${esc(d.referencia || '—')}</td>
+      <td>${esc(d.concepto || '—')}</td>
+      <td style="text-align:right;font-family:monospace">${mpDebFmtMonto(d.monto)}</td>
+      <td style="font-family:monospace">${esc(d.operacion || '—')}</td>
+      <td>${mpDebEstadoBadge(d.estado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${d.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroMpDeb(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    mpDebFiltros[key] = value;
+  } else if (['codigo', 'cuenta', 'suscripcion', 'recibo'].includes(key)) {
+    const v = String(value).trim();
+    mpDebFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    mpDebFiltros.limite = n;
+  } else {
+    mpDebFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosMpDeb();
+  cargarMpDeb();
+}
+
+function refrescarBadgeFiltrosMpDeb() {
+  const btn   = $('#mpDebFiltrosBtn');
+  const badge = $('#mpDebFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(mpDebFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(mpDebFiltros[k]) !== String(mpDebFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosMpDeb() {
+  const f = mpDebFiltros;
+  $('#fMpDebCodigo').value      = f.codigo;
+  $('#fMpDebEstado').value      = f.estado;
+  $('#fMpDebCuenta').value      = f.cuenta;
+  $('#fMpDebSuscripcion').value = f.suscripcion;
+  $('#fMpDebRecibo').value      = f.recibo;
+  $('#fMpDebDesde').value       = f.desde;
+  $('#fMpDebHasta').value       = f.hasta;
+  $('#fMpDebLimite').value      = f.limite;
+  $('#fMpDebOrderBy').value     = f.order_by;
+  $('#fMpDebDir').value         = f.dir;
+}
+
+function abrirModalFiltrosMpDeb() {
+  mpDebFiltrosSnapshot = { ...mpDebFiltros };
+  sincronizarControlesFiltrosMpDeb();
+  $('#filtrosMpDebBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosMpDeb() { $('#filtrosMpDebBackdrop').classList.remove('open'); }
+function cancelarFiltrosMpDeb() {
+  if (mpDebFiltrosSnapshot) {
+    Object.assign(mpDebFiltros, mpDebFiltrosSnapshot);
+    refrescarBadgeFiltrosMpDeb();
+    cargarMpDeb();
+  }
+  cerrarModalFiltrosMpDeb();
+}
+function limpiarFiltrosMpDeb() {
+  Object.assign(mpDebFiltros, mpDebFiltrosDefaults);
+  mpDebFiltros.q = $('#mpDebSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosMpDeb();
+  refrescarBadgeFiltrosMpDeb();
+  cargarMpDeb();
+}
+window.onFiltroMpDeb           = onFiltroMpDeb;
+window.cancelarFiltrosMpDeb    = cancelarFiltrosMpDeb;
+window.limpiarFiltrosMpDeb     = limpiarFiltrosMpDeb;
+window.cerrarModalFiltrosMpDeb = cerrarModalFiltrosMpDeb;
+
+async function abrirConsultarMpDeb(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1100px">
+      <div class="modal-header">
+        <div class="modal-title">Débito Mercadopago <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionMpDeb(id); }
+  });
+
+  try {
+    const d = await apiGet(`api/mercadopagodebitos.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaMpDeb(d);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaMpDeb(d) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">$ ${mpDebFmtMonto(d.monto)}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(d.operacion || '')}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(d.concepto || 'Sin concepto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(d.id)} · <code>${esc(d.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${mpDebEstadoBadge(d.estado)}</div>
+        <div style="margin-top:6px;font-size:.85rem"><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(d.fecha))}</div>
+      </div>
+    </div>
+
+    ${seccion('Identificación')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Código',      d.id)}
+      ${card('UUID',        d.uuid, false, true)}
+      ${card('Cuenta',      d.cuenta)}
+      ${card('Suscripción', d.suscripcion)}
+      ${card('Referencia',  d.referencia, false, true)}
+      ${card('Recibo',      d.recibo)}
+    </dl>
+
+    ${seccion('Cobro y estado')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Fecha',     fmtFecha(d.fecha))}
+      ${card('Monto',     mpDebFmtMonto(d.monto))}
+      ${card('Estado',    d.estado)}
+      ${card('Concepto',  d.concepto)}
+      ${card('Operación', d.operacion, false, true)}
+    </dl>
+
+    ${seccion('Propiedades')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Propiedades', d.propiedades, true, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionMpDeb(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar débito <span class="modal-subtitle">#${id}</span>` : 'Nuevo débito'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formMpDebHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const d = await apiGet(`api/mercadopagodebitos.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formMpDebHtml(d);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarMpDeb(id, a);
+  });
+}
+
+function formMpDebHtml(d) {
+  const v   = (k) => esc(d?.[k] ?? '');
+  const sel = (k, val) => (d?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = d?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>UUID</label>
+        <input type="text" id="mpDebUuid" maxlength="50" value="${v('uuid')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="mpDebFecha" value="${dt('fecha')}">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="mpDebEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="A" ${sel('estado','A')}>Aprobado</option>
+          <option value="P" ${sel('estado','P')}>Pendiente</option>
+          <option value="R" ${sel('estado','R')}>Rechazado</option>
+          <option value="C" ${sel('estado','C')}>Cancelado</option>
+          <option value="X" ${sel('estado','X')}>Anulado</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Cuenta (ID)</label>
+        <input type="number" id="mpDebCuenta" min="1" value="${v('cuenta')}">
+      </div>
+      <div class="form-group">
+        <label>Suscripción (ID)</label>
+        <input type="number" id="mpDebSuscripcion" min="1" value="${v('suscripcion')}">
+      </div>
+      <div class="form-group">
+        <label>Recibo (ID)</label>
+        <input type="number" id="mpDebRecibo" min="1" value="${v('recibo')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Referencia</label>
+        <input type="text" id="mpDebReferencia" maxlength="100" value="${v('referencia')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Concepto</label>
+        <input type="text" id="mpDebConcepto" maxlength="255" value="${v('concepto')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Monto</label>
+        <input type="number" id="mpDebMonto" step="0.01" min="0" value="${v('monto')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Operación</label>
+        <input type="text" id="mpDebOperacion" maxlength="255" value="${v('operacion')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Propiedades</label>
+      <textarea id="mpDebPropiedades" rows="4" style="font-family:monospace">${v('propiedades')}</textarea>
+    </div>
+    <div class="field-error" id="mpDebFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarMpDeb(id, btn) {
+  const err = $('#mpDebFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    uuid:        $('#mpDebUuid').value.trim(),
+    cuenta:      $('#mpDebCuenta').value,
+    suscripcion: $('#mpDebSuscripcion').value,
+    referencia:  $('#mpDebReferencia').value.trim(),
+    recibo:      $('#mpDebRecibo').value,
+    fecha:       $('#mpDebFecha').value || null,
+    concepto:    $('#mpDebConcepto').value.trim(),
+    monto:       $('#mpDebMonto').value,
+    operacion:   $('#mpDebOperacion').value.trim(),
+    estado:      $('#mpDebEstado').value,
+    propiedades: $('#mpDebPropiedades').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/mercadopagodebitos.php', 'POST', payload);
+      toast('Débito creado.');
+    } else {
+      await apiSend(`api/mercadopagodebitos.php?id=${id}`, 'PUT', payload);
+      toast('Débito actualizado.');
+    }
+    closeModal();
+    cargarMpDeb();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarMpDeb(id) {
+  const ok = await confirmar({
+    title: 'Eliminar débito',
+    message: `Se eliminará el débito #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/mercadopagodebitos.php?id=${id}`, 'DELETE');
+    toast('Débito eliminado.');
+    cargarMpDeb();
   } catch (e) {
     toast(e.message, { error: true });
   }
