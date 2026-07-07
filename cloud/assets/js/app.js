@@ -10879,6 +10879,548 @@ async function eliminarMsim(id) {
   }
 }
 
+// ------------------------- Vista: Claro (landing) -------------------------
+route('/claro', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Claro</div>
+      <div class="page-subtitle">Autogestión Empresas de Claro: gestión de SIMs M2M y consola de la plataforma.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/clarosims'">
+        <span class="tile-icon">📶</span>
+        <span class="tile-title">SIMs</span>
+        <span class="tile-desc">Catálogo de SIMs M2M administradas vía Autogestión Empresas: línea, ICC, estado, IMEI, MSISDN.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://autogestion-empresas.claro.com.ar/sites/launchpad#Shell-home', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre la consola de Autogestión Empresas de Claro en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'Claro');
+
+// ------------------------- Vista: Claro > SIMs (ABM) -------------------------
+const csimFiltrosDefaults = {
+  q: '', codigo: '', estado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const csimFiltros = { ...csimFiltrosDefaults };
+let csimBuscadorTimer   = null;
+let csimFiltrosSnapshot = null;
+
+function csimFmtEstado(v) {
+  if (v == null || v === '') return `<span class="badge badge-info">—</span>`;
+  const s   = String(v).toLowerCase();
+  const map = {
+    activada: 'badge-success', activa: 'badge-success', active: 'badge-success',
+    suspendida: 'badge-warn',  suspended: 'badge-warn',
+    baja: 'badge-danger',      terminada: 'badge-danger', terminated: 'badge-danger',
+    inventario: 'badge-info',  inventory: 'badge-info',
+  };
+  const cls = map[s] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(v)}</span>`;
+}
+
+route('/clarosims', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a Claro" onclick="location.hash='#/claro'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div style="font-size:1.6rem;line-height:1">📶</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Las SIMs de Claro son las líneas M2M administradas desde
+          Autogestión Empresas — cada fila trae el nombre, la línea,
+          el ICC, el estado general/GPRS/LTE, el límite de datos, el IMEI
+          del equipo asociado y el MSISDN.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="csimStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" data-slot="total">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value" data-slot="activas">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin estado</span><span class="stat-value" data-slot="sin_estado">—</span></div>
+        <div class="stat-card"><span class="stat-label">Última sync</span><span class="stat-value" data-slot="ultima_sync" style="font-size:1rem">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="csimSearch"
+                   placeholder="🔍 Buscar nombre, línea, ICC, IMEI o MSISDN…">
+            <button class="search-clear" id="csimSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="csimFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="csimFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="csimRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right" style="gap:8px">
+          <button class="btn btn-primary" id="csimNuevoBtn">+ Nueva SIM</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:90px">Código</th>
+              <th>Nombre</th>
+              <th>Línea</th>
+              <th style="width:180px">ICC</th>
+              <th style="width:120px">Estado</th>
+              <th style="width:130px">Límite datos</th>
+              <th>MSISDN</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="csimTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="csimCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosCsimBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosCsim()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosCsim()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fCsimCodigo" min="1" placeholder="ID …" oninput="onFiltroCsim('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <input type="text" id="fCsimEstado" placeholder="Ej: Activada" oninput="onFiltroCsim('estado', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fCsimLimite" min="1" max="2000" value="100" onchange="onFiltroCsim('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fCsimOrderBy" onchange="onFiltroCsim('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="linea">Línea</option>
+                <option value="icc">ICC</option>
+                <option value="estado">Estado</option>
+                <option value="msisdn">MSISDN</option>
+                <option value="actualizado">Última sync</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fCsimDir" onchange="onFiltroCsim('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosCsim()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosCsim()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosCsim()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#csimNuevoBtn').addEventListener('click',    () => abrirAltaEdicionCsim(null));
+  $('#csimFiltrosBtn').addEventListener('click',  () => abrirModalFiltrosCsim());
+  $('#csimRefrescarBtn').addEventListener('click',() => cargarCsim());
+
+  const inp = $('#csimSearch');
+  const clr = $('#csimSearchClear');
+  inp.value = csimFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    csimFiltros.q = inp.value.trim();
+    clearTimeout(csimBuscadorTimer);
+    csimBuscadorTimer = setTimeout(() => { cargarCsim(); refrescarBadgeFiltrosCsim(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    csimFiltros.q = '';
+    cargarCsim();
+    refrescarBadgeFiltrosCsim();
+  });
+
+  $('#csimCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarCsim(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionCsim(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarCsim(data.id);
+  });
+
+  $('#csimTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#csimCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarCsim(Number(tr.dataset.id));
+  });
+  $('#csimTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#csimCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosCsim();
+  await cargarCsim();
+}, 'SIMs');
+
+async function cargarCsim() {
+  const tbody = $('#csimTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(csimFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+
+  try {
+    const data = await apiGet('api/clarosims.php?' + qs.toString());
+    pintarStatsCsim(data.stats);
+    pintarTablaCsim(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsCsim(s) {
+  const setSlot = (name, val) => {
+    const el = document.querySelector(`#csimStats [data-slot="${name}"]`);
+    if (el) el.textContent = val;
+  };
+  setSlot('total',      fmtNum(s?.total      ?? 0));
+  setSlot('activas',    fmtNum(s?.activas    ?? 0));
+  setSlot('sin_estado', fmtNum(s?.sin_estado ?? 0));
+  setSlot('ultima_sync', s?.ultima_sync ? String(s.ultima_sync).replace('T', ' ').slice(0, 16) : '—');
+}
+
+function pintarTablaCsim(rows) {
+  const tbody = $('#csimTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin SIMs.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td class="td-id">#${esc(r.id)}</td>
+      <td>${esc(r.nombre || '—')}</td>
+      <td style="font-family:monospace">${esc(r.linea || '—')}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
+      <td>${csimFmtEstado(r.estado)}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
+      <td style="font-family:monospace">${esc(r.msisdn || '—')}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroCsim(key, value) {
+  if (['order_by', 'dir', 'estado'].includes(key)) {
+    csimFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    csimFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 2000) n = 2000;
+    csimFiltros.limite = n;
+  } else {
+    csimFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosCsim();
+  cargarCsim();
+}
+
+function refrescarBadgeFiltrosCsim() {
+  const btn   = $('#csimFiltrosBtn');
+  const badge = $('#csimFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(csimFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(csimFiltros[k]) !== String(csimFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosCsim() {
+  const f = csimFiltros;
+  $('#fCsimCodigo').value  = f.codigo;
+  $('#fCsimEstado').value  = f.estado;
+  $('#fCsimLimite').value  = f.limite;
+  $('#fCsimOrderBy').value = f.order_by;
+  $('#fCsimDir').value     = f.dir;
+}
+
+function abrirModalFiltrosCsim() {
+  csimFiltrosSnapshot = { ...csimFiltros };
+  sincronizarControlesFiltrosCsim();
+  $('#filtrosCsimBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosCsim() { $('#filtrosCsimBackdrop').classList.remove('open'); }
+function cancelarFiltrosCsim() {
+  if (csimFiltrosSnapshot) {
+    Object.assign(csimFiltros, csimFiltrosSnapshot);
+    refrescarBadgeFiltrosCsim();
+    cargarCsim();
+  }
+  cerrarModalFiltrosCsim();
+}
+function limpiarFiltrosCsim() {
+  Object.assign(csimFiltros, csimFiltrosDefaults);
+  csimFiltros.q = $('#csimSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosCsim();
+  refrescarBadgeFiltrosCsim();
+  cargarCsim();
+}
+window.onFiltroCsim           = onFiltroCsim;
+window.cancelarFiltrosCsim    = cancelarFiltrosCsim;
+window.limpiarFiltrosCsim     = limpiarFiltrosCsim;
+window.cerrarModalFiltrosCsim = cerrarModalFiltrosCsim;
+
+async function abrirConsultarCsim(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title">SIM Claro <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionCsim(id); }
+  });
+
+  try {
+    const r = await apiGet(`api/clarosims.php?id=${id}`);
+    const card = (label, val, extra = '') => `
+      <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px${extra ? ';' + extra : ''}">
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">${label}</div>
+        <div style="font-family:monospace">${val}</div>
+      </div>
+    `;
+    const est   = r.estado ? csimFmtEstado(r.estado)      : '—';
+    const gprs  = r.estado_gprs ? csimFmtEstado(r.estado_gprs) : '—';
+    const lte   = r.estado_lte  ? csimFmtEstado(r.estado_lte)  : '—';
+    const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
+    $('#modalRoot .modal-body').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        ${card('Código',        `#${esc(r.id)}`)}
+        ${card('Nombre',        esc(r.nombre || '—'))}
+        ${card('Línea',         esc(r.linea  || '—'))}
+        ${card('ICC',           esc(r.icc    || '—'))}
+        ${card('Estado',        est)}
+        ${card('Estado GPRS',   gprs)}
+        ${card('Estado LTE',    lte)}
+        ${card('Límite datos',  esc(r.limite_datos || '—'))}
+        ${card('IMEI',          esc(r.imei   || '—'))}
+        ${card('MSISDN',        esc(r.msisdn || '—'))}
+        ${card('Última sync',   esc(sync), 'grid-column:1 / -1')}
+      </div>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function abrirAltaEdicionCsim(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar SIM <span class="modal-subtitle">#${id}</span>` : 'Nueva SIM'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formCsimHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const r = await apiGet(`api/clarosims.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formCsimHtml(r);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarCsim(id, a);
+  });
+}
+
+function formCsimHtml(r) {
+  const v = (k) => esc(r?.[k] ?? '');
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="csimNombre" maxlength="255" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Línea</label>
+        <input type="text" id="csimLinea" maxlength="30" value="${v('linea')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>ICC</label>
+        <input type="text" id="csimIcc" maxlength="25" value="${v('icc')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>MSISDN</label>
+        <input type="text" id="csimMsisdn" maxlength="30" value="${v('msisdn')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Estado</label>
+        <input type="text" id="csimEstado" maxlength="40" value="${v('estado')}">
+      </div>
+      <div class="form-group">
+        <label>Estado GPRS</label>
+        <input type="text" id="csimEstadoGprs" maxlength="40" value="${v('estado_gprs')}">
+      </div>
+      <div class="form-group">
+        <label>Estado LTE</label>
+        <input type="text" id="csimEstadoLte" maxlength="40" value="${v('estado_lte')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Límite datos</label>
+        <input type="text" id="csimLimiteDatos" maxlength="40" value="${v('limite_datos')}">
+      </div>
+      <div class="form-group">
+        <label>Número IMEI</label>
+        <input type="text" id="csimImei" maxlength="30" value="${v('imei')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="field-error" id="csimFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarCsim(id, btn) {
+  const err = $('#csimFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:       $('#csimNombre').value.trim()       || null,
+    linea:        $('#csimLinea').value.trim()        || null,
+    icc:          $('#csimIcc').value.trim()          || null,
+    estado:       $('#csimEstado').value.trim()       || null,
+    estado_gprs:  $('#csimEstadoGprs').value.trim()   || null,
+    estado_lte:   $('#csimEstadoLte').value.trim()    || null,
+    limite_datos: $('#csimLimiteDatos').value.trim()  || null,
+    imei:         $('#csimImei').value.trim()         || null,
+    msisdn:       $('#csimMsisdn').value.trim()       || null,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/clarosims.php', 'POST', payload);
+      toast('SIM creada.');
+    } else {
+      await apiSend(`api/clarosims.php?id=${id}`, 'PUT', payload);
+      toast('SIM actualizada.');
+    }
+    closeModal();
+    cargarCsim();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarCsim(id) {
+  const ok = await confirmar({
+    title: 'Eliminar SIM',
+    message: `Se eliminará la SIM #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/clarosims.php?id=${id}`, 'DELETE');
+    toast('SIM eliminada.');
+    cargarCsim();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 // ------------------------- Vista: Dolarhoy > Cotizaciones (ABM) -------------------------
 const dhCotFiltrosDefaults = {
   q: '', codigo: '', desde: '', hasta: '',
