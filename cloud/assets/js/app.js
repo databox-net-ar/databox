@@ -10328,16 +10328,16 @@ route('/movistar', async (mount) => {
         <span class="tile-desc">Catálogo de SIMs M2M administradas vía Kite Platform: línea, ICC, estado, IMEI, MSISDN y sincronización desde Kite.</span>
       </button>
       <button type="button" class="tile-card"
-              onclick="window.open('https://kiteplatform-movistar-ar.telefonica.com/', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
-        <span class="tile-title">Plataforma</span>
-        <span class="tile-desc">Abre la consola de Kite Platform en una pestaña nueva.</span>
-      </button>
-      <button type="button" class="tile-card"
               onclick="window.open('https://mimovistarempresas.movistar.com.ar/', '_blank', 'noopener')">
         <span class="tile-icon">💼</span>
         <span class="tile-title">Comercial</span>
         <span class="tile-desc">Abre el portal Mi Movistar Empresas en una pestaña nueva.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://kiteplatform-movistar-ar.telefonica.com/', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre la consola de Kite Platform en una pestaña nueva.</span>
       </button>
     </div>
 
