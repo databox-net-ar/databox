@@ -10333,6 +10333,43 @@ route('/movistar', async (mount) => {
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre la consola de Kite Platform en una pestaña nueva.</span>
       </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://mimovistarempresas.movistar.com.ar/', '_blank', 'noopener')">
+        <span class="tile-icon">💼</span>
+        <span class="tile-title">Comercial</span>
+        <span class="tile-desc">Abre el portal Mi Movistar Empresas en una pestaña nueva.</span>
+      </button>
+    </div>
+
+    <div style="display:block;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;margin-top:20px;box-shadow:var(--shadow);font-size:.88rem;color:var(--text);line-height:1.55">
+      <div style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Procedimiento de alta de SIM</div>
+      <ul style="margin:0 0 18px 20px;padding:0;color:var(--muted)">
+        <li>Filtrar SIM/s necesarias y seleccionarlas</li>
+        <li><strong style="color:var(--text)">ASIGNAR</strong> grupo de suscripción correspondiente</li>
+        <li><strong style="color:var(--text)">CAMBIAR</strong> "Estado de ciclo de vida" a listo para activación</li>
+        <li><strong style="color:var(--text)">CAMBIAR</strong> "Etiquetas personalizables" en field 1 agregar etiqueta correspondiente</li>
+        <li><strong style="color:var(--text)">CAMBIAR</strong> "Tecnologías de acceso radio" seleccionar 2G, 3G y LTE/LTE-M</li>
+        <li><strong style="color:var(--text)">ACTIVAR</strong> "Servicio de VPN"</li>
+        <li><strong style="color:var(--text)">ACTIVAR</strong> "Tráfico de datos originados en operador local"</li>
+      </ul>
+
+      <div style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Procedimiento de reactivación de SIM</div>
+      <ul style="margin:0 0 18px 20px;padding:0;color:var(--muted)">
+        <li>Filtrar SIM/s necesarias y seleccionarlas</li>
+        <li><strong style="color:var(--text)">CAMBIAR</strong> "Activada" a listo para rehabilitar</li>
+        <li><strong style="color:var(--text)">ACTIVAR</strong> "Servicio de VPN"</li>
+        <li><strong style="color:var(--text)">ACTIVAR</strong> "Tráfico de datos originados en operador local"</li>
+      </ul>
+
+      <div style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Credenciales</div>
+      <dl style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0">
+        <dt style="color:var(--muted)">Website:</dt>
+        <dd style="margin:0"><a href="https://kiteplatform-movistar-ar.telefonica.com/" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none;font-weight:600">Abrir</a></dd>
+        <dt style="color:var(--muted)">Usuario:</dt>
+        <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 8px">administracion@alfatec.net.ar</code></dd>
+        <dt style="color:var(--muted)">Contraseña:</dt>
+        <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 8px">Alfa123++</code></dd>
+      </dl>
     </div>
   `;
 }, 'Movistar');
