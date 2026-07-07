@@ -127,6 +127,9 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
             <a href="#/dolarhoy" class="nav-item nav-sub-item" data-route="/dolarhoy">
               <span class="nav-icon">💵</span> Dolarhoy
             </a>
+            <a href="#/movistar" class="nav-item nav-sub-item" data-route="/movistar">
+              <span class="nav-icon">📡</span> Movistar
+            </a>
           </div>
         </div>
 

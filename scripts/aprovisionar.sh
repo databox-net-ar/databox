@@ -57,7 +57,13 @@ echo ""
 # Se incluye scripts/ para que aprovisionar_server.sh quede disponible en el
 # server. .env.production tambien (esta en .gitignore, no llega por otra via).
 # db/ es opcional (schema de referencia).
-echo "  Subiendo cloud/, docker/, db/, scripts/, env.php, .env.production..."
+# certs/ tambien es opcional: si esta local se sube (contiene los certificados
+# mTLS de Kite: movistar.pfx + PEM extraidos). Los .pem/.key SOLO se aceptan
+# dentro de certs/: la carpeta esta gitignored y su contenido es material
+# sensible que la app necesita en /var/www/certs (bind-monteado por el
+# docker-compose.prod.yml). Si falta localmente, se avisa y se sigue: el
+# resto del aprovisionamiento no depende de estos certs.
+echo "  Subiendo cloud/, docker/, db/, scripts/, env.php, .env.production, certs/..."
 cd "$BASE_LOCAL"
 
 INCLUDE_DB=""
@@ -65,14 +71,24 @@ if [ -d "$BASE_LOCAL/db" ]; then
     INCLUDE_DB="db"
 fi
 
+INCLUDE_CERTS=""
+if [ -d "$BASE_LOCAL/certs" ]; then
+    INCLUDE_CERTS="certs"
+    for f in movistar.pfx movistar.cer movistar.key; do
+        if [ ! -f "$BASE_LOCAL/certs/$f" ]; then
+            echo "  AVISO: falta $BASE_LOCAL/certs/$f -- Kite Platform no va a funcionar en prod."
+        fi
+    done
+else
+    echo "  AVISO: no existe $BASE_LOCAL/certs/ -- se omite; Kite Platform no va a funcionar en prod."
+fi
+
 tar \
     --exclude='./cloud/.git' \
     --exclude='./cloud/node_modules' \
     --exclude='./cloud/vendor' \
     --exclude='*.log' \
-    --exclude='*.pem' \
-    --exclude='*.key' \
-    -czf - cloud docker $INCLUDE_DB scripts env.php .env.production | \
+    -czf - cloud docker $INCLUDE_DB scripts env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar -xzf - -C '$BASE_REMOTE/'"

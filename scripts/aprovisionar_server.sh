@@ -104,6 +104,10 @@ services:
       # permisos al arrancar para que cron lo acepte y para que www-data pueda
       # re-escribirlo desde el endpoint del panel.
       - ./robot/crontab:/etc/cron.d/databox
+      # Certificados mTLS para API Kite (Movistar). Carpeta gitignored pero
+      # subida por aprovisionar.sh / deploy.sh desde ./certs local (deben estar
+      # el .pfx + los PEM ya extraidos con openssl -legacy, ver STACK / .env).
+      - ./certs:/var/www/certs
     env_file:
       - .env.production
     restart: unless-stopped
@@ -111,9 +115,19 @@ EOF
 echo "        OK"
 
 # ---- 6. Configurar Nginx ----
+# Dos server blocks en databox.conf:
+#   1. ${DOMAIN} (cloud): proxy a 127.0.0.1:${APP_PORT} (Apache vhost cloud).
+#   2. default_server en :80: cualquier hostname que no matchee cloud devuelve
+#      HTTP 404 con cuerpo vacio (respuesta 404 default de nginx).
+#
+# El default_server :443 (fallback HTTPS -> 404 reusando el cert de cloud) se
+# escribe en un archivo aparte (databox-default-ssl.conf) despues del certbot,
+# porque `listen 443 ssl` sin cert rompe `nginx -t`.
 echo "[ 6/8 ] Configurando Nginx como reverse proxy..."
 sudo tee /etc/nginx/conf.d/databox.conf > /dev/null << NGX
 # Reverse proxy databox -- generado por aprovisionar_server.sh
+
+# --- cloud.databox.net.ar ---
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -126,6 +140,13 @@ server {
         client_max_body_size 50M;
         proxy_read_timeout 120s;
     }
+}
+
+# --- default_server: hostname desconocido -> HTTP 404 ---
+server {
+    listen 80 default_server;
+    server_name _;
+    return 404;
 }
 NGX
 
@@ -179,12 +200,43 @@ if ! sudo certbot --nginx \
     echo "          - Limite de rate de Let's Encrypt (5 fallos/hora por dominio)."
     exit 1
 fi
-echo "        OK -- certificado emitido/renovado."
+echo "        OK -- certificado emitido/renovado para $DOMAIN."
 
 if [ ! -f /etc/cron.d/certbot ]; then
     echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && /usr/bin/certbot renew -q" \
         | sudo tee /etc/cron.d/certbot > /dev/null
     echo "        Cron de renovacion creado en /etc/cron.d/certbot"
+fi
+
+# ---- default_server :443 -> 404 ----
+# Fallback HTTPS: cualquier hostname desconocido sobre :443 devuelve 404.
+# Reusa el cert de $DOMAIN (unico que tenemos); un SNI que no matchee $DOMAIN
+# va a hacer que el navegador muestre warning de cert antes del 404.
+# Se escribe recien despues del certbot porque `listen 443 ssl` sin cert
+# rompe `nginx -t`.
+DOMAIN_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+DOMAIN_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+if [ -f "$DOMAIN_CERT" ] && [ -f "$DOMAIN_KEY" ]; then
+    echo "        Configurando default_server :443 -> 404 (cert de $DOMAIN)..."
+    sudo tee /etc/nginx/conf.d/databox-default-ssl.conf > /dev/null << NGX443
+# default_server :443: hostname desconocido sobre HTTPS -> 404.
+# Reusa el cert de ${DOMAIN}; el navegador puede mostrar warning por SNI
+# mismatch antes de aceptar. Escrito por aprovisionar_server.sh despues del
+# certbot para que \`nginx -t\` no falle por falta de cert.
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    ssl_certificate     ${DOMAIN_CERT};
+    ssl_certificate_key ${DOMAIN_KEY};
+    return 404;
+}
+NGX443
+    sudo nginx -t && sudo systemctl reload nginx
+    echo "        OK -- HTTPS a hostname desconocido devuelve 404."
+else
+    echo "        AVISO: no hay cert para $DOMAIN -- HTTPS a hostname desconocido"
+    echo "        cae en el primer server SSL (deberia haber emitido en el paso previo)."
+    sudo rm -f /etc/nginx/conf.d/databox-default-ssl.conf
 fi
 
 # Verificacion: Nginx debe haber quedado con un listener en 443.
@@ -209,6 +261,7 @@ echo "============================================================"
 echo "  Setup remoto completo."
 echo ""
 echo "  App:        https://${DOMAIN}/   (proxy a 127.0.0.1:${APP_PORT})"
+echo "  Fallback:   hostname desconocido (:80 y :443) -> HTTP 404"
 echo "  Repo:       $APP_DIR"
 echo "  Compose:    docker compose -f $APP_DIR/$COMPOSE_FILE <cmd>"
 echo "  Logs:       sudo docker logs -f databox-apache"

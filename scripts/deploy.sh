@@ -46,13 +46,19 @@ for f in .env.production env.php docker/Dockerfile cloud; do
     fi
 done
 
-# ---- 3. Subir cloud/, docker/, db/, env.php, .env.production ----
+# ---- 3. Subir cloud/, docker/, db/, env.php, .env.production, certs/ ----
 # NO subimos docker-compose.yml: en el servidor vive docker-compose.prod.yml,
 # generado por aprovisionar_server.sh. Ni dev ni prod corren MySQL en Docker:
 # en prod la BD es RDS, en dev es el MySQL del host.
 # .env.production se sube en cada deploy para mantener prod en sync.
 # env.php es el loader de variables (define APP_KEY_CLOUD y demas como constantes).
-echo "  Subiendo cloud/, docker/, db/, env.php y .env.production..."
+# certs/ contiene el material mTLS de Kite (movistar.pfx + PEM extraidos). Los
+# .pem/.key SOLO se aceptan dentro de certs/: la carpeta esta gitignored y su
+# contenido es material sensible que la app necesita en /var/www/certs
+# (bind-monteado por el docker-compose.prod.yml). Si falta localmente, se
+# avisa y se sigue: el deploy funciona sin certs (solo el modulo de SIMs
+# Movistar queda fuera de linea).
+echo "  Subiendo cloud/, docker/, db/, env.php, .env.production, certs/..."
 cd "$BASE_LOCAL"
 
 # db/ se incluye porque CLAUDE.md lo declara como schema de referencia.
@@ -62,14 +68,24 @@ if [ -d "$BASE_LOCAL/db" ]; then
     INCLUDE_DB="db"
 fi
 
+INCLUDE_CERTS=""
+if [ -d "$BASE_LOCAL/certs" ]; then
+    INCLUDE_CERTS="certs"
+    for f in movistar.pfx movistar.cer movistar.key; do
+        if [ ! -f "$BASE_LOCAL/certs/$f" ]; then
+            echo "  AVISO: falta $BASE_LOCAL/certs/$f -- Kite Platform no va a funcionar en prod."
+        fi
+    done
+else
+    echo "  AVISO: no existe $BASE_LOCAL/certs/ -- se omite; Kite Platform no va a funcionar en prod."
+fi
+
 tar \
     --exclude='./cloud/.git' \
     --exclude='./cloud/node_modules' \
     --exclude='./cloud/vendor' \
     --exclude='*.log' \
-    --exclude='*.pem' \
-    --exclude='*.key' \
-    -czf - cloud robot docker $INCLUDE_DB env.php .env.production | \
+    -czf - cloud robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar -xzf - -C '$BASE_REMOTE/'"

@@ -24,6 +24,9 @@ services:
       # y para que el endpoint del panel (que corre como www-data) pueda
       # re-escribirlo desde el "Editor de cron" en Herramientas.
       - ./robot/crontab:/etc/cron.d/databox
+      # Certificados mTLS para API Kite (Movistar). Carpeta gitignored;
+      # cada host mantiene su propio movistar.pfx. Ver KITE_CERT_PATH/KITE_KEY_PATH en .env.
+      - ./certs:/var/www/certs
     environment:
       APP_ENV: development
     extra_hosts:
