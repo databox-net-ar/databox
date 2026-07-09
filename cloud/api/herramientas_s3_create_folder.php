@@ -17,11 +17,17 @@ header('Content-Type: application/json; charset=utf-8');
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') { exit; }
 
 require_once __DIR__ . '/lib/auth_check.php';
-requireAuth();
+$auth      = requireAuth();
+$usuarioId = (int)($auth['sub'] ?? 0);
 
 require_once __DIR__ . '/lib/s3.php';
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/sucesos.php';
+$pdoLog = db();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Crear carpeta (usuario #$usuarioId): método no permitido (" . ($_SERVER['REQUEST_METHOD'] ?? '?') . ')');
     echo json_encode(['ok' => false, 'error' => 'Método no permitido']);
     exit;
 }
@@ -37,6 +43,8 @@ $nombre = trim($nombre);
 $nombre = preg_replace('/[^\w\.\- ]/u', '_', $nombre);
 $nombre = trim($nombre, " /");
 if ($nombre === '' || $nombre === '.' || $nombre === '..') {
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Crear carpeta prefix=\"$prefix\" (usuario #$usuarioId): nombre de carpeta inválido");
     echo json_encode(['ok' => false, 'error' => 'Nombre de carpeta inválido']);
     exit;
 }
@@ -46,11 +54,16 @@ $key = $prefix . $nombre . '/';
 try {
     $res = s3_put_object($key, '', 'application/x-directory');
 } catch (Throwable $e) {
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Crear carpeta key=\"$key\" (usuario #$usuarioId): " . $e->getMessage());
     echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
     exit;
 }
 
 if ($res['status'] < 200 || $res['status'] >= 300) {
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Crear carpeta key=\"$key\" (usuario #$usuarioId) — S3 respondió HTTP " . $res['status']
+        . (isset($res['body']) ? ': ' . substr((string)$res['body'], 0, 500) : ''));
     echo json_encode([
         'ok'     => false,
         'error'  => 'S3 respondió HTTP ' . $res['status'],

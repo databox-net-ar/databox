@@ -1,0 +1,9 @@
+# Los scripts de esta carpeta se ejecutan por CLI (cron / bootstrap del panel).
+# Nunca se sirven por HTTP.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>

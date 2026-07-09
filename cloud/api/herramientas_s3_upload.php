@@ -32,13 +32,25 @@ register_shutdown_function(function () {
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') { exit; }
 
 require_once __DIR__ . '/lib/auth_check.php';
-requireAuth();
+$auth      = requireAuth();
+$usuarioId = (int)($auth['sub'] ?? 0);
 
 require_once __DIR__ . '/lib/s3.php';
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/sucesos.php';
+$pdoLog = db();
+
+// Helper local: registra en `sucesos` y devuelve JSON de error, todo en la misma
+// llamada. Evita repetir el par (registrarSuceso + echo + exit) en cada rama.
+$s3UploadFallar = function (string $mensaje, string $contexto = '') use ($pdoLog, $usuarioId) {
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Subir (usuario #$usuarioId)" . ($contexto !== '' ? " $contexto" : '') . ": $mensaje");
+    echo json_encode(['ok' => false, 'error' => $mensaje]);
+    exit;
+};
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    echo json_encode(['ok' => false, 'error' => 'Método no permitido']);
-    exit;
+    $s3UploadFallar('Método no permitido', 'metodo=' . ($_SERVER['REQUEST_METHOD'] ?? '?'));
 }
 
 if (!isset($_FILES['archivo']) || $_FILES['archivo']['error'] !== UPLOAD_ERR_OK) {
@@ -51,22 +63,19 @@ if (!isset($_FILES['archivo']) || $_FILES['archivo']['error'] !== UPLOAD_ERR_OK)
         UPLOAD_ERR_CANT_WRITE => 'Error de escritura en disco',
     ];
     $code = $_FILES['archivo']['error'] ?? UPLOAD_ERR_NO_FILE;
-    echo json_encode(['ok' => false, 'error' => $errores[$code] ?? 'Error al subir archivo']);
-    exit;
+    $s3UploadFallar($errores[$code] ?? 'Error al subir archivo', "codigo=$code");
 }
 
 $file = $_FILES['archivo'];
 
 $maxSize = 20 * 1024 * 1024;
 if ($file['size'] > $maxSize) {
-    echo json_encode(['ok' => false, 'error' => 'El archivo excede los 20MB']);
-    exit;
+    $s3UploadFallar('El archivo excede los 20MB', 'archivo="' . ($file['name'] ?? '?') . '" tam=' . $file['size']);
 }
 
 $contenido = file_get_contents($file['tmp_name']);
 if ($contenido === false) {
-    echo json_encode(['ok' => false, 'error' => 'No se pudo leer el archivo subido']);
-    exit;
+    $s3UploadFallar('No se pudo leer el archivo subido', 'archivo="' . ($file['name'] ?? '?') . '"');
 }
 
 $finfo    = new finfo(FILEINFO_MIME_TYPE);
@@ -98,11 +107,13 @@ if ($prefix !== '') {
 try {
     $res = s3_put_object($key, $contenido, $mimeReal);
 } catch (Throwable $e) {
-    echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
-    exit;
+    $s3UploadFallar($e->getMessage(), "key=\"$key\"");
 }
 
 if ($res['status'] < 200 || $res['status'] >= 300) {
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Subir key=\"$key\" (usuario #$usuarioId) — S3 respondió HTTP " . $res['status']
+        . (isset($res['body']) ? ': ' . substr((string)$res['body'], 0, 500) : ''));
     echo json_encode([
         'ok'     => false,
         'error'  => 'S3 respondió HTTP ' . $res['status'],

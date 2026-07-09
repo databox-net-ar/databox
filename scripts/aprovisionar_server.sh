@@ -104,6 +104,11 @@ services:
       # permisos al arrancar para que cron lo acepte y para que www-data pueda
       # re-escribirlo desde el endpoint del panel.
       - ./robot/crontab:/etc/cron.d/databox
+      # Crontab del "Programador de tareas" del panel cloud (scheduler minutal
+      # + cleanup + rotacion). Archivo estatico versionado en el repo — las
+      # tareas concretas viven en la tabla \`tareas\` y se administran desde
+      # el back office.
+      - ./cloud/jobs/crontab:/etc/cron.d/databox-cloud
       # Certificados mTLS para API Kite (Movistar). Carpeta gitignored pero
       # subida por aprovisionar.sh / deploy.sh desde ./certs local (deben estar
       # el .pfx + los PEM ya extraidos con openssl -legacy, ver STACK / .env).

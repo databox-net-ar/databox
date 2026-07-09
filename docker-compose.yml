@@ -24,6 +24,10 @@ services:
       # y para que el endpoint del panel (que corre como www-data) pueda
       # re-escribirlo desde el "Editor de cron" en Herramientas.
       - ./robot/crontab:/etc/cron.d/databox
+      # Crontab del "Programador de tareas" del panel cloud (scheduler
+      # minutal + cleanup + rotacion). Estatico — las tareas concretas
+      # viven en la tabla `tareas`. El entrypoint le ajusta permisos.
+      - ./cloud/jobs/crontab:/etc/cron.d/databox-cloud
       # Certificados mTLS para API Kite (Movistar). Carpeta gitignored;
       # cada host mantiene su propio movistar.pfx. Ver KITE_CERT_PATH/KITE_KEY_PATH en .env.
       - ./certs:/var/www/certs

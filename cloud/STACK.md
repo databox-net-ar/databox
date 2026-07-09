@@ -255,6 +255,58 @@ Cloud no tiene scripts propios — usa los scripts compartidos en
   `header('Content-Type: application/json; charset=utf-8')` y
   `json_encode($data, JSON_UNESCAPED_UNICODE)`.
 
+## 10.1 Tareas automáticas (Programador de tareas)
+
+El módulo Herramientas incluye un **Programador de tareas** que dispara
+procesos automáticos desde la BD (tabla `tareas`), sin tocar el crontab
+del sistema. Fuente de verdad de qué corre y cuándo: la BD. El crontab
+solo tiene 3 líneas estáticas que invocan al scheduler.
+
+**Piezas:**
+
+| Ubicación                          | Qué hace                                                   |
+|-----------------------------------|------------------------------------------------------------|
+| `cloud/jobs/_scheduler.php`       | Tick minutal (cron): evalúa `cron_expr`, dispara jobs.     |
+| `cloud/jobs/_bootstrap.php`       | Runtime común de los jobs (helpers, SIGTERM, shutdown).    |
+| `cloud/jobs/_cleanup_logs.php`    | Cleanup nocturno (por `retencion_dias` de cada tarea).     |
+| `cloud/jobs/crontab`              | Crontab estático (3 líneas) — bind-mounteado en el contenedor. |
+| `cloud/jobs/*.php`                | Un archivo por tarea automática del proyecto.              |
+| `cloud/jobs/.htaccess`            | `Require all denied` — la carpeta nunca se sirve por HTTP. |
+| Tabla `tareas`                    | Catálogo del ABM: nombre, script, cron_expr, timeout, etc. |
+| Tabla `tareas_ejecuciones`        | Historial de corridas (una fila por ejecución + log_path). |
+
+**Endpoints REST** (bajo auth, en `cloud/api/`):
+
+- `tareas.php` — CRUD del catálogo.
+- `tareas_ejecuciones.php` — listado del historial + `POST accion:'detener'`.
+- `tareas_ejecutar.php` — disparo manual ("Ejecutar ahora").
+- `tareas_ejecucion_stream.php` — streaming SSE del `.log` en vivo.
+- `tareas_scripts_disponibles.php` — pobla el desplegable del form.
+
+**Infraestructura de disparo:**
+
+- Cron corre **dentro del contenedor `databox-apache`** (igual que el
+  worker Robot). El crontab del programador se monta como
+  `/etc/cron.d/databox-cloud` desde `cloud/jobs/crontab` (ver
+  `docker-compose.yml`). El entrypoint le ajusta permisos.
+- Cada ejecución se dispara con:
+  `timeout --signal=TERM --kill-after=10s Ns stdbuf -oL -eL php <script> >> <log> 2>&1 &`
+  con `EJECUCION_ID=<id>` en el env para que el `_bootstrap.php` del hijo
+  sepa qué fila cerrar.
+- Cada corrida escribe su propio archivo
+  `/var/log/databox/cloud/ejecuciones/<id>.log` — el streaming SSE lee de ahí.
+- El Dockerfile crea el log dir con `www-data:www-data` y agrega las
+  extensiones PHP `pcntl` (signal handler) y los paquetes OS
+  `coreutils` + `procps` (`timeout`, `stdbuf`, `kill`).
+
+**Ciclo de vida:**
+
+- Tarea nueva → alta desde el back office; queda en tabla `tareas`.
+- Cambios de horario / retención / timeout / activo → PUT desde back office.
+- Cambios de código de un job (`cloud/jobs/mi_tarea.php`) → deploy.
+- Cambios al `cloud/jobs/crontab` (raro) → deploy + restart del
+  contenedor (el bind-mount se re-establece al recrear).
+
 ## 11. Criterios de aceptación (qué tiene que ser cierto siempre)
 
 1. **Sin build step.** No hay `node_modules`, no hay `vendor/`, no hay archivos generados.

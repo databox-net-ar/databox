@@ -133,6 +133,12 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
             <a href="#/claro" class="nav-item nav-sub-item" data-route="/claro">
               <span class="nav-icon">📡</span> Claro
             </a>
+            <a href="#/openai" class="nav-item nav-sub-item" data-route="/openai">
+              <span class="nav-icon">🤖</span> OpenAI
+            </a>
+            <a href="#/anthropic" class="nav-item nav-sub-item" data-route="/anthropic">
+              <span class="nav-icon">✨</span> Anthropic
+            </a>
           </div>
         </div>
 
@@ -980,6 +986,323 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
     <div class="ctx-menu-sep"></div>
     <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
       <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+    </button>
+  </div>
+
+  <!-- ===== Modal Programador de tareas: Listado ===== -->
+  <div class="modal-backdrop" id="tareasBackdrop"
+       onclick="if(event.target===this)cerrarTareas()">
+    <div class="modal" style="max-width:1080px;display:flex;flex-direction:column;max-height:90vh;overflow:hidden">
+      <div class="modal-header" style="flex-shrink:0">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:1.2rem">⏰</span>
+          <span>Programador de tareas</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarTareas()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px;flex:1;overflow:hidden;min-height:0;display:flex;flex-direction:column">
+        <div class="toolbar" style="margin-bottom:0">
+          <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+            <div class="search-wrap">
+              <input class="search-input" type="search" id="tareasSearch"
+                     placeholder="🔍 Buscar nombre, script, cron…"
+                     oninput="tareasOnSearch(this.value)">
+              <button class="search-clear" id="tareasSearchClear" style="display:none"
+                      onclick="tareasLimpiarBusqueda()">×</button>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip tareas-chip-estado"        data-activo=""  onclick="tareasSetActivo('', this)">Todas</button>
+              <button type="button" class="filter-chip tareas-chip-estado active"  data-activo="1" onclick="tareasSetActivo('1', this)">Activas</button>
+              <button type="button" class="filter-chip tareas-chip-estado"        data-activo="0" onclick="tareasSetActivo('0', this)">Inactivas</button>
+            </div>
+          </div>
+          <div class="toolbar-right" style="gap:6px">
+            <button class="btn btn-ghost btn-icon" title="Refrescar" onclick="cargarTareas()">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="abrirNuevaTarea()">
+              <i class="fa-solid fa-plus"></i> Nueva tarea
+            </button>
+          </div>
+        </div>
+
+        <div class="table-card" style="flex:1;overflow-y:auto;min-height:0">
+          <table>
+            <thead style="position:sticky;top:0;background:var(--bg);z-index:1">
+              <tr>
+                <th style="width:70px">Código</th>
+                <th>Nombre</th>
+                <th style="width:150px">Cron</th>
+                <th style="width:110px">Estado</th>
+                <th style="width:170px">Última corrida</th>
+                <th style="width:80px;text-align:center">Activa</th>
+                <th style="width:70px;text-align:center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tareasTbody">
+              <tr><td colspan="7" style="text-align:center;padding:24px"><div class="spin"></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer" style="flex-shrink:0">
+        <button class="btn btn-ghost" onclick="cerrarTareas()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Alta / Edición de tarea ===== -->
+  <div class="modal-backdrop" id="formTareaBackdrop"
+       onclick="if(event.target===this)this.classList.remove('open')">
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title" id="formTareaTitulo" style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:1.2rem">⏰</span><span>Nueva tarea</span>
+        </div>
+        <button class="btn-icon-sm" type="button"
+                onclick="document.getElementById('formTareaBackdrop').classList.remove('open')"
+                title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px">
+        <input type="hidden" id="formTareaId">
+        <div class="form-group">
+          <label for="formTareaNombre">Nombre</label>
+          <input type="text" id="formTareaNombre" maxlength="120">
+          <div class="field-error" id="formTareaNombreError" style="display:none"></div>
+        </div>
+        <div class="form-group">
+          <label for="formTareaDescripcion">Descripción (opcional)</label>
+          <input type="text" id="formTareaDescripcion" maxlength="255">
+          <div class="field-error" id="formTareaDescripcionError" style="display:none"></div>
+        </div>
+        <div class="form-group">
+          <label for="formTareaScript">Script</label>
+          <div style="display:flex;gap:6px;align-items:stretch">
+            <select id="formTareaScript" style="flex:1">
+              <option value="">— Cargando… —</option>
+            </select>
+            <button class="btn btn-ghost btn-icon" type="button" title="Re-escanear scripts"
+                    onclick="cargarScriptsDisponibles(document.getElementById('formTareaScript').value)">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+          </div>
+          <div class="field-error" id="formTareaScriptError" style="display:none"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="formTareaCron">Expresión cron</label>
+            <div style="display:flex;gap:6px;align-items:stretch">
+              <input type="text" id="formTareaCron" style="font-family:monospace;flex:1"
+                     maxlength="80" placeholder="*/5 * * * *">
+              <button class="btn btn-ghost btn-icon" type="button" title="Abrir constructor"
+                      onclick="abrirCronBuilder()">
+                <i class="fa-solid fa-sliders"></i>
+              </button>
+            </div>
+            <div class="field-error" id="formTareaCronError" style="display:none"></div>
+          </div>
+          <div class="form-group">
+            <label for="formTareaTimeout">Timeout (segundos)</label>
+            <input type="number" id="formTareaTimeout" min="5" max="86400" value="300">
+            <div class="field-error" id="formTareaTimeoutError" style="display:none"></div>
+          </div>
+        </div>
+        <div class="form-row form-row-3" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label for="formTareaOverlap">Si ya está corriendo</label>
+            <select id="formTareaOverlap">
+              <option value="skip">Saltar</option>
+              <option value="allow">Ejecutar</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="formTareaRetencion">Retención (días)</label>
+            <input type="number" id="formTareaRetencion" min="1" max="3650" value="7">
+          </div>
+          <div class="form-group">
+            <label for="formTareaActivo">Estado</label>
+            <select id="formTareaActivo">
+              <option value="1">Activa</option>
+              <option value="0">Inactiva</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" type="button"
+                onclick="document.getElementById('formTareaBackdrop').classList.remove('open')">Cancelar</button>
+        <button class="btn btn-primary" id="btnGuardarTarea" type="button" onclick="guardarTarea()">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Ejecuciones ===== -->
+  <div class="modal-backdrop" id="ejecucionesBackdrop"
+       onclick="if(event.target===this)cerrarEjecuciones()">
+    <div class="modal" style="max-width:1000px;display:flex;flex-direction:column;max-height:90vh;overflow:hidden">
+      <div class="modal-header" style="flex-shrink:0">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:1.2rem">📜</span>
+          <span>Ejecuciones de </span>
+          <span id="ejecucionesTareaNombre" style="font-family:monospace">—</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarEjecuciones()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px;flex:1;overflow:hidden;min-height:0;display:flex;flex-direction:column">
+        <div class="toolbar" style="margin-bottom:0">
+          <div class="toolbar-left" style="gap:6px;flex-wrap:wrap">
+            <button type="button" class="filter-chip tareas-chip-est active" data-est=""          onclick="ejecucionesSetEstado('', this)">Todas</button>
+            <button type="button" class="filter-chip tareas-chip-est"        data-est="corriendo" onclick="ejecucionesSetEstado('corriendo', this)">Corriendo</button>
+            <button type="button" class="filter-chip tareas-chip-est"        data-est="ok"        onclick="ejecucionesSetEstado('ok', this)">OK</button>
+            <button type="button" class="filter-chip tareas-chip-est"        data-est="error"     onclick="ejecucionesSetEstado('error', this)">Error</button>
+            <button type="button" class="filter-chip tareas-chip-est"        data-est="timeout"   onclick="ejecucionesSetEstado('timeout', this)">Timeout</button>
+            <button type="button" class="filter-chip tareas-chip-est"        data-est="killed"    onclick="ejecucionesSetEstado('killed', this)">Killed</button>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn btn-ghost btn-icon" title="Refrescar" onclick="cargarEjecuciones()">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="table-card" style="flex:1;overflow-y:auto;min-height:0">
+          <table>
+            <thead style="position:sticky;top:0;background:var(--bg);z-index:1">
+              <tr>
+                <th style="width:70px">Código</th>
+                <th style="width:160px">Inicio</th>
+                <th style="width:110px">Duración</th>
+                <th style="width:100px">Estado</th>
+                <th style="width:100px">Disparo</th>
+                <th>Mensaje</th>
+                <th style="width:70px;text-align:center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="ejecucionesTbody">
+              <tr><td colspan="7" style="text-align:center;padding:24px"><div class="spin"></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer" style="flex-shrink:0">
+        <button class="btn btn-ghost" onclick="cerrarEjecuciones()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Terminal (streaming SSE) ===== -->
+  <div class="modal-backdrop" id="terminalBackdrop"
+       onclick="if(event.target===this)cerrarTerminal()">
+    <div class="modal" style="max-width:960px">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:1.2rem">🖥️</span>
+          <span>Log ejecución</span>
+          <span id="terminalEjecucionNum" style="font-family:monospace;color:var(--muted)">#—</span>
+          <span class="badge badge-info" id="terminalEstadoBadge">corriendo</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarTerminal()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="terminalOutput" class="terminal-live"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-icon active" type="button" id="btnTerminalAutoscroll"
+                title="Auto-scroll" onclick="terminalToggleAutoscroll()">
+          <i class="fa-solid fa-angles-down"></i>
+        </button>
+        <div style="flex:1"></div>
+        <button class="btn btn-danger" type="button" id="btnTerminalDetener"
+                onclick="detenerEjecucionActual()" style="display:none">
+          <i class="fa-solid fa-stop"></i> Detener
+        </button>
+        <button class="btn btn-ghost" onclick="cerrarTerminal()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Constructor de cron ===== -->
+  <div class="modal-backdrop" id="cronBuilderBackdrop" style="z-index:160"
+       onclick="if(event.target===this)cerrarCronBuilder()">
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:1.2rem">🧰</span><span>Constructor de expresión cron</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarCronBuilder()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px">
+        <div id="cronBuilderCampos" style="display:flex;flex-direction:column;gap:8px"></div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px">
+          <div style="font-family:monospace;font-weight:600;font-size:1rem" id="cronBuilderPreview">* * * * *</div>
+          <div style="font-size:.82rem;color:var(--muted);margin-top:4px" id="cronBuilderDesc">Cada minuto, todos los días.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" type="button" onclick="cerrarCronBuilder()">Cancelar</button>
+        <button class="btn btn-primary" type="button" onclick="cronBuilderAplicar()">Aplicar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Picker de valores del cron ===== -->
+  <div class="modal-backdrop" id="cronPickerBackdrop" style="z-index:180"
+       onclick="if(event.target===this)cerrarCronPicker()">
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px">
+          <span id="cronPickerEmoji" style="font-size:1.2rem">⏱️</span>
+          <span id="cronPickerTitulo">Elegir valores</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarCronPicker()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:10px">
+        <div id="cronPickerHint" style="font-size:.82rem;color:var(--muted)">—</div>
+        <div>
+          <label id="cronPickerLabel1" style="font-size:.78rem;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">Valores</label>
+          <div id="cronPickerGrupo1" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        </div>
+        <div id="cronPickerGrupo2Wrap" style="display:none">
+          <label style="font-size:.78rem;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">Hasta</label>
+          <div id="cronPickerGrupo2" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" type="button" onclick="cronPickerLimpiar()">Limpiar</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost" type="button" onclick="cerrarCronPicker()">Cancelar</button>
+        <button class="btn btn-primary" type="button" onclick="cronPickerAplicar()">Aplicar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Menú contextual del Programador de tareas -->
+  <div id="tareasCtxMenu" class="ctx-menu" role="menu">
+    <button type="button" data-action="ver-ejecuciones" role="menuitem">
+      <i class="fa-solid fa-list"></i><span>Ver ejecuciones</span>
+    </button>
+    <button type="button" data-action="ejecutar-ahora" role="menuitem">
+      <i class="fa-solid fa-play"></i><span>Ejecutar ahora</span>
+    </button>
+    <button type="button" data-action="toggle-activo" role="menuitem">
+      <i class="fa-solid fa-power-off"></i><span data-label>Desactivar</span>
+    </button>
+    <div class="ctx-menu-sep"></div>
+    <button type="button" data-action="editar" role="menuitem">
+      <i class="fa-solid fa-pen"></i><span>Editar</span>
+    </button>
+    <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+      <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+    </button>
+  </div>
+
+  <!-- Menú contextual de Ejecuciones -->
+  <div id="ejecucionesCtxMenu" class="ctx-menu" role="menu">
+    <button type="button" data-action="ver-log" role="menuitem">
+      <i class="fa-solid fa-terminal"></i><span>Ver log</span>
+    </button>
+    <button type="button" data-action="detener" class="ctx-menu-danger" role="menuitem">
+      <i class="fa-solid fa-stop"></i><span>Detener</span>
     </button>
   </div>
 

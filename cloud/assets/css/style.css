@@ -325,6 +325,10 @@ textarea { resize: vertical; min-height: 60px; }
                    transition: color .15s, border-color .15s; }
 .modal-tab:hover { color: var(--text); }
 .modal-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+/* Los paneles visibles heredan el mismo layout vertical que .modal-body para
+   que .form-row / .form-group / .data-list adentro tengan separacion propia.
+   Sin esto, filas consecutivas quedan pegadas y los labels se solapan. */
+.modal-tabpanel { display: flex; flex-direction: column; gap: 16px; }
 .modal-tabpanel[hidden] { display: none; }
 
 /* 15. Confirm dialog */
@@ -754,4 +758,24 @@ tbody tr.row-clickable { cursor: pointer; }
 .terminal-log .term-success { color: #4ade80; display: block; font-weight: 600; }
 .terminal-log .term-warn    { color: #f5a8a8; display: block; }
 .terminal-log .term-error   { color: #f87171; display: block; font-weight: 600; }
+
+/* ---- Terminal en vivo (Programador de tareas)
+ * Streaming SSE del log de la ejecución seleccionada. Fondo oscuro,
+ * fuente monospace, scroll interno; se llena línea por línea a medida
+ * que el proceso hijo emite stdout/stderr.
+ */
+.terminal-live            { background: #0d1117; color: #d1d9e0;
+                            font-family: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+                            font-size: .82rem; line-height: 1.45;
+                            padding: 14px 16px;
+                            border-radius: var(--radius);
+                            border: 1px solid var(--border);
+                            min-height: 340px; max-height: 60vh; overflow-y: auto;
+                            white-space: pre-wrap; word-break: break-word;
+                            margin: 0; }
+#btnTerminalAutoscroll.active i { color: var(--primary); }
+
+/* ---- Picker de valores del cron builder ---- */
+.cron-picker-btn          { min-width: 44px; text-align: center;
+                            font-family: monospace; font-size: .82rem; }
 

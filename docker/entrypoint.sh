@@ -20,6 +20,21 @@ if [ -f /etc/cron.d/databox ]; then
   chmod 664 /etc/cron.d/databox 2>/dev/null || true
 fi
 
+# Crontab del "Programador de tareas" del panel cloud.
+# Este archivo es estatico (versionado en cloud/jobs/crontab); las tareas
+# concretas viven en la tabla `tareas` y las dispara el scheduler minutal.
+# cron requiere owner root y no world-writable — le ponemos root:root 644.
+if [ -f /etc/cron.d/databox-cloud ]; then
+  chown root:root /etc/cron.d/databox-cloud 2>/dev/null || true
+  chmod 644 /etc/cron.d/databox-cloud 2>/dev/null || true
+fi
+
+# Asegurar el log dir de las ejecuciones (por si el volumen se recreo).
+mkdir -p /var/log/databox/cloud/ejecuciones 2>/dev/null || true
+touch /var/log/databox/cloud/scheduler.log 2>/dev/null || true
+chown -R www-data:www-data /var/log/databox 2>/dev/null || true
+chmod 644 /var/log/databox/cloud/scheduler.log 2>/dev/null || true
+
 service cron start
 
 exec apache2-foreground

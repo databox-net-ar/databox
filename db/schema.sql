@@ -1716,6 +1716,18 @@ CREATE TABLE `movistarsims`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for openai_consumos
+-- ----------------------------
+DROP TABLE IF EXISTS `openai_consumos`;
+CREATE TABLE `openai_consumos`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `fecha` datetime NOT NULL,
+  `datos` json NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  KEY `idx_openai_consumos_fecha` (`fecha`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for paises
 -- ----------------------------
 DROP TABLE IF EXISTS `paises`;
@@ -1844,6 +1856,51 @@ CREATE TABLE `sucesos`  (
   `detalle` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for tareas
+-- ----------------------------
+DROP TABLE IF EXISTS `tareas`;
+CREATE TABLE `tareas`  (
+  `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(120) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL,
+  `script` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `cron_expr` varchar(80) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `activo` tinyint(1) NOT NULL DEFAULT 1,
+  `overlap` enum('skip','allow') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'skip',
+  `timeout_seg` int(10) UNSIGNED NOT NULL DEFAULT 300,
+  `retencion_dias` int(10) UNSIGNED NOT NULL DEFAULT 7,
+  `ultimo_run` datetime NULL DEFAULT NULL,
+  `ultimo_estado` enum('ok','error','timeout','killed','corriendo') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL,
+  `ultimo_error` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+  `fecha_creacion` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `fecha_modificacion` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE KEY `uq_tareas_nombre`(`nombre`) USING BTREE,
+  KEY `idx_tareas_activo_ultimo_run`(`activo`, `ultimo_run`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for tareas_ejecuciones
+-- ----------------------------
+DROP TABLE IF EXISTS `tareas_ejecuciones`;
+CREATE TABLE `tareas_ejecuciones`  (
+  `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `tarea_id` int(10) UNSIGNED NOT NULL,
+  `pid` int(10) UNSIGNED NULL DEFAULT NULL,
+  `inicio` datetime NOT NULL,
+  `fin` datetime NULL DEFAULT NULL,
+  `estado` enum('corriendo','ok','error','timeout','killed') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'corriendo',
+  `exit_code` int(11) NULL DEFAULT NULL,
+  `mensaje` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+  `log_path` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL,
+  `disparo` enum('scheduler','manual') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'scheduler',
+  PRIMARY KEY (`id`) USING BTREE,
+  KEY `idx_tareas_ej_tarea_id`(`tarea_id`, `id`) USING BTREE,
+  KEY `idx_tareas_ej_estado`(`estado`) USING BTREE,
+  KEY `idx_tareas_ej_inicio`(`inicio`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for tickets

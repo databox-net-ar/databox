@@ -16,9 +16,13 @@ header('Content-Type: application/json; charset=utf-8');
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') { exit; }
 
 require_once __DIR__ . '/lib/auth_check.php';
-requireAuth();
+$auth      = requireAuth();
+$usuarioId = (int)($auth['sub'] ?? 0);
 
 require_once __DIR__ . '/lib/s3.php';
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/sucesos.php';
+$pdoLog = db();
 
 $prefix = isset($_GET['prefix']) ? (string)$_GET['prefix'] : '';
 $token  = isset($_GET['token'])  ? (string)$_GET['token']  : '';
@@ -28,14 +32,19 @@ $prefix = ltrim($prefix, '/');
 try {
     $res = s3_list_objects($prefix, $token !== '' ? $token : null, '/');
 } catch (Throwable $e) {
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Listar prefix=\"$prefix\" (usuario #$usuarioId): " . $e->getMessage());
     echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
     exit;
 }
 
 if (!$res['ok']) {
+    $msg = $res['error'] ?? 'Error al listar S3';
+    registrarSuceso($pdoLog, 'Explorador S3', 'error',
+        "Listar prefix=\"$prefix\" (usuario #$usuarioId) — HTTP " . ($res['status'] ?? 0) . ": $msg");
     echo json_encode([
         'ok'     => false,
-        'error'  => $res['error'] ?? 'Error al listar S3',
+        'error'  => $msg,
         'status' => $res['status'] ?? 0,
         'detail' => $res['detail'] ?? null,
     ]);

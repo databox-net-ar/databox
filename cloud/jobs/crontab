@@ -1,0 +1,22 @@
+# Crontab del Programador de tareas del panel cloud.
+# Bind-mounteado como /etc/cron.d/databox-cloud dentro del contenedor
+# databox-apache (ver docker-compose.yml). Cron corre dentro del mismo
+# contenedor donde vive PHP; no hace falta `docker exec`.
+#
+# Estas 3 lineas son estaticas — no se editan desde la UI. Las tareas
+# concretas se administran desde el back office (tabla `tareas`) y el
+# scheduler decide cuales disparar en cada tick.
+#
+# Formato /etc/cron.d/ (7 campos): min hora dom mes dow USUARIO COMANDO
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Tick minutal del scheduler.
+* * * * * www-data php /var/www/html/jobs/_scheduler.php >> /var/log/databox/cloud/scheduler.log 2>&1
+
+# Cleanup nocturno por retencion_dias de cada tarea (§5b de la skill).
+0 3 * * * www-data php /var/www/html/jobs/_cleanup_logs.php >> /var/log/databox/cloud/scheduler.log 2>&1
+
+# Rotacion blanda del log del propio scheduler.
+5 3 * * * root find /var/log/databox/cloud/scheduler.log -size +10M -exec truncate -s 0 {} \; 2>/dev/null

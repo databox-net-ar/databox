@@ -21,6 +21,22 @@ function fmtFecha(iso) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Tiempo relativo compacto en castellano ("hace 3 min", "hace 2 h", "hace 4 d",
+// "hace 2 mes", "hace 1 a"). Sin dependencias; equivalente al
+// $oTiempo->traducir($oTiempo->diferencia(...)) del legacy.
+function fmtHace(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const diff = Math.max(0, (Date.now() - d.getTime()) / 1000); // en segundos
+  if (diff < 60)         return 'hace ' + Math.floor(diff)         + ' s';
+  if (diff < 3600)       return 'hace ' + Math.floor(diff / 60)    + ' min';
+  if (diff < 86400)      return 'hace ' + Math.floor(diff / 3600)  + ' h';
+  if (diff < 2592000)    return 'hace ' + Math.floor(diff / 86400) + ' d';
+  if (diff < 31536000)   return 'hace ' + Math.floor(diff / 2592000)  + ' mes';
+  return 'hace ' + Math.floor(diff / 31536000) + ' a';
+}
+
 // YYYY-MM-DD HH:MM:SS — para listados donde importa el segundo (log de mensajes).
 function fmtFechaLarga(iso) {
   if (!iso) return '—';
@@ -2854,6 +2870,11 @@ route('/herramientas', async (mount) => {
         <span class="tile-icon">🕒</span>
         <span class="tile-title">Editor de cron</span>
         <span class="tile-desc">Consultá y editá el crontab del worker Robot que corre las tareas programadas dentro del contenedor.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirTareas()">
+        <span class="tile-icon">⏰</span>
+        <span class="tile-title">Programador de tareas</span>
+        <span class="tile-desc">Administrá los procesos automáticos (tabla <code>tareas</code>) que el scheduler dispara cada minuto, y revisá el historial y el log en vivo de cada ejecución.</span>
       </button>
     </div>
   `;
@@ -6292,30 +6313,87 @@ const dsProFiltros = { ...dsProFiltrosDefaults };
 let dsProBuscadorTimer   = null;
 let dsProFiltrosSnapshot = null;
 
-const DS_PRO_SENTIDO_MAP = {
-  I: 'Entrante',
-  S: 'Saliente',
-};
-const DS_PRO_TIPO_MAP = {
-  F: 'Persona física',
-  J: 'Persona jurídica',
-};
+// Diccionarios para poblar selects (proyectos, usuarios, paises) y opciones de
+// combos (sentido / origen / tipo / estado / producto) leidas de la tabla
+// `estados`. Se piden una vez al montar la vista via ensureDsProLookups().
+let dsProLookups = null;
 
-function dsProSentidoBadge(s) {
-  if (s == null || s === '') return `<span class="badge badge-info">—</span>`;
-  const label = DS_PRO_SENTIDO_MAP[s] || s;
+async function ensureDsProLookups() {
+  if (dsProLookups) return dsProLookups;
+  dsProLookups = await apiGet('api/datasaleprospectos.php?lookups=1');
+  return dsProLookups;
+}
+
+// Renderiza el texto resuelto contra `estados` (o el valor crudo si no hay
+// traduccion) como badge. `texto` = campo `*_texto` que viene enriquecido en
+// el response; `valor` = valor crudo guardado en la fila.
+function dsProBadge(texto, valor) {
+  const label = (texto && String(texto).trim() !== '') ? texto : valor;
+  if (label == null || label === '') return `<span class="badge badge-info">—</span>`;
   return `<span class="badge badge-info">${esc(label)}</span>`;
 }
 
-function dsProTipoBadge(t) {
-  if (t == null || t === '') return `<span class="badge badge-info">—</span>`;
-  const label = DS_PRO_TIPO_MAP[t] || t;
-  return `<span class="badge badge-info">${esc(label)}</span>`;
+// Iconos por valor de `estado` (siguiendo el legacy: reloj para pendiente,
+// apreton de manos para atendido, check para despachado). El resto cae en
+// icono vacio + label neutro.
+const DS_PRO_ESTADO_ICONO = {
+  '1': 'fa-solid fa-clock',
+  '2': 'fa-solid fa-handshake',
+  '3': 'fa-solid fa-check',
+};
+
+// Celda "Estado" del listado. Replica el layout del legacy `listar.php`:
+//   <icono> | <estado>
+//   a/por <asignado|atendido>
+//   hace X (desde ingreso si pendiente, desde actualizado si atendido)
+// Los pendientes se pintan en rojo (--danger) para llamar la atencion.
+function dsProEstadoCelda(p) {
+  const estadoStr = p.estado != null ? String(p.estado) : '';
+  const pendiente = estadoStr === '1';
+  const icono = DS_PRO_ESTADO_ICONO[estadoStr] || '';
+  const label = p.estado_texto || p.estado || '—';
+
+  const iconoHtml = icono ? `<i class="${icono}"></i> ` : '';
+  const cabecera  = `${iconoHtml}${esc(label)}`;
+
+  const partes = [];
+  if (pendiente && p.asignado_nombre) {
+    partes.push(`<small style="opacity:.8">a ${esc(p.asignado_nombre)}</small>`);
+  } else if (!pendiente && p.atendido_nombre) {
+    partes.push(`<small style="opacity:.8">por ${esc(p.atendido_nombre)}</small>`);
+  }
+  const desde = pendiente ? p.ingreso : (p.actualizado || p.ingreso);
+  const hace  = fmtHace(desde);
+  if (hace) partes.push(`<small style="opacity:.8">${esc(hace)}</small>`);
+
+  const cuerpo = [cabecera, ...partes].join('<br>');
+  const color  = pendiente ? 'color:var(--danger)' : '';
+  return `<span style="line-height:1.35;${color}">${cuerpo}</span>`;
 }
 
-function dsProEstadoBadge(e) {
-  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  return `<span class="badge badge-info">${esc(e)}</span>`;
+// Renderiza las <option> de un combo desde dsProLookups.opciones[campo]. Se
+// usa tanto en el modal de filtros como en el form de alta/edicion.
+function dsProOpcionesHtml(campo, valorActual, incluirTodos = false, todosLabel = '— Todos —') {
+  const opts = (dsProLookups?.opciones?.[campo]) || [];
+  const parts = [];
+  parts.push(`<option value="">${incluirTodos ? esc(todosLabel) : '—'}</option>`);
+  for (const o of opts) {
+    const sel = String(o.valor) === String(valorActual ?? '') ? ' selected' : '';
+    parts.push(`<option value="${esc(o.valor)}"${sel}>${esc(o.texto)}</option>`);
+  }
+  return parts.join('');
+}
+
+// Renderiza las <option> de una lista {id, nombre} (proyectos, usuarios,
+// paises, provincias, localidades).
+function dsProIdNombreHtml(items, valorActual, incluirTodos = false, todosLabel = '— Todos —') {
+  const parts = [];
+  parts.push(`<option value="">${incluirTodos ? esc(todosLabel) : '—'}</option>`);
+  for (const it of (items || [])) {
+    const sel = String(it.id) === String(valorActual ?? '') ? ' selected' : '';
+    parts.push(`<option value="${esc(it.id)}"${sel}>${esc(it.nombre)}</option>`);
+  }
+  return parts.join('');
 }
 
 function dsProCalificacion(n) {
@@ -6326,6 +6404,11 @@ function dsProCalificacion(n) {
 }
 
 route('/prospectos', async (mount) => {
+  // Los selects del modal de filtros y del formulario dependen de los
+  // diccionarios (proyectos, usuarios, opciones de combos). Se cargan una
+  // sola vez por sesion antes de renderizar la vista.
+  await ensureDsProLookups();
+
   mount.innerHTML = `
     <div class="section">
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
@@ -6354,6 +6437,9 @@ route('/prospectos', async (mount) => {
             <i class="fa-solid fa-filter"></i>
             <span class="btn-icon-badge" id="dsProFiltrosBadge" style="display:none">0</span>
           </button>
+          <button class="btn btn-ghost btn-icon" id="dsProRapidoBtn" title="Filtro rápido por estado">
+            <i class="fa-solid fa-bolt"></i>
+          </button>
           <button class="btn btn-ghost btn-icon" id="dsProRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
@@ -6369,26 +6455,52 @@ route('/prospectos', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Ingreso</th>
-              <th>Nombre</th>
-              <th>Organización</th>
-              <th>Contacto</th>
-              <th>Producto</th>
+              <th>Proyecto</th>
+              <th>Asunto / Nombre</th>
               <th>Estado</th>
-              <th style="text-align:center">Calificación</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="dsProTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- Menú contextual único de la sección -->
+    <!-- Menú contextual del filtro rápido (icono de rayo). Refleja el legacy:
+         Todos / Pendientes / Atendidos / Despachados. -->
+    <div id="dsProRapidoMenu" class="ctx-menu" role="menu">
+      <button type="button" data-estado="" role="menuitem">
+        <i class="fa-solid fa-list-ul"></i><span>Todos</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-estado="1" role="menuitem">
+        <i class="fa-solid fa-clock"></i><span>Esperando</span>
+      </button>
+      <button type="button" data-estado="2" role="menuitem">
+        <i class="fa-solid fa-handshake"></i><span>Atendidos</span>
+      </button>
+      <button type="button" data-estado="3" role="menuitem">
+        <i class="fa-solid fa-check"></i><span>Despachados</span>
+      </button>
+    </div>
+
+    <!-- Menú contextual único de la sección. Los items marcar-* se muestran u
+         ocultan segun el estado actual del prospecto (ver abrirMenuDsPro). -->
     <div id="dsProCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep" data-role="sep-transiciones"></div>
+      <button type="button" data-action="marcar-esperando" role="menuitem">
+        <i class="fa-solid fa-clock"></i><span>Marcar como esperando</span>
+      </button>
+      <button type="button" data-action="marcar-atendido" role="menuitem">
+        <i class="fa-solid fa-handshake"></i><span>Marcar como atendido</span>
+      </button>
+      <button type="button" data-action="marcar-despachado" role="menuitem">
+        <i class="fa-solid fa-check"></i><span>Marcar como despachado</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
@@ -6414,44 +6526,50 @@ route('/prospectos', async (mount) => {
               <input type="number" id="fDsProCodigo" min="1" placeholder="ID …" oninput="onFiltroDsPro('codigo', this.value)">
             </div>
             <div class="form-group">
-              <label>Proyecto (ID)</label>
-              <input type="number" id="fDsProProyecto" min="1" oninput="onFiltroDsPro('proyecto', this.value)">
+              <label>Proyecto</label>
+              <select id="fDsProProyecto" onchange="onFiltroDsPro('proyecto', this.value)">
+                ${dsProIdNombreHtml(dsProLookups?.proyectos, '', true)}
+              </select>
             </div>
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Sentido</label>
               <select id="fDsProSentido" onchange="onFiltroDsPro('sentido', this.value)">
-                <option value="">— Todos —</option>
-                <option value="I">Entrante</option>
-                <option value="S">Saliente</option>
+                ${dsProOpcionesHtml('sentido', '', true)}
               </select>
             </div>
             <div class="form-group">
               <label>Tipo</label>
               <select id="fDsProTipo" onchange="onFiltroDsPro('tipo', this.value)">
-                <option value="">— Todos —</option>
-                <option value="F">Persona física</option>
-                <option value="J">Persona jurídica</option>
+                ${dsProOpcionesHtml('tipo', '', true)}
               </select>
             </div>
             <div class="form-group">
               <label>Origen</label>
-              <input type="text" id="fDsProOrigen" maxlength="10" oninput="onFiltroDsPro('origen', this.value)">
+              <select id="fDsProOrigen" onchange="onFiltroDsPro('origen', this.value)">
+                ${dsProOpcionesHtml('origen', '', true)}
+              </select>
             </div>
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Estado</label>
-              <input type="number" id="fDsProEstado" min="0" oninput="onFiltroDsPro('estado', this.value)">
+              <select id="fDsProEstado" onchange="onFiltroDsPro('estado', this.value)">
+                ${dsProOpcionesHtml('estado', '', true)}
+              </select>
             </div>
             <div class="form-group">
-              <label>Asignado (ID)</label>
-              <input type="number" id="fDsProAsignado" min="1" oninput="onFiltroDsPro('asignado', this.value)">
+              <label>Asignado</label>
+              <select id="fDsProAsignado" onchange="onFiltroDsPro('asignado', this.value)">
+                ${dsProIdNombreHtml(dsProLookups?.usuarios, '', true)}
+              </select>
             </div>
             <div class="form-group">
-              <label>Atendido (ID)</label>
-              <input type="number" id="fDsProAtendido" min="1" oninput="onFiltroDsPro('atendido', this.value)">
+              <label>Atendido</label>
+              <select id="fDsProAtendido" onchange="onFiltroDsPro('atendido', this.value)">
+                ${dsProIdNombreHtml(dsProLookups?.usuarios, '', true)}
+              </select>
             </div>
           </div>
           <div class="form-row">
@@ -6511,6 +6629,23 @@ route('/prospectos', async (mount) => {
   $('#dsProFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDsPro());
   $('#dsProRefrescarBtn').addEventListener('click', () => cargarDsPro());
 
+  // Filtro rápido por estado: abre menu contextual anclado al boton del rayo.
+  $('#dsProRapidoBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu($('#dsProRapidoMenu'), r.right - 200, r.bottom + 4, null);
+  });
+  $('#dsProRapidoMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-estado]');
+    if (!b) return;
+    cerrarCtxMenu();
+    // El filtro rapido reemplaza al estado del modal de filtros — si estaban
+    // pisando el mismo campo, el ultimo click gana.
+    dsProFiltros.estado = b.dataset.estado;
+    refrescarBadgeFiltrosDsPro();
+    cargarDsPro();
+  });
+
   const inp = $('#dsProSearch');
   const clr = $('#dsProSearchClear');
   inp.value = dsProFiltros.q || '';
@@ -6536,9 +6671,12 @@ route('/prospectos', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarDsPro(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionDsPro(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarDsPro(data.id);
+    if (b.dataset.action === 'consultar')        abrirConsultarDsPro(data.id);
+    if (b.dataset.action === 'editar')           abrirAltaEdicionDsPro(data.id);
+    if (b.dataset.action === 'eliminar')         eliminarDsPro(data.id);
+    if (b.dataset.action === 'marcar-esperando')  marcarEstadoDsPro(data.id, 1);
+    if (b.dataset.action === 'marcar-atendido')   marcarEstadoDsPro(data.id, 2);
+    if (b.dataset.action === 'marcar-despachado') marcarEstadoDsPro(data.id, 3);
   });
 
   // Clic en fila → consultar; clic en hamburguesa → menú
@@ -6546,9 +6684,10 @@ route('/prospectos', async (mount) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
-      const id = Number(ham.dataset.id);
-      const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#dsProCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      const id     = Number(ham.dataset.id);
+      const estado = ham.dataset.estado || '';
+      const r      = ham.getBoundingClientRect();
+      abrirMenuDsPro(r.right - 190, r.bottom + 4, { id, estado });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -6559,7 +6698,10 @@ route('/prospectos', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#dsProCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    abrirMenuDsPro(ev.clientX, ev.clientY, {
+      id:     Number(tr.dataset.id),
+      estado: tr.dataset.estado || '',
+    });
   });
 
   refrescarBadgeFiltrosDsPro();
@@ -6569,7 +6711,7 @@ route('/prospectos', async (mount) => {
 async function cargarDsPro() {
   const tbody = $('#dsProTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(dsProFiltros).forEach(([k, v]) => {
@@ -6580,7 +6722,7 @@ async function cargarDsPro() {
     pintarStatsDsPro(data.stats);
     pintarTablaDsPro(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -6592,34 +6734,48 @@ function pintarStatsDsPro(s) {
   cards[2].textContent = fmtNum(s.asignados);
 }
 
+// Layout de la columna "Asunto / Nombre" — replica del legacy:
+//   <asunto>       (small + bold, si viene)
+//   <nombre>
+//   <ubicacion>    (small; localidad, provincia, pais con etiquetas resueltas)
+//   Producto <producto>  (small, si viene)
+// Cuando no hay nombre (registros huerfanos), cae a "Prospecto #<id>".
+function dsProAsuntoNombreCelda(p) {
+  const ubicacion = [p.localidad_nombre, p.provincia_nombre, p.pais_nombre]
+    .filter(Boolean).join(', ');
+  const producto = p.producto_texto || p.producto || '';
+  const nombre = p.nombre || `Prospecto #${p.id}`;
+
+  const partes = [];
+  if (p.asunto) partes.push(`<small><b>${esc(p.asunto)}</b></small>`);
+  partes.push(esc(nombre));
+  if (ubicacion) partes.push(`<small style="opacity:.8">${esc(ubicacion)}</small>`);
+  if (producto)  partes.push(`<small style="opacity:.8">Producto ${esc(producto)}</small>`);
+  return `<span style="line-height:1.35">${partes.join('<br>')}</span>`;
+}
+
 function pintarTablaDsPro(rows) {
   const tbody = $('#dsProTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin prospectos.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin prospectos.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map((p) => {
-    const contactoLinea = [p.correo, p.celular].filter(Boolean).join(' · ') || '—';
-    return `
-    <tr data-id="${p.id}" class="row-clickable">
+  tbody.innerHTML = rows.map((p) => `
+    <tr data-id="${p.id}" data-estado="${esc(p.estado ?? '')}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(p.ingreso))}</td>
-      <td class="td-nombre">${esc(p.nombre || '—')}</td>
-      <td>${esc(p.organizacion || '—')}</td>
-      <td style="font-family:monospace;font-size:.85rem">${esc(contactoLinea)}</td>
-      <td>${esc(p.producto || '—')}</td>
-      <td>${dsProEstadoBadge(p.estado)}</td>
-      <td style="text-align:center">${dsProCalificacion(p.calificacion)}</td>
+      <td>${esc(p.proyecto_nombre || p.proyecto || '—')}</td>
+      <td>${dsProAsuntoNombreCelda(p)}</td>
+      <td>${dsProEstadoCelda(p)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
-          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}" data-estado="${esc(p.estado ?? '')}">
             <i class="fa-solid fa-bars"></i>
           </button>
         </div>
       </td>
     </tr>
-  `;
-  }).join('');
+  `).join('');
 }
 
 // ---- Modal de Filtros ----
@@ -6705,7 +6861,7 @@ window.cerrarModalFiltrosDsPro = cerrarModalFiltrosDsPro;
 // ---- Modal Consultar ----
 async function abrirConsultarDsPro(id) {
   openModal(`
-    <div class="modal" style="width:80vw;max-width:1100px">
+    <div class="modal modal-wide">
       <div class="modal-header">
         <div class="modal-title">Prospecto <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
@@ -6720,6 +6876,7 @@ async function abrirConsultarDsPro(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDsPro(id); }
+    dsProSwitchTab(ev);
   });
 
   try {
@@ -6728,6 +6885,16 @@ async function abrirConsultarDsPro(id) {
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
+}
+
+// Delegado de tabs para los modales de prospecto (consulta y alta/edicion).
+// Recorre solo el modal activo — no toca otros modales-tabs de la SPA.
+function dsProSwitchTab(ev) {
+  const tabBtn = ev.target.closest('#modalRoot [data-tab]');
+  if (!tabBtn) return;
+  const target = tabBtn.dataset.tab;
+  $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+  $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
 }
 
 function renderConsultaDsPro(p) {
@@ -6743,83 +6910,76 @@ function renderConsultaDsPro(p) {
       </div>`;
   };
 
-  const seccion = (titulo) => `
-    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
-      ${esc(titulo)}
-    </div>`;
-
   const accionesTxt = p.acciones && String(p.acciones).trim() !== ''
     ? `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(p.acciones)}</pre>`
     : `<div style="color:var(--muted);font-style:italic">Sin historial de acciones</div>`;
 
+  // El listener de tabs esta enganchado en el mismo modalRoot que ya maneja
+  // "close" y "editar" (ver abrirConsultarDsPro).
   return `
-    <!-- Encabezado -->
-    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
-      <div>
-        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <span style="font-size:1.3rem;font-weight:700">${esc(p.nombre || '—')}</span>
-          <span style="font-size:.95rem;color:var(--muted)">${esc(p.organizacion || '')}</span>
-        </div>
-        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(p.asunto || 'Sin asunto')}</div>
-        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">
-          #${esc(p.id)} · Ingreso ${esc(fmtFecha(p.ingreso))}
-        </div>
-      </div>
-      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-        <div>${dsProSentidoBadge(p.sentido)} ${dsProTipoBadge(p.tipo)}</div>
-        <div>${dsProEstadoBadge(p.estado)}</div>
-        <div style="margin-top:6px">${dsProCalificacion(p.calificacion)}</div>
-      </div>
+    <div class="modal-tabs">
+      <button type="button" class="modal-tab active" data-tab="contacto">Contacto</button>
+      <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
+      <button type="button" class="modal-tab"        data-tab="oportunidad">Oportunidad</button>
+      <button type="button" class="modal-tab"        data-tab="seguimiento">Seguimiento</button>
+      <button type="button" class="modal-tab"        data-tab="comentarios">Comentarios</button>
+      <button type="button" class="modal-tab"        data-tab="historial">Historial</button>
     </div>
 
-    ${seccion('Contacto')}
-    <dl class="data-list">
-      ${card('Nombre',       p.nombre)}
-      ${card('Organización', p.organizacion)}
-      ${card('Contacto',     p.contacto)}
-      ${card('Celular',      p.celular, false, true)}
-      ${card('Correo',       p.correo,  false, true)}
-      ${card('Web',          p.web,     false, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="contacto">
+      <dl class="data-list">
+        ${card('Nombre',       p.nombre)}
+        ${card('Organización', p.organizacion)}
+        ${card('Contacto',     p.contacto)}
+        ${card('Celular',      p.celular, false, true)}
+        ${card('Correo',       p.correo,  false, true)}
+        ${card('Web',          p.web,     false, true)}
+      </dl>
+    </div>
 
-    ${seccion('Ubicación')}
-    <dl class="data-list">
-      ${card('Domicilio',  p.domicilio, true)}
-      ${card('Ciudad',     p.ciudad)}
-      ${card('Localidad',  p.localidad)}
-      ${card('Provincia',  p.provincia)}
-      ${card('País',       p.pais)}
-      ${card('Ubicación',  p.ubicacion, true, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="ubicacion" hidden>
+      <dl class="data-list">
+        ${card('Domicilio',  p.domicilio, true)}
+        ${card('Ciudad',     p.ciudad)}
+        ${card('Localidad',  p.localidad_nombre || p.localidad)}
+        ${card('Provincia',  p.provincia_nombre || p.provincia)}
+        ${card('País',       p.pais_nombre      || p.pais)}
+        ${card('Ubicación',  p.ubicacion, true, true)}
+      </dl>
+    </div>
 
-    ${seccion('Oportunidad')}
-    <dl class="data-list">
-      ${card('Proyecto (ID)', p.proyecto)}
-      ${card('Producto',      p.producto)}
-      ${card('Asunto',        p.asunto,  true)}
-      ${card('Sentido',       DS_PRO_SENTIDO_MAP[p.sentido] || p.sentido)}
-      ${card('Tipo',          DS_PRO_TIPO_MAP[p.tipo]       || p.tipo)}
-      ${card('Origen',        p.origen)}
-      ${card('Estado',        p.estado)}
-      ${card('Calificación',  p.calificacion)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="oportunidad" hidden>
+      <dl class="data-list">
+        ${card('Proyecto',      p.proyecto_nombre || p.proyecto)}
+        ${card('Producto',      p.producto_texto  || p.producto)}
+        ${card('Asunto',        p.asunto,  true)}
+        ${card('Sentido',       p.sentido_texto || p.sentido)}
+        ${card('Tipo',          p.tipo_texto    || p.tipo)}
+        ${card('Origen',        p.origen_texto  || p.origen)}
+        ${card('Estado',        p.estado_texto  || p.estado)}
+        ${card('Calificación',  p.calificacion)}
+      </dl>
+    </div>
 
-    ${seccion('Seguimiento')}
-    <dl class="data-list">
-      ${card('Asignado a (ID)', p.asignado)}
-      ${card('Atendido por (ID)', p.atendido)}
-      ${card('Ingreso',      fmtFecha(p.ingreso))}
-      ${card('Actualizado',  fmtFecha(p.actualizado))}
-      ${card('Aplazado hasta', fmtFecha(p.aplazado))}
-    </dl>
+    <div class="modal-tabpanel" data-panel="seguimiento" hidden>
+      <dl class="data-list">
+        ${card('Asignado a',     p.asignado_nombre || p.asignado)}
+        ${card('Atendido por',   p.atendido_nombre || p.atendido)}
+        ${card('Ingreso',        fmtFecha(p.ingreso))}
+        ${card('Actualizado',    fmtFecha(p.actualizado))}
+        ${card('Aplazado hasta', fmtFecha(p.aplazado))}
+      </dl>
+    </div>
 
-    ${seccion('Comentarios')}
-    <dl class="data-list">
-      ${card('Comentarios', p.comentarios, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="comentarios" hidden>
+      <dl class="data-list">
+        ${card('Comentarios', p.comentarios, true)}
+      </dl>
+    </div>
 
-    ${seccion('Historial de acciones')}
-    ${accionesTxt}
+    <div class="modal-tabpanel" data-panel="historial" hidden>
+      ${accionesTxt}
+    </div>
   `;
 }
 
@@ -6848,12 +7008,19 @@ async function abrirAltaEdicionDsPro(id) {
     try {
       const p = await apiGet(`api/datasaleprospectos.php?id=${id}`);
       $('#modalRoot .modal-body').innerHTML = formDsProHtml(p);
+      // Los selects encadenados de provincia y localidad se hidratan tras el
+      // render: el form ya trae la provincia/localidad persistida como opcion
+      // seleccionada, pero la lista completa se pide filtrando por pais.
+      if (p.pais) {
+        await cargarProvinciasDsPro(p.pais, p.provincia || '');
+      }
     } catch (e) {
       $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
     }
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
+    dsProSwitchTab(ev);
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
@@ -6862,146 +7029,249 @@ async function abrirAltaEdicionDsPro(id) {
 }
 
 function formDsProHtml(p) {
-  const v   = (k) => esc(p?.[k] ?? '');
-  const sel = (k, val) => (p?.[k] ?? '') === val ? 'selected' : '';
-  const dt  = (k) => {
+  const v  = (k) => esc(p?.[k] ?? '');
+  const dt = (k) => {
     const raw = p?.[k];
     if (!raw) return '';
     return esc(String(raw).replace(' ', 'T').slice(0, 16));
   };
+  // Los selects encadenados de provincia y localidad se hidratan tras el render
+  // via cargarProvinciasDsPro() / cargarLocalidadesDsPro(), asi el <select>
+  // arranca solo con la opcion ya persistida y luego se completa con la lista
+  // filtrada por el pais/provincia seleccionados.
+  const optProv = p?.provincia
+    ? `<option value="${esc(p.provincia)}" selected>${esc(p.provincia_nombre || p.provincia)}</option>`
+    : '<option value="">—</option>';
+  const optLoc  = p?.localidad
+    ? `<option value="${esc(p.localidad)}" selected>${esc(p.localidad_nombre || p.localidad)}</option>`
+    : '<option value="">—</option>';
+  // Los campos se agrupan en 6 tabs que espejan las secciones de la vista
+  // Consultar (Contacto / Ubicacion / Oportunidad / Seguimiento / Comentarios /
+  // Historial). El toggle se maneja con el mismo dsProSwitchTab que la consulta.
+  // `dspFormError` queda fuera de los paneles para ser visible en cualquier tab.
   return `
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Ingreso</label>
-        <input type="datetime-local" id="dspIngreso" value="${dt('ingreso')}">
+    <div class="modal-tabs">
+      <button type="button" class="modal-tab active" data-tab="contacto">Contacto</button>
+      <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
+      <button type="button" class="modal-tab"        data-tab="oportunidad">Oportunidad</button>
+      <button type="button" class="modal-tab"        data-tab="seguimiento">Seguimiento</button>
+      <button type="button" class="modal-tab"        data-tab="comentarios">Comentarios</button>
+      <button type="button" class="modal-tab"        data-tab="historial">Historial</button>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="contacto">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nombre</label>
+          <input type="text" id="dspNombre" maxlength="255" value="${v('nombre')}">
+        </div>
+        <div class="form-group">
+          <label>Organización</label>
+          <input type="text" id="dspOrganizacion" maxlength="255" value="${v('organizacion')}">
+        </div>
+      </div>
+      <div class="form-row form-row-3">
+        <div class="form-group">
+          <label>Contacto</label>
+          <input type="text" id="dspContacto" maxlength="255" value="${v('contacto')}">
+        </div>
+        <div class="form-group">
+          <label>Celular</label>
+          <input type="text" id="dspCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
+        </div>
+        <div class="form-group">
+          <label>Correo</label>
+          <input type="email" id="dspCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
+        </div>
       </div>
       <div class="form-group">
-        <label>Sentido</label>
-        <select id="dspSentido">
-          <option value=""  ${sel('sentido','')}>—</option>
-          <option value="I" ${sel('sentido','I')}>Entrante</option>
-          <option value="S" ${sel('sentido','S')}>Saliente</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Tipo</label>
-        <select id="dspTipo">
-          <option value=""  ${sel('tipo','')}>—</option>
-          <option value="F" ${sel('tipo','F')}>Persona física</option>
-          <option value="J" ${sel('tipo','J')}>Persona jurídica</option>
-        </select>
+        <label>Web</label>
+        <input type="text" id="dspWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
       </div>
     </div>
-    <div class="form-row form-row-3">
+
+    <div class="modal-tabpanel" data-panel="ubicacion" hidden>
       <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="dspProyecto" min="1" value="${v('proyecto')}">
+        <label>Domicilio</label>
+        <input type="text" id="dspDomicilio" maxlength="255" value="${v('domicilio')}">
       </div>
-      <div class="form-group">
-        <label>Origen</label>
-        <input type="text" id="dspOrigen" maxlength="10" value="${v('origen')}" style="font-family:monospace">
+      <div class="form-row form-row-3">
+        <div class="form-group">
+          <label>País</label>
+          <select id="dspPais" onchange="cargarProvinciasDsPro(this.value, '')">
+            ${dsProIdNombreHtml(dsProLookups?.paises, p?.pais)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Provincia</label>
+          <select id="dspProvincia" onchange="cargarLocalidadesDsPro(this.value, '')">
+            ${optProv}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Localidad</label>
+          <select id="dspLocalidad">
+            ${optLoc}
+          </select>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Producto</label>
-        <input type="text" id="dspProducto" maxlength="100" value="${v('producto')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Asunto</label>
-      <input type="text" id="dspAsunto" maxlength="255" value="${v('asunto')}">
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Nombre</label>
-        <input type="text" id="dspNombre" maxlength="255" value="${v('nombre')}">
-      </div>
-      <div class="form-group">
-        <label>Organización</label>
-        <input type="text" id="dspOrganizacion" maxlength="255" value="${v('organizacion')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Contacto</label>
-        <input type="text" id="dspContacto" maxlength="255" value="${v('contacto')}">
-      </div>
-      <div class="form-group">
-        <label>Celular</label>
-        <input type="text" id="dspCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
-      </div>
-      <div class="form-group">
-        <label>Correo</label>
-        <input type="email" id="dspCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Ciudad</label>
+          <input type="text" id="dspCiudad" maxlength="255" value="${v('ciudad')}">
+        </div>
+        <div class="form-group">
+          <label>Ubicación (coordenadas)</label>
+          <input type="text" id="dspUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace"
+                 placeholder="lat,lng">
+        </div>
       </div>
     </div>
-    <div class="form-group">
-      <label>Web</label>
-      <input type="text" id="dspWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
-    </div>
-    <div class="form-group">
-      <label>Domicilio</label>
-      <input type="text" id="dspDomicilio" maxlength="255" value="${v('domicilio')}">
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Ciudad</label>
-        <input type="text" id="dspCiudad" maxlength="255" value="${v('ciudad')}">
+
+    <div class="modal-tabpanel" data-panel="oportunidad" hidden>
+      <div class="form-row form-row-3">
+        <div class="form-group">
+          <label>Proyecto</label>
+          <select id="dspProyecto">
+            ${dsProIdNombreHtml(dsProLookups?.proyectos, p?.proyecto)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Origen</label>
+          <select id="dspOrigen">
+            ${dsProOpcionesHtml('origen', p?.origen)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Producto</label>
+          <select id="dspProducto">
+            ${dsProOpcionesHtml('producto', p?.producto)}
+          </select>
+        </div>
+      </div>
+      <div class="form-row form-row-3">
+        <div class="form-group">
+          <label>Sentido</label>
+          <select id="dspSentido">
+            ${dsProOpcionesHtml('sentido', p?.sentido)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Tipo</label>
+          <select id="dspTipo">
+            ${dsProOpcionesHtml('tipo', p?.tipo)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Calificación (0-5)</label>
+          <input type="number" id="dspCalificacion" min="0" max="5" value="${v('calificacion')}">
+        </div>
       </div>
       <div class="form-group">
-        <label>Localidad</label>
-        <input type="text" id="dspLocalidad" maxlength="255" value="${v('localidad')}">
-      </div>
-      <div class="form-group">
-        <label>Provincia</label>
-        <input type="text" id="dspProvincia" maxlength="255" value="${v('provincia')}">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>País</label>
-        <input type="text" id="dspPais" maxlength="255" value="${v('pais')}">
-      </div>
-      <div class="form-group">
-        <label>Ubicación (coordenadas)</label>
-        <input type="text" id="dspUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace"
-               placeholder="lat,lng">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Calificación (0-5)</label>
-        <input type="number" id="dspCalificacion" min="0" max="5" value="${v('calificacion')}">
+        <label>Asunto</label>
+        <input type="text" id="dspAsunto" maxlength="255" value="${v('asunto')}">
       </div>
       <div class="form-group">
         <label>Estado</label>
-        <input type="number" id="dspEstado" min="0" value="${v('estado')}">
+        <select id="dspEstado">
+          ${dsProOpcionesHtml('estado', p?.estado)}
+        </select>
       </div>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="seguimiento" hidden>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Ingreso</label>
+          <input type="datetime-local" id="dspIngreso" value="${dt('ingreso')}">
+        </div>
+        <div class="form-group">
+          <label>Aplazado hasta</label>
+          <input type="datetime-local" id="dspAplazado" value="${dt('aplazado')}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Asignado a</label>
+          <select id="dspAsignado">
+            ${dsProIdNombreHtml(dsProLookups?.usuarios, p?.asignado)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Atendido por</label>
+          <select id="dspAtendido">
+            ${dsProIdNombreHtml(dsProLookups?.usuarios, p?.atendido)}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <div class="form-group">
-        <label>Aplazado hasta</label>
-        <input type="datetime-local" id="dspAplazado" value="${dt('aplazado')}">
+        <label>Comentarios</label>
+        <textarea id="dspComentarios" rows="10" maxlength="1000">${v('comentarios')}</textarea>
       </div>
     </div>
-    <div class="form-row">
+
+    <div class="modal-tabpanel" data-panel="historial" hidden>
       <div class="form-group">
-        <label>Asignado a (usuario ID)</label>
-        <input type="number" id="dspAsignado" min="1" value="${v('asignado')}">
-      </div>
-      <div class="form-group">
-        <label>Atendido por (usuario ID)</label>
-        <input type="number" id="dspAtendido" min="1" value="${v('atendido')}">
+        <label>Historial de acciones</label>
+        <textarea id="dspAcciones" rows="12" style="font-family:monospace">${v('acciones')}</textarea>
       </div>
     </div>
-    <div class="form-group">
-      <label>Comentarios</label>
-      <textarea id="dspComentarios" rows="3" maxlength="1000">${v('comentarios')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Historial de acciones</label>
-      <textarea id="dspAcciones" rows="4" style="font-family:monospace">${v('acciones')}</textarea>
-    </div>
-    <div class="field-error" id="dspFormError" style="display:none"></div>
+
+    <div class="field-error" id="dspFormError" style="display:none;margin-top:10px"></div>
   `;
 }
+
+// Repoblar el select de provincias filtrado por pais. `keepProv` es el valor
+// a preservar despues del refresco (util al inicializar el form con datos
+// existentes). Al vaciar `keepProv` se limpia tambien el select dependiente de
+// localidad.
+async function cargarProvinciasDsPro(paisId, keepProv) {
+  const selProv = document.getElementById('dspProvincia');
+  const selLoc  = document.getElementById('dspLocalidad');
+  if (!selProv) return;
+
+  if (!paisId) {
+    selProv.innerHTML = '<option value="">—</option>';
+    if (selLoc) selLoc.innerHTML = '<option value="">—</option>';
+    return;
+  }
+  selProv.innerHTML = '<option value="">Cargando…</option>';
+  if (selLoc) selLoc.innerHTML = '<option value="">—</option>';
+  try {
+    const items = await apiGet('api/datasaleprospectos.php?provincias=1&pais=' + encodeURIComponent(paisId));
+    selProv.innerHTML = dsProIdNombreHtml(items, keepProv || '');
+    if (keepProv) {
+      await cargarLocalidadesDsPro(keepProv, '');
+    }
+  } catch (e) {
+    selProv.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
+  }
+}
+
+// Analogo a cargarProvinciasDsPro pero para localidades filtradas por
+// provincia. `keepLoc` es el valor a mantener seleccionado tras el refresco.
+async function cargarLocalidadesDsPro(provinciaId, keepLoc) {
+  const selLoc = document.getElementById('dspLocalidad');
+  if (!selLoc) return;
+
+  if (!provinciaId) {
+    selLoc.innerHTML = '<option value="">—</option>';
+    return;
+  }
+  selLoc.innerHTML = '<option value="">Cargando…</option>';
+  try {
+    const items = await apiGet('api/datasaleprospectos.php?localidades=1&provincia=' + encodeURIComponent(provinciaId));
+    selLoc.innerHTML = dsProIdNombreHtml(items, keepLoc || '');
+  } catch (e) {
+    selLoc.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
+  }
+}
+
+window.cargarProvinciasDsPro  = cargarProvinciasDsPro;
+window.cargarLocalidadesDsPro = cargarLocalidadesDsPro;
 
 async function guardarDsPro(id, btn) {
   const err = $('#dspFormError');
@@ -7064,6 +7334,36 @@ async function eliminarDsPro(id) {
   try {
     await apiSend(`api/datasaleprospectos.php?id=${id}`, 'DELETE');
     toast('Prospecto eliminado.');
+    cargarDsPro();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Abre el menu contextual del listado ocultando el item "Marcar como ..." que
+// coincide con el estado actual del prospecto — no tiene sentido ofrecer la
+// transicion hacia el estado en el que ya esta.
+function abrirMenuDsPro(x, y, data) {
+  const menu = $('#dsProCtxMenu');
+  if (!menu) return;
+  const estadoActual = String(data?.estado ?? '');
+  const mapa = { '1': 'marcar-esperando', '2': 'marcar-atendido', '3': 'marcar-despachado' };
+  const actualAction = mapa[estadoActual] || null;
+
+  menu.querySelectorAll('[data-action^="marcar-"]').forEach((btn) => {
+    btn.style.display = (btn.dataset.action === actualAction) ? 'none' : '';
+  });
+  abrirCtxMenu(menu, x, y, data);
+}
+
+// Dispara la transicion de estado contra el endpoint POST ?action=estado. El
+// backend deriva `atendido` del JWT del usuario logueado; el frontend solo
+// manda el nuevo estado. Recarga el listado para reflejar el cambio.
+async function marcarEstadoDsPro(id, estado) {
+  const labels = { 1: 'esperando', 2: 'atendido', 3: 'despachado' };
+  try {
+    await apiSend(`api/datasaleprospectos.php?id=${id}&action=estado`, 'POST', { estado });
+    toast(`Prospecto marcado como ${labels[estado] || 'actualizado'}.`);
     cargarDsPro();
   } catch (e) {
     toast(e.message, { error: true });
@@ -10939,6 +11239,328 @@ route('/claro', async (mount) => {
     </div>
   `;
 }, 'Claro');
+
+// ------------------------- Vista: OpenAI (landing) -------------------------
+function openaiFmtMoneda(v, moneda) {
+  if (v == null || isNaN(Number(v))) return '—';
+  const cur = String(moneda || 'usd').toUpperCase();
+  try {
+    return Number(v).toLocaleString('es-AR', {
+      style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2,
+    });
+  } catch {
+    return `${cur} ${Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+}
+
+function openaiFmtEntero(v) {
+  if (v == null || isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('es-AR');
+}
+
+function openaiFmtFecha(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function openaiFmtFechaHora(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T'));
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('es-AR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+}
+
+function openaiPintarStats(snapshot) {
+  const kpis = (snapshot && snapshot.kpis) || {};
+  const moneda = (snapshot && snapshot.moneda) || 'usd';
+  document.getElementById('openaiCostoActual').textContent   = openaiFmtMoneda(kpis.costo_mes_actual,   moneda);
+  document.getElementById('openaiCostoAnterior').textContent = openaiFmtMoneda(kpis.costo_mes_anterior, moneda);
+  document.getElementById('openaiTokensMes').textContent     = openaiFmtEntero(kpis.tokens_mes);
+  document.getElementById('openaiRequestsMes').textContent   = openaiFmtEntero(kpis.requests_mes);
+}
+
+function openaiPintarTabla(snapshot) {
+  const tbody = document.getElementById('openaiApikeysBody');
+  if (!tbody) return;
+  const items  = (snapshot && snapshot.apikeys) || [];
+  const moneda = (snapshot && snapshot.moneda)  || 'usd';
+  if (items.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">Sin API keys.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = items.map((k) => {
+    const aviso = k.tiene_modelos_sin_precio
+      ? ` <span title="La key usó modelos sin precio en la tabla interna. El spend estimado es parcial." style="color:var(--warn,#d97706);cursor:help">⚠️</span>`
+      : '';
+    return `
+      <tr>
+        <td style="font-weight:600">${esc(k.name || '—')}</td>
+        <td><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem">${esc(k.id)}</code></td>
+        <td>${esc(k.project_name || '—')}</td>
+        <td>${openaiFmtFecha(k.created_at)}</td>
+        <td>${openaiFmtFecha(k.last_used)}</td>
+        <td style="text-align:right">${openaiFmtEntero(k.tokens_total)}</td>
+        <td style="text-align:right">${openaiFmtEntero(k.requests)}</td>
+        <td style="text-align:right;font-weight:600">${openaiFmtMoneda(k.spend_estimado, moneda)}${aviso}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function openaiPintarActualizado(fecha, edadSeg) {
+  const el = document.getElementById('openaiActualizado');
+  if (!el) return;
+  if (!fecha) {
+    el.innerHTML = `<span style="color:var(--muted)">Sin datos guardados — pulsá <strong>Refrescar</strong> para tomar el primer snapshot.</span>`;
+    return;
+  }
+  const detalle = openaiFmtFechaHora(fecha);
+  let hace = '';
+  if (typeof edadSeg === 'number' && !isNaN(edadSeg)) {
+    if (edadSeg < 60)       hace = `hace ${edadSeg}s`;
+    else if (edadSeg < 3600) hace = `hace ${Math.floor(edadSeg/60)} min`;
+    else if (edadSeg < 86400) hace = `hace ${Math.floor(edadSeg/3600)} h`;
+    else                     hace = `hace ${Math.floor(edadSeg/86400)} d`;
+  }
+  el.innerHTML = `<span style="color:var(--muted)">Actualizado ${esc(hace)} — ${esc(detalle)}</span>`;
+}
+
+// Abre un modal con la lista de fechas de todos los snapshots guardados.
+// Al elegir uno se recarga la vista con ese snapshot puntual (mismo re-render
+// que usa openaiRefrescar, sin golpear la API de OpenAI).
+async function openaiAbrirHistorial() {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Snapshots guardados</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+    const b = ev.target.closest('[data-snap-id]');
+    if (b) {
+      const id = Number(b.dataset.snapId);
+      closeModal();
+      openaiCargarSnapshot(id);
+    }
+  });
+
+  try {
+    const items = await apiGet('api/openai_consumos.php?historial=1');
+    const body  = $('#modalRoot .modal-body');
+    if (!items.length) {
+      body.innerHTML = `<div class="table-empty">No hay snapshots guardados todavía.</div>`;
+      return;
+    }
+    // Tabla simple: fecha grande + edad relativa, fila entera clickeable.
+    body.innerHTML = `
+      <div class="table-card" style="margin:0">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Fecha</th>
+              <th style="text-align:right">Hace</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((s) => `
+              <tr class="row-clickable" data-snap-id="${s.id}">
+                <td class="td-id">#${esc(s.id)}</td>
+                <td style="font-family:monospace">${esc(fmtFechaLarga(s.fecha))}</td>
+                <td style="text-align:right;color:var(--muted)">${esc(fmtHace(s.fecha))}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML =
+      `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// Carga un snapshot puntual (por id) y re-pinta stats + tabla + label, igual
+// que openaiRefrescar pero sin POST.
+async function openaiCargarSnapshot(id) {
+  try {
+    const data = await apiGet('api/openai_consumos.php?id=' + encodeURIComponent(id));
+    if (data.snapshot) {
+      openaiPintarStats(data.snapshot);
+      openaiPintarTabla(data.snapshot);
+    } else {
+      document.getElementById('openaiApikeysBody').innerHTML =
+        `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">El snapshot #${esc(id)} no tiene datos.</td></tr>`;
+    }
+    openaiPintarActualizado(data.fecha, data.edad_seg);
+    toast(`Snapshot #${id} cargado.`);
+  } catch (e) {
+    toast('OpenAI: ' + (e.message || 'no se pudo cargar el snapshot'), { error: true });
+  }
+}
+
+async function openaiRefrescar() {
+  const btn = document.getElementById('openaiRefrescarBtn');
+  if (!btn) return;
+  btn.disabled = true;
+  const labelOriginal = btn.innerHTML;
+  btn.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> Refrescando…';
+  try {
+    const r = await fetch('api/openai_consumos.php', { method: 'POST', credentials: 'same-origin' });
+    const j = await r.json().catch(() => ({ ok: false, error: 'Respuesta no JSON' }));
+    if (r.status === 429) {
+      toast(j.error || 'Snapshot muy reciente, esperá un momento.', { error: true });
+      return;
+    }
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    openaiPintarStats(j.data.snapshot);
+    openaiPintarTabla(j.data.snapshot);
+    openaiPintarActualizado(j.data.fecha, j.data.edad_seg);
+    toast('Snapshot actualizado.');
+  } catch (e) {
+    toast('OpenAI refresh: ' + (e.message || 'falló'), { error: true });
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = labelOriginal;
+  }
+}
+
+route('/openai', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">OpenAI</div>
+      <div class="page-subtitle">Plataforma de OpenAI: consola de administración de la cuenta.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/openaiconsumos'">
+        <span class="tile-icon">📊</span>
+        <span class="tile-title">Consumos</span>
+        <span class="tile-desc">Snapshots del estado de cuenta: costos, tokens, requests y consumo por API key. Con selector de histórico.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://platform.openai.com', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre la consola de OpenAI en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'OpenAI');
+
+// ------------------------- Vista: OpenAI > Consumos -------------------------
+route('/openaiconsumos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <button type="button" class="btn btn-primary btn-icon" title="Volver a OpenAI" onclick="location.hash='#/openai'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div style="font-size:1.6rem;line-height:1">📊</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Snapshots del estado de cuenta OpenAI: costos del mes en curso y anterior, tokens, requests
+          y consumo por API key. Cada snapshot queda guardado en <code>openai_consumos</code>;
+          desde <strong>Snapshots</strong> podés navegar a versiones históricas.
+          El <em>spend estimado</em> por key surge de tokens × tabla de precios interna — puede diferir
+          del gasto oficial (no incluye descuentos batch, cached-input reducido ni modelos sin precio).
+        </div>
+      </div>
+
+      <div class="toolbar" style="margin-bottom:14px">
+        <div class="toolbar-left" style="gap:12px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-primary" id="openaiRefrescarBtn">
+            <i class="fa-solid fa-rotate"></i> Refrescar
+          </button>
+          <button class="btn btn-ghost" id="openaiHistorialBtn" title="Ver snapshots guardados">
+            <i class="fa-solid fa-clock-rotate-left"></i> Snapshots
+          </button>
+          <div id="openaiActualizado" style="font-size:.85rem">
+            <span style="color:var(--muted)">Cargando…</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="openaiStats">
+        <div class="stat-card"><span class="stat-label">Costo del mes en curso</span><span class="stat-value orange" id="openaiCostoActual">—</span></div>
+        <div class="stat-card"><span class="stat-label">Costo del mes anterior</span><span class="stat-value" id="openaiCostoAnterior">—</span></div>
+        <div class="stat-card"><span class="stat-label">Tokens usados (mes)</span><span class="stat-value blue" id="openaiTokensMes">—</span></div>
+        <div class="stat-card"><span class="stat-label">Requests (mes)</span><span class="stat-value blue" id="openaiRequestsMes">—</span></div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Tracking ID</th>
+              <th>Proyecto</th>
+              <th>Creada</th>
+              <th>Last used</th>
+              <th style="text-align:right">Tokens</th>
+              <th style="text-align:right">Requests</th>
+              <th style="text-align:right">Spend (est.)</th>
+            </tr>
+          </thead>
+          <tbody id="openaiApikeysBody">
+            <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">Cargando…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('openaiRefrescarBtn').onclick = openaiRefrescar;
+  document.getElementById('openaiHistorialBtn').onclick = openaiAbrirHistorial;
+
+  try {
+    const data = await apiGet('api/openai_consumos.php');
+    if (data.snapshot) {
+      openaiPintarStats(data.snapshot);
+      openaiPintarTabla(data.snapshot);
+    } else {
+      document.getElementById('openaiApikeysBody').innerHTML =
+        `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">Sin snapshot guardado. Pulsá Refrescar para tomar el primero.</td></tr>`;
+    }
+    openaiPintarActualizado(data.fecha, data.edad_seg);
+  } catch (e) {
+    toast('OpenAI: ' + (e.message || 'no se pudo cargar el snapshot'), { error: true });
+    document.getElementById('openaiActualizado').innerHTML =
+      `<span style="color:var(--danger)">${esc(e.message || 'Error cargando')}</span>`;
+  }
+}, 'OpenAI · Consumos');
+
+// ------------------------- Vista: Anthropic (landing) -------------------------
+route('/anthropic', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Anthropic</div>
+      <div class="page-subtitle">Plataforma de Anthropic: consola de administración de la cuenta.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card"
+              onclick="window.open('https://platform.claude.com', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre la consola de Anthropic en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'Anthropic');
 
 // ------------------------- Vista: Claro > SIMs (ABM) -------------------------
 const csimFiltrosDefaults = {
@@ -16431,6 +17053,999 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const b = document.getElementById('cronBackdrop');
   if (b && b.classList.contains('open')) cerrarEditorCron();
+});
+
+// ------------------------- Herramientas: Programador de tareas -------------------------
+// CRUD sobre `tareas` + historial en `tareas_ejecuciones` + streaming SSE del log
+// de cada ejecución en vivo. Ver la skill `crear_programador_de_tareas` y §5–§10.
+
+let tareasCache             = [];
+let tareasFiltroQ           = '';
+let tareasFiltroActivo      = '1';
+let tareasCtxRegistroId     = null;
+let _tareasSearchTimer      = null;
+let _tareasGuardando        = false;
+let _tareasScripts          = [];
+let ejecucionesTareaSel     = null;     // { id, nombre }
+let ejecucionesFiltroEstado = '';
+let ejecucionesCache        = [];
+let ejecucionesCtxRegistroId = null;
+let terminalES              = null;
+let terminalEjecucionActual = null;
+let terminalAutoscroll      = true;
+
+// --- Listado de tareas ---
+
+function abrirTareas() {
+  document.getElementById('tareasBackdrop').classList.add('open');
+  cargarTareas();
+}
+
+function cerrarTareas() {
+  document.getElementById('tareasBackdrop').classList.remove('open');
+  cerrarCtxMenu();
+}
+
+function tareasOnSearch(v) {
+  tareasFiltroQ = String(v ?? '');
+  const clearBtn = document.getElementById('tareasSearchClear');
+  if (clearBtn) clearBtn.style.display = tareasFiltroQ ? '' : 'none';
+  clearTimeout(_tareasSearchTimer);
+  _tareasSearchTimer = setTimeout(cargarTareas, 250);
+}
+
+function tareasLimpiarBusqueda() {
+  tareasFiltroQ = '';
+  const input = document.getElementById('tareasSearch');
+  if (input) input.value = '';
+  document.getElementById('tareasSearchClear').style.display = 'none';
+  cargarTareas();
+}
+
+function tareasSetActivo(v, el) {
+  tareasFiltroActivo = v;
+  $$('.tareas-chip-estado').forEach((c) => c.classList.toggle('active', c === el));
+  cargarTareas();
+}
+
+async function cargarTareas() {
+  const tbody = document.getElementById('tareasTbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
+
+  const params = new URLSearchParams();
+  if (tareasFiltroQ)      params.set('q', tareasFiltroQ);
+  if (tareasFiltroActivo) params.set('activo', tareasFiltroActivo);
+  params.set('limite',   '500');
+  params.set('order_by', 'id');
+  params.set('dir',      'asc');
+
+  try {
+    const data = await apiGet('api/tareas.php?' + params.toString());
+    tareasCache = data.items || [];
+    renderTareas(tareasCache);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function tareaBadgeEstado(estado) {
+  const map = {
+    ok:        { cls: 'badge-success', txt: 'OK' },
+    error:     { cls: 'badge-danger',  txt: 'Error' },
+    timeout:   { cls: 'badge-warn',    txt: 'Timeout' },
+    killed:    { cls: 'badge-danger',  txt: 'Killed' },
+    corriendo: { cls: 'badge-info',    txt: 'Corriendo' },
+  };
+  const m = map[estado] || { cls: '', txt: 'Sin corrida' };
+  return `<span class="badge ${m.cls}">${m.txt}</span>`;
+}
+
+function renderTareas(rows) {
+  const tbody = document.getElementById('tareasTbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="table-empty">Sin tareas para mostrar.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((t) => {
+    const nombre  = esc(t.nombre || '');
+    const script  = esc(t.script || '');
+    const cron    = esc(t.cron_expr || '');
+    const est     = tareaBadgeEstado(t.ultimo_estado);
+    const ultimo  = t.ultimo_run ? esc(fmtFecha(t.ultimo_run)) : '<span style="color:var(--muted)">—</span>';
+    const activo  = t.activo ? 'checked' : '';
+    return `
+      <tr class="row-clickable" data-id="${t.id}"
+          onclick="abrirEjecuciones(${t.id})"
+          oncontextmenu="event.preventDefault();abrirMenuContextoTareas(event, ${t.id})">
+        <td class="td-id">${t.id}</td>
+        <td>
+          <div style="font-weight:600">${nombre}</div>
+          <div style="font-family:monospace;font-size:.78rem;color:var(--muted)">${script}</div>
+        </td>
+        <td style="font-family:monospace;font-size:.82rem">${cron}</td>
+        <td>${est}</td>
+        <td style="font-family:monospace;font-size:.82rem">${ultimo}</td>
+        <td style="text-align:center">
+          <label class="toggle-switch" onclick="event.stopPropagation()">
+            <input type="checkbox" ${activo}
+                   onchange="toggleActivoTarea(${t.id}, this.checked)">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </td>
+        <td style="text-align:center">
+          <button class="btn-icon-sm" title="Más acciones"
+                  onclick="event.stopPropagation();abrirMenuContextoTareas(event, ${t.id})">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// --- Alta / Edición ---
+
+async function cargarScriptsDisponibles(actualScript) {
+  const sel = document.getElementById('formTareaScript');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— Cargando… —</option>';
+  try {
+    const data = await apiGet('api/tareas_scripts_disponibles.php');
+    _tareasScripts = data || [];
+    const opts = ['<option value="">— Elegí un script —</option>'];
+    _tareasScripts.forEach((s) => {
+      opts.push(`<option value="${esc(s)}">${esc(s)}</option>`);
+    });
+    if (actualScript && !_tareasScripts.includes(actualScript)) {
+      opts.push(`<option value="${esc(actualScript)}">⚠️ ${esc(actualScript)} (no está en cloud/jobs/)</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    if (actualScript) sel.value = actualScript;
+  } catch (e) {
+    sel.innerHTML = '<option value="">— Error al cargar —</option>';
+    toast(e.message, { error: true });
+  }
+}
+
+function abrirNuevaTarea() {
+  limpiarErroresFormTarea();
+  document.getElementById('formTareaTitulo').innerHTML =
+    '<span style="font-size:1.2rem">⏰</span><span>Nueva tarea</span>';
+  document.getElementById('formTareaId').value          = '';
+  document.getElementById('formTareaNombre').value      = '';
+  document.getElementById('formTareaDescripcion').value = '';
+  document.getElementById('formTareaCron').value        = '* * * * *';
+  document.getElementById('formTareaTimeout').value     = '300';
+  document.getElementById('formTareaRetencion').value   = '7';
+  document.getElementById('formTareaOverlap').value     = 'skip';
+  document.getElementById('formTareaActivo').value      = '1';
+  cargarScriptsDisponibles('');
+  document.getElementById('formTareaBackdrop').classList.add('open');
+  setTimeout(() => document.getElementById('formTareaNombre').focus(), 50);
+}
+
+function abrirEditarTarea(id) {
+  const t = tareasCache.find((x) => x.id === id);
+  if (!t) { toast('No se encontró la tarea.', { error: true }); return; }
+  limpiarErroresFormTarea();
+  document.getElementById('formTareaTitulo').innerHTML =
+    '<span style="font-size:1.2rem">⏰</span><span>Editar tarea</span>';
+  document.getElementById('formTareaId').value          = t.id;
+  document.getElementById('formTareaNombre').value      = t.nombre || '';
+  document.getElementById('formTareaDescripcion').value = t.descripcion || '';
+  document.getElementById('formTareaCron').value        = t.cron_expr || '* * * * *';
+  document.getElementById('formTareaTimeout').value     = t.timeout_seg   || 300;
+  document.getElementById('formTareaRetencion').value   = t.retencion_dias || 7;
+  document.getElementById('formTareaOverlap').value     = t.overlap || 'skip';
+  document.getElementById('formTareaActivo').value      = t.activo ? '1' : '0';
+  cargarScriptsDisponibles(t.script || '');
+  document.getElementById('formTareaBackdrop').classList.add('open');
+  setTimeout(() => document.getElementById('formTareaNombre').focus(), 50);
+}
+
+function limpiarErroresFormTarea() {
+  ['Nombre', 'Descripcion', 'Script', 'Cron', 'Timeout'].forEach((c) => {
+    const input = document.getElementById('formTarea' + c);
+    const err   = document.getElementById('formTarea' + c + 'Error');
+    if (input) input.classList.remove('input-invalid');
+    if (err)   { err.style.display = 'none'; err.textContent = ''; }
+  });
+}
+
+function mostrarErrorTarea(campo, msg) {
+  const input = document.getElementById('formTarea' + campo);
+  const err   = document.getElementById('formTarea' + campo + 'Error');
+  if (input) { input.classList.add('input-invalid'); input.focus(); }
+  if (err)   { err.style.display = ''; err.textContent = msg; }
+}
+
+async function guardarTarea() {
+  if (_tareasGuardando) return;
+  limpiarErroresFormTarea();
+
+  const idRaw       = document.getElementById('formTareaId').value;
+  const id          = idRaw ? parseInt(idRaw, 10) : 0;
+  const nombre      = document.getElementById('formTareaNombre').value.trim();
+  const descripcion = document.getElementById('formTareaDescripcion').value.trim();
+  const script      = document.getElementById('formTareaScript').value;
+  const cron_expr   = document.getElementById('formTareaCron').value.trim();
+  const timeout_seg = parseInt(document.getElementById('formTareaTimeout').value, 10) || 300;
+  const retencion_dias = parseInt(document.getElementById('formTareaRetencion').value, 10) || 7;
+  const overlap     = document.getElementById('formTareaOverlap').value || 'skip';
+  const activo      = document.getElementById('formTareaActivo').value === '1' ? 1 : 0;
+
+  if (!nombre)    { mostrarErrorTarea('Nombre', 'El nombre es obligatorio.'); return; }
+  if (nombre.length > 120) { mostrarErrorTarea('Nombre', 'Máximo 120 caracteres.'); return; }
+  if (!script)    { mostrarErrorTarea('Script', 'Elegí un script del desplegable.'); return; }
+  if (!cron_expr) { mostrarErrorTarea('Cron', 'La expresión cron es obligatoria.'); return; }
+  if (cron_expr.split(/\s+/).length !== 5) {
+    mostrarErrorTarea('Cron', 'Deben ser exactamente 5 campos, ej: */5 * * * *.');
+    return;
+  }
+  if (timeout_seg < 5 || timeout_seg > 86400) {
+    mostrarErrorTarea('Timeout', 'Rango válido: 5 a 86400 segundos.');
+    return;
+  }
+
+  const btn = document.getElementById('btnGuardarTarea');
+  _tareasGuardando = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+
+  try {
+    const payload = { nombre, descripcion, script, cron_expr, timeout_seg, retencion_dias, overlap, activo };
+    if (id > 0) {
+      await apiSend('api/tareas.php?id=' + id, 'PUT', payload);
+      toast('Tarea actualizada.');
+    } else {
+      await apiSend('api/tareas.php', 'POST', payload);
+      toast('Tarea creada.');
+    }
+    document.getElementById('formTareaBackdrop').classList.remove('open');
+    cargarTareas();
+  } catch (e) {
+    const msg = e.message || 'Error al guardar.';
+    if (/nombre_duplicado/i.test(msg)) {
+      mostrarErrorTarea('Nombre', 'Ya existe una tarea con ese nombre.');
+    } else {
+      toast(msg, { error: true });
+    }
+  } finally {
+    _tareasGuardando = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+  }
+}
+
+async function eliminarTarea(id) {
+  const t = tareasCache.find((x) => x.id === id);
+  if (!t) return;
+  const ok = await confirmar({
+    title: 'Eliminar tarea',
+    message: `Vas a eliminar «${t.nombre}» y todo su historial de ejecuciones. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const res = await apiSend('api/tareas.php?id=' + id, 'DELETE');
+    const msg = res && res.archivos_borrados
+      ? `Tarea eliminada. ${res.archivos_borrados} archivo${res.archivos_borrados === 1 ? '' : 's'} de log borrado${res.archivos_borrados === 1 ? '' : 's'}.`
+      : 'Tarea eliminada.';
+    toast(msg);
+    cargarTareas();
+  } catch (e) {
+    const msg = e.message || 'Error al eliminar.';
+    if (/ejecucion_en_curso/i.test(msg)) {
+      toast('La tarea tiene una ejecución en curso. Detenela desde el historial antes de borrarla.', { error: true, duration: 6000 });
+    } else {
+      toast(msg, { error: true });
+    }
+  }
+}
+
+async function toggleActivoTarea(id, activo) {
+  const t = tareasCache.find((x) => x.id === id);
+  if (!t) return;
+  try {
+    await apiSend('api/tareas.php?id=' + id, 'PUT', {
+      nombre:         t.nombre,
+      descripcion:    t.descripcion,
+      script:         t.script,
+      cron_expr:      t.cron_expr,
+      timeout_seg:    t.timeout_seg,
+      retencion_dias: t.retencion_dias,
+      overlap:        t.overlap,
+      activo:         activo ? 1 : 0,
+    });
+    toast(activo ? 'Tarea activada.' : 'Tarea desactivada.');
+    // Actualizar cache sin recargar toda la tabla.
+    t.activo = activo ? 1 : 0;
+  } catch (e) {
+    toast(e.message, { error: true });
+    cargarTareas(); // sincronizar UI con el estado real
+  }
+}
+
+async function ejecutarAhora(id) {
+  try {
+    const res = await apiSend('api/tareas_ejecutar.php', 'POST', { tarea_id: id });
+    toast('Ejecución iniciada.');
+    if (res && res.ejecucion_id) {
+      // Refrescar el listado principal para que el snapshot muestre "corriendo".
+      cargarTareas();
+      abrirTerminal(res.ejecucion_id);
+    }
+  } catch (e) {
+    const msg = e.message || 'Error al ejecutar.';
+    if (/ya_esta_corriendo/i.test(msg)) {
+      toast('La tarea ya tiene una ejecución en curso.', { error: true });
+    } else {
+      toast(msg, { error: true });
+    }
+  }
+}
+
+// --- Menú contextual de tareas ---
+
+function abrirMenuContextoTareas(ev, id) {
+  tareasCtxRegistroId = id;
+  const menu = document.getElementById('tareasCtxMenu');
+  if (!menu) return;
+  const t = tareasCache.find((x) => x.id === id);
+  const lbl = menu.querySelector('[data-action="toggle-activo"] [data-label]');
+  if (lbl) lbl.textContent = (t && t.activo) ? 'Desactivar' : 'Activar';
+  let x = ev.clientX, y = ev.clientY;
+  if ((!x && !y) && ev.currentTarget && ev.currentTarget.getBoundingClientRect) {
+    const r = ev.currentTarget.getBoundingClientRect();
+    x = r.right; y = r.bottom;
+  }
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+function cerrarMenuContextoTareas() {
+  tareasCtxRegistroId = null;
+  cerrarCtxMenu();
+}
+
+// --- Listado de ejecuciones ---
+
+function abrirEjecuciones(tareaId) {
+  const t = tareasCache.find((x) => x.id === tareaId);
+  if (!t) { toast('No se encontró la tarea.', { error: true }); return; }
+  ejecucionesTareaSel = { id: t.id, nombre: t.nombre };
+  ejecucionesFiltroEstado = '';
+  $$('.tareas-chip-est').forEach((c) => c.classList.toggle('active', c.getAttribute('data-est') === ''));
+  document.getElementById('ejecucionesTareaNombre').textContent = t.nombre;
+  document.getElementById('ejecucionesBackdrop').classList.add('open');
+  cargarEjecuciones();
+}
+
+function cerrarEjecuciones() {
+  document.getElementById('ejecucionesBackdrop').classList.remove('open');
+  ejecucionesTareaSel = null;
+  cerrarCtxMenu();
+  // Refrescar el listado principal para reflejar el nuevo snapshot.
+  if (document.getElementById('tareasBackdrop').classList.contains('open')) {
+    cargarTareas();
+  }
+}
+
+function ejecucionesSetEstado(v, el) {
+  ejecucionesFiltroEstado = v;
+  $$('.tareas-chip-est').forEach((c) => c.classList.toggle('active', c === el));
+  cargarEjecuciones();
+}
+
+async function cargarEjecuciones() {
+  if (!ejecucionesTareaSel) return;
+  const tbody = document.getElementById('ejecucionesTbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>';
+
+  const params = new URLSearchParams();
+  params.set('tarea_id', ejecucionesTareaSel.id);
+  if (ejecucionesFiltroEstado) params.set('estado', ejecucionesFiltroEstado);
+  params.set('limite', '300');
+
+  try {
+    const data = await apiGet('api/tareas_ejecuciones.php?' + params.toString());
+    ejecucionesCache = data.items || [];
+    renderEjecuciones(ejecucionesCache);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" class="table-empty">✗ ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function renderEjecuciones(rows) {
+  const tbody = document.getElementById('ejecucionesTbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="table-empty">Sin ejecuciones para mostrar.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((e) => {
+    const est     = tareaBadgeEstado(e.estado);
+    const inicio  = esc(fmtFechaLarga(e.inicio));
+    const durTxt  = formatoDuracion(e.inicio, e.fin);
+    const disparo = e.disparo === 'manual'
+      ? '<span class="badge badge-info">Manual</span>'
+      : '<span style="color:var(--muted)">Scheduler</span>';
+    const msg     = esc(e.mensaje || '');
+    return `
+      <tr class="row-clickable" data-id="${e.id}"
+          onclick="abrirTerminal(${e.id})"
+          oncontextmenu="event.preventDefault();abrirMenuContextoEjecuciones(event, ${e.id})">
+        <td class="td-id">${e.id}</td>
+        <td style="font-family:monospace;font-size:.82rem">${inicio}</td>
+        <td style="font-family:monospace;font-size:.82rem">${durTxt}</td>
+        <td>${est}</td>
+        <td>${disparo}</td>
+        <td title="${msg}"
+            style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.82rem;color:var(--muted)">
+          ${msg}
+        </td>
+        <td style="text-align:center">
+          <button class="btn-icon-sm" title="Más acciones"
+                  onclick="event.stopPropagation();abrirMenuContextoEjecuciones(event, ${e.id})">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function formatoDuracion(inicioIso, finIso) {
+  if (!inicioIso) return '—';
+  const t0 = new Date(inicioIso).getTime();
+  if (isNaN(t0)) return '—';
+  const t1 = finIso ? new Date(finIso).getTime() : Date.now();
+  const seg = Math.max(0, Math.round((t1 - t0) / 1000));
+  if (seg < 60)    return seg + 's';
+  if (seg < 3600)  return Math.floor(seg / 60) + 'm ' + (seg % 60) + 's';
+  return Math.floor(seg / 3600) + 'h ' + Math.floor((seg % 3600) / 60) + 'm';
+}
+
+function abrirMenuContextoEjecuciones(ev, id) {
+  ejecucionesCtxRegistroId = id;
+  const menu = document.getElementById('ejecucionesCtxMenu');
+  if (!menu) return;
+  const e = ejecucionesCache.find((x) => x.id === id);
+  const btnDet = menu.querySelector('[data-action="detener"]');
+  if (btnDet) btnDet.style.display = (e && e.estado === 'corriendo') ? '' : 'none';
+  let x = ev.clientX, y = ev.clientY;
+  if ((!x && !y) && ev.currentTarget && ev.currentTarget.getBoundingClientRect) {
+    const r = ev.currentTarget.getBoundingClientRect();
+    x = r.right; y = r.bottom;
+  }
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+function cerrarMenuContextoEjecuciones() {
+  ejecucionesCtxRegistroId = null;
+  cerrarCtxMenu();
+}
+
+async function detenerEjecucion(id) {
+  try {
+    const res = await apiSend('api/tareas_ejecuciones.php', 'POST', { id, accion: 'detener' });
+    toast(res && res.killed ? 'Ejecución detenida (SIGKILL).' : 'Ejecución detenida (SIGTERM).');
+    cargarEjecuciones();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// --- Terminal (streaming SSE) ---
+
+function abrirTerminal(ejecucionId) {
+  terminalEjecucionActual = ejecucionId;
+  terminalAutoscroll = true;
+  const btnAuto = document.getElementById('btnTerminalAutoscroll');
+  if (btnAuto) btnAuto.classList.add('active');
+
+  const out = document.getElementById('terminalOutput');
+  if (out) out.textContent = '';
+  document.getElementById('terminalEjecucionNum').textContent = '#' + ejecucionId;
+  const badge = document.getElementById('terminalEstadoBadge');
+  badge.className = 'badge badge-info';
+  badge.textContent = 'corriendo';
+  document.getElementById('btnTerminalDetener').style.display = '';
+  document.getElementById('terminalBackdrop').classList.add('open');
+
+  if (terminalES) { try { terminalES.close(); } catch (_) {} terminalES = null; }
+  terminalES = new EventSource('api/tareas_ejecucion_stream.php?id=' + ejecucionId);
+
+  terminalES.onmessage = (ev) => {
+    out.textContent += ev.data + '\n';
+    if (terminalAutoscroll) out.scrollTop = out.scrollHeight;
+  };
+
+  terminalES.addEventListener('end', (ev) => {
+    const estado = ev.data || 'finalizado';
+    const map = {
+      ok:      'badge-success',
+      error:   'badge-danger',
+      killed:  'badge-danger',
+      timeout: 'badge-warn',
+    };
+    badge.className = 'badge ' + (map[estado] || 'badge-info');
+    badge.textContent = estado;
+    document.getElementById('btnTerminalDetener').style.display = 'none';
+    out.textContent += `\n── ejecución terminada (${estado}) ──\n`;
+    if (terminalAutoscroll) out.scrollTop = out.scrollHeight;
+    try { terminalES.close(); } catch (_) {}
+    terminalES = null;
+    // Refrescar listados de fondo si están abiertos.
+    if (ejecucionesTareaSel) cargarEjecuciones();
+    if (document.getElementById('tareasBackdrop').classList.contains('open')) cargarTareas();
+  });
+
+  terminalES.onerror = () => {
+    try { terminalES.close(); } catch (_) {}
+    terminalES = null;
+    // Si la fila seguía corriendo, marcar como desconectado.
+    if (badge.textContent === 'corriendo') {
+      badge.className = 'badge badge-warn';
+      badge.textContent = 'desconectado';
+    }
+  };
+}
+
+function cerrarTerminal() {
+  if (terminalES) { try { terminalES.close(); } catch (_) {} terminalES = null; }
+  document.getElementById('terminalBackdrop').classList.remove('open');
+  terminalEjecucionActual = null;
+  // Refrescar listados de fondo si están abiertos.
+  if (ejecucionesTareaSel) cargarEjecuciones();
+  if (document.getElementById('tareasBackdrop').classList.contains('open')) cargarTareas();
+}
+
+function terminalToggleAutoscroll() {
+  terminalAutoscroll = !terminalAutoscroll;
+  const btn = document.getElementById('btnTerminalAutoscroll');
+  if (btn) btn.classList.toggle('active', terminalAutoscroll);
+  toast(terminalAutoscroll ? 'Auto-scroll ON' : 'Auto-scroll OFF');
+  if (terminalAutoscroll) {
+    const out = document.getElementById('terminalOutput');
+    if (out) out.scrollTop = out.scrollHeight;
+  }
+}
+
+function detenerEjecucionActual() {
+  if (!terminalEjecucionActual) return;
+  detenerEjecucion(terminalEjecucionActual);
+}
+
+// --- Constructor de cron ---
+
+const CRON_CAMPOS = [
+  { key: 'min',  label: 'Minuto',           rango: '0-59', min: 0, max: 59 },
+  { key: 'hour', label: 'Hora',             rango: '0-23', min: 0, max: 23 },
+  { key: 'dom',  label: 'Día del mes',      rango: '1-31', min: 1, max: 31 },
+  { key: 'mon',  label: 'Mes',              rango: '1-12', min: 1, max: 12 },
+  { key: 'dow',  label: 'Día de la semana', rango: '0=dom..6=sáb', min: 0, max: 6 },
+];
+
+const CRON_PICKER_CFG = {
+  min:  { min: 0, max: 59, formato: (n) => String(n).padStart(2, '0'), emoji: '⏱️', titulo: 'Elegir minutos' },
+  hour: { min: 0, max: 23, formato: (n) => String(n).padStart(2, '0'), emoji: '🕐', titulo: 'Elegir horas' },
+  dom:  { min: 1, max: 31, formato: (n) => String(n),                  emoji: '📅', titulo: 'Elegir día del mes' },
+  mon:  { min: 1, max: 12, formato: (n) => cronNombreMesCorto(n),      emoji: '🗓️', titulo: 'Elegir mes' },
+  dow:  { min: 0, max: 6,  formato: (n) => cronNombreDiaCorto(n),      emoji: '🗓️', titulo: 'Elegir día de la semana',
+          orden: [1, 2, 3, 4, 5, 6, 0] },
+};
+
+function cronNombreMesCorto(n) {
+  return ['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][n] || String(n);
+}
+function cronNombreMes(n) {
+  return ['','enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+          'septiembre','octubre','noviembre','diciembre'][n] || String(n);
+}
+function cronNombreDiaCorto(n) {
+  return ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'][n] || String(n);
+}
+function cronNombreDia(n) {
+  return ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'][n] || String(n);
+}
+function cronPluralDia(n) {
+  // Días terminados en 's' no se pluralizan; sábado/domingo sí.
+  const nombre = cronNombreDia(n);
+  if (nombre === 'sábado')  return 'sábados';
+  if (nombre === 'domingo') return 'domingos';
+  return nombre;
+}
+
+function abrirCronBuilder() {
+  const cont = document.getElementById('cronBuilderCampos');
+  cont.innerHTML = CRON_CAMPOS.map((c) => `
+    <div class="cron-builder-row" data-campo="${c.key}"
+         style="display:grid;grid-template-columns:140px 130px 1fr 34px;gap:8px;align-items:center">
+      <label style="font-size:.86rem">${c.label}
+        <span style="color:var(--muted);font-size:.72rem;font-family:monospace">(${c.rango})</span>
+      </label>
+      <select data-cron-modo="${c.key}" onchange="cronBuilderModoChange('${c.key}')">
+        <option value="star">Cualquiera</option>
+        <option value="exact">Exacto</option>
+        <option value="step">Cada</option>
+        <option value="range">Rango</option>
+        <option value="list">Lista</option>
+      </select>
+      <input type="text" data-cron-valor="${c.key}" placeholder=""
+             style="font-family:monospace" disabled
+             oninput="cronBuilderOnChange()"
+             onclick="if(!this.disabled) abrirCronPicker('${c.key}')">
+      <button class="btn btn-ghost btn-icon-sm" type="button" data-cron-picker="${c.key}"
+              title="Elegir con botones" disabled
+              onclick="abrirCronPicker('${c.key}')">
+        <i class="fa-solid fa-list-check"></i>
+      </button>
+    </div>
+  `).join('');
+
+  const expr = document.getElementById('formTareaCron').value.trim() || '* * * * *';
+  cronBuilderPoblar(expr);
+  document.getElementById('cronBuilderBackdrop').classList.add('open');
+}
+
+function cerrarCronBuilder() {
+  document.getElementById('cronBuilderBackdrop').classList.remove('open');
+}
+
+function cronBuilderPoblar(expr) {
+  const partes = expr.split(/\s+/);
+  if (partes.length !== 5) return;
+  CRON_CAMPOS.forEach((c, i) => cronBuilderPoblarCampo(c.key, partes[i]));
+  cronBuilderOnChange();
+}
+
+function cronBuilderPoblarCampo(campo, valor) {
+  const modoSel = document.querySelector(`[data-cron-modo="${campo}"]`);
+  const valInp  = document.querySelector(`[data-cron-valor="${campo}"]`);
+  if (!modoSel || !valInp) return;
+  if (valor === '*') {
+    modoSel.value = 'star';
+    valInp.value = '';
+  } else if (valor.startsWith('*/')) {
+    modoSel.value = 'step';
+    valInp.value = valor.slice(2);
+  } else if (valor.includes(',')) {
+    modoSel.value = 'list';
+    valInp.value = valor;
+  } else if (valor.includes('-')) {
+    modoSel.value = 'range';
+    valInp.value = valor;
+  } else {
+    modoSel.value = 'exact';
+    valInp.value = valor;
+  }
+  cronBuilderAjustarInput(campo);
+}
+
+function cronBuilderAjustarInput(campo) {
+  const modoSel = document.querySelector(`[data-cron-modo="${campo}"]`);
+  const valInp  = document.querySelector(`[data-cron-valor="${campo}"]`);
+  const btnPick = document.querySelector(`[data-cron-picker="${campo}"]`);
+  const modo    = modoSel.value;
+  const cfg     = CRON_PICKER_CFG[campo];
+  const placeholders = {
+    star:  '',
+    exact: cfg.min + '',
+    step:  '15',
+    range: `${cfg.min}-${cfg.max}`,
+    list:  `${cfg.min},${cfg.max}`,
+  };
+  valInp.placeholder = placeholders[modo] || '';
+  valInp.disabled    = (modo === 'star');
+  btnPick.disabled   = (modo === 'star');
+  if (modo === 'star') valInp.value = '';
+}
+
+function cronBuilderModoChange(campo) {
+  cronBuilderAjustarInput(campo);
+  cronBuilderOnChange();
+  // Abrir el picker en el próximo tick si el modo lo requiere.
+  const modo = document.querySelector(`[data-cron-modo="${campo}"]`).value;
+  if (modo !== 'star') setTimeout(() => abrirCronPicker(campo), 30);
+}
+
+function cronBuilderConstruirCampo(campo) {
+  const modo = document.querySelector(`[data-cron-modo="${campo}"]`).value;
+  const val  = document.querySelector(`[data-cron-valor="${campo}"]`).value.trim();
+  if (modo === 'star') return '*';
+  if (modo === 'step') return val ? `*/${val}` : '*';
+  return val || '*';
+}
+
+function cronBuilderConstruir() {
+  return CRON_CAMPOS.map((c) => cronBuilderConstruirCampo(c.key)).join(' ');
+}
+
+function cronBuilderOnChange() {
+  const expr = cronBuilderConstruir();
+  document.getElementById('cronBuilderPreview').textContent = expr;
+  document.getElementById('cronBuilderDesc').textContent    = cronDescribir(expr);
+}
+
+function cronBuilderAplicar() {
+  const expr = cronBuilderConstruir();
+  document.getElementById('formTareaCron').value = expr;
+  const err = document.getElementById('formTareaCronError');
+  if (err) { err.style.display = 'none'; err.textContent = ''; }
+  document.getElementById('formTareaCron').classList.remove('input-invalid');
+  cerrarCronBuilder();
+}
+
+// --- Picker de valores ---
+
+let cronPickerState = null;
+
+function cronPickerRango(modo, cfg) {
+  if (modo === 'step') {
+    const arr = [];
+    for (let n = 1; n <= cfg.max; n++) arr.push(n);
+    return arr;
+  }
+  if (cfg.orden) return cfg.orden.slice();
+  const arr = [];
+  for (let n = cfg.min; n <= cfg.max; n++) arr.push(n);
+  return arr;
+}
+
+function abrirCronPicker(campo) {
+  const modoSel = document.querySelector(`[data-cron-modo="${campo}"]`);
+  const valInp  = document.querySelector(`[data-cron-valor="${campo}"]`);
+  if (!modoSel || !valInp) return;
+  const modo = modoSel.value;
+  if (modo === 'star') {
+    toast('Elegí un modo (Exacto / Cada / Rango / Lista) primero.', { error: true });
+    return;
+  }
+  const cfg = CRON_PICKER_CFG[campo];
+  cronPickerState = {
+    campo, modo, cfg,
+    valor1: null, valor2: null,
+    seleccionados: [],
+  };
+  cronPickerPreCargar(valInp.value.trim());
+  document.getElementById('cronPickerEmoji').textContent  = cfg.emoji;
+  document.getElementById('cronPickerTitulo').textContent = cfg.titulo;
+  const hints = {
+    exact: 'Modo: Elegí un único valor.',
+    step:  'Modo: Cada N — elegí el intervalo.',
+    range: 'Modo: Rango — elegí desde y hasta.',
+    list:  'Modo: Lista — tocá varios para agregarlos.',
+  };
+  document.getElementById('cronPickerHint').textContent = hints[modo] || '';
+  const wrap2 = document.getElementById('cronPickerGrupo2Wrap');
+  document.getElementById('cronPickerLabel1').textContent = (modo === 'range') ? 'Desde' : 'Valores';
+  wrap2.style.display = (modo === 'range') ? '' : 'none';
+  cronPickerRender();
+  document.getElementById('cronPickerBackdrop').classList.add('open');
+}
+
+function cerrarCronPicker() {
+  document.getElementById('cronPickerBackdrop').classList.remove('open');
+  cronPickerState = null;
+}
+
+function cronPickerPreCargar(actual) {
+  if (!cronPickerState || !actual) return;
+  const s = cronPickerState;
+  if (s.modo === 'exact' || s.modo === 'step') {
+    const n = parseInt(actual, 10);
+    if (!isNaN(n)) s.valor1 = n;
+  } else if (s.modo === 'range') {
+    const m = actual.match(/^(\d+)-(\d+)$/);
+    if (m) { s.valor1 = parseInt(m[1], 10); s.valor2 = parseInt(m[2], 10); }
+  } else if (s.modo === 'list') {
+    s.seleccionados = actual.split(',').map((x) => parseInt(x.trim(), 10)).filter((n) => !isNaN(n));
+  }
+}
+
+function cronPickerRender() {
+  if (!cronPickerState) return;
+  const s = cronPickerState;
+  const rangoBotones = cronPickerRango(s.modo, s.cfg);
+  const g1 = document.getElementById('cronPickerGrupo1');
+  g1.innerHTML = rangoBotones.map((n) => {
+    let activo = false;
+    if (s.modo === 'exact' || s.modo === 'step') activo = (s.valor1 === n);
+    else if (s.modo === 'range')                 activo = (s.valor1 === n);
+    else if (s.modo === 'list')                  activo = s.seleccionados.includes(n);
+    // En modo `step` mostramos números plain (representan N, no un valor real).
+    const label = (s.modo === 'step') ? String(n) : s.cfg.formato(n);
+    return cronPickerBoton(n, activo, label, 1);
+  }).join('');
+  if (s.modo === 'range') {
+    const g2 = document.getElementById('cronPickerGrupo2');
+    g2.innerHTML = rangoBotones.map((n) => {
+      const activo = (s.valor2 === n);
+      const label = s.cfg.formato(n);
+      return cronPickerBoton(n, activo, label, 2);
+    }).join('');
+  }
+}
+
+function cronPickerBoton(n, activo, label, grupo) {
+  return `<button type="button" class="filter-chip cron-picker-btn${activo ? ' active' : ''}"
+                  onclick="cronPickerSeleccionar(${n}, ${grupo})">${label}</button>`;
+}
+
+function cronPickerSeleccionar(n, grupo) {
+  if (!cronPickerState) return;
+  const s = cronPickerState;
+  if (s.modo === 'exact' || s.modo === 'step') {
+    s.valor1 = (s.valor1 === n) ? null : n;
+  } else if (s.modo === 'range') {
+    if (grupo === 1) s.valor1 = (s.valor1 === n) ? null : n;
+    else             s.valor2 = (s.valor2 === n) ? null : n;
+  } else if (s.modo === 'list') {
+    const i = s.seleccionados.indexOf(n);
+    if (i >= 0) s.seleccionados.splice(i, 1);
+    else        s.seleccionados.push(n);
+    s.seleccionados.sort((a, b) => a - b);
+  }
+  cronPickerRender();
+}
+
+function cronPickerLimpiar() {
+  if (!cronPickerState) return;
+  cronPickerState.valor1 = null;
+  cronPickerState.valor2 = null;
+  cronPickerState.seleccionados = [];
+  cronPickerRender();
+}
+
+function cronPickerAplicar() {
+  if (!cronPickerState) return;
+  const s = cronPickerState;
+  let out = '';
+  if (s.modo === 'exact') {
+    if (s.valor1 == null) { toast('Elegí un valor.', { error: true }); return; }
+    out = String(s.valor1);
+  } else if (s.modo === 'step') {
+    if (s.valor1 == null) { toast('Elegí un intervalo.', { error: true }); return; }
+    out = String(s.valor1);
+  } else if (s.modo === 'range') {
+    if (s.valor1 == null || s.valor2 == null) { toast('Elegí Desde y Hasta.', { error: true }); return; }
+    if (s.valor1 > s.valor2) { toast('Desde debe ser ≤ Hasta.', { error: true }); return; }
+    out = s.valor1 + '-' + s.valor2;
+  } else if (s.modo === 'list') {
+    if (!s.seleccionados.length) { toast('Elegí al menos un valor.', { error: true }); return; }
+    out = s.seleccionados.join(',');
+  }
+  const inp = document.querySelector(`[data-cron-valor="${s.campo}"]`);
+  if (inp) inp.value = out;
+  cerrarCronPicker();
+  cronBuilderOnChange();
+}
+
+// --- Descripción en español (best-effort) de una expresión cron ---
+
+function cronDescribir(expr) {
+  const partes = expr.split(/\s+/);
+  if (partes.length !== 5) return '(expresión inválida)';
+  const [m, h, dom, mon, dow] = partes;
+  const partesTexto = [];
+  partesTexto.push(cronDescHorario(m, h));
+  if (dom !== '*') partesTexto.push(cronDescDom(dom));
+  if (mon !== '*') partesTexto.push('en ' + cronDescMon(mon));
+  if (dow !== '*') partesTexto.push(cronDescDow(dow));
+  else if (dom === '*' && mon === '*') partesTexto.push('todos los días');
+  const s = partesTexto.filter(Boolean).join(', ');
+  return s.charAt(0).toUpperCase() + s.slice(1) + '.';
+}
+
+function cronDescHorario(m, h) {
+  // Cada minuto...
+  if (m === '*' && h === '*') return 'cada minuto';
+  if (m.startsWith('*/') && h === '*') return `cada ${m.slice(2)} minutos`;
+  if (m === '*' && /^\d+$/.test(h))    return `cada minuto entre las ${cronDescHora(h)}`;
+  if (m === '0' && h === '*')          return 'al minuto 0 de cada hora';
+  if (m === '0' && h.startsWith('*/')) return `cada ${h.slice(2)} horas en punto`;
+  if (/^\d+$/.test(m) && h === '*')    return `al minuto ${parseInt(m, 10)} de cada hora`;
+  if (/^\d+$/.test(m) && /^\d+$/.test(h)) {
+    return `a las ${String(parseInt(h, 10)).padStart(2, '0')}:${String(parseInt(m, 10)).padStart(2, '0')}`;
+  }
+  return `en el patrón ${m} ${h}`;
+}
+
+function cronDescHora(h) {
+  if (/^\d+$/.test(h)) return String(parseInt(h, 10)).padStart(2, '0') + ':00';
+  return h;
+}
+
+function cronDescDom(dom) {
+  if (/^\d+$/.test(dom))            return `el día ${dom} del mes`;
+  if (dom.startsWith('*/'))         return `cada ${dom.slice(2)} días`;
+  if (/^\d+-\d+$/.test(dom))        return `los días ${dom} del mes`;
+  if (dom.includes(','))            return `los días ${dom} del mes`;
+  return `en el patrón día=${dom}`;
+}
+
+function cronDescMon(mon) {
+  if (/^\d+$/.test(mon))          return cronNombreMes(parseInt(mon, 10));
+  if (mon.includes(','))          return mon.split(',').map((n) => cronNombreMes(parseInt(n, 10))).join(', ');
+  if (/^(\d+)-(\d+)$/.test(mon))  {
+    const m = mon.match(/^(\d+)-(\d+)$/);
+    return `de ${cronNombreMes(+m[1])} a ${cronNombreMes(+m[2])}`;
+  }
+  return 'meses ' + mon;
+}
+
+function cronDescDow(dow) {
+  if (/^\d+$/.test(dow))         return `los ${cronPluralDia(parseInt(dow, 10))}`;
+  if (dow.includes(',')) {
+    const nombres = dow.split(',').map((n) => cronPluralDia(parseInt(n, 10)));
+    if (nombres.length === 1) return `los ${nombres[0]}`;
+    return `los ${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}`;
+  }
+  if (/^(\d+)-(\d+)$/.test(dow)) {
+    const m = dow.match(/^(\d+)-(\d+)$/);
+    return `de ${cronNombreDia(+m[1])} a ${cronNombreDia(+m[2])}`;
+  }
+  return 'día-semana=' + dow;
+}
+
+// --- Wiring de menús contextuales + Escape ---
+
+document.addEventListener('DOMContentLoaded', () => {
+  const mT = document.getElementById('tareasCtxMenu');
+  if (mT) {
+    mT.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      const id     = tareasCtxRegistroId;
+      cerrarMenuContextoTareas();
+      if (!id) return;
+      const t = tareasCache.find((x) => x.id === id);
+      if (action === 'ver-ejecuciones') abrirEjecuciones(id);
+      else if (action === 'ejecutar-ahora') ejecutarAhora(id);
+      else if (action === 'toggle-activo') {
+        if (t) toggleActivoTarea(id, !t.activo).then(() => cargarTareas());
+      }
+      else if (action === 'editar')    abrirEditarTarea(id);
+      else if (action === 'eliminar')  eliminarTarea(id);
+    });
+  }
+
+  const mE = document.getElementById('ejecucionesCtxMenu');
+  if (mE) {
+    mE.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      const id     = ejecucionesCtxRegistroId;
+      cerrarMenuContextoEjecuciones();
+      if (!id) return;
+      if (action === 'ver-log') abrirTerminal(id);
+      else if (action === 'detener') detenerEjecucion(id);
+    });
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const picker  = document.getElementById('cronPickerBackdrop');
+  const builder = document.getElementById('cronBuilderBackdrop');
+  const ctxT    = document.getElementById('tareasCtxMenu');
+  const ctxE    = document.getElementById('ejecucionesCtxMenu');
+  const term    = document.getElementById('terminalBackdrop');
+  const form    = document.getElementById('formTareaBackdrop');
+  const ejec    = document.getElementById('ejecucionesBackdrop');
+  const listado = document.getElementById('tareasBackdrop');
+  if (picker  && picker.classList.contains('open'))   { cerrarCronPicker(); return; }
+  if (builder && builder.classList.contains('open'))  { cerrarCronBuilder(); return; }
+  if (ctxT    && ctxT.classList.contains('open'))     { cerrarMenuContextoTareas(); return; }
+  if (ctxE    && ctxE.classList.contains('open'))     { cerrarMenuContextoEjecuciones(); return; }
+  if (term    && term.classList.contains('open'))     { cerrarTerminal(); return; }
+  if (form    && form.classList.contains('open'))     { form.classList.remove('open'); return; }
+  if (ejec    && ejec.classList.contains('open'))     { cerrarEjecuciones(); return; }
+  if (listado && listado.classList.contains('open'))  { cerrarTareas(); }
 });
 
 // ------------------------- Boot -------------------------
