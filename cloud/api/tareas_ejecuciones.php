@@ -134,6 +134,22 @@ function handleDetener(PDO $pdo, int $id): void {
         jsonError('not_running', 409);
     }
 
+    // Pre-marcar la fila como 'killed' ANTES de mandar señales.
+    // Si no hacemos esto, el handler pcntl_signal(SIGTERM, ...) del bootstrap
+    // reacciona primero al SIGTERM que mandamos abajo y marca la fila como
+    // 'timeout' — perdemos la semántica de "detenido manualmente" y la UI
+    // muestra timeout en lugar de killed. Con la fila ya fuera de 'corriendo',
+    // los UPDATEs guardados por `AND estado = 'corriendo'` del bootstrap
+    // quedan como no-op.
+    $mensajeInicial = 'Detenido manualmente desde el panel.';
+    $pre = $pdo->prepare("
+        UPDATE tareas_ejecuciones
+           SET fin = NOW(), estado = 'killed', exit_code = 143, mensaje = :m
+         WHERE id = :id AND estado = 'corriendo'
+    ");
+    $pre->execute([':m' => $mensajeInicial, ':id' => $id]);
+    $preRows = $pre->rowCount();
+
     $pid    = (int) ($row['pid'] ?? 0);
     $killed = false;
 
@@ -151,19 +167,17 @@ function handleDetener(PDO $pdo, int $id): void {
         }
     }
 
-    $mensaje = 'Detenido manualmente desde el panel (' . ($killed ? 'SIGKILL' : 'SIGTERM') . ').';
-    $up = $pdo->prepare("
-        UPDATE tareas_ejecuciones
-           SET fin = NOW(), estado = 'killed', exit_code = 143, mensaje = :m
-         WHERE id = :id AND estado = 'corriendo'
-    ");
-    $up->execute([':m' => $mensaje, ':id' => $id]);
-    if ($up->rowCount() > 0) {
+    // Refinar el mensaje ahora que sabemos qué señal terminó bajando el proceso.
+    $mensajeFinal = 'Detenido manualmente desde el panel (' . ($killed ? 'SIGKILL' : 'SIGTERM') . ').';
+    $pdo->prepare('UPDATE tareas_ejecuciones SET mensaje = :m WHERE id = :id')
+        ->execute([':m' => $mensajeFinal, ':id' => $id]);
+
+    if ($preRows > 0) {
         $ut = $pdo->prepare("
             UPDATE tareas SET ultimo_estado = 'killed', ultimo_error = :m
              WHERE id = :tid
         ");
-        $ut->execute([':m' => $mensaje, ':tid' => (int) $row['tarea_id']]);
+        $ut->execute([':m' => $mensajeFinal, ':tid' => (int) $row['tarea_id']]);
         registrarSuceso($pdo, 'cron/scheduler', 'alerta',
             'Ejecucion #' . $id . ' de "' . $row['tarea_nombre'] . '" detenida manualmente (' .
             ($killed ? 'SIGKILL' : 'SIGTERM') . ').');

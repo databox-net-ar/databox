@@ -2831,30 +2831,37 @@ route('/herramientas', async (mount) => {
     </div>
 
     <div class="tile-grid" id="toolsGrid">
-      <button type="button" class="tile-card" onclick="abrirExploradorS3()">
-        <span class="tile-icon">📁</span>
-        <span class="tile-title">Explorador S3</span>
-        <span class="tile-desc">Navegá, subí, descargá y eliminá carpetas y archivos del bucket de media del entorno actual.</span>
-      </button>
-      <button type="button" class="tile-card" onclick="abrirExploradorDB()">
-        <span class="tile-icon">🗄️</span>
-        <span class="tile-title">Explorador DB</span>
-        <span class="tile-desc">Recorrá las tablas de la base del entorno actual, ojeá su estructura y los últimos registros.</span>
+      <!-- Tarjetas ordenadas alfabéticamente por título. Al agregar una nueva
+           herramienta, insertarla en su posición alfabética. -->
+      <button type="button" class="tile-card" onclick="abrirEstados()">
+        <span class="tile-icon">🎚️</span>
+        <span class="tile-title">Editor de estados</span>
+        <span class="tile-desc">Catálogo de valores posibles (<code>campo</code> / <code>valor</code> / <code>texto</code>) para columnas de estado de las distintas tablas.</span>
       </button>
       <button type="button" class="tile-card" onclick="abrirParametros()">
         <span class="tile-icon">🧩</span>
         <span class="tile-title">Editor de parámetros</span>
         <span class="tile-desc">Variables runtime (variable / valor) que el resto del sistema lee para configurarse sin redeploy.</span>
       </button>
-      <button type="button" class="tile-card" onclick="abrirEstados()">
-        <span class="tile-icon">🎚️</span>
-        <span class="tile-title">Editor de estados</span>
-        <span class="tile-desc">Catálogo de valores posibles (<code>campo</code> / <code>valor</code> / <code>texto</code>) para columnas de estado de las distintas tablas.</span>
+      <button type="button" class="tile-card" onclick="abrirExploradorDB()">
+        <span class="tile-icon">🗄️</span>
+        <span class="tile-title">Explorador DB</span>
+        <span class="tile-desc">Recorrá las tablas de la base del entorno actual, ojeá su estructura y los últimos registros.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirExploradorS3()">
+        <span class="tile-icon">📁</span>
+        <span class="tile-title">Explorador S3</span>
+        <span class="tile-desc">Navegá, subí, descargá y eliminá carpetas y archivos del bucket de media del entorno actual.</span>
       </button>
       <button type="button" class="tile-card" onclick="abrirMigraciones()">
         <span class="tile-icon">📜</span>
         <span class="tile-title">Migrador DB</span>
         <span class="tile-desc">Aplicá las migraciones pendientes de <code>cloud/sql/migrations/</code> contra la BD del entorno actual.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirTareas()">
+        <span class="tile-icon">⏰</span>
+        <span class="tile-title">Programador de tareas</span>
+        <span class="tile-desc">Administrá los procesos automáticos (tabla <code>tareas</code>) que el scheduler dispara cada minuto, y revisá el historial y el log en vivo de cada ejecución.</span>
       </button>
       <button type="button" class="tile-card" onclick="abrirSincronizador()">
         <span class="tile-icon">🔄</span>
@@ -2865,16 +2872,6 @@ route('/herramientas', async (mount) => {
         <span class="tile-icon">📰</span>
         <span class="tile-title">Visor de sucesos</span>
         <span class="tile-desc">Recorré el log de actividad (tabla <code>sucesos</code>) que los distintos módulos van registrando al trabajar.</span>
-      </button>
-      <button type="button" class="tile-card" onclick="abrirEditorCron()">
-        <span class="tile-icon">🕒</span>
-        <span class="tile-title">Editor de cron</span>
-        <span class="tile-desc">Consultá y editá el crontab del worker Robot que corre las tareas programadas dentro del contenedor.</span>
-      </button>
-      <button type="button" class="tile-card" onclick="abrirTareas()">
-        <span class="tile-icon">⏰</span>
-        <span class="tile-title">Programador de tareas</span>
-        <span class="tile-desc">Administrá los procesos automáticos (tabla <code>tareas</code>) que el scheduler dispara cada minuto, y revisá el historial y el log en vivo de cada ejecución.</span>
       </button>
     </div>
   `;
@@ -16946,113 +16943,6 @@ document.addEventListener('keydown', (e) => {
   const listado = document.getElementById('sucesosBackdrop');
   if (detalle && detalle.classList.contains('open')) { detalle.classList.remove('open'); return; }
   if (listado && listado.classList.contains('open')) { cerrarVisorSucesos(); }
-});
-
-// ------------------------- Herramientas: Editor de cron -------------------------
-// Lee/escribe el archivo /etc/cron.d/databox del contenedor (bind-mount de
-// ./robot/crontab). Formato /etc/cron.d/: min hora dom mes dow USUARIO CMD.
-let _cronCargando = false;
-let _cronGuardando = false;
-
-function abrirEditorCron() {
-  document.getElementById('cronBackdrop').classList.add('open');
-  cargarEditorCron();
-}
-
-function cerrarEditorCron() {
-  document.getElementById('cronBackdrop').classList.remove('open');
-}
-
-async function cargarEditorCron() {
-  if (_cronCargando) return;
-  _cronCargando = true;
-  const ta = document.getElementById('cronContenido');
-  ta.value = 'Cargando…';
-  ta.disabled = true;
-  document.getElementById('cronBtnGuardar').disabled = true;
-  try {
-    const data = await apiGet('api/herramientas_cron.php');
-    ta.value = data.contenido || '';
-    ta.disabled = false;
-    document.getElementById('cronRuta').textContent = data.ruta || '—';
-
-    const envBadge = document.getElementById('cronEnvBadge');
-    const env = (data.env || 'unknown').toLowerCase();
-    envBadge.textContent = env;
-    envBadge.className = 'badge ' + (env === 'production' ? 'badge-danger'
-                                    : env === 'development' ? 'badge-success'
-                                    : 'badge-warn');
-
-    actualizarResumenCron(data);
-    renderWarningsCron(data.warnings || []);
-    document.getElementById('cronBtnGuardar').disabled = false;
-  } catch (e) {
-    ta.value = '# Error al cargar: ' + e.message;
-    ta.disabled = false;
-  } finally {
-    _cronCargando = false;
-  }
-}
-
-function actualizarResumenCron(data) {
-  const activas = data.activas ?? 0;
-  const lineas  = data.lineas  ?? 0;
-  const tamano  = data.tamano  ?? 0;
-  const mod     = data.modificado ? ` · guardado ${data.modificado}` : '';
-  document.getElementById('cronResumen').textContent =
-    `${activas} tarea${activas === 1 ? '' : 's'} activa${activas === 1 ? '' : 's'} · ` +
-    `${lineas} línea${lineas === 1 ? '' : 's'} · ${tamano} B${mod}`;
-}
-
-function renderWarningsCron(warnings) {
-  const cont = document.getElementById('cronWarnings');
-  const tbody = document.getElementById('cronWarningsTbody');
-  if (!warnings.length) {
-    cont.style.display = 'none';
-    tbody.innerHTML = '';
-    return;
-  }
-  cont.style.display = '';
-  tbody.innerHTML = warnings.map((w) => `
-    <tr>
-      <td style="text-align:center;font-family:monospace;color:var(--warn)">${w.linea || '—'}</td>
-      <td style="font-size:.82rem">${esc(w.mensaje || '')}</td>
-    </tr>
-  `).join('');
-}
-
-async function guardarEditorCron() {
-  if (_cronGuardando) return;
-  _cronGuardando = true;
-  const btn = document.getElementById('cronBtnGuardar');
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Guardando…';
-  try {
-    const contenido = document.getElementById('cronContenido').value;
-    const data = await apiSend('api/herramientas_cron.php', 'POST', { contenido });
-    actualizarResumenCron(data);
-    renderWarningsCron(data.warnings || []);
-    const warns = (data.warnings || []).length;
-    if (warns > 0) {
-      toast(`Guardado con ${warns} advertencia${warns === 1 ? '' : 's'}. Revisá el panel de abajo.`,
-            { duration: 6000 });
-    } else {
-      toast('Crontab guardado. Cron lo relee automáticamente.');
-    }
-  } catch (e) {
-    toast(e.message || 'Error al guardar.', { error: true, duration: 10000 });
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-    _cronGuardando = false;
-  }
-}
-
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  const b = document.getElementById('cronBackdrop');
-  if (b && b.classList.contains('open')) cerrarEditorCron();
 });
 
 // ------------------------- Herramientas: Programador de tareas -------------------------
