@@ -231,20 +231,130 @@ CREATE TABLE `datacountcomprobantesrenglones`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 19727 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datacountcuentas
+-- Table structure for datacount_cuentas
 -- ----------------------------
-DROP TABLE IF EXISTS `datacountcuentas`;
-CREATE TABLE `datacountcuentas`  (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `padre` int(11) NULL DEFAULT NULL,
-  `orden` int(11) NULL DEFAULT NULL,
-  `categoria` smallint(1) NULL DEFAULT NULL,
-  `tipo` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `observaciones` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `saldo` decimal(20, 2) NULL DEFAULT NULL,
-  PRIMARY KEY (`id`) USING BTREE
-) ENGINE = MyISAM AUTO_INCREMENT = 296 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+-- Plan de cuentas jerárquico (equivalente al de la BD `repo`.`cuentas`).
+-- Cada empresa tiene su propio plan (`empresa_id` referencia
+-- `datacount_empresas.id`). El `codigo` es único DENTRO de una empresa
+-- (índice compuesto `(empresa_id, codigo)`) — el mismo código puede
+-- repetirse entre empresas distintas.
+-- La jerarquía se resuelve por `parent_id` + `nivel` y siempre queda
+-- dentro de la misma empresa (validado en el endpoint PHP).
+-- `imputable=1` significa que la cuenta recibe asientos; `=0` es agrupación.
+-- `naturaleza` define si el saldo se calcula debe-haber (deudora) o haber-debe (acreedora).
+DROP TABLE IF EXISTS `datacount_cuentas`;
+CREATE TABLE `datacount_cuentas`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `empresa_id` int(11) NOT NULL DEFAULT 1,
+  `codigo` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `nombre` varchar(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `tipo` enum('activo','pasivo','patrimonio','ingreso','egreso') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `parent_id` int(11) UNSIGNED NULL DEFAULT NULL,
+  `nivel` tinyint(3) UNSIGNED NOT NULL DEFAULT 1,
+  `imputable` tinyint(1) NOT NULL DEFAULT 1,
+  `naturaleza` enum('deudora','acreedora') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `descripcion` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `activa` tinyint(1) NOT NULL DEFAULT 1,
+  `saldo` decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_empresa_codigo`(`empresa_id`, `codigo`) USING BTREE,
+  INDEX `idx_empresa`(`empresa_id`) USING BTREE,
+  INDEX `idx_parent`(`parent_id`) USING BTREE,
+  INDEX `idx_tipo`(`tipo`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_asientos
+-- ----------------------------
+-- Asientos contables (mismo esquema que `repo.asientos`). Cada asiento
+-- se auto-numera (`numero`, UNIQUE) y agrupa 2+ líneas en
+-- `datacount_asientos_detalles`. El total = SUM(debe) = SUM(haber)
+-- (validado en el endpoint PHP).
+DROP TABLE IF EXISTS `datacount_asientos_detalles`;
+DROP TABLE IF EXISTS `datacount_asientos`;
+CREATE TABLE `datacount_asientos`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `numero` int(11) UNSIGNED NOT NULL,
+  `fecha` date NOT NULL,
+  `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `total` decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_numero`(`numero`) USING BTREE,
+  INDEX `idx_fecha`(`fecha`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_asientos_detalles
+-- ----------------------------
+-- Líneas (movimientos) de un asiento. `cuenta_id` apunta a `datacount_cuentas.id`
+-- (solo cuentas imputables y activas se aceptan desde el endpoint). Cada línea
+-- lleva `debe` xor `haber` (uno de los dos > 0). ON DELETE CASCADE contra el asiento.
+CREATE TABLE `datacount_asientos_detalles`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `asiento_id` int(11) UNSIGNED NOT NULL,
+  `cuenta_id` int(11) UNSIGNED NOT NULL,
+  `debe` decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `haber` decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `orden` tinyint(3) UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_asiento`(`asiento_id`) USING BTREE,
+  INDEX `idx_cuenta`(`cuenta_id`) USING BTREE,
+  CONSTRAINT `fk_dcad_asiento` FOREIGN KEY (`asiento_id`) REFERENCES `datacount_asientos` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_empresas
+-- ----------------------------
+-- Catálogo de empresas para las que Datacount lleva la contabilidad.
+-- Cada empresa aporta los datos identificatorios y fiscales mínimos
+-- (razón social, CUIT, condición ante AFIP, IIBB, domicilio e inicio
+-- de actividades). La `razon` es UNIQUE — no se admiten dos empresas
+-- con la misma razón social.
+DROP TABLE IF EXISTS `datacount_empresas`;
+CREATE TABLE `datacount_empresas`  (
+  `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `nombre`     varchar(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `razon`      varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `domicilio`  varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `condicion`  enum('responsable_inscripto','monotributista','exento','consumidor_final','no_responsable','no_categorizado') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'responsable_inscripto',
+  `cuit`       varchar(15)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `iibb`       varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `inicio`     date NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_razon`(`razon`) USING BTREE,
+  INDEX `idx_cuit`(`cuit`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_recurrentes
+-- ----------------------------
+-- Movimientos contables recurrentes por empresa + cuenta con montos
+-- previstos de `ingreso` y `egreso` y flag de activación. Sirve como
+-- plantilla para generar asientos periódicos o para reporting de
+-- expectativas. `empresa` referencia `datacount_empresas.id` y `cuenta`
+-- referencia `datacount_cuentas.id` (validado desde el endpoint PHP).
+DROP TABLE IF EXISTS `datacount_recurrentes`;
+CREATE TABLE `datacount_recurrentes`  (
+  `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `empresa`    int(11) UNSIGNED NOT NULL,
+  `cuenta`     int(11) UNSIGNED NOT NULL,
+  `ingreso`    decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `egreso`     decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `activo`     tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_empresa`(`empresa`) USING BTREE,
+  INDEX `idx_cuenta`(`cuenta`) USING BTREE,
+  INDEX `idx_activo`(`activo`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for datacountempleados

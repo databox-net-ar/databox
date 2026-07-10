@@ -73,6 +73,18 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
             <a href="#/datacountfacturacion" class="nav-item nav-sub-item" data-route="/datacountfacturacion">
               <span class="nav-icon">🤖</span> Facturación
             </a>
+            <a href="#/datacountasientos" class="nav-item nav-sub-item" data-route="/datacountasientos">
+              <span class="nav-icon">📖</span> Asientos
+            </a>
+            <a href="#/datacountrecurrentes" class="nav-item nav-sub-item" data-route="/datacountrecurrentes">
+              <span class="nav-icon">🔁</span> Recurrentes
+            </a>
+            <a href="#/datacountcuentas" class="nav-item nav-sub-item" data-route="/datacountcuentas">
+              <span class="nav-icon">📒</span> Plan de cuentas
+            </a>
+            <a href="#/datacountempresas" class="nav-item nav-sub-item" data-route="/datacountempresas">
+              <span class="nav-icon">🏢</span> Empresas
+            </a>
           </div>
         </div>
 

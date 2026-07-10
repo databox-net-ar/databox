@@ -2831,8 +2831,9 @@ route('/herramientas', async (mount) => {
     </div>
 
     <div class="tile-grid" id="toolsGrid">
-      <!-- Tarjetas ordenadas alfabéticamente por título. Al agregar una nueva
-           herramienta, insertarla en su posición alfabética. -->
+      <!-- Tarjetas ordenadas alfabéticamente por <span class="tile-title">.
+           Al agregar, renombrar o reordenar cualquier herramienta, mantener
+           el orden alfabético estricto por título visible. -->
       <button type="button" class="tile-card" onclick="abrirEstados()">
         <span class="tile-icon">🎚️</span>
         <span class="tile-title">Editor de estados</span>
@@ -4678,6 +4679,2817 @@ route('/datacountfacturacion', async (mount) => {
     factCargarLog();
   }, FACT_REFRESH_MS);
 }, 'Facturación');
+
+// ------------------------- Contexto compartido: empresa activa -------------------------
+// Contexto de "empresa activa" para todos los módulos de Datacount (Plan de
+// cuentas, Recurrentes, etc). Se persiste en localStorage para que la
+// selección se mantenga al navegar entre módulos y entre sesiones.
+
+const DC_EMPRESA_LS_KEY = 'datacount:empresaId';
+let dcEmpresasCache = [];
+
+async function dcGetEmpresas(force = false) {
+  if (!force && dcEmpresasCache.length) return dcEmpresasCache;
+  try {
+    const d = await apiGet('api/datacountempresas.php?limite=1000&orden=nombre&dir=asc');
+    dcEmpresasCache = d.items || [];
+  } catch {
+    dcEmpresasCache = [];
+  }
+  return dcEmpresasCache;
+}
+
+function dcGetEmpresaId() {
+  const raw = localStorage.getItem(DC_EMPRESA_LS_KEY);
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function dcSetEmpresaId(id) {
+  const n = Number(id);
+  if (Number.isFinite(n) && n > 0) {
+    localStorage.setItem(DC_EMPRESA_LS_KEY, String(n));
+  } else {
+    localStorage.removeItem(DC_EMPRESA_LS_KEY);
+  }
+}
+
+// Elige empresa activa: la persistida en localStorage si sigue siendo
+// válida, o la primera empresa disponible como fallback (y la persiste).
+// Devuelve null si no hay empresas.
+async function dcAsegurarEmpresaId() {
+  const empresas = await dcGetEmpresas();
+  if (!empresas.length) return null;
+  const current = dcGetEmpresaId();
+  if (current && empresas.some((e) => e.id === current)) return current;
+  const primera = empresas[0].id;
+  dcSetEmpresaId(primera);
+  return primera;
+}
+
+// ------------------------- Vista: Datacount > Plan de cuentas -------------------------
+// Plan de cuentas jerárquico sobre `datacount_cuentas` (misma estructura que
+// `repo.cuentas`) — un plan independiente por empresa. Se pinta como árbol:
+// cada fila puede colapsarse, y hay buscador que aplana la vista. El botón
+// "+ Nueva cuenta" abre un formulario que hereda tipo/naturaleza del padre
+// si se pasa parentId.
+
+const DCC_API = 'api/datacountcuentas.php';
+const DCC_TIPO_LABEL = {
+  activo:     'Activo',
+  pasivo:     'Pasivo',
+  patrimonio: 'Patrimonio',
+  ingreso:    'Ingreso',
+  egreso:     'Egreso',
+};
+const DCC_TIPO_BADGE = {
+  activo:     'badge-info',
+  pasivo:     'badge-danger',
+  patrimonio: 'badge-warn',
+  ingreso:    'badge-success',
+  egreso:     'badge-warn',
+};
+
+let dccCuentas       = [];
+let dccBusqueda      = '';
+let dccFiltroTipo    = '';
+let dccColapsadas    = new Set();
+let dccEditandoId    = null;
+let dccBuscadorTimer = null;
+
+function dccFmtMoney(n) {
+  return Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+route('/datacountcuentas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">📒</div>
+        <div class="module-help-text">
+          El plan de cuentas es la lista jerárquica de cuentas contables que Datacount usa
+          para clasificar movimientos: cada cuenta tiene un código (ej. 1.1.01.02), un tipo
+          (activo, pasivo, patrimonio, ingreso o egreso) y una naturaleza (deudora o acreedora).
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dccStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dccStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activo</span><span class="stat-value" style="color:#93c5fd" id="dccStatActivo">—</span></div>
+        <div class="stat-card"><span class="stat-label">Pasivo</span><span class="stat-value red" id="dccStatPasivo">—</span></div>
+        <div class="stat-card"><span class="stat-label">Patrimonio</span><span class="stat-value" style="color:#c4b5fd" id="dccStatPatrimonio">—</span></div>
+        <div class="stat-card"><span class="stat-label">Ingresos</span><span class="stat-value green" id="dccStatIngreso">—</span></div>
+        <div class="stat-card"><span class="stat-label">Egresos</span><span class="stat-value" style="color:#fcd34d" id="dccStatEgreso">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dccEmpresaSel" style="min-width:200px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dccSearch"
+                   placeholder="🔍 Buscar por código o nombre…">
+            <button class="search-clear" id="dccSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dccRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right" style="gap:6px">
+          <button class="btn btn-ghost btn-sm" id="dccExpandirBtn" title="Expandir todo">
+            <i class="fa-solid fa-angles-down"></i> Expandir
+          </button>
+          <button class="btn btn-ghost btn-sm" id="dccColapsarBtn" title="Colapsar todo">
+            <i class="fa-solid fa-angles-up"></i> Colapsar
+          </button>
+          <button class="btn btn-primary" id="dccNuevoBtn">+ Nueva cuenta</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:160px">Código</th>
+              <th>Nombre</th>
+              <th style="width:130px">Tipo</th>
+              <th style="width:100px;text-align:center">Naturaleza</th>
+              <th style="width:90px;text-align:center">Imputable</th>
+              <th style="width:90px;text-align:center">Estado</th>
+              <th style="width:140px;text-align:right">Saldo</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dccTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dccCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="agregar-sub" role="menuitem">
+        <i class="fa-solid fa-plus"></i><span>Agregar subcuenta</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+  `;
+
+  const inp = $('#dccSearch');
+  const clr = $('#dccSearchClear');
+  inp.value = dccBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dccBusqueda = inp.value.trim();
+    clearTimeout(dccBuscadorTimer);
+    dccBuscadorTimer = setTimeout(cargarDcc, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dccBusqueda = ''; cargarDcc();
+  });
+
+  // Selector de empresa (contexto compartido con otros módulos Datacount).
+  const selEmp = $('#dccEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    cargarDcc();
+  });
+
+  $('#dccRefrescarBtn').addEventListener('click', cargarDcc);
+  $('#dccExpandirBtn').addEventListener('click', () => dccExpandirTodo(true));
+  $('#dccColapsarBtn').addEventListener('click', () => dccExpandirTodo(false));
+  $('#dccNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcc(null, null));
+
+  // Menú contextual y clicks en filas.
+  $('#dccCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')   abrirConsultaDcc(data.id);
+    if (b.dataset.action === 'agregar-sub') abrirAltaEdicionDcc(null, data.id);
+    if (b.dataset.action === 'editar')      abrirAltaEdicionDcc(data.id, null);
+    if (b.dataset.action === 'eliminar')    eliminarDcc(data.id);
+  });
+
+  $('#dccTbody').addEventListener('click', (ev) => {
+    const tog = ev.target.closest('[data-act="toggle"]');
+    if (tog) {
+      const id = Number(tog.dataset.id);
+      if (dccColapsadas.has(id)) dccColapsadas.delete(id);
+      else dccColapsadas.add(id);
+      renderDcc();
+      return;
+    }
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dccCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcc(Number(tr.dataset.id));
+  });
+  $('#dccTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dccCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  await cargarDcc();
+}, 'Plan de cuentas');
+
+async function cargarDcc() {
+  const tbody = $('#dccTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">No hay empresas registradas — creá una antes de armar su plan de cuentas.</td></tr>`;
+    return;
+  }
+
+  const qs = new URLSearchParams();
+  qs.set('empresa_id', String(empresaId));
+  if (dccBusqueda)   qs.set('q', dccBusqueda);
+  if (dccFiltroTipo) qs.set('tipo', dccFiltroTipo);
+
+  try {
+    const data = await apiGet(DCC_API + '?' + qs.toString());
+    dccCuentas = data.items || [];
+    pintarStatsDcc(data.stats || {});
+    renderDcc();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcc(s) {
+  $('#dccStatTotal').textContent      = fmtNum(s.total ?? dccCuentas.length);
+  $('#dccStatActivo').textContent     = fmtNum(s.activo ?? 0);
+  $('#dccStatPasivo').textContent     = fmtNum(s.pasivo ?? 0);
+  $('#dccStatPatrimonio').textContent = fmtNum(s.patrimonio ?? 0);
+  $('#dccStatIngreso').textContent    = fmtNum(s.ingreso ?? 0);
+  $('#dccStatEgreso').textContent     = fmtNum(s.egreso ?? 0);
+}
+
+function renderDcc() {
+  const tbody = $('#dccTbody');
+  if (!tbody) return;
+  if (!dccCuentas.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin cuentas registradas.</td></tr>`;
+    return;
+  }
+
+  // Cuando hay búsqueda o filtro por tipo aplanamos, sin jerarquía.
+  const aplanado = !!(dccBusqueda || dccFiltroTipo);
+
+  let html = '';
+  if (aplanado) {
+    html = dccCuentas.map((c) => renderFilaDcc(c, 0, false, false)).join('');
+  } else {
+    const byId = {};
+    dccCuentas.forEach((c) => { byId[c.id] = Object.assign({}, c, { children: [] }); });
+    const raices = [];
+    dccCuentas.forEach((c) => {
+      const n = byId[c.id];
+      if (c.parent_id && byId[c.parent_id]) byId[c.parent_id].children.push(n);
+      else raices.push(n);
+    });
+    const walk = (nodo, depth) => {
+      const tieneHijos = nodo.children.length > 0;
+      const colapsada  = dccColapsadas.has(nodo.id);
+      html += renderFilaDcc(nodo, depth, tieneHijos, colapsada);
+      if (tieneHijos && !colapsada) {
+        nodo.children.forEach((h) => walk(h, depth + 1));
+      }
+    };
+    raices.forEach((r) => walk(r, 0));
+  }
+  tbody.innerHTML = html;
+}
+
+function renderFilaDcc(c, depth, tieneHijos, colapsada) {
+  const indent = depth * 22;
+  const toggle = tieneHijos
+    ? `<span class="dcc-toggle" data-act="toggle" data-id="${c.id}"
+             style="cursor:pointer;display:inline-block;width:18px;text-align:center;user-select:none;color:var(--muted)">${colapsada ? '▶' : '▼'}</span>`
+    : `<span style="display:inline-block;width:18px"></span>`;
+
+  const tipoBadge = `<span class="badge ${DCC_TIPO_BADGE[c.tipo] || 'badge-info'}">${esc(DCC_TIPO_LABEL[c.tipo] || c.tipo)}</span>`;
+
+  const naturaleza = c.naturaleza === 'deudora'
+    ? `<span style="color:#93c5fd;font-weight:600">D</span>`
+    : `<span style="color:#f5a8a8;font-weight:600">A</span>`;
+
+  const imputable = Number(c.imputable) === 1
+    ? `<span style="color:var(--success)">✓</span>`
+    : `<span style="color:var(--muted)">—</span>`;
+
+  const activa = Number(c.activa) === 1
+    ? `<span style="color:var(--success);font-size:.78rem">● Activa</span>`
+    : `<span style="color:var(--muted);font-size:.78rem">○ Inactiva</span>`;
+
+  const boldNombre = Number(c.imputable) === 0 ? 'font-weight:700' : '';
+
+  const saldoVal   = parseFloat(c.saldo || 0);
+  const saldoColor = saldoVal > 0 ? 'var(--success)' : saldoVal < 0 ? 'var(--danger)' : 'var(--muted)';
+  const saldoHtml  = `<span style="font-family:monospace;font-size:.85rem;font-weight:600;color:${saldoColor}">${saldoVal < 0 ? '-' : ''}$ ${dccFmtMoney(Math.abs(saldoVal))}</span>`;
+
+  return `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td><span style="display:inline-block;margin-left:${indent}px">${toggle} <code style="font-size:.82rem">${esc(c.codigo)}</code></span></td>
+      <td style="${boldNombre}">${esc(c.nombre)}</td>
+      <td>${tipoBadge}</td>
+      <td style="text-align:center">${naturaleza}</td>
+      <td style="text-align:center">${imputable}</td>
+      <td style="text-align:center">${activa}</td>
+      <td style="text-align:right">${saldoHtml}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function dccExpandirTodo(expandir) {
+  if (expandir) {
+    dccColapsadas.clear();
+  } else {
+    const conHijos = new Set();
+    dccCuentas.forEach((c) => { if (c.parent_id) conHijos.add(c.parent_id); });
+    conHijos.forEach((id) => dccColapsadas.add(id));
+  }
+  renderDcc();
+}
+
+// ---- Modal Alta / Edición ----
+function dccPoblarSelectPadre(sel, excludeId, seleccionado) {
+  sel.innerHTML = `<option value="">— Sin padre (cuenta raíz) —</option>`;
+  // Excluir la cuenta editada + sus descendientes (previene ciclos).
+  const excluidos = new Set();
+  if (excludeId) {
+    excluidos.add(excludeId);
+    let hubo = true;
+    while (hubo) {
+      hubo = false;
+      dccCuentas.forEach((c) => {
+        if (c.parent_id && excluidos.has(c.parent_id) && !excluidos.has(c.id)) {
+          excluidos.add(c.id); hubo = true;
+        }
+      });
+    }
+  }
+  dccCuentas.forEach((c) => {
+    if (excluidos.has(c.id)) return;
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `${c.codigo} — ${c.nombre}`;
+    sel.appendChild(opt);
+  });
+  if (seleccionado != null) sel.value = String(seleccionado);
+}
+
+function abrirAltaEdicionDcc(id, parentIdPreseleccionado) {
+  dccEditandoId = id;
+  const editando = !!id;
+  const c = editando ? dccCuentas.find((x) => x.id === id) : null;
+
+  const titulo = editando ? 'Editar cuenta' : 'Nueva cuenta';
+
+  openModal(`
+    <div class="modal" style="max-width:560px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dccCodigo">Código *</label>
+            <input type="text" id="dccCodigo" placeholder="Ej. 1.1.05" style="font-family:monospace"
+                   autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="20">
+          </div>
+          <div class="form-group">
+            <label for="dccNombre">Nombre *</label>
+            <input type="text" id="dccNombre" placeholder="Nombre de la cuenta" maxlength="160">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dccTipo">Tipo *</label>
+            <select id="dccTipo">
+              <option value="activo">Activo</option>
+              <option value="pasivo">Pasivo</option>
+              <option value="patrimonio">Patrimonio</option>
+              <option value="ingreso">Ingreso</option>
+              <option value="egreso">Egreso</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="dccNaturaleza">Naturaleza *</label>
+            <select id="dccNaturaleza">
+              <option value="deudora">Deudora</option>
+              <option value="acreedora">Acreedora</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dccParent">Cuenta padre</label>
+          <select id="dccParent"></select>
+        </div>
+        <div class="form-group">
+          <label for="dccDescripcion">Descripción <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+          <textarea id="dccDescripcion" rows="2" placeholder="Detalle u observaciones"></textarea>
+        </div>
+        <div class="form-group" style="display:flex;gap:18px;align-items:center">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dccImputable" checked> Permite movimientos (imputable)
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dccActiva" checked> Activa
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  const sel = $('#dccParent');
+  dccPoblarSelectPadre(sel, editando ? id : null, null);
+
+  if (editando && c) {
+    $('#dccCodigo').value      = c.codigo || '';
+    $('#dccNombre').value      = c.nombre || '';
+    $('#dccTipo').value        = c.tipo || 'activo';
+    $('#dccNaturaleza').value  = c.naturaleza || 'deudora';
+    $('#dccDescripcion').value = c.descripcion || '';
+    $('#dccImputable').checked = Number(c.imputable) === 1;
+    $('#dccActiva').checked    = Number(c.activa) === 1;
+    sel.value = c.parent_id != null ? String(c.parent_id) : '';
+  } else if (parentIdPreseleccionado) {
+    // Nueva subcuenta: heredar tipo/naturaleza del padre para ahorrar clicks.
+    const padre = dccCuentas.find((x) => x.id === parentIdPreseleccionado);
+    if (padre) {
+      sel.value = String(parentIdPreseleccionado);
+      $('#dccTipo').value       = padre.tipo;
+      $('#dccNaturaleza').value = padre.naturaleza;
+    }
+  }
+
+  setTimeout(() => $('#dccCodigo')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcc();
+  });
+}
+
+async function guardarDcc() {
+  const codigo      = $('#dccCodigo').value.trim();
+  const nombre      = $('#dccNombre').value.trim();
+  const tipo        = $('#dccTipo').value;
+  const naturaleza  = $('#dccNaturaleza').value;
+  const parent_id   = $('#dccParent').value || null;
+  const descripcion = $('#dccDescripcion').value.trim();
+  const imputable   = $('#dccImputable').checked ? 1 : 0;
+  const activa      = $('#dccActiva').checked ? 1 : 0;
+
+  if (!codigo) { toast('El código es obligatorio', { error: true }); return; }
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+
+  const body = { codigo, nombre, tipo, naturaleza, parent_id, descripcion, imputable, activa };
+
+  // Empresa activa (contexto compartido). Solo aplica al alta; en edición el
+  // endpoint conserva la empresa original y rechaza cambios.
+  if (!dccEditandoId) {
+    const empresaId = dcGetEmpresaId();
+    if (!empresaId) { toast('Elegí una empresa antes de crear cuentas', { error: true }); return; }
+    body.empresa_id = empresaId;
+  }
+
+  try {
+    if (dccEditandoId) {
+      await apiSend(`${DCC_API}?id=${dccEditandoId}`, 'PUT', body);
+      toast('Cuenta actualizada');
+    } else {
+      await apiSend(DCC_API, 'POST', body);
+      toast('Cuenta creada');
+    }
+    closeModal();
+    dccEditandoId = null;
+    await cargarDcc();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+async function abrirConsultaDcc(id) {
+  const c = dccCuentas.find((x) => x.id === id);
+  if (!c) return;
+  const padre    = c.parent_id ? dccCuentas.find((x) => x.id === c.parent_id) : null;
+  const padreStr = padre ? `${padre.codigo} — ${padre.nombre}` : '—';
+
+  const saldoVal   = parseFloat(c.saldo || 0);
+  const saldoColor = saldoVal > 0 ? 'var(--success)' : saldoVal < 0 ? 'var(--danger)' : 'var(--muted)';
+  const saldoStr   = `${saldoVal < 0 ? '-' : ''}$ ${dccFmtMoney(Math.abs(saldoVal))}`;
+
+  openModal(`
+    <div class="modal" style="max-width:520px">
+      <div class="modal-header">
+        <div class="modal-title">
+          <code style="font-family:monospace">${esc(c.codigo)}</code>
+          <span class="modal-subtitle">${esc(c.nombre)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:20px">
+        <div style="text-align:center;padding:24px 16px;background:var(--bg);border-radius:12px;border:1px solid var(--border)">
+          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:8px">Saldo actual</div>
+          <div style="font-size:2.4rem;font-weight:800;font-family:monospace;letter-spacing:-.02em;color:${saldoColor}">${esc(saldoStr)}</div>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:6px">Nivel ${c.nivel}</div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Código</div>
+            <div style="font-family:monospace;font-weight:700;font-size:1rem">${esc(c.codigo)}</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Tipo</div>
+            <div>${`<span class="badge ${DCC_TIPO_BADGE[c.tipo] || 'badge-info'}">${esc(DCC_TIPO_LABEL[c.tipo] || c.tipo)}</span>`}</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Naturaleza</div>
+            <div>${c.naturaleza === 'deudora' ? 'Deudora' : 'Acreedora'}</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Estado</div>
+            <div>${Number(c.activa) === 1 ? 'Activa' : 'Inactiva'}</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Imputable</div>
+            <div>${Number(c.imputable) === 1 ? 'Sí' : 'No (agrupación)'}</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Cuenta padre</div>
+            <div style="font-size:.85rem">${esc(padreStr)}</div>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Nombre completo</div>
+          <div style="font-weight:600;font-size:1rem">${esc(c.nombre)}</div>
+        </div>
+
+        <div>
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Descripción</div>
+          <div style="color:var(--muted);font-size:.9rem;line-height:1.5">${esc(c.descripcion || '—')}</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcc(id, null); }
+  });
+}
+
+async function eliminarDcc(id) {
+  const c = dccCuentas.find((x) => x.id === id);
+  if (!c) return;
+  const ok = await confirmar({
+    title:       'Eliminar cuenta',
+    message:     `¿Eliminás la cuenta "${c.codigo} — ${c.nombre}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCC_API}?id=${id}`, 'DELETE');
+    toast('Cuenta eliminada');
+    await cargarDcc();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Empresas -------------------------
+// ABM de empresas para las que Datacount lleva la contabilidad. Cada fila
+// representa una entidad con sus datos identificatorios (nombre de fantasía,
+// razón social, domicilio) y fiscales (condición ante AFIP, CUIT, IIBB,
+// inicio de actividades). Listado + toolbar mínima con buscador rápido +
+// modal de filtros según ABM.md.
+
+const DCE_API = 'api/datacountempresas.php';
+
+const DCE_CONDICIONES = [
+  { v: 'responsable_inscripto', label: 'Responsable Inscripto', badge: 'badge-info'    },
+  { v: 'monotributista',        label: 'Monotributista',        badge: 'badge-success' },
+  { v: 'exento',                label: 'Exento',                badge: 'badge-warn'    },
+  { v: 'consumidor_final',      label: 'Consumidor Final',      badge: 'badge-info'    },
+  { v: 'no_responsable',        label: 'No Responsable',        badge: 'badge-warn'    },
+  { v: 'no_categorizado',       label: 'No Categorizado',       badge: 'badge-danger'  },
+];
+const DCE_CONDICION_MAP = Object.fromEntries(DCE_CONDICIONES.map((c) => [c.v, c]));
+
+let dceItems           = [];
+let dceBusqueda        = '';
+let dceFiltroCodigo    = '';
+let dceFiltroCondicion = '';
+let dceFiltroLimite    = 100;
+let dceFiltroOrden     = 'id';
+let dceFiltroDir       = 'desc';
+let dceEditandoId      = null;
+let dceBuscadorTimer   = null;
+let dceFiltrosSnapshot = null;
+
+function dceFmtCuit(cuit) {
+  if (!cuit) return '—';
+  const s = String(cuit).replace(/\D+/g, '');
+  if (s.length === 11) return `${s.slice(0, 2)}-${s.slice(2, 10)}-${s.slice(10)}`;
+  return cuit;
+}
+
+function dceFmtFecha(iso) {
+  if (!iso) return '—';
+  const p = String(iso).slice(0, 10).split('-');
+  if (p.length !== 3) return iso;
+  return `${p[2]}/${p[1]}/${p[0]}`;
+}
+
+function dceCondicionLabel(v) { return DCE_CONDICION_MAP[v]?.label || v || '—'; }
+function dceCondicionBadge(v) {
+  const c = DCE_CONDICION_MAP[v];
+  if (!c) return `<span class="badge">${esc(v || '—')}</span>`;
+  return `<span class="badge ${c.badge}">${esc(c.label)}</span>`;
+}
+
+route('/datacountempresas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">🏢</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Las empresas son las entidades para las que Datacount lleva la contabilidad:
+          cada fila reúne el nombre de fantasía, la razón social, la condición fiscal
+          ante AFIP, CUIT, IIBB, domicilio y fecha de inicio de actividades.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dceStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dceStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Resp. Inscripto</span><span class="stat-value" style="color:#93c5fd" id="dceStatRI">—</span></div>
+        <div class="stat-card"><span class="stat-label">Monotributistas</span><span class="stat-value green" id="dceStatMono">—</span></div>
+        <div class="stat-card"><span class="stat-label">Exentos</span><span class="stat-value" style="color:#fcd34d" id="dceStatExento">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dceSearch"
+                   placeholder="🔍 Buscar nombre, razón, CUIT o domicilio…">
+            <button class="search-clear" id="dceSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dceFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dceFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dceRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dceNuevoBtn">+ Nueva empresa</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Nombre</th>
+              <th>Razón social</th>
+              <th style="width:180px">Condición</th>
+              <th style="width:140px">CUIT</th>
+              <th style="width:120px">Inicio</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dceTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dceCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDceBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDce()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDce()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDceCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDce('codigo', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Condición fiscal</label>
+            <div id="fDceCondChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDceLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDce('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDceOrden" onchange="onFiltroDce('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="razon">Razón social</option>
+                <option value="cuit">CUIT</option>
+                <option value="inicio">Inicio</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDceDir" onchange="onFiltroDce('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDce()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDce()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDce()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dceSearch');
+  const clr = $('#dceSearchClear');
+  inp.value = dceBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dceBusqueda = inp.value.trim();
+    clearTimeout(dceBuscadorTimer);
+    dceBuscadorTimer = setTimeout(cargarDce, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dceBusqueda = ''; cargarDce();
+  });
+
+  $('#dceFiltrosBtn').addEventListener('click', abrirModalFiltrosDce);
+  $('#dceRefrescarBtn').addEventListener('click', cargarDce);
+  $('#dceNuevoBtn').addEventListener('click', () => abrirAltaEdicionDce(null));
+
+  // Chips de condición dentro del modal.
+  const chipsCont = $('#fDceCondChips');
+  chipsCont.innerHTML = `
+    <button type="button" class="filter-chip" data-cond="">Todas</button>
+    ${DCE_CONDICIONES.map((c) => `
+      <button type="button" class="filter-chip" data-cond="${c.v}">${esc(c.label)}</button>
+    `).join('')}
+  `;
+  chipsCont.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    dceFiltroCondicion = b.dataset.cond || '';
+    dceSincronizarChipsCondicion();
+    dceActualizarBadgeFiltros();
+    cargarDce();
+  });
+
+  // Menú contextual + interacción con la fila
+  $('#dceCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDce(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDce(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDce(data.id);
+  });
+
+  $('#dceTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dceCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDce(Number(tr.dataset.id));
+  });
+  $('#dceTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dceCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  dceActualizarBadgeFiltros();
+  await cargarDce();
+}, 'Empresas');
+
+async function cargarDce() {
+  const tbody = $('#dceTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dceBusqueda)        qs.set('q', dceBusqueda);
+  if (dceFiltroCondicion) qs.set('condicion', dceFiltroCondicion);
+  if (dceFiltroCodigo)    qs.set('id', dceFiltroCodigo);
+  if (dceFiltroLimite)    qs.set('limite', dceFiltroLimite);
+  if (dceFiltroOrden)     qs.set('orden', dceFiltroOrden);
+  if (dceFiltroDir)       qs.set('dir', dceFiltroDir);
+
+  try {
+    const data = await apiGet(DCE_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dceItems = data.items || [];
+    pintarStatsDce(data.stats || {});
+    renderDce();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDce(s) {
+  $('#dceStatTotal').textContent  = fmtNum(s.total ?? dceItems.length);
+  $('#dceStatRI').textContent     = fmtNum(s.responsable_inscripto ?? 0);
+  $('#dceStatMono').textContent   = fmtNum(s.monotributista ?? 0);
+  $('#dceStatExento').textContent = fmtNum(s.exento ?? 0);
+}
+
+function renderDce() {
+  const tbody = $('#dceTbody');
+  if (!tbody) return;
+  if (!dceItems.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin empresas registradas.</td></tr>`;
+    return;
+  }
+
+  // Filtro cliente por Código (el buscador rápido y condicion los resuelve el server).
+  let filas = dceItems;
+  if (dceFiltroCodigo) {
+    const cod = Number(dceFiltroCodigo);
+    filas = filas.filter((e) => e.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((e) => `
+    <tr data-id="${e.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${e.id}</code></td>
+      <td style="font-weight:600">${esc(e.nombre)}</td>
+      <td style="color:var(--muted)">${esc(e.razon)}</td>
+      <td>${dceCondicionBadge(e.condicion)}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(dceFmtCuit(e.cuit))}</td>
+      <td>${esc(dceFmtFecha(e.inicio))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDce() {
+  dceFiltrosSnapshot = {
+    codigo:    dceFiltroCodigo,
+    condicion: dceFiltroCondicion,
+    limite:    dceFiltroLimite,
+    orden:     dceFiltroOrden,
+    dir:       dceFiltroDir,
+  };
+  $('#fDceCodigo').value = dceFiltroCodigo || '';
+  $('#fDceLimite').value = dceFiltroLimite || 100;
+  $('#fDceOrden').value  = dceFiltroOrden  || 'id';
+  $('#fDceDir').value    = dceFiltroDir    || 'desc';
+  dceSincronizarChipsCondicion();
+  document.getElementById('filtrosDceBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDce() {
+  document.getElementById('filtrosDceBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDce() {
+  if (dceFiltrosSnapshot) {
+    dceFiltroCodigo    = dceFiltrosSnapshot.codigo;
+    dceFiltroCondicion = dceFiltrosSnapshot.condicion;
+    dceFiltroLimite    = dceFiltrosSnapshot.limite;
+    dceFiltroOrden     = dceFiltrosSnapshot.orden;
+    dceFiltroDir       = dceFiltrosSnapshot.dir;
+    dceActualizarBadgeFiltros();
+    cargarDce();
+  }
+  cerrarModalFiltrosDce();
+}
+
+function limpiarFiltrosDce() {
+  dceFiltroCodigo    = '';
+  dceFiltroCondicion = '';
+  dceFiltroLimite    = 100;
+  dceFiltroOrden     = 'id';
+  dceFiltroDir       = 'desc';
+  $('#fDceCodigo').value = '';
+  $('#fDceLimite').value = 100;
+  $('#fDceOrden').value  = 'id';
+  $('#fDceDir').value    = 'desc';
+  dceSincronizarChipsCondicion();
+  dceActualizarBadgeFiltros();
+  cargarDce();
+}
+
+function onFiltroDce(campo, valor) {
+  if (campo === 'codigo') dceFiltroCodigo = (valor || '').trim();
+  if (campo === 'limite') dceFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dceFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    dceFiltroDir    = valor || 'desc';
+  dceActualizarBadgeFiltros();
+  cargarDce();
+}
+
+function dceSincronizarChipsCondicion() {
+  const chips = document.querySelectorAll('#fDceCondChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.cond || '') === (dceFiltroCondicion || ''));
+  });
+}
+
+function dceActualizarBadgeFiltros() {
+  let n = 0;
+  if (dceFiltroCodigo)                  n++;
+  if (dceFiltroCondicion)               n++;
+  if (Number(dceFiltroLimite) !== 100)  n++;
+  if (dceFiltroOrden !== 'id')          n++;
+  if (dceFiltroDir   !== 'desc')        n++;
+  const badge = $('#dceFiltrosBadge');
+  const btn   = $('#dceFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ---- Modal Alta / Edición ----
+function abrirAltaEdicionDce(id) {
+  dceEditandoId = id;
+  const editando = !!id;
+  const e = editando ? dceItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar empresa' : 'Nueva empresa';
+
+  const opciones = DCE_CONDICIONES.map((c) =>
+    `<option value="${c.v}">${esc(c.label)}</option>`
+  ).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dceNombre">Nombre *</label>
+            <input type="text" id="dceNombre" placeholder="Nombre de fantasía" maxlength="160" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dceRazon">Razón social *</label>
+            <input type="text" id="dceRazon" placeholder="Razón social completa" maxlength="200" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dceDomicilio">Domicilio</label>
+          <input type="text" id="dceDomicilio" placeholder="Calle, número, ciudad, provincia" maxlength="255" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dceCondicion">Condición fiscal *</label>
+            <select id="dceCondicion">${opciones}</select>
+          </div>
+          <div class="form-group">
+            <label for="dceCuit">CUIT</label>
+            <input type="text" id="dceCuit" placeholder="20123456789 o 20-12345678-9" maxlength="15"
+                   style="font-family:monospace" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dceIibb">IIBB</label>
+            <input type="text" id="dceIibb" placeholder="Nº de Ingresos Brutos" maxlength="30" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dceInicio">Inicio de actividades</label>
+            <input type="date" id="dceInicio">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && e) {
+    $('#dceNombre').value    = e.nombre    || '';
+    $('#dceRazon').value     = e.razon     || '';
+    $('#dceDomicilio').value = e.domicilio || '';
+    $('#dceCondicion').value = e.condicion || 'responsable_inscripto';
+    $('#dceCuit').value      = e.cuit      || '';
+    $('#dceIibb').value      = e.iibb      || '';
+    $('#dceInicio').value    = e.inicio    ? String(e.inicio).slice(0, 10) : '';
+  } else {
+    $('#dceCondicion').value = 'responsable_inscripto';
+  }
+
+  setTimeout(() => $('#dceNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDce();
+  });
+}
+
+async function guardarDce() {
+  const nombre    = $('#dceNombre').value.trim();
+  const razon     = $('#dceRazon').value.trim();
+  const domicilio = $('#dceDomicilio').value.trim();
+  const condicion = $('#dceCondicion').value;
+  const cuit      = $('#dceCuit').value.trim();
+  const iibb      = $('#dceIibb').value.trim();
+  const inicio    = $('#dceInicio').value || '';
+
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+  if (!razon)  { toast('La razón social es obligatoria', { error: true }); return; }
+
+  const body = { nombre, razon, domicilio, condicion, cuit, iibb, inicio };
+
+  try {
+    if (dceEditandoId) {
+      await apiSend(`${DCE_API}?id=${dceEditandoId}`, 'PUT', body);
+      toast('Empresa actualizada');
+    } else {
+      await apiSend(DCE_API, 'POST', body);
+      toast('Empresa creada');
+    }
+    closeModal();
+    dceEditandoId = null;
+    await cargarDce();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDce(id) {
+  const e = dceItems.find((x) => x.id === id);
+  if (!e) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  openModal(`
+    <div class="modal" style="max-width:620px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🏢 <span class="modal-subtitle">${esc(e.nombre)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',            `<code>${e.id}</code>`)}
+          ${card('Condición fiscal',  dceCondicionBadge(e.condicion))}
+          ${card('Nombre',            esc(e.nombre), 'full')}
+          ${card('Razón social',      esc(e.razon), 'full')}
+          ${card('Domicilio',         esc(e.domicilio || '—'), 'full')}
+          ${card('CUIT',              `<span style="font-family:monospace">${esc(dceFmtCuit(e.cuit))}</span>`)}
+          ${card('IIBB',              `<span style="font-family:monospace">${esc(e.iibb || '—')}</span>`)}
+          ${card('Inicio actividades', esc(dceFmtFecha(e.inicio)))}
+          ${card('Alta',               esc(fmtFecha(e.created_at)))}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDce(id); }
+  });
+}
+
+async function eliminarDce(id) {
+  const e = dceItems.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar empresa',
+    message:     `¿Eliminás la empresa "${e.nombre}" (${e.razon})?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCE_API}?id=${id}`, 'DELETE');
+    toast('Empresa eliminada');
+    await cargarDce();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Asientos -------------------------
+// Asientos contables (misma UI que `repo.cloud > contable > asientos`): listado
+// con sub-líneas del detalle, filtros fecha/cuenta/texto, modal de alta/edición
+// con líneas (Debe/Haber) y picker jerárquico de cuentas del plan.
+
+const DCA_API = 'api/datacountasientos.php';
+
+let dcaAsientos           = [];
+let dcaBusqueda           = '';
+let dcaFiltroDesde        = '';
+let dcaFiltroHasta        = '';
+let dcaFiltroCuentaId     = null;
+let dcaFiltroCuentaNombre = '';
+let dcaBuscadorTimer      = null;
+
+let dcaEditandoId         = null;
+let dcaLineas             = [];    // [{cuenta_id, debe, haber, descripcion}]
+let dcaCuentasImputables  = [];    // solo imputables+activas
+let dcaTodasCuentas       = [];    // árbol completo (picker)
+let dcaPickerLineaIdx     = null;
+let dcaPickerColapsadas   = new Set();
+let dcaPickerBusqueda     = '';
+
+function dcaFmtMoney(n) {
+  return Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function dcaFmtFechaAR(iso) {
+  if (!iso) return '—';
+  const p = String(iso).slice(0, 10).split('-');
+  if (p.length !== 3) return iso;
+  return `${p[2]}/${p[1]}/${p[0]}`;
+}
+
+route('/datacountasientos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">📖</div>
+        <div class="module-help-text">
+          Los asientos son los movimientos contables de Datacount. Cada asiento agrupa
+          dos o más líneas contra cuentas del plan (Debe/Haber) y debe balancear.
+          Los saldos del plan de cuentas se recalculan automáticamente al guardar o eliminar.
+        </div>
+      </div>
+
+      <div class="stats-bar">
+        <div class="stat-card"><span class="stat-label">Total asientos</span><span class="stat-value orange" id="dcaStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Del mes</span><span class="stat-value" style="color:#93c5fd" id="dcaStatMes">—</span></div>
+        <div class="stat-card"><span class="stat-label">Monto acumulado</span><span class="stat-value green" id="dcaStatMonto">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcaSearch"
+                   placeholder="🔍 Buscar por nº o descripción…">
+            <button class="search-clear" id="dcaSearchClear" style="display:none">×</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted)">
+            Desde <input type="date" id="dcaDesde" style="min-width:140px">
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted)">
+            Hasta <input type="date" id="dcaHasta" style="min-width:140px">
+          </label>
+          <div id="dcaFiltroCtaBadge"
+               style="display:none;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:.8rem">
+            Cuenta: <strong id="dcaFiltroCtaTexto"></strong>
+            <span onclick="dcaLimpiarFiltroCuenta()" style="cursor:pointer;font-weight:700;color:var(--muted)" title="Quitar filtro">✕</span>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcaRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcaNuevoBtn">+ Nuevo asiento</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">N°</th>
+              <th style="width:120px">Fecha</th>
+              <th>Descripción</th>
+              <th style="width:140px;text-align:right">Total</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcaTbody">
+            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dcaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="ver" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Ver detalle</span>
+      </button>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+  `;
+
+  const inp = $('#dcaSearch');
+  const clr = $('#dcaSearchClear');
+  inp.value = dcaBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcaBusqueda = inp.value.trim();
+    clearTimeout(dcaBuscadorTimer);
+    dcaBuscadorTimer = setTimeout(cargarDca, 300);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcaBusqueda = ''; cargarDca();
+  });
+
+  $('#dcaDesde').value = dcaFiltroDesde;
+  $('#dcaHasta').value = dcaFiltroHasta;
+  $('#dcaDesde').addEventListener('change', (ev) => { dcaFiltroDesde = ev.target.value; cargarDca(); });
+  $('#dcaHasta').addEventListener('change', (ev) => { dcaFiltroHasta = ev.target.value; cargarDca(); });
+
+  $('#dcaRefrescarBtn').addEventListener('click', cargarDca);
+  $('#dcaNuevoBtn').addEventListener('click', () => abrirNuevoAsientoDca());
+
+  $('#dcaCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'ver')      abrirDetalleAsientoDca(data.id);
+    if (b.dataset.action === 'editar')   abrirEditarAsientoDca(data.id);
+    if (b.dataset.action === 'eliminar') eliminarAsientoDca(data.id, data.numero);
+  });
+
+  $('#dcaTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const numero = Number(ham.dataset.numero);
+      const r = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dcaCtxMenu'), r.right - 200, r.bottom + 4, { id, numero });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirDetalleAsientoDca(Number(tr.dataset.id));
+  });
+  $('#dcaTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dcaCtxMenu'), ev.clientX, ev.clientY, {
+      id: Number(tr.dataset.id),
+      numero: Number(tr.dataset.numero),
+    });
+  });
+
+  dcaActualizarBadgeFiltroCuenta();
+  await cargarDca();
+}, 'Asientos');
+
+function dcaActualizarBadgeFiltroCuenta() {
+  const badge = $('#dcaFiltroCtaBadge');
+  if (!badge) return;
+  if (dcaFiltroCuentaId) {
+    $('#dcaFiltroCtaTexto').textContent = dcaFiltroCuentaNombre;
+    badge.style.display = 'flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function dcaLimpiarFiltroCuenta() {
+  dcaFiltroCuentaId     = null;
+  dcaFiltroCuentaNombre = '';
+  dcaActualizarBadgeFiltroCuenta();
+  cargarDca();
+}
+window.dcaLimpiarFiltroCuenta = dcaLimpiarFiltroCuenta;
+
+async function cargarDca() {
+  const tbody = $('#dcaTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dcaBusqueda)       qs.set('q', dcaBusqueda);
+  if (dcaFiltroDesde)    qs.set('desde', dcaFiltroDesde);
+  if (dcaFiltroHasta)    qs.set('hasta', dcaFiltroHasta);
+  if (dcaFiltroCuentaId) qs.set('cuenta_id', dcaFiltroCuentaId);
+
+  try {
+    const data = await apiGet(DCA_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dcaAsientos = data.items || [];
+    pintarStatsDca(data.stats || {});
+    renderDca();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDca(s) {
+  $('#dcaStatTotal').textContent = fmtNum(s.total ?? dcaAsientos.length);
+  $('#dcaStatMes').textContent   = fmtNum(s.del_mes ?? 0);
+  $('#dcaStatMonto').textContent = '$ ' + dcaFmtMoney(s.monto || 0);
+}
+
+function renderDca() {
+  const tbody = $('#dcaTbody');
+  if (!tbody) return;
+  if (!dcaAsientos.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">No hay asientos registrados.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = dcaAsientos.map(renderFilaAsientoDca).join('');
+}
+
+function renderFilaAsientoDca(a) {
+  const fecha = dcaFmtFechaAR(a.fecha);
+
+  let subFilas = '';
+  if (a.detalle && a.detalle.length) {
+    subFilas = a.detalle.map((d) => {
+      const cuenta = (d.cuenta_codigo
+                        ? `<code style="font-size:.72rem;color:var(--muted)">${esc(d.cuenta_codigo)}</code> `
+                        : '') + esc(d.cuenta_nombre || '—');
+      const esDebe = Number(d.debe) > 0;
+      const importeColor = esDebe ? '#93c5fd' : '#f5a8a8';
+      const tipoColor    = esDebe ? '#93c5fd' : '#f5a8a8';
+      const importe = esDebe
+        ? `<span style="color:${importeColor}">$ ${dcaFmtMoney(d.debe)}</span>`
+        : `<span style="color:${importeColor}">$ ${dcaFmtMoney(d.haber)}</span>`;
+      const tipo = esDebe
+        ? `<span style="color:${tipoColor};font-weight:700;font-size:.68rem;letter-spacing:.5px">DEBE</span>`
+        : `<span style="color:${tipoColor};font-weight:700;font-size:.68rem;letter-spacing:.5px">HABER</span>`;
+      const det = d.descripcion
+        ? ` <span style="color:var(--muted);font-size:.78rem">— ${esc(d.descripcion)}</span>`
+        : '';
+      return `
+        <div style="display:flex;align-items:center;gap:10px;padding:3px 0;font-size:.82rem">
+          <span style="width:52px;flex-shrink:0">${tipo}</span>
+          <span style="flex:1;min-width:0">${cuenta}${det}</span>
+          <span style="width:120px;text-align:right;font-weight:600">${importe}</span>
+        </div>`;
+    }).join('');
+  }
+
+  const main = `
+    <tr data-id="${a.id}" data-numero="${a.numero}" class="row-clickable" style="border-bottom:none">
+      <td><strong>#${a.numero}</strong></td>
+      <td>${esc(fecha)}</td>
+      <td>${esc(a.descripcion || '')}</td>
+      <td style="text-align:right;font-weight:600">$ ${dcaFmtMoney(a.total)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${a.id}" data-numero="${a.numero}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>`;
+
+  const sub = subFilas
+    ? `<tr data-id="${a.id}" data-numero="${a.numero}" class="row-clickable">
+         <td></td>
+         <td colspan="4" style="padding-top:0;padding-bottom:12px">
+           <div style="border-left:3px solid var(--border);padding:2px 0 2px 12px;margin-left:4px">${subFilas}</div>
+         </td>
+       </tr>`
+    : '';
+  return main + sub;
+}
+
+// ---- Cuentas del plan (para alta/edición) ----
+async function dcaAsegurarCuentas() {
+  if (dcaCuentasImputables.length) return;
+  try {
+    const d = await apiGet(DCC_API);
+    dcaTodasCuentas = d.items || [];
+    dcaCuentasImputables = dcaTodasCuentas.filter(
+      (c) => Number(c.imputable) === 1 && Number(c.activa) === 1
+    );
+  } catch (_) {
+    // el modal muestra un aviso más abajo
+  }
+}
+
+// ---- Modal Alta / Edición ----
+function dcaAbrirModalAlta(tituloText) {
+  openModal(`
+    <div class="modal modal-wide" style="max-width:960px">
+      <div class="modal-header">
+        <div class="modal-title" id="dcaModalTitulo">${esc(tituloText)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row" style="grid-template-columns:180px 1fr">
+          <div class="form-group">
+            <label for="dcaFecha">Fecha *</label>
+            <input type="date" id="dcaFecha">
+          </div>
+          <div class="form-group">
+            <label for="dcaDescripcion">Descripción *</label>
+            <input type="text" id="dcaDescripcion" placeholder="Ej: Venta del día — cobro en efectivo" maxlength="255">
+          </div>
+        </div>
+
+        <div style="margin-top:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <label style="margin:0">Líneas del asiento *</label>
+            <button type="button" class="btn btn-ghost btn-sm" id="dcaAgregarLineaBtn">+ Agregar línea</button>
+          </div>
+          <div class="table-card" style="margin-top:0">
+            <table style="font-size:.88rem">
+              <thead>
+                <tr>
+                  <th style="width:38%">Cuenta</th>
+                  <th style="width:140px;text-align:right">Debe</th>
+                  <th style="width:140px;text-align:right">Haber</th>
+                  <th>Detalle</th>
+                  <th style="width:40px"></th>
+                </tr>
+              </thead>
+              <tbody id="dcaLineasBody"></tbody>
+              <tfoot>
+                <tr style="font-weight:700;background:var(--bg)">
+                  <td style="text-align:right">Totales:</td>
+                  <td style="text-align:right" id="dcaTotalDebe">0,00</td>
+                  <td style="text-align:right" id="dcaTotalHaber">0,00</td>
+                  <td colspan="2" id="dcaBalance"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  $('#dcaAgregarLineaBtn').addEventListener('click', dcaAgregarLinea);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   { closeModal(); dcaEditandoId = null; dcaLineas = []; }
+    if (ev.target.closest('[data-act="guardar"]')) guardarAsientoDca();
+  });
+
+  // Delegación para inputs y botones de línea (evita ensuciar `window`).
+  $('#dcaLineasBody').addEventListener('click', (ev) => {
+    const pick = ev.target.closest('[data-act="picker"]');
+    if (pick) { dcaAbrirPickerCuenta(Number(pick.dataset.idx)); return; }
+    const clr = ev.target.closest('[data-act="clear-cuenta"]');
+    if (clr)  { ev.stopPropagation(); dcaUpdateLinea(Number(clr.dataset.idx), 'cuenta_id', ''); return; }
+    const del = ev.target.closest('[data-act="del-linea"]');
+    if (del)  { dcaQuitarLinea(Number(del.dataset.idx)); return; }
+  });
+  $('#dcaLineasBody').addEventListener('input', (ev) => {
+    const i = ev.target.closest('[data-idx]');
+    if (!i) return;
+    dcaUpdateLinea(Number(i.dataset.idx), i.dataset.campo, i.value);
+  });
+}
+
+async function abrirNuevoAsientoDca() {
+  await dcaAsegurarCuentas();
+  if (!dcaCuentasImputables.length) {
+    toast('No hay cuentas imputables activas. Revisá el plan de cuentas.', { error: true });
+    return;
+  }
+  dcaEditandoId = null;
+  dcaLineas = [
+    { cuenta_id: '', debe: '', haber: '', descripcion: '' },
+    { cuenta_id: '', debe: '', haber: '', descripcion: '' },
+  ];
+  dcaAbrirModalAlta('Nuevo asiento');
+  const hoy = new Date().toISOString().slice(0, 10);
+  $('#dcaFecha').value       = hoy;
+  $('#dcaDescripcion').value = '';
+  dcaRenderLineas();
+  setTimeout(() => $('#dcaDescripcion')?.focus(), 50);
+}
+
+async function abrirEditarAsientoDca(id) {
+  await dcaAsegurarCuentas();
+  try {
+    const a = await apiGet(`${DCA_API}?id=${id}`);
+    dcaEditandoId = id;
+    dcaLineas = (a.detalle || []).map((d) => ({
+      cuenta_id:   d.cuenta_id,
+      debe:        Number(d.debe)  || '',
+      haber:       Number(d.haber) || '',
+      descripcion: d.descripcion || '',
+    }));
+    while (dcaLineas.length < 2) {
+      dcaLineas.push({ cuenta_id: '', debe: '', haber: '', descripcion: '' });
+    }
+    dcaAbrirModalAlta(`Editar asiento N° ${a.numero}`);
+    $('#dcaFecha').value       = a.fecha || '';
+    $('#dcaDescripcion').value = a.descripcion || '';
+    dcaRenderLineas();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+function dcaRenderLineas() {
+  const tbody = $('#dcaLineasBody');
+  if (!tbody) return;
+  if (!dcaLineas.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:14px">Sin líneas. Hacé clic en "+ Agregar línea".</td></tr>`;
+    $('#dcaTotalDebe').textContent  = '0,00';
+    $('#dcaTotalHaber').textContent = '0,00';
+    $('#dcaBalance').innerHTML = '';
+    return;
+  }
+  tbody.innerHTML = dcaLineas.map((l, i) => {
+    const cs  = dcaCuentasImputables.find((c) => c.id === Number(l.cuenta_id));
+    const lbl = cs ? `${esc(cs.codigo)} — ${esc(cs.nombre)}` : '— Seleccionar cuenta —';
+    const lc  = cs ? '' : 'color:var(--muted)';
+    const ico = cs
+      ? `<span data-act="clear-cuenta" data-idx="${i}" style="flex-shrink:0;padding:0 2px;color:var(--muted);cursor:pointer" title="Quitar">✕</span>`
+      : `<span style="flex-shrink:0;color:var(--muted)">▾</span>`;
+    return `
+      <tr>
+        <td>
+          <button type="button" data-act="picker" data-idx="${i}"
+                  style="width:100%;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:5px 8px;cursor:pointer;font-size:.88rem;display:flex;align-items:center;gap:6px;min-height:32px;color:var(--text)">
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${lc}">${lbl}</span>${ico}
+          </button>
+        </td>
+        <td><input type="number" step="0.01" min="0" data-idx="${i}" data-campo="debe"
+                   value="${l.debe === '' ? '' : l.debe}" style="width:100%;text-align:right"></td>
+        <td><input type="number" step="0.01" min="0" data-idx="${i}" data-campo="haber"
+                   value="${l.haber === '' ? '' : l.haber}" style="width:100%;text-align:right"></td>
+        <td><input type="text" data-idx="${i}" data-campo="descripcion"
+                   value="${esc(l.descripcion || '')}" style="width:100%" placeholder="Detalle (opcional)"></td>
+        <td><button type="button" class="btn-icon-sm" title="Eliminar línea"
+                    data-act="del-linea" data-idx="${i}">🗑️</button></td>
+      </tr>`;
+  }).join('');
+  dcaRecalcularTotales();
+}
+
+function dcaRecalcularTotales() {
+  let totD = 0, totH = 0;
+  dcaLineas.forEach((l) => { totD += Number(l.debe || 0); totH += Number(l.haber || 0); });
+  $('#dcaTotalDebe').textContent  = dcaFmtMoney(totD);
+  $('#dcaTotalHaber').textContent = dcaFmtMoney(totH);
+  const diff = Math.abs(totD - totH);
+  const bal = $('#dcaBalance');
+  if (diff < 0.01 && totD > 0) {
+    bal.innerHTML = `<span style="color:var(--success);font-weight:600">✓ Balanceado</span>`;
+  } else if (totD === 0 && totH === 0) {
+    bal.innerHTML = '';
+  } else {
+    bal.innerHTML = `<span style="color:var(--danger);font-weight:600">✗ Diferencia: $ ${dcaFmtMoney(diff)}</span>`;
+  }
+}
+
+function dcaAgregarLinea() {
+  dcaLineas.push({ cuenta_id: '', debe: '', haber: '', descripcion: '' });
+  dcaRenderLineas();
+}
+
+function dcaQuitarLinea(i) {
+  dcaLineas.splice(i, 1);
+  dcaRenderLineas();
+}
+
+function dcaUpdateLinea(i, campo, valor) {
+  if (!dcaLineas[i]) return;
+  if (campo === 'debe' || campo === 'haber') {
+    dcaLineas[i][campo] = valor === '' ? '' : Number(valor);
+    if (campo === 'debe'  && Number(valor) > 0) dcaLineas[i].haber = '';
+    if (campo === 'haber' && Number(valor) > 0) dcaLineas[i].debe  = '';
+    dcaRenderLineas();
+  } else if (campo === 'cuenta_id') {
+    dcaLineas[i].cuenta_id = valor ? Number(valor) : '';
+    dcaRenderLineas();
+  } else {
+    dcaLineas[i][campo] = valor;
+    // Sin re-render — evita perder el foco del input mientras el usuario escribe.
+  }
+}
+
+async function guardarAsientoDca() {
+  const fecha       = $('#dcaFecha').value;
+  const descripcion = $('#dcaDescripcion').value.trim();
+
+  if (!fecha)       { toast('La fecha es obligatoria', { error: true }); return; }
+  if (!descripcion) { toast('La descripción es obligatoria', { error: true }); return; }
+
+  const detalle = dcaLineas
+    .filter((l) => l.cuenta_id || Number(l.debe) > 0 || Number(l.haber) > 0)
+    .map((l) => ({
+      cuenta_id: l.cuenta_id ? Number(l.cuenta_id) : 0,
+      debe:      Number(l.debe)  || 0,
+      haber:     Number(l.haber) || 0,
+      descripcion: l.descripcion || '',
+    }));
+
+  if (detalle.length < 2) { toast('Se requieren al menos 2 líneas con datos', { error: true }); return; }
+
+  const body = { fecha, descripcion, detalle };
+  try {
+    if (dcaEditandoId) {
+      await apiSend(`${DCA_API}?id=${dcaEditandoId}`, 'PUT', body);
+      toast('Asiento actualizado');
+    } else {
+      await apiSend(DCA_API, 'POST', body);
+      toast('Asiento creado');
+    }
+    closeModal();
+    dcaEditandoId = null;
+    dcaLineas = [];
+    // Invalidar cache local del plan de cuentas: los saldos cambian.
+    dcaCuentasImputables = [];
+    dcaTodasCuentas      = [];
+    await cargarDca();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ---- Modal Detalle ----
+async function abrirDetalleAsientoDca(id) {
+  try {
+    const a = await apiGet(`${DCA_API}?id=${id}`);
+    openModal(`
+      <div class="modal" style="max-width:820px">
+        <div class="modal-header">
+          <div class="modal-title">Asiento N° ${a.numero}</div>
+          <button class="btn-icon-sm" data-act="close">×</button>
+        </div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:14px">
+          <div class="form-row">
+            <div>
+              <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Fecha</div>
+              <div style="font-weight:600">${esc(dcaFmtFechaAR(a.fecha))}</div>
+            </div>
+            <div>
+              <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Total</div>
+              <div style="font-weight:600;font-family:monospace">$ ${dcaFmtMoney(a.total)}</div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Descripción</div>
+            <div style="font-weight:600">${esc(a.descripcion || '—')}</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Detalle</div>
+            <div class="table-card">
+              <table style="font-size:.85rem">
+                <thead>
+                  <tr>
+                    <th>Cuenta</th>
+                    <th style="width:130px;text-align:right">Debe</th>
+                    <th style="width:130px;text-align:right">Haber</th>
+                    <th>Detalle</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${(a.detalle || []).map((d) => `
+                    <tr>
+                      <td>${d.cuenta_codigo ? `<code style="font-size:.78rem;color:var(--muted)">${esc(d.cuenta_codigo)}</code> ` : ''}${esc(d.cuenta_nombre || '—')}</td>
+                      <td style="text-align:right">${Number(d.debe)  > 0 ? '$ ' + dcaFmtMoney(d.debe)  : '—'}</td>
+                      <td style="text-align:right">${Number(d.haber) > 0 ? '$ ' + dcaFmtMoney(d.haber) : '—'}</td>
+                      <td>${esc(d.descripcion || '')}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+          <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+        </div>
+      </div>
+    `);
+    $('#modalRoot').addEventListener('click', (ev) => {
+      if (ev.target.closest('[data-act="close"]'))  closeModal();
+      if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirEditarAsientoDca(id); }
+    });
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function eliminarAsientoDca(id, numero) {
+  const ok = await confirmar({
+    title:       'Eliminar asiento',
+    message:     `¿Eliminás el asiento N° ${numero}? Esto recalcula los saldos afectados.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCA_API}?id=${id}`, 'DELETE');
+    toast('Asiento eliminado');
+    dcaCuentasImputables = [];
+    dcaTodasCuentas      = [];
+    await cargarDca();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ---- Picker de cuentas (árbol jerárquico) ----
+// Se implementa como modal separado (no usa openModal) para no cerrar el
+// modal de alta/edición que está por debajo. Vive en su propio nodo con
+// id `dcaPickerRoot` y z-index más alto que el `.modal-backdrop` base.
+function dcaCerrarPicker() {
+  const p = $('#dcaPickerRoot');
+  if (p) { p.classList.remove('open'); setTimeout(() => p.remove(), 150); }
+  dcaPickerLineaIdx = null;
+}
+
+function dcaAbrirPickerCuenta(lineaIdx) {
+  dcaCerrarPicker();
+  dcaPickerLineaIdx = lineaIdx;
+  dcaPickerBusqueda = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'dcaPickerRoot';
+  wrap.style.zIndex = '160';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
+      <div class="modal-header">
+        <div class="modal-title">Seleccionar cuenta</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+        <input type="search" id="dcaPickerSearch" class="search-input"
+               style="width:100%;box-sizing:border-box"
+               placeholder="🔍 Buscar por código o nombre…">
+      </div>
+      <div id="dcaPickerArbol"
+           style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cancelar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target === wrap) { dcaCerrarPicker(); return; }
+    if (ev.target.closest('[data-act="close"]')) { dcaCerrarPicker(); return; }
+
+    const it = ev.target.closest('[data-cuenta-id]');
+    if (it) {
+      const id = Number(it.dataset.cuentaId);
+      const cs = dcaTodasCuentas.find((c) => c.id === id);
+      if (cs && Number(cs.imputable) === 1 && Number(cs.activa) === 1) {
+        if (dcaPickerLineaIdx !== null) {
+          dcaUpdateLinea(dcaPickerLineaIdx, 'cuenta_id', id);
+        }
+        dcaCerrarPicker();
+      }
+      return;
+    }
+    const tog = ev.target.closest('[data-toggle-id]');
+    if (tog) {
+      ev.stopPropagation();
+      const id = Number(tog.dataset.toggleId);
+      if (dcaPickerColapsadas.has(id)) dcaPickerColapsadas.delete(id);
+      else dcaPickerColapsadas.add(id);
+      dcaRenderArbolPicker();
+    }
+  });
+
+  $('#dcaPickerSearch').addEventListener('input', (ev) => {
+    dcaPickerBusqueda = ev.target.value.trim();
+    dcaRenderArbolPicker();
+  });
+
+  dcaRenderArbolPicker();
+  setTimeout(() => $('#dcaPickerSearch')?.focus(), 50);
+}
+
+function dcaRenderArbolPicker() {
+  const container = $('#dcaPickerArbol');
+  if (!container) return;
+  const busq = dcaPickerBusqueda.toLowerCase();
+  const lineaCuentaId = (dcaPickerLineaIdx !== null && dcaLineas[dcaPickerLineaIdx])
+    ? Number(dcaLineas[dcaPickerLineaIdx].cuenta_id) : 0;
+
+  if (!dcaTodasCuentas.length) {
+    container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">No hay cuentas disponibles</div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (busq) {
+    const matches = dcaTodasCuentas.filter((c) =>
+      Number(c.imputable) === 1 && Number(c.activa) === 1 &&
+      (c.codigo + ' ' + c.nombre).toLowerCase().includes(busq)
+    );
+    if (!matches.length) {
+      container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">Sin resultados para "${esc(dcaPickerBusqueda)}"</div>`;
+      return;
+    }
+    matches.forEach((c) => {
+      const sel = lineaCuentaId === c.id;
+      html += `
+        <div data-cuenta-id="${c.id}"
+             style="display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;border-radius:6px;${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;font-weight:600' : ''}">
+          <code style="font-size:.78rem;flex-shrink:0">${esc(c.codigo)}</code>
+          <span style="flex:1">${esc(c.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0">✓</span>' : ''}
+        </div>`;
+    });
+  } else {
+    const byId = {};
+    dcaTodasCuentas.forEach((c) => { byId[c.id] = Object.assign({}, c, { children: [] }); });
+    const raices = [];
+    dcaTodasCuentas.forEach((c) => {
+      if (c.parent_id && byId[c.parent_id]) byId[c.parent_id].children.push(byId[c.id]);
+      else raices.push(byId[c.id]);
+    });
+
+    const walk = (nodo, depth) => {
+      const isImputable = Number(nodo.imputable) === 1 && Number(nodo.activa) === 1;
+      const tieneHijos  = nodo.children.length > 0;
+      const colapsado   = dcaPickerColapsadas.has(nodo.id);
+      const sel         = lineaCuentaId === nodo.id;
+      const pl          = 8 + depth * 20;
+
+      const toggle = tieneHijos
+        ? `<span data-toggle-id="${nodo.id}" style="width:18px;text-align:center;display:inline-block;flex-shrink:0;cursor:pointer">${colapsado ? '▶' : '▼'}</span>`
+        : `<span style="width:18px;display:inline-block;flex-shrink:0"></span>`;
+
+      html += `
+        <div ${isImputable ? `data-cuenta-id="${nodo.id}"` : ''}
+             style="display:flex;align-items:center;gap:4px;padding:7px 8px 7px ${pl}px;border-radius:6px;
+                    cursor:${isImputable ? 'pointer' : 'default'};
+                    ${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;' : !isImputable ? 'color:var(--muted);' : ''}
+                    font-weight:${Number(nodo.imputable) === 0 ? '700' : '400'}">
+          ${toggle}
+          <code style="font-size:.78rem;flex-shrink:0;margin-right:4px">${esc(nodo.codigo)}</code>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nodo.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0;margin-left:4px">✓</span>' : ''}
+        </div>`;
+
+      if (tieneHijos && !colapsado) {
+        nodo.children.forEach((h) => walk(h, depth + 1));
+      }
+    };
+    raices.forEach((r) => walk(r, 0));
+  }
+
+  container.innerHTML = html;
+}
+
+// ------------------------- Vista: Datacount > Movimientos recurrentes -------------------------
+// ABM de movimientos contables recurrentes por empresa + cuenta con montos
+// previstos de ingreso/egreso y flag `activo`. Listado + toolbar con
+// buscador rápido + modal de filtros según ABM.md.
+
+const DCR_API = 'api/datacountrecurrentes.php';
+
+let dcrItems             = [];
+let dcrTodasCuentasCache = [];       // todas las cuentas (con agrupaciones) — para el árbol
+let dcrCuentasCache      = [];       // solo imputables+activas — para filtros dropdown
+let dcrCuentasCacheEmp   = null;     // empresa a la que corresponde el cache
+let dcrBusqueda          = '';
+let dcrFiltroCodigo      = '';
+let dcrFiltroCuenta      = '';
+let dcrFiltroActivo      = '';
+let dcrFiltroLimite      = 100;
+let dcrFiltroOrden       = 'id';
+let dcrFiltroDir         = 'desc';
+let dcrEditandoId        = null;
+let dcrBuscadorTimer     = null;
+let dcrFiltrosSnapshot   = null;
+
+// Estado del picker jerárquico de cuentas (modal secundario del alta/edición).
+let dcrPickerColapsadas  = new Set();
+let dcrPickerBusqueda    = '';
+
+function dcrFmtMoney(n) {
+  return Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Carga las cuentas de la empresa activa. Cachea por empresa. Publica dos
+// vistas: `dcrTodasCuentasCache` (para el árbol) y `dcrCuentasCache` (solo
+// imputables+activas, para el dropdown del filtro).
+async function dcrCargarCuentasEmpresa(empresaId) {
+  if (dcrTodasCuentasCache.length && dcrCuentasCacheEmp === empresaId) return dcrCuentasCache;
+  try {
+    const d = await apiGet(`api/datacountcuentas.php?empresa_id=${empresaId}`);
+    dcrTodasCuentasCache = d.items || [];
+    dcrCuentasCache = dcrTodasCuentasCache.filter((c) =>
+      Number(c.imputable) === 1 && Number(c.activa) === 1);
+    dcrCuentasCacheEmp = empresaId;
+  } catch {
+    dcrTodasCuentasCache = [];
+    dcrCuentasCache = [];
+    dcrCuentasCacheEmp = empresaId;
+  }
+  return dcrCuentasCache;
+}
+
+route('/datacountrecurrentes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">🔁</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los movimientos recurrentes son plantillas de ingresos/egresos esperados por
+          empresa y cuenta contable. Cada fila combina una empresa, una cuenta imputable
+          del plan de cuentas y los montos previstos de ingreso y egreso.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dcrStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dcrStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green" id="dcrStatActivos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Ingresos (activos)</span><span class="stat-value" style="color:#93c5fd" id="dcrStatIngresos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Egresos (activos)</span><span class="stat-value red" id="dcrStatEgresos">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcrEmpresaSel" style="min-width:200px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcrSearch"
+                   placeholder="🔍 Buscar código o nombre de cuenta…">
+            <button class="search-clear" id="dcrSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcrFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcrFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcrRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcrNuevoBtn">+ Nuevo movimiento recurrente</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Empresa</th>
+              <th>Cuenta</th>
+              <th style="width:140px;text-align:right">Ingreso</th>
+              <th style="width:140px;text-align:right">Egreso</th>
+              <th style="width:90px;text-align:center">Activo</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcrTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dcrCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDcrBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcr()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDcr()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcrCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDcr('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Cuenta</label>
+              <select id="fDcrCuenta" onchange="onFiltroDcr('cuenta', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <div id="fDcrActivoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-val="">Todos</button>
+              <button type="button" class="filter-chip" data-val="1">Activos</button>
+              <button type="button" class="filter-chip" data-val="0">Inactivos</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcrLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDcr('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcrOrden" onchange="onFiltroDcr('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="cuenta">Cuenta</option>
+                <option value="ingreso">Ingreso</option>
+                <option value="egreso">Egreso</option>
+                <option value="activo">Activo</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcrDir" onchange="onFiltroDcr('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcr()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcr()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcr()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcrSearch');
+  const clr = $('#dcrSearchClear');
+  inp.value = dcrBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcrBusqueda = inp.value.trim();
+    clearTimeout(dcrBuscadorTimer);
+    dcrBuscadorTimer = setTimeout(cargarDcr, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcrBusqueda = ''; cargarDcr();
+  });
+
+  // Selector de empresa (contexto compartido con otros módulos Datacount).
+  const selEmp = $('#dcrEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', async (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    // Cambió la empresa: reset filtro por cuenta (era del contexto anterior)
+    // y recargar el cache de cuentas.
+    dcrFiltroCuenta      = '';
+    dcrTodasCuentasCache = [];
+    dcrCuentasCache      = [];
+    dcrCuentasCacheEmp   = null;
+    const nuevaEmp = Number(ev.target.value);
+    if (nuevaEmp > 0) await dcrCargarCuentasEmpresa(nuevaEmp);
+    dcrPoblarSelectsFiltros();
+    dcrActualizarBadgeFiltros();
+    await cargarDcr();
+  });
+
+  $('#dcrFiltrosBtn').addEventListener('click', abrirModalFiltrosDcr);
+  $('#dcrRefrescarBtn').addEventListener('click', cargarDcr);
+  $('#dcrNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcr(null));
+
+  // Chips de activo dentro del modal
+  const chips = document.querySelectorAll('#fDcrActivoChips .filter-chip');
+  chips.forEach((b) => {
+    b.addEventListener('click', () => {
+      dcrFiltroActivo = b.dataset.val || '';
+      dcrSincronizarChipsActivo();
+      dcrActualizarBadgeFiltros();
+      cargarDcr();
+    });
+  });
+
+  // Menú contextual + interacción con la fila
+  $('#dcrCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDcr(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDcr(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDcr(data.id);
+  });
+
+  $('#dcrTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dcrCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcr(Number(tr.dataset.id));
+  });
+  $('#dcrTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dcrCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  if (empresaId) await dcrCargarCuentasEmpresa(empresaId);
+  dcrPoblarSelectsFiltros();
+  dcrActualizarBadgeFiltros();
+  await cargarDcr();
+}, 'Recurrentes');
+
+async function cargarDcr() {
+  const tbody = $('#dcrTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">No hay empresas registradas — creá una antes de dar de alta recurrentes.</td></tr>`;
+    return;
+  }
+
+  const qs = new URLSearchParams();
+  qs.set('empresa', String(empresaId));
+  if (dcrBusqueda)                          qs.set('q', dcrBusqueda);
+  if (dcrFiltroCuenta)                      qs.set('cuenta', dcrFiltroCuenta);
+  if (dcrFiltroActivo === '0' || dcrFiltroActivo === '1') qs.set('activo', dcrFiltroActivo);
+  if (dcrFiltroLimite)                      qs.set('limite', dcrFiltroLimite);
+  if (dcrFiltroOrden)                       qs.set('orden', dcrFiltroOrden);
+  if (dcrFiltroDir)                         qs.set('dir', dcrFiltroDir);
+
+  try {
+    const data = await apiGet(DCR_API + '?' + qs.toString());
+    dcrItems = data.items || [];
+    pintarStatsDcr(data.stats || {});
+    renderDcr();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcr(s) {
+  $('#dcrStatTotal').textContent    = fmtNum(s.total ?? dcrItems.length);
+  $('#dcrStatActivos').textContent  = fmtNum(s.activos ?? 0);
+  $('#dcrStatIngresos').textContent = '$ ' + dcrFmtMoney(s.ingresos ?? 0);
+  $('#dcrStatEgresos').textContent  = '$ ' + dcrFmtMoney(s.egresos ?? 0);
+}
+
+function renderDcr() {
+  const tbody = $('#dcrTbody');
+  if (!tbody) return;
+  if (!dcrItems.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin movimientos recurrentes registrados.</td></tr>`;
+    return;
+  }
+
+  // Filtro cliente por Código (el resto lo resuelve el server).
+  let filas = dcrItems;
+  if (dcrFiltroCodigo) {
+    const cod = Number(dcrFiltroCodigo);
+    filas = filas.filter((r) => r.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((r) => {
+    const activoBadge = Number(r.activo) === 1
+      ? '<span class="badge badge-success">Activo</span>'
+      : '<span class="badge">Inactivo</span>';
+    const cuentaStr = r.cuenta_codigo
+      ? `<code style="font-family:monospace;font-size:.82rem">${esc(r.cuenta_codigo)}</code> — ${esc(r.cuenta_nombre || '')}`
+      : `#${r.cuenta}`;
+    return `
+      <tr data-id="${r.id}" class="row-clickable">
+        <td><code style="font-size:.82rem">${r.id}</code></td>
+        <td style="font-weight:600">${esc(r.empresa_nombre || '#' + r.empresa)}</td>
+        <td>${cuentaStr}</td>
+        <td style="text-align:right;font-family:monospace">${Number(r.ingreso) > 0 ? '<span style="color:var(--success);font-weight:600">$ ' + dcrFmtMoney(r.ingreso) + '</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="text-align:right;font-family:monospace">${Number(r.egreso) > 0 ? '<span style="color:var(--danger);font-weight:600">$ ' + dcrFmtMoney(r.egreso) + '</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="text-align:center">${activoBadge}</td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ---- Modal de filtros ----
+function dcrPoblarSelectsFiltros() {
+  const selC = $('#fDcrCuenta');
+  if (selC) {
+    selC.innerHTML = `<option value="">— Todas —</option>` +
+      dcrCuentasCache.map((c) => `<option value="${c.id}">${esc(c.codigo)} — ${esc(c.nombre)}</option>`).join('');
+    selC.value = dcrFiltroCuenta || '';
+  }
+}
+
+function abrirModalFiltrosDcr() {
+  dcrFiltrosSnapshot = {
+    codigo:  dcrFiltroCodigo,
+    cuenta:  dcrFiltroCuenta,
+    activo:  dcrFiltroActivo,
+    limite:  dcrFiltroLimite,
+    orden:   dcrFiltroOrden,
+    dir:     dcrFiltroDir,
+  };
+  $('#fDcrCodigo').value  = dcrFiltroCodigo || '';
+  $('#fDcrCuenta').value  = dcrFiltroCuenta || '';
+  $('#fDcrLimite').value  = dcrFiltroLimite || 100;
+  $('#fDcrOrden').value   = dcrFiltroOrden  || 'id';
+  $('#fDcrDir').value     = dcrFiltroDir    || 'desc';
+  dcrSincronizarChipsActivo();
+  document.getElementById('filtrosDcrBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDcr() {
+  document.getElementById('filtrosDcrBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDcr() {
+  if (dcrFiltrosSnapshot) {
+    dcrFiltroCodigo  = dcrFiltrosSnapshot.codigo;
+    dcrFiltroCuenta  = dcrFiltrosSnapshot.cuenta;
+    dcrFiltroActivo  = dcrFiltrosSnapshot.activo;
+    dcrFiltroLimite  = dcrFiltrosSnapshot.limite;
+    dcrFiltroOrden   = dcrFiltrosSnapshot.orden;
+    dcrFiltroDir     = dcrFiltrosSnapshot.dir;
+    dcrActualizarBadgeFiltros();
+    cargarDcr();
+  }
+  cerrarModalFiltrosDcr();
+}
+
+function limpiarFiltrosDcr() {
+  dcrFiltroCodigo  = '';
+  dcrFiltroCuenta  = '';
+  dcrFiltroActivo  = '';
+  dcrFiltroLimite  = 100;
+  dcrFiltroOrden   = 'id';
+  dcrFiltroDir     = 'desc';
+  $('#fDcrCodigo').value  = '';
+  $('#fDcrCuenta').value  = '';
+  $('#fDcrLimite').value  = 100;
+  $('#fDcrOrden').value   = 'id';
+  $('#fDcrDir').value     = 'desc';
+  dcrSincronizarChipsActivo();
+  dcrActualizarBadgeFiltros();
+  cargarDcr();
+}
+
+function onFiltroDcr(campo, valor) {
+  if (campo === 'codigo')  dcrFiltroCodigo  = (valor || '').trim();
+  if (campo === 'cuenta')  dcrFiltroCuenta  = valor || '';
+  if (campo === 'limite')  dcrFiltroLimite  = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')   dcrFiltroOrden   = valor || 'id';
+  if (campo === 'dir')     dcrFiltroDir     = valor || 'desc';
+  dcrActualizarBadgeFiltros();
+  cargarDcr();
+}
+
+function dcrSincronizarChipsActivo() {
+  const chips = document.querySelectorAll('#fDcrActivoChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.val || '') === (dcrFiltroActivo || ''));
+  });
+}
+
+function dcrActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcrFiltroCodigo)                                     n++;
+  if (dcrFiltroCuenta)                                     n++;
+  if (dcrFiltroActivo === '0' || dcrFiltroActivo === '1')  n++;
+  if (Number(dcrFiltroLimite) !== 100)                     n++;
+  if (dcrFiltroOrden !== 'id')                             n++;
+  if (dcrFiltroDir   !== 'desc')                           n++;
+  const badge = $('#dcrFiltrosBadge');
+  const btn   = $('#dcrFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDcr(id) {
+  dcrEditandoId = id;
+  const editando = !!id;
+  const r = editando ? dcrItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar movimiento recurrente' : 'Nuevo movimiento recurrente';
+
+  // Empresa contextual: en alta usa la del contexto compartido; en edición
+  // usa la que ya tiene el registro (no se puede cambiar desde este modal).
+  const empresaId = editando ? Number(r?.empresa) : (dcGetEmpresaId() || 0);
+  if (!empresaId) {
+    toast('Elegí una empresa antes de crear recurrentes', { error: true });
+    return;
+  }
+  await dcrCargarCuentasEmpresa(empresaId);
+  const empresas = await dcGetEmpresas();
+  const empresaObj = empresas.find((e) => e.id === empresaId);
+
+  openModal(`
+    <div class="modal" style="max-width:560px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Empresa</label>
+          <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);font-weight:600">
+            🏢 ${esc(empresaObj?.nombre || '#' + empresaId)}
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Cuenta *</label>
+          <button type="button" id="dcrCuentaBtn" data-cuenta-id=""
+                  style="text-align:left;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);cursor:pointer;display:flex;align-items:center;gap:8px">
+            <span id="dcrCuentaLabel" style="flex:1;color:var(--muted)">— Elegí una cuenta imputable —</span>
+            <i class="fa-solid fa-chevron-down" style="color:var(--muted);flex-shrink:0"></i>
+          </button>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcrIngreso">Ingreso</label>
+            <input type="number" id="dcrIngreso" min="0" step="0.01" placeholder="0.00"
+                   style="font-family:monospace;text-align:right">
+          </div>
+          <div class="form-group">
+            <label for="dcrEgreso">Egreso</label>
+            <input type="number" id="dcrEgreso" min="0" step="0.01" placeholder="0.00"
+                   style="font-family:monospace;text-align:right">
+          </div>
+        </div>
+        <div class="form-group" style="display:flex;gap:18px;align-items:center">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dcrActivo" checked> Activo
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && r) {
+    dcrSetCuentaSeleccionada(Number(r.cuenta));
+    $('#dcrIngreso').value = Number(r.ingreso) > 0 ? r.ingreso : '';
+    $('#dcrEgreso').value  = Number(r.egreso)  > 0 ? r.egreso  : '';
+    $('#dcrActivo').checked = Number(r.activo) === 1;
+  }
+
+  setTimeout(() => $('#dcrCuentaBtn')?.focus(), 50);
+
+  $('#modalRoot').dataset.dcrEmpresa = String(empresaId);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcr();
+    if (ev.target.closest('#dcrCuentaBtn'))        dcrAbrirPickerCuenta();
+  });
+}
+
+// Refleja la cuenta elegida en el botón: guarda el id en `data-cuenta-id`
+// y muestra el label con código y nombre. Si el id es 0/null, deja el
+// placeholder.
+function dcrSetCuentaSeleccionada(cuentaId) {
+  const btn   = $('#dcrCuentaBtn');
+  const label = $('#dcrCuentaLabel');
+  if (!btn || !label) return;
+  const c = cuentaId ? dcrTodasCuentasCache.find((x) => x.id === cuentaId) : null;
+  if (c) {
+    btn.dataset.cuentaId = String(c.id);
+    label.style.color = '';
+    label.innerHTML =
+      `<code style="font-family:monospace;font-size:.85rem;margin-right:6px">${esc(c.codigo)}</code>${esc(c.nombre)}`;
+  } else {
+    btn.dataset.cuentaId = '';
+    label.style.color = 'var(--muted)';
+    label.textContent = '— Elegí una cuenta imputable —';
+  }
+}
+
+// ---- Picker de cuentas jerárquico (modal secundario del alta/edición) ----
+function dcrCerrarPickerCuenta() {
+  const p = $('#dcrPickerRoot');
+  if (p) { p.classList.remove('open'); setTimeout(() => p.remove(), 150); }
+}
+
+function dcrAbrirPickerCuenta() {
+  dcrCerrarPickerCuenta();
+  dcrPickerBusqueda = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'dcrPickerRoot';
+  wrap.style.zIndex = '160';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
+      <div class="modal-header">
+        <div class="modal-title">Seleccionar cuenta</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+        <input type="search" id="dcrPickerSearch" class="search-input"
+               style="width:100%;box-sizing:border-box"
+               placeholder="🔍 Buscar por código o nombre…">
+      </div>
+      <div id="dcrPickerArbol"
+           style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cancelar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target === wrap) { dcrCerrarPickerCuenta(); return; }
+    if (ev.target.closest('[data-act="close"]')) { dcrCerrarPickerCuenta(); return; }
+
+    const it = ev.target.closest('[data-cuenta-id]');
+    if (it) {
+      const id = Number(it.dataset.cuentaId);
+      const cs = dcrTodasCuentasCache.find((c) => c.id === id);
+      if (cs && Number(cs.imputable) === 1 && Number(cs.activa) === 1) {
+        dcrSetCuentaSeleccionada(id);
+        dcrCerrarPickerCuenta();
+      }
+      return;
+    }
+    const tog = ev.target.closest('[data-toggle-id]');
+    if (tog) {
+      ev.stopPropagation();
+      const id = Number(tog.dataset.toggleId);
+      if (dcrPickerColapsadas.has(id)) dcrPickerColapsadas.delete(id);
+      else dcrPickerColapsadas.add(id);
+      dcrRenderArbolPicker();
+    }
+  });
+
+  $('#dcrPickerSearch').addEventListener('input', (ev) => {
+    dcrPickerBusqueda = ev.target.value.trim();
+    dcrRenderArbolPicker();
+  });
+
+  dcrRenderArbolPicker();
+  setTimeout(() => $('#dcrPickerSearch')?.focus(), 50);
+}
+
+function dcrRenderArbolPicker() {
+  const container = $('#dcrPickerArbol');
+  if (!container) return;
+  const busq = dcrPickerBusqueda.toLowerCase();
+  const cuentaSeleccionada = Number($('#dcrCuentaBtn')?.dataset.cuentaId) || 0;
+
+  if (!dcrTodasCuentasCache.length) {
+    container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">No hay cuentas disponibles para esta empresa</div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (busq) {
+    // En modo búsqueda aplanamos: solo cuentas imputables+activas que matcheen.
+    const matches = dcrTodasCuentasCache.filter((c) =>
+      Number(c.imputable) === 1 && Number(c.activa) === 1 &&
+      (c.codigo + ' ' + c.nombre).toLowerCase().includes(busq)
+    );
+    if (!matches.length) {
+      container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">Sin resultados para "${esc(dcrPickerBusqueda)}"</div>`;
+      return;
+    }
+    matches.forEach((c) => {
+      const sel = cuentaSeleccionada === c.id;
+      html += `
+        <div data-cuenta-id="${c.id}"
+             style="display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;border-radius:6px;${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;font-weight:600' : ''}">
+          <code style="font-size:.78rem;flex-shrink:0">${esc(c.codigo)}</code>
+          <span style="flex:1">${esc(c.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0">✓</span>' : ''}
+        </div>`;
+    });
+  } else {
+    // Vista árbol: agrupaciones (imputable=0) se muestran pero no se pueden elegir.
+    const byId = {};
+    dcrTodasCuentasCache.forEach((c) => { byId[c.id] = Object.assign({}, c, { children: [] }); });
+    const raices = [];
+    dcrTodasCuentasCache.forEach((c) => {
+      if (c.parent_id && byId[c.parent_id]) byId[c.parent_id].children.push(byId[c.id]);
+      else raices.push(byId[c.id]);
+    });
+
+    const walk = (nodo, depth) => {
+      const isImputable = Number(nodo.imputable) === 1 && Number(nodo.activa) === 1;
+      const tieneHijos  = nodo.children.length > 0;
+      const colapsado   = dcrPickerColapsadas.has(nodo.id);
+      const sel         = cuentaSeleccionada === nodo.id;
+      const pl          = 8 + depth * 20;
+
+      const toggle = tieneHijos
+        ? `<span data-toggle-id="${nodo.id}" style="width:18px;text-align:center;display:inline-block;flex-shrink:0;cursor:pointer">${colapsado ? '▶' : '▼'}</span>`
+        : `<span style="width:18px;display:inline-block;flex-shrink:0"></span>`;
+
+      html += `
+        <div ${isImputable ? `data-cuenta-id="${nodo.id}"` : ''}
+             style="display:flex;align-items:center;gap:4px;padding:7px 8px 7px ${pl}px;border-radius:6px;
+                    cursor:${isImputable ? 'pointer' : 'default'};
+                    ${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;' : !isImputable ? 'color:var(--muted);' : ''}
+                    font-weight:${Number(nodo.imputable) === 0 ? '700' : '400'}">
+          ${toggle}
+          <code style="font-size:.78rem;flex-shrink:0;margin-right:4px">${esc(nodo.codigo)}</code>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nodo.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0;margin-left:4px">✓</span>' : ''}
+        </div>`;
+
+      if (tieneHijos && !colapsado) {
+        nodo.children.forEach((h) => walk(h, depth + 1));
+      }
+    };
+    raices.forEach((r) => walk(r, 0));
+  }
+
+  container.innerHTML = html;
+}
+
+async function guardarDcr() {
+  const empresa = Number($('#modalRoot').dataset.dcrEmpresa) || 0;
+  const cuenta  = Number($('#dcrCuentaBtn')?.dataset.cuentaId) || 0;
+  const ingreso = Number($('#dcrIngreso').value) || 0;
+  const egreso  = Number($('#dcrEgreso').value)  || 0;
+  const activo  = $('#dcrActivo').checked ? 1 : 0;
+
+  if (!empresa) { toast('La empresa es obligatoria', { error: true }); return; }
+  if (!cuenta)  { toast('La cuenta es obligatoria',  { error: true }); return; }
+  if (ingreso < 0 || egreso < 0) { toast('Los montos no pueden ser negativos', { error: true }); return; }
+
+  const body = { empresa, cuenta, ingreso, egreso, activo };
+
+  try {
+    if (dcrEditandoId) {
+      await apiSend(`${DCR_API}?id=${dcrEditandoId}`, 'PUT', body);
+      toast('Movimiento recurrente actualizado');
+    } else {
+      await apiSend(DCR_API, 'POST', body);
+      toast('Movimiento recurrente creado');
+    }
+    closeModal();
+    dcrEditandoId = null;
+    await cargarDcr();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDcr(id) {
+  const r = dcrItems.find((x) => x.id === id);
+  if (!r) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  const cuentaLabel = r.cuenta_codigo
+    ? `<code style="font-family:monospace">${esc(r.cuenta_codigo)}</code> — ${esc(r.cuenta_nombre || '')}`
+    : `#${r.cuenta}`;
+  const ingresoHtml = Number(r.ingreso) > 0
+    ? `<span style="color:var(--success);font-weight:600;font-family:monospace">$ ${dcrFmtMoney(r.ingreso)}</span>`
+    : `<span style="color:var(--muted)">—</span>`;
+  const egresoHtml = Number(r.egreso) > 0
+    ? `<span style="color:var(--danger);font-weight:600;font-family:monospace">$ ${dcrFmtMoney(r.egreso)}</span>`
+    : `<span style="color:var(--muted)">—</span>`;
+  const activoHtml = Number(r.activo) === 1
+    ? `<span class="badge badge-success">Activo</span>`
+    : `<span class="badge">Inactivo</span>`;
+
+  openModal(`
+    <div class="modal" style="max-width:620px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🔁 <span class="modal-subtitle">Movimiento recurrente #${r.id}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',   `<code>${r.id}</code>`)}
+          ${card('Estado',   activoHtml)}
+          ${card('Empresa',  esc(r.empresa_nombre || '#' + r.empresa), 'full')}
+          ${card('Cuenta',   cuentaLabel, 'full')}
+          ${card('Ingreso',  ingresoHtml)}
+          ${card('Egreso',   egresoHtml)}
+          ${card('Alta',     esc(fmtFecha(r.created_at)))}
+          ${card('Modificación', esc(fmtFecha(r.updated_at)))}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcr(id); }
+  });
+}
+
+async function eliminarDcr(id) {
+  const r = dcrItems.find((x) => x.id === id);
+  if (!r) return;
+  const desc = r.empresa_nombre
+    ? `${r.empresa_nombre} / ${r.cuenta_codigo || '#' + r.cuenta}`
+    : `#${id}`;
+  const ok = await confirmar({
+    title:       'Eliminar movimiento recurrente',
+    message:     `¿Eliminás el movimiento recurrente "${desc}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCR_API}?id=${id}`, 'DELETE');
+    toast('Movimiento recurrente eliminado');
+    await cargarDcr();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
 
 // ------------------------- Vista: Datarocket > Mensajes (ABM) -------------------------
 const drMsgFiltrosDefaults = {
