@@ -19940,7 +19940,7 @@ function renderTareas(rows) {
   }
   tbody.innerHTML = rows.map((t) => {
     const nombre  = esc(t.nombre || '');
-    const script  = esc(t.script || '');
+    const desc    = t.descripcion ? esc(t.descripcion) : '';
     const cron    = esc(t.cron_expr || '');
     const est     = tareaBadgeEstado(t.ultimo_estado);
     const ultimo  = t.ultimo_run ? esc(fmtFecha(t.ultimo_run)) : '<span style="color:var(--muted)">—</span>';
@@ -19952,7 +19952,7 @@ function renderTareas(rows) {
         <td class="td-id">${t.id}</td>
         <td>
           <div style="font-weight:600">${nombre}</div>
-          <div style="font-family:monospace;font-size:.78rem;color:var(--muted)">${script}</div>
+          ${desc ? `<div style="font-size:.82rem;color:var(--muted)">${desc}</div>` : ''}
         </td>
         <td style="font-family:monospace;font-size:.82rem">${cron}</td>
         <td>${est}</td>
