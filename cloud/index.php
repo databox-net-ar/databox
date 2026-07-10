@@ -77,7 +77,7 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
               <span class="nav-icon">📖</span> Asientos
             </a>
             <a href="#/datacountrecurrentes" class="nav-item nav-sub-item" data-route="/datacountrecurrentes">
-              <span class="nav-icon">🔁</span> Recurrentes
+              <span class="nav-icon">🔁</span> Movimientos recurrentes
             </a>
             <a href="#/datacountcuentas" class="nav-item nav-sub-item" data-route="/datacountcuentas">
               <span class="nav-icon">📒</span> Plan de cuentas

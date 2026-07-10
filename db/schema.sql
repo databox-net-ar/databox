@@ -269,13 +269,17 @@ CREATE TABLE `datacount_cuentas`  (
 -- Table structure for datacount_asientos
 -- ----------------------------
 -- Asientos contables (mismo esquema que `repo.asientos`). Cada asiento
--- se auto-numera (`numero`, UNIQUE) y agrupa 2+ líneas en
--- `datacount_asientos_detalles`. El total = SUM(debe) = SUM(haber)
--- (validado en el endpoint PHP).
+-- se asocia a una empresa (`empresa_id` referencia `datacount_empresas.id`)
+-- y auto-numera dentro de ella — `numero` es UNIQUE por `(empresa_id, numero)`,
+-- cada empresa lleva su propia serie 1, 2, 3, ... Agrupa 2+ líneas en
+-- `datacount_asientos_detalles`; el total = SUM(debe) = SUM(haber) y todas
+-- las cuentas del detalle deben pertenecer a la misma empresa (validado
+-- en el endpoint PHP).
 DROP TABLE IF EXISTS `datacount_asientos_detalles`;
 DROP TABLE IF EXISTS `datacount_asientos`;
 CREATE TABLE `datacount_asientos`  (
   `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `empresa_id` int(11) UNSIGNED NOT NULL DEFAULT 1,
   `numero` int(11) UNSIGNED NOT NULL,
   `fecha` date NOT NULL,
   `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
@@ -283,7 +287,8 @@ CREATE TABLE `datacount_asientos`  (
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_numero`(`numero`) USING BTREE,
+  UNIQUE INDEX `uk_empresa_numero`(`empresa_id`, `numero`) USING BTREE,
+  INDEX `idx_empresa`(`empresa_id`) USING BTREE,
   INDEX `idx_fecha`(`fecha`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
@@ -343,6 +348,7 @@ CREATE TABLE `datacount_empresas`  (
 DROP TABLE IF EXISTS `datacount_recurrentes`;
 CREATE TABLE `datacount_recurrentes`  (
   `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `nombre`     varchar(150) NOT NULL DEFAULT '',
   `empresa`    int(11) UNSIGNED NOT NULL,
   `cuenta`     int(11) UNSIGNED NOT NULL,
   `ingreso`    decimal(14, 2) NOT NULL DEFAULT 0.00,

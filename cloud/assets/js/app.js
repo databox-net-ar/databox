@@ -5898,7 +5898,10 @@ async function eliminarDce(id) {
 // ------------------------- Vista: Datacount > Asientos -------------------------
 // Asientos contables (misma UI que `repo.cloud > contable > asientos`): listado
 // con sub-líneas del detalle, filtros fecha/cuenta/texto, modal de alta/edición
-// con líneas (Debe/Haber) y picker jerárquico de cuentas del plan.
+// con líneas (Debe/Haber) y picker jerárquico de cuentas del plan. Cada asiento
+// queda asociado a una empresa (misma relación que `datacount_cuentas` y
+// `datacount_recurrentes`); el listado filtra por la empresa activa del
+// contexto compartido de Datacount.
 
 const DCA_API = 'api/datacountasientos.php';
 
@@ -5911,9 +5914,11 @@ let dcaFiltroCuentaNombre = '';
 let dcaBuscadorTimer      = null;
 
 let dcaEditandoId         = null;
+let dcaEditandoEmpresaId  = null;  // empresa objetivo del modal alta/edición
 let dcaLineas             = [];    // [{cuenta_id, debe, haber, descripcion}]
-let dcaCuentasImputables  = [];    // solo imputables+activas
-let dcaTodasCuentas       = [];    // árbol completo (picker)
+let dcaCuentasImputables  = [];    // solo imputables+activas — de la empresa cacheada
+let dcaTodasCuentas       = [];    // árbol completo (picker) — de la empresa cacheada
+let dcaCuentasCacheEmp    = null;  // empresa a la que corresponde el cache
 let dcaPickerLineaIdx     = null;
 let dcaPickerColapsadas   = new Set();
 let dcaPickerBusqueda     = '';
@@ -5949,6 +5954,9 @@ route('/datacountasientos', async (mount) => {
 
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcaEmpresaSel" style="min-width:200px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
           <div class="search-wrap">
             <input type="search" class="search-input" id="dcaSearch"
                    placeholder="🔍 Buscar por nº o descripción…">
@@ -6018,6 +6026,31 @@ route('/datacountasientos', async (mount) => {
   });
   clr.addEventListener('click', () => {
     inp.value = ''; clr.style.display = 'none'; dcaBusqueda = ''; cargarDca();
+  });
+
+  // Selector de empresa (contexto compartido con otros módulos Datacount).
+  const selEmp = $('#dcaEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    // Cambió la empresa: invalidar cache de cuentas (era del contexto anterior)
+    // y limpiar el filtro por cuenta (los ids ya no aplican).
+    dcaCuentasImputables = [];
+    dcaTodasCuentas      = [];
+    dcaCuentasCacheEmp   = null;
+    dcaFiltroCuentaId    = null;
+    dcaFiltroCuentaNombre = '';
+    dcaActualizarBadgeFiltroCuenta();
+    cargarDca();
   });
 
   $('#dcaDesde').value = dcaFiltroDesde;
@@ -6091,14 +6124,22 @@ async function cargarDca() {
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">No hay empresas registradas — creá una antes de dar de alta asientos.</td></tr>`;
+    pintarStatsDca({});
+    return;
+  }
+
   const qs = new URLSearchParams();
+  qs.set('empresa', String(empresaId));
   if (dcaBusqueda)       qs.set('q', dcaBusqueda);
   if (dcaFiltroDesde)    qs.set('desde', dcaFiltroDesde);
   if (dcaFiltroHasta)    qs.set('hasta', dcaFiltroHasta);
   if (dcaFiltroCuentaId) qs.set('cuenta_id', dcaFiltroCuentaId);
 
   try {
-    const data = await apiGet(DCA_API + (qs.toString() ? '?' + qs.toString() : ''));
+    const data = await apiGet(DCA_API + '?' + qs.toString());
     dcaAsientos = data.items || [];
     pintarStatsDca(data.stats || {});
     renderDca();
@@ -6180,21 +6221,30 @@ function renderFilaAsientoDca(a) {
 }
 
 // ---- Cuentas del plan (para alta/edición) ----
-async function dcaAsegurarCuentas() {
-  if (dcaCuentasImputables.length) return;
+// Cachea el plan por empresa. El picker jerárquico y las líneas de detalle
+// solo pueden elegir cuentas de la empresa activa del asiento.
+async function dcaAsegurarCuentas(empresaId) {
+  if (dcaCuentasImputables.length && dcaCuentasCacheEmp === empresaId) return;
   try {
-    const d = await apiGet(DCC_API);
+    const d = await apiGet(`${DCC_API}?empresa_id=${empresaId}`);
     dcaTodasCuentas = d.items || [];
     dcaCuentasImputables = dcaTodasCuentas.filter(
       (c) => Number(c.imputable) === 1 && Number(c.activa) === 1
     );
+    dcaCuentasCacheEmp = empresaId;
   } catch (_) {
+    dcaTodasCuentas      = [];
+    dcaCuentasImputables = [];
+    dcaCuentasCacheEmp   = empresaId;
     // el modal muestra un aviso más abajo
   }
 }
 
 // ---- Modal Alta / Edición ----
-function dcaAbrirModalAlta(tituloText) {
+function dcaAbrirModalAlta(tituloText, empresaObj) {
+  const empresaHtml = empresaObj
+    ? `🏢 ${esc(empresaObj.nombre)}`
+    : (dcaEditandoEmpresaId ? `🏢 #${dcaEditandoEmpresaId}` : '—');
   openModal(`
     <div class="modal modal-wide" style="max-width:960px">
       <div class="modal-header">
@@ -6202,6 +6252,12 @@ function dcaAbrirModalAlta(tituloText) {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
+        <div class="form-group">
+          <label>Empresa</label>
+          <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);font-weight:600">
+            ${empresaHtml}
+          </div>
+        </div>
         <div class="form-row" style="grid-template-columns:180px 1fr">
           <div class="form-group">
             <label for="dcaFecha">Fecha *</label>
@@ -6251,7 +6307,7 @@ function dcaAbrirModalAlta(tituloText) {
 
   $('#dcaAgregarLineaBtn').addEventListener('click', dcaAgregarLinea);
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))   { closeModal(); dcaEditandoId = null; dcaLineas = []; }
+    if (ev.target.closest('[data-act="close"]'))   { closeModal(); dcaEditandoId = null; dcaEditandoEmpresaId = null; dcaLineas = []; }
     if (ev.target.closest('[data-act="guardar"]')) guardarAsientoDca();
   });
 
@@ -6272,17 +6328,25 @@ function dcaAbrirModalAlta(tituloText) {
 }
 
 async function abrirNuevoAsientoDca() {
-  await dcaAsegurarCuentas();
-  if (!dcaCuentasImputables.length) {
-    toast('No hay cuentas imputables activas. Revisá el plan de cuentas.', { error: true });
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    toast('Elegí una empresa antes de crear asientos', { error: true });
     return;
   }
-  dcaEditandoId = null;
+  await dcaAsegurarCuentas(empresaId);
+  if (!dcaCuentasImputables.length) {
+    toast('No hay cuentas imputables activas para esta empresa. Revisá el plan de cuentas.', { error: true });
+    return;
+  }
+  dcaEditandoId        = null;
+  dcaEditandoEmpresaId = empresaId;
   dcaLineas = [
     { cuenta_id: '', debe: '', haber: '', descripcion: '' },
     { cuenta_id: '', debe: '', haber: '', descripcion: '' },
   ];
-  dcaAbrirModalAlta('Nuevo asiento');
+  const empresas = await dcGetEmpresas();
+  const empresaObj = empresas.find((e) => e.id === empresaId);
+  dcaAbrirModalAlta('Nuevo asiento', empresaObj);
   const hoy = new Date().toISOString().slice(0, 10);
   $('#dcaFecha').value       = hoy;
   $('#dcaDescripcion').value = '';
@@ -6291,10 +6355,14 @@ async function abrirNuevoAsientoDca() {
 }
 
 async function abrirEditarAsientoDca(id) {
-  await dcaAsegurarCuentas();
   try {
     const a = await apiGet(`${DCA_API}?id=${id}`);
-    dcaEditandoId = id;
+    // La empresa del asiento manda: cargamos el plan de esa empresa aunque
+    // el usuario tenga otra seleccionada en el contexto compartido.
+    const empresaId = Number(a.empresa_id) || (await dcAsegurarEmpresaId());
+    await dcaAsegurarCuentas(empresaId);
+    dcaEditandoId        = id;
+    dcaEditandoEmpresaId = empresaId;
     dcaLineas = (a.detalle || []).map((d) => ({
       cuenta_id:   d.cuenta_id,
       debe:        Number(d.debe)  || '',
@@ -6304,7 +6372,9 @@ async function abrirEditarAsientoDca(id) {
     while (dcaLineas.length < 2) {
       dcaLineas.push({ cuenta_id: '', debe: '', haber: '', descripcion: '' });
     }
-    dcaAbrirModalAlta(`Editar asiento N° ${a.numero}`);
+    const empresas = await dcGetEmpresas();
+    const empresaObj = empresas.find((e) => e.id === empresaId);
+    dcaAbrirModalAlta(`Editar asiento N° ${a.numero}`, empresaObj);
     $('#dcaFecha').value       = a.fecha || '';
     $('#dcaDescripcion').value = a.descripcion || '';
     dcaRenderLineas();
@@ -6399,6 +6469,7 @@ async function guardarAsientoDca() {
 
   if (!fecha)       { toast('La fecha es obligatoria', { error: true }); return; }
   if (!descripcion) { toast('La descripción es obligatoria', { error: true }); return; }
+  if (!dcaEditandoEmpresaId) { toast('Falta la empresa del asiento', { error: true }); return; }
 
   const detalle = dcaLineas
     .filter((l) => l.cuenta_id || Number(l.debe) > 0 || Number(l.haber) > 0)
@@ -6411,7 +6482,7 @@ async function guardarAsientoDca() {
 
   if (detalle.length < 2) { toast('Se requieren al menos 2 líneas con datos', { error: true }); return; }
 
-  const body = { fecha, descripcion, detalle };
+  const body = { empresa: dcaEditandoEmpresaId, fecha, descripcion, detalle };
   try {
     if (dcaEditandoId) {
       await apiSend(`${DCA_API}?id=${dcaEditandoId}`, 'PUT', body);
@@ -6421,11 +6492,13 @@ async function guardarAsientoDca() {
       toast('Asiento creado');
     }
     closeModal();
-    dcaEditandoId = null;
+    dcaEditandoId        = null;
+    dcaEditandoEmpresaId = null;
     dcaLineas = [];
     // Invalidar cache local del plan de cuentas: los saldos cambian.
     dcaCuentasImputables = [];
     dcaTodasCuentas      = [];
+    dcaCuentasCacheEmp   = null;
     await cargarDca();
   } catch (e) {
     toast(e.message, { error: true });
@@ -6511,6 +6584,7 @@ async function eliminarAsientoDca(id, numero) {
     toast('Asiento eliminado');
     dcaCuentasImputables = [];
     dcaTodasCuentas      = [];
+    dcaCuentasCacheEmp   = null;
     await cargarDca();
   } catch (e) {
     toast(e.message, { error: true });
@@ -6763,7 +6837,7 @@ route('/datacountrecurrentes', async (mount) => {
           <thead>
             <tr>
               <th style="width:80px">Código</th>
-              <th>Empresa</th>
+              <th>Nombre</th>
               <th>Cuenta</th>
               <th style="width:140px;text-align:right">Ingreso</th>
               <th style="width:140px;text-align:right">Egreso</th>
@@ -6948,7 +7022,7 @@ route('/datacountrecurrentes', async (mount) => {
   dcrPoblarSelectsFiltros();
   dcrActualizarBadgeFiltros();
   await cargarDcr();
-}, 'Recurrentes');
+}, 'Movimientos recurrentes');
 
 async function cargarDcr() {
   const tbody = $('#dcrTbody');
@@ -7017,7 +7091,7 @@ function renderDcr() {
     return `
       <tr data-id="${r.id}" class="row-clickable">
         <td><code style="font-size:.82rem">${r.id}</code></td>
-        <td style="font-weight:600">${esc(r.empresa_nombre || '#' + r.empresa)}</td>
+        <td style="font-weight:600">${esc(r.nombre || '—')}</td>
         <td>${cuentaStr}</td>
         <td style="text-align:right;font-family:monospace">${Number(r.ingreso) > 0 ? '<span style="color:var(--success);font-weight:600">$ ' + dcrFmtMoney(r.ingreso) + '</span>' : '<span style="color:var(--muted)">—</span>'}</td>
         <td style="text-align:right;font-family:monospace">${Number(r.egreso) > 0 ? '<span style="color:var(--danger);font-weight:600">$ ' + dcrFmtMoney(r.egreso) + '</span>' : '<span style="color:var(--muted)">—</span>'}</td>
@@ -7167,9 +7241,15 @@ async function abrirAltaEdicionDcr(id) {
           </div>
         </div>
         <div class="form-group">
+          <label for="dcrNombre">Nombre *</label>
+          <input type="text" id="dcrNombre" maxlength="150"
+                 placeholder="Ej. Alquiler oficina, Sueldo administrativo…"
+                 style="width:100%;box-sizing:border-box">
+        </div>
+        <div class="form-group">
           <label>Cuenta *</label>
           <button type="button" id="dcrCuentaBtn" data-cuenta-id=""
-                  style="text-align:left;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);cursor:pointer;display:flex;align-items:center;gap:8px">
+                  style="text-align:left;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:8px">
             <span id="dcrCuentaLabel" style="flex:1;color:var(--muted)">— Elegí una cuenta imputable —</span>
             <i class="fa-solid fa-chevron-down" style="color:var(--muted);flex-shrink:0"></i>
           </button>
@@ -7186,9 +7266,11 @@ async function abrirAltaEdicionDcr(id) {
                    style="font-family:monospace;text-align:right">
           </div>
         </div>
-        <div class="form-group" style="display:flex;gap:18px;align-items:center">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="dcrActivo" checked> Activo
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="dcrActivo" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Activo</span>
           </label>
         </div>
       </div>
@@ -7200,13 +7282,14 @@ async function abrirAltaEdicionDcr(id) {
   `);
 
   if (editando && r) {
+    $('#dcrNombre').value = r.nombre || '';
     dcrSetCuentaSeleccionada(Number(r.cuenta));
     $('#dcrIngreso').value = Number(r.ingreso) > 0 ? r.ingreso : '';
     $('#dcrEgreso').value  = Number(r.egreso)  > 0 ? r.egreso  : '';
     $('#dcrActivo').checked = Number(r.activo) === 1;
   }
 
-  setTimeout(() => $('#dcrCuentaBtn')?.focus(), 50);
+  setTimeout(() => $('#dcrNombre')?.focus(), 50);
 
   $('#modalRoot').dataset.dcrEmpresa = String(empresaId);
   $('#modalRoot').addEventListener('click', (ev) => {
@@ -7381,17 +7464,19 @@ function dcrRenderArbolPicker() {
 }
 
 async function guardarDcr() {
+  const nombre  = ($('#dcrNombre').value || '').trim();
   const empresa = Number($('#modalRoot').dataset.dcrEmpresa) || 0;
   const cuenta  = Number($('#dcrCuentaBtn')?.dataset.cuentaId) || 0;
   const ingreso = Number($('#dcrIngreso').value) || 0;
   const egreso  = Number($('#dcrEgreso').value)  || 0;
   const activo  = $('#dcrActivo').checked ? 1 : 0;
 
+  if (!nombre)  { toast('El nombre es obligatorio', { error: true }); return; }
   if (!empresa) { toast('La empresa es obligatoria', { error: true }); return; }
   if (!cuenta)  { toast('La cuenta es obligatoria',  { error: true }); return; }
   if (ingreso < 0 || egreso < 0) { toast('Los montos no pueden ser negativos', { error: true }); return; }
 
-  const body = { empresa, cuenta, ingreso, egreso, activo };
+  const body = { nombre, empresa, cuenta, ingreso, egreso, activo };
 
   try {
     if (dcrEditandoId) {
@@ -7446,12 +7531,13 @@ function abrirConsultaDcr(id) {
       </div>
       <div class="modal-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px">
-          ${card('Código',   `<code>${r.id}</code>`)}
-          ${card('Estado',   activoHtml)}
           ${card('Empresa',  esc(r.empresa_nombre || '#' + r.empresa), 'full')}
+          ${card('Nombre',   esc(r.nombre || '—'), 'full')}
           ${card('Cuenta',   cuentaLabel, 'full')}
           ${card('Ingreso',  ingresoHtml)}
           ${card('Egreso',   egresoHtml)}
+          ${card('Estado',   activoHtml)}
+          ${card('Código',   `<code>${r.id}</code>`)}
           ${card('Alta',     esc(fmtFecha(r.created_at)))}
           ${card('Modificación', esc(fmtFecha(r.updated_at)))}
         </div>
@@ -7472,9 +7558,11 @@ function abrirConsultaDcr(id) {
 async function eliminarDcr(id) {
   const r = dcrItems.find((x) => x.id === id);
   if (!r) return;
-  const desc = r.empresa_nombre
-    ? `${r.empresa_nombre} / ${r.cuenta_codigo || '#' + r.cuenta}`
-    : `#${id}`;
+  const desc = r.nombre
+    ? r.nombre
+    : (r.empresa_nombre
+        ? `${r.empresa_nombre} / ${r.cuenta_codigo || '#' + r.cuenta}`
+        : `#${id}`);
   const ok = await confirmar({
     title:       'Eliminar movimiento recurrente',
     message:     `¿Eliminás el movimiento recurrente "${desc}"?`,

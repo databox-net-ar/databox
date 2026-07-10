@@ -2,21 +2,25 @@
 // api/datacountasientos.php
 // Asientos contables Datacount (CRUD). Lee/escribe sobre las tablas
 // `datacount_asientos` + `datacount_asientos_detalles` — mismo esquema que
-// `repo.asientos` / `repo.asiento_detalles`.
+// `repo.asientos` / `repo.asiento_detalles`. Cada asiento se asocia a una
+// empresa (`empresa_id`) y la numeracion `numero` es autoincrementable por
+// empresa (index UNIQUE `(empresa_id, numero)`).
 //
-//   GET    api/datacountasientos.php[?q=...&desde=YYYY-MM-DD&hasta=YYYY-MM-DD&cuenta_id=N]
+//   GET    api/datacountasientos.php[?empresa=N&q=...&desde=YYYY-MM-DD
+//                                     &hasta=YYYY-MM-DD&cuenta_id=N]
 //                                       -> listado (500 max) + stats + detalle por asiento
 //   GET    api/datacountasientos.php?id=N
 //                                       -> asiento individual con su detalle
-//   POST   api/datacountasientos.php     -> alta (JSON body con `detalle` array)
+//   POST   api/datacountasientos.php     -> alta (JSON body con `empresa` y `detalle` array)
 //   PUT    api/datacountasientos.php?id=N
 //                                       -> modificacion (reemplaza el detalle completo)
 //   DELETE api/datacountasientos.php?id=N
 //                                       -> baja (CASCADE borra el detalle)
 //
 // Validacion: total DEBE = total HABER (tolerancia 0.01), 2+ lineas, todas
-// las cuentas deben ser imputables y activas. Al guardar/eliminar, recalcula
-// el `saldo` de las cuentas afectadas (deudora: debe-haber; acreedora: haber-debe).
+// las cuentas deben ser imputables, activas y pertenecer a la empresa del
+// asiento. Al guardar/eliminar, recalcula el `saldo` de las cuentas
+// afectadas (deudora: debe-haber; acreedora: haber-debe).
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
@@ -27,7 +31,7 @@ require_once __DIR__ . '/lib/sucesos.php';
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
-const DCA_COLS = 'id, numero, fecha, descripcion, total, created_at';
+const DCA_COLS = 'id, empresa_id, numero, fecha, descripcion, total, created_at';
 
 try {
     $pdo    = db();
@@ -58,14 +62,19 @@ try {
 // ----------------------------------------------------------------------------
 
 function handleList(PDO $pdo, array $q): void {
-    $search = trim((string)($q['q'] ?? ''));
-    $desde  = trim((string)($q['desde'] ?? ''));
-    $hasta  = trim((string)($q['hasta'] ?? ''));
-    $cuenta = isset($q['cuenta_id']) ? (int)$q['cuenta_id'] : 0;
+    $search  = trim((string)($q['q'] ?? ''));
+    $empresa = isset($q['empresa']) ? (int)$q['empresa'] : 0;
+    $desde   = trim((string)($q['desde'] ?? ''));
+    $hasta   = trim((string)($q['hasta'] ?? ''));
+    $cuenta  = isset($q['cuenta_id']) ? (int)$q['cuenta_id'] : 0;
 
     $where  = [];
     $params = [];
 
+    if ($empresa > 0) {
+        $where[] = 'empresa_id = :empresa';
+        $params[':empresa'] = $empresa;
+    }
     if ($search !== '') {
         // PDO con EMULATE_PREPARES=false no permite reusar el mismo :param — usamos dos.
         $where[] = '(descripcion LIKE :s_desc OR numero LIKE :s_num)';
@@ -111,20 +120,34 @@ function handleList(PDO $pdo, array $q): void {
             $porAsiento[(int)$d['asiento_id']][] = normalizarLineaDetalle($d);
         }
         foreach ($rows as &$r) {
-            $r['id']       = (int)$r['id'];
-            $r['numero']   = (int)$r['numero'];
-            $r['total']    = (float)$r['total'];
-            $r['detalle']  = $porAsiento[(int)$r['id']] ?? [];
+            $r['id']         = (int)$r['id'];
+            $r['empresa_id'] = (int)$r['empresa_id'];
+            $r['numero']     = (int)$r['numero'];
+            $r['total']      = (float)$r['total'];
+            $r['detalle']    = $porAsiento[(int)$r['id']] ?? [];
         }
         unset($r);
     }
 
-    $total   = (int) $pdo->query('SELECT COUNT(*) FROM datacount_asientos')->fetchColumn();
-    $monto   = (float) $pdo->query('SELECT COALESCE(SUM(total),0) FROM datacount_asientos')->fetchColumn();
-    $delMes  = (int) $pdo->query(
-        'SELECT COUNT(*) FROM datacount_asientos
-         WHERE YEAR(fecha)=YEAR(CURDATE()) AND MONTH(fecha)=MONTH(CURDATE())'
-    )->fetchColumn();
+    // Stats filtradas por empresa si se envio.
+    $statsWhere  = $empresa > 0 ? 'WHERE empresa_id = :empresa' : '';
+    $statsParams = $empresa > 0 ? [':empresa' => $empresa] : [];
+
+    $stT = $pdo->prepare("SELECT COUNT(*) FROM datacount_asientos {$statsWhere}");
+    $stT->execute($statsParams);
+    $total = (int) $stT->fetchColumn();
+
+    $stM = $pdo->prepare("SELECT COALESCE(SUM(total),0) FROM datacount_asientos {$statsWhere}");
+    $stM->execute($statsParams);
+    $monto = (float) $stM->fetchColumn();
+
+    $mesWhere  = $empresa > 0 ? 'empresa_id = :empresa AND ' : '';
+    $stMes = $pdo->prepare(
+        "SELECT COUNT(*) FROM datacount_asientos
+         WHERE {$mesWhere} YEAR(fecha)=YEAR(CURDATE()) AND MONTH(fecha)=MONTH(CURDATE())"
+    );
+    $stMes->execute($statsParams);
+    $delMes = (int) $stMes->fetchColumn();
 
     jsonOk([
         'items' => $rows,
@@ -155,6 +178,7 @@ function handleGetOne(PDO $pdo, int $id): void {
 
     jsonOk([
         'id'          => (int)$a['id'],
+        'empresa_id'  => (int)$a['empresa_id'],
         'numero'      => (int)$a['numero'],
         'fecha'       => $a['fecha'],
         'descripcion' => $a['descripcion'],
@@ -168,6 +192,7 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
     $fecha       = trim((string)($body['fecha'] ?? ''));
     $descripcion = trim((string)($body['descripcion'] ?? ''));
     $detalle     = $body['detalle'] ?? [];
+    $empresaIn   = isset($body['empresa']) ? (int)$body['empresa'] : 0;
 
     if ($fecha === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha)) {
         jsonError('Fecha invalida (YYYY-MM-DD)', 400);
@@ -175,6 +200,23 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
     if ($descripcion === '') jsonError('La descripcion es obligatoria.', 400);
     if (!is_array($detalle) || count($detalle) < 2) {
         jsonError('Se requieren al menos 2 lineas.', 400);
+    }
+
+    // Determinar empresa objetivo: en alta viene en el body (obligatoria);
+    // en edicion se preserva la del asiento (no se puede reasignar aca).
+    if ($id) {
+        $stE = $pdo->prepare('SELECT empresa_id FROM datacount_asientos WHERE id = :id LIMIT 1');
+        $stE->execute([':id' => $id]);
+        $prev = $stE->fetch();
+        if (!$prev) jsonError('Asiento no encontrado', 404);
+        $empresaId = (int)$prev['empresa_id'];
+    } else {
+        if ($empresaIn <= 0) jsonError('La empresa es obligatoria.', 400);
+        // Validar que exista.
+        $stChk = $pdo->prepare('SELECT id FROM datacount_empresas WHERE id = :id LIMIT 1');
+        $stChk->execute([':id' => $empresaIn]);
+        if (!$stChk->fetch()) jsonError('Empresa no encontrada.', 400);
+        $empresaId = $empresaIn;
     }
 
     // Normalizar / validar cada linea.
@@ -217,10 +259,10 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
         );
     }
 
-    // Validar cuentas existentes, imputables y activas.
+    // Validar cuentas existentes, imputables, activas y de la empresa correcta.
     $idsUnicos = array_values(array_unique($cuentasIds));
     $place = implode(',', array_fill(0, count($idsUnicos), '?'));
-    $stCu = $pdo->prepare("SELECT id, imputable, activa FROM datacount_cuentas WHERE id IN ($place)");
+    $stCu = $pdo->prepare("SELECT id, empresa_id, imputable, activa FROM datacount_cuentas WHERE id IN ($place)");
     $stCu->execute($idsUnicos);
     $cuentas = $stCu->fetchAll();
     if (count($cuentas) !== count($idsUnicos)) {
@@ -232,6 +274,9 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
         }
         if ((int)$c['activa'] !== 1) {
             jsonError('Hay cuentas inactivas seleccionadas.', 400);
+        }
+        if ((int)$c['empresa_id'] !== $empresaId) {
+            jsonError('Hay cuentas que pertenecen a otra empresa.', 400);
         }
     }
 
@@ -246,12 +291,6 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
             $stOld->execute([':id' => $id]);
             $oldCuentaIds = $stOld->fetchAll(PDO::FETCH_COLUMN);
 
-            $exists = $pdo->prepare('SELECT id FROM datacount_asientos WHERE id = :id');
-            $exists->execute([':id' => $id]);
-            if (!$exists->fetch()) {
-                $pdo->rollBack();
-                jsonError('Asiento no encontrado', 404);
-            }
             $upd = $pdo->prepare(
                 'UPDATE datacount_asientos SET fecha = :f, descripcion = :d, total = :t WHERE id = :id'
             );
@@ -260,13 +299,21 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
                 ->execute([':id' => $id]);
             $asientoId = $id;
         } else {
-            // Numero autoincrementable a nivel de aplicacion: MAX(numero)+1.
-            $next = (int)$pdo->query('SELECT COALESCE(MAX(numero),0) + 1 FROM datacount_asientos')->fetchColumn();
-            $ins = $pdo->prepare(
-                'INSERT INTO datacount_asientos (numero, fecha, descripcion, total)
-                 VALUES (:n, :f, :d, :t)'
+            // Numero autoincrementable a nivel de aplicacion, por empresa:
+            // MAX(numero)+1 dentro de la empresa.
+            $stMax = $pdo->prepare(
+                'SELECT COALESCE(MAX(numero),0) + 1 FROM datacount_asientos WHERE empresa_id = :e'
             );
-            $ins->execute([':n' => $next, ':f' => $fecha, ':d' => $descripcion, ':t' => $total]);
+            $stMax->execute([':e' => $empresaId]);
+            $next = (int)$stMax->fetchColumn();
+            $ins = $pdo->prepare(
+                'INSERT INTO datacount_asientos (empresa_id, numero, fecha, descripcion, total)
+                 VALUES (:e, :n, :f, :d, :t)'
+            );
+            $ins->execute([
+                ':e' => $empresaId, ':n' => $next, ':f' => $fecha,
+                ':d' => $descripcion, ':t' => $total,
+            ]);
             $asientoId = (int)$pdo->lastInsertId();
         }
 
@@ -296,7 +343,8 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
     recalcularSaldoCuentas($pdo, $todasIds);
 
     registrarSuceso($pdo, 'datacountasientos', 'info',
-        ($id ? 'Modificacion' : 'Alta') . " asiento #{$asientoId} — {$descripcion} — total {$total}");
+        ($id ? 'Modificacion' : 'Alta') .
+        " asiento #{$asientoId} — empresa {$empresaId} — {$descripcion} — total {$total}");
 
     handleGetOne($pdo, $asientoId);
 }

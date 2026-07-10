@@ -25,8 +25,8 @@ require_once __DIR__ . '/lib/sucesos.php';
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
-const DCR_ORDENES = ['id', 'empresa', 'cuenta', 'ingreso', 'egreso', 'activo'];
-const DCR_COLS    = 'r.id, r.empresa, r.cuenta, r.ingreso, r.egreso, r.activo, r.created_at, r.updated_at';
+const DCR_ORDENES = ['id', 'nombre', 'empresa', 'cuenta', 'ingreso', 'egreso', 'activo'];
+const DCR_COLS    = 'r.id, r.nombre, r.empresa, r.cuenta, r.ingreso, r.egreso, r.activo, r.created_at, r.updated_at';
 
 try {
     $pdo    = db();
@@ -59,6 +59,7 @@ try {
 function normalizarFila(array $r): array {
     return [
         'id'             => (int)($r['id'] ?? 0),
+        'nombre'         => (string)($r['nombre'] ?? ''),
         'empresa'        => (int)($r['empresa'] ?? 0),
         'empresa_nombre' => $r['empresa_nombre'] ?? null,
         'cuenta'         => (int)($r['cuenta'] ?? 0),
@@ -73,6 +74,8 @@ function normalizarFila(array $r): array {
 }
 
 function sanitizePayload(array $in, bool $esAlta): array {
+    $nombre  = trim((string)($in['nombre'] ?? ''));
+    if (mb_strlen($nombre) > 150) $nombre = mb_substr($nombre, 0, 150);
     $empresa = isset($in['empresa']) ? (int)$in['empresa'] : 0;
     $cuenta  = isset($in['cuenta'])  ? (int)$in['cuenta']  : 0;
     $ingreso = isset($in['ingreso']) ? round((float)$in['ingreso'], 2) : 0.0;
@@ -80,14 +83,16 @@ function sanitizePayload(array $in, bool $esAlta): array {
     $activo  = array_key_exists('activo', $in) ? (int)!!$in['activo'] : 1;
 
     if ($esAlta) {
-        if ($empresa <= 0) jsonError('La empresa es obligatoria.', 400);
-        if ($cuenta  <= 0) jsonError('La cuenta es obligatoria.', 400);
+        if ($nombre === '') jsonError('El nombre es obligatorio.', 400);
+        if ($empresa <= 0)  jsonError('La empresa es obligatoria.', 400);
+        if ($cuenta  <= 0)  jsonError('La cuenta es obligatoria.', 400);
     }
 
     if ($ingreso < 0) jsonError('El ingreso no puede ser negativo.', 400);
     if ($egreso  < 0) jsonError('El egreso no puede ser negativo.', 400);
 
     return [
+        'nombre'  => $nombre,
         'empresa' => $empresa,
         'cuenta'  => $cuenta,
         'ingreso' => $ingreso,
@@ -130,7 +135,8 @@ function handleList(PDO $pdo, array $q): void {
 
     if ($search !== '') {
         // EMULATE_PREPARES=false → placeholders distintos por columna.
-        $where[] = '(e.nombre LIKE :s_emp OR c.codigo LIKE :s_cod OR c.nombre LIKE :s_cta)';
+        $where[] = '(r.nombre LIKE :s_nom OR e.nombre LIKE :s_emp OR c.codigo LIKE :s_cod OR c.nombre LIKE :s_cta)';
+        $params[':s_nom'] = "%{$search}%";
         $params[':s_emp'] = "%{$search}%";
         $params[':s_cod'] = "%{$search}%";
         $params[':s_cta'] = "%{$search}%";
@@ -204,11 +210,12 @@ function handleCreate(PDO $pdo, array $body): void {
 
     $st = $pdo->prepare(
         'INSERT INTO datacount_recurrentes
-            (empresa, cuenta, ingreso, egreso, activo)
+            (nombre, empresa, cuenta, ingreso, egreso, activo)
          VALUES
-            (:empresa, :cuenta, :ingreso, :egreso, :activo)'
+            (:nombre, :empresa, :cuenta, :ingreso, :egreso, :activo)'
     );
     $st->execute([
+        ':nombre'  => $p['nombre'],
         ':empresa' => $p['empresa'],
         ':cuenta'  => $p['cuenta'],
         ':ingreso' => $p['ingreso'],
@@ -242,6 +249,11 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
     $sets   = [];
     $params = [':id' => $id];
 
+    if (array_key_exists('nombre', $body)) {
+        if ($p['nombre'] === '') jsonError('El nombre es obligatorio.', 400);
+        $sets[] = 'nombre = :nombre';
+        $params[':nombre'] = $p['nombre'];
+    }
     if (array_key_exists('empresa', $body) && $p['empresa'] > 0) {
         validarEmpresa($pdo, $p['empresa']);
         $sets[] = 'empresa = :empresa';

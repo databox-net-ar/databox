@@ -9,6 +9,11 @@
 -- Idempotente: CREATE TABLE IF NOT EXISTS. En entornos nuevos schema.sql
 -- ya trae estas tablas; en entornos existentes las crea vacías.
 
+-- Nota: la asociacion a `empresa_id` y el cambio del UNIQUE `numero` a
+-- `(empresa_id, numero)` se aplican en la migracion 20260710_1800.
+-- Esta migracion se mantiene creando la tabla en su forma original para
+-- respetar el orden historico; la 1800 la actualiza in-place si ya existia.
+
 CREATE TABLE IF NOT EXISTS `datacount_asientos` (
   `id`          int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
   `numero`      int(11) UNSIGNED NOT NULL,
