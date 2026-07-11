@@ -1,4 +1,4 @@
-/* =====================================================================
+﻿/* =====================================================================
    cloud / app.js
    SPA: hash routing + render del contenido. Ver STACK.md §4.
    ===================================================================== */
@@ -70,6 +70,26 @@ async function apiSend(url, method, body) {
   if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j.data;
 }
+
+// ------------------------- Polling de versión -------------------------
+// Muestra el banner "nueva versión disponible" (#versionBanner, oculto por
+// default en index.php) cuando `version.txt` en el servidor cambia respecto
+// al que cargó la página al abrir la pestaña. Se activa después de un
+// `git push` + deploy: al próximo poll cada cliente ve el aviso y recarga.
+const VERSION_INICIAL = document.getElementById('appVersion')?.textContent?.trim() || '';
+async function chequearVersion() {
+  try {
+    const r = await fetch('api/version.php', { cache: 'no-store' });
+    const data = await r.json();
+    if (data.ok && data.version && VERSION_INICIAL && data.version !== VERSION_INICIAL) {
+      const b = document.getElementById('versionBanner');
+      if (b) b.style.display = '';
+    }
+  } catch (_) { /* silencioso: se reintenta en el próximo tick */ }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  setInterval(chequearVersion, 5000);
+});
 
 // ------------------------- Toast -------------------------
 function toast(msg, opts = {}) {
@@ -7574,6 +7594,983 @@ async function eliminarDcr(id) {
     await apiSend(`${DCR_API}?id=${id}`, 'DELETE');
     toast('Movimiento recurrente eliminado');
     await cargarDcr();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Empleados -------------------------
+// ABM de empleados por empresa. Cada fila combina datos personales (nombre,
+// documento, nacimiento, domicilio), de contacto (celular, correo) y laborales
+// (cuenta contable donde imputa el sueldo, sueldo mensual, CVU/CBU, estado y
+// observaciones). Listado + toolbar con buscador rápido + modal de filtros según
+// ABM.md.
+
+const DCM_API = 'api/datacountempleados.php';
+
+let dcmItems             = [];
+let dcmTodasCuentasCache = [];       // todas las cuentas (con agrupaciones) — para el árbol
+let dcmCuentasCache      = [];       // solo imputables+activas — para el dropdown del filtro
+let dcmCuentasCacheEmp   = null;     // empresa a la que corresponde el cache
+let dcmBusqueda          = '';
+let dcmFiltroCodigo      = '';
+let dcmFiltroCuentaId    = '';
+let dcmFiltroActivo      = '';
+let dcmFiltroLimite      = 100;
+let dcmFiltroOrden       = 'id';
+let dcmFiltroDir         = 'desc';
+let dcmEditandoId        = null;
+let dcmBuscadorTimer     = null;
+let dcmFiltrosSnapshot   = null;
+
+// Estado del picker jerárquico de cuentas (modal secundario del alta/edición).
+let dcmPickerColapsadas  = new Set();
+let dcmPickerBusqueda    = '';
+
+function dcmFmtMoney(n) {
+  return Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Carga las cuentas de la empresa activa. Cachea por empresa. Publica dos
+// vistas: `dcmTodasCuentasCache` (para el árbol) y `dcmCuentasCache` (solo
+// imputables+activas, para el dropdown del filtro).
+async function dcmCargarCuentasEmpresa(empresaId) {
+  if (dcmTodasCuentasCache.length && dcmCuentasCacheEmp === empresaId) return dcmCuentasCache;
+  try {
+    const d = await apiGet(`api/datacountcuentas.php?empresa_id=${empresaId}`);
+    dcmTodasCuentasCache = d.items || [];
+    dcmCuentasCache = dcmTodasCuentasCache.filter((c) =>
+      Number(c.imputable) === 1 && Number(c.activa) === 1);
+    dcmCuentasCacheEmp = empresaId;
+  } catch {
+    dcmTodasCuentasCache = [];
+    dcmCuentasCache = [];
+    dcmCuentasCacheEmp = empresaId;
+  }
+  return dcmCuentasCache;
+}
+
+route('/datacountempleados', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
+        <div style="font-size:1.6rem;line-height:1">👤</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+          Los empleados son las personas contratadas por cada empresa. Cada
+          fila combina datos personales, de contacto y laborales (cuenta contable
+          donde imputa el sueldo, sueldo mensual, CVU/CBU y estado).
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dcmStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dcmStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green" id="dcmStatActivos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Masa salarial (activos)</span><span class="stat-value" style="color:#93c5fd" id="dcmStatMasa">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcmEmpresaSel" style="min-width:200px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcmSearch"
+                   placeholder="🔍 Buscar nombre, documento, correo o celular…">
+            <button class="search-clear" id="dcmSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcmFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcmFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcmRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcmNuevoBtn">+ Nuevo empleado</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Nombre</th>
+              <th style="width:120px">Documento</th>
+              <th>Correo</th>
+              <th style="width:130px">Celular</th>
+              <th style="width:140px;text-align:right">Sueldo</th>
+              <th style="width:90px;text-align:center">Activo</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcmTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dcmCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="copiar" role="menuitem">
+        <i class="fa-solid fa-copy"></i><span>Copiar</span>
+      </button>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDcmBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcm()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDcm()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcmCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDcm('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Cuenta</label>
+              <select id="fDcmCuentaId" onchange="onFiltroDcm('cuenta_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <div id="fDcmActivoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-val="">Todos</button>
+              <button type="button" class="filter-chip" data-val="si">Activos</button>
+              <button type="button" class="filter-chip" data-val="no">Inactivos</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcmLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDcm('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcmOrden" onchange="onFiltroDcm('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="documento">Documento</option>
+                <option value="sueldo">Sueldo</option>
+                <option value="activo">Activo</option>
+                <option value="nacimiento">Nacimiento</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcmDir" onchange="onFiltroDcm('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcm()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcm()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcm()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcmSearch');
+  const clr = $('#dcmSearchClear');
+  inp.value = dcmBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcmBusqueda = inp.value.trim();
+    clearTimeout(dcmBuscadorTimer);
+    dcmBuscadorTimer = setTimeout(cargarDcm, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcmBusqueda = ''; cargarDcm();
+  });
+
+  const selEmp = $('#dcmEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', async (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    dcmFiltroCuentaId    = '';
+    dcmTodasCuentasCache = [];
+    dcmCuentasCache      = [];
+    dcmCuentasCacheEmp   = null;
+    const nuevaEmp = Number(ev.target.value);
+    if (nuevaEmp > 0) await dcmCargarCuentasEmpresa(nuevaEmp);
+    dcmPoblarSelectsFiltros();
+    dcmActualizarBadgeFiltros();
+    await cargarDcm();
+  });
+
+  $('#dcmFiltrosBtn').addEventListener('click', abrirModalFiltrosDcm);
+  $('#dcmRefrescarBtn').addEventListener('click', cargarDcm);
+  $('#dcmNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcm(null));
+
+  const chips = document.querySelectorAll('#fDcmActivoChips .filter-chip');
+  chips.forEach((b) => {
+    b.addEventListener('click', () => {
+      dcmFiltroActivo = b.dataset.val || '';
+      dcmSincronizarChipsActivo();
+      dcmActualizarBadgeFiltros();
+      cargarDcm();
+    });
+  });
+
+  $('#dcmCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDcm(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDcm(data.id);
+    if (b.dataset.action === 'copiar')    abrirCopiarDcm(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDcm(data.id);
+  });
+
+  $('#dcmTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dcmCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcm(Number(tr.dataset.id));
+  });
+  $('#dcmTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dcmCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  if (empresaId) await dcmCargarCuentasEmpresa(empresaId);
+  dcmPoblarSelectsFiltros();
+  dcmActualizarBadgeFiltros();
+  await cargarDcm();
+}, 'Empleados');
+
+async function cargarDcm() {
+  const tbody = $('#dcmTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">No hay empresas registradas — creá una antes de dar de alta empleados.</td></tr>`;
+    return;
+  }
+
+  const qs = new URLSearchParams();
+  qs.set('empresa', String(empresaId));
+  if (dcmBusqueda)                                       qs.set('q', dcmBusqueda);
+  if (dcmFiltroCuentaId)                                 qs.set('cuenta_id', dcmFiltroCuentaId);
+  if (dcmFiltroActivo === 'si' || dcmFiltroActivo === 'no') qs.set('activo', dcmFiltroActivo);
+  if (dcmFiltroLimite)                                   qs.set('limite', dcmFiltroLimite);
+  if (dcmFiltroOrden)                                    qs.set('orden', dcmFiltroOrden);
+  if (dcmFiltroDir)                                      qs.set('dir', dcmFiltroDir);
+
+  try {
+    const data = await apiGet(DCM_API + '?' + qs.toString());
+    dcmItems = data.items || [];
+    pintarStatsDcm(data.stats || {});
+    renderDcm();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcm(s) {
+  $('#dcmStatTotal').textContent   = fmtNum(s.total ?? dcmItems.length);
+  $('#dcmStatActivos').textContent = fmtNum(s.activos ?? 0);
+  $('#dcmStatMasa').textContent    = '$ ' + dcmFmtMoney(s.masa_salarial ?? 0);
+}
+
+function renderDcm() {
+  const tbody = $('#dcmTbody');
+  if (!tbody) return;
+  if (!dcmItems.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin empleados registrados.</td></tr>`;
+    return;
+  }
+
+  let filas = dcmItems;
+  if (dcmFiltroCodigo) {
+    const cod = Number(dcmFiltroCodigo);
+    filas = filas.filter((r) => r.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((r) => {
+    const activoBadge = r.activo === 'si'
+      ? '<span class="badge badge-success">Activo</span>'
+      : '<span class="badge">Inactivo</span>';
+    const sueldoHtml = Number(r.sueldo) > 0
+      ? `<span style="color:var(--success);font-weight:600">$ ${dcmFmtMoney(r.sueldo)}</span>`
+      : `<span style="color:var(--muted)">—</span>`;
+    return `
+      <tr data-id="${r.id}" class="row-clickable">
+        <td><code style="font-size:.82rem">${r.id}</code></td>
+        <td style="font-weight:600">${esc(r.nombre || '—')}</td>
+        <td><code style="font-family:monospace;font-size:.82rem">${esc(r.documento || '—')}</code></td>
+        <td>${r.correo ? esc(r.correo) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td>${r.celular ? esc(r.celular) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="text-align:right;font-family:monospace">${sueldoHtml}</td>
+        <td style="text-align:center">${activoBadge}</td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ---- Modal de filtros ----
+function dcmPoblarSelectsFiltros() {
+  const selC = $('#fDcmCuentaId');
+  if (selC) {
+    selC.innerHTML = `<option value="">— Todas —</option>` +
+      dcmCuentasCache.map((c) => `<option value="${c.id}">${esc(c.codigo)} — ${esc(c.nombre)}</option>`).join('');
+    selC.value = dcmFiltroCuentaId || '';
+  }
+}
+
+function abrirModalFiltrosDcm() {
+  dcmFiltrosSnapshot = {
+    codigo:    dcmFiltroCodigo,
+    cuenta_id: dcmFiltroCuentaId,
+    activo:    dcmFiltroActivo,
+    limite:    dcmFiltroLimite,
+    orden:     dcmFiltroOrden,
+    dir:       dcmFiltroDir,
+  };
+  $('#fDcmCodigo').value    = dcmFiltroCodigo || '';
+  $('#fDcmCuentaId').value  = dcmFiltroCuentaId || '';
+  $('#fDcmLimite').value    = dcmFiltroLimite || 100;
+  $('#fDcmOrden').value     = dcmFiltroOrden  || 'id';
+  $('#fDcmDir').value       = dcmFiltroDir    || 'desc';
+  dcmSincronizarChipsActivo();
+  document.getElementById('filtrosDcmBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDcm() {
+  document.getElementById('filtrosDcmBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDcm() {
+  if (dcmFiltrosSnapshot) {
+    dcmFiltroCodigo   = dcmFiltrosSnapshot.codigo;
+    dcmFiltroCuentaId = dcmFiltrosSnapshot.cuenta_id;
+    dcmFiltroActivo   = dcmFiltrosSnapshot.activo;
+    dcmFiltroLimite   = dcmFiltrosSnapshot.limite;
+    dcmFiltroOrden    = dcmFiltrosSnapshot.orden;
+    dcmFiltroDir      = dcmFiltrosSnapshot.dir;
+    dcmActualizarBadgeFiltros();
+    cargarDcm();
+  }
+  cerrarModalFiltrosDcm();
+}
+
+function limpiarFiltrosDcm() {
+  dcmFiltroCodigo     = '';
+  dcmFiltroCuentaId     = '';
+  dcmFiltroActivo = '';
+  dcmFiltroLimite     = 100;
+  dcmFiltroOrden      = 'id';
+  dcmFiltroDir        = 'desc';
+  $('#fDcmCodigo').value  = '';
+  $('#fDcmCuentaId').value  = '';
+  $('#fDcmLimite').value  = 100;
+  $('#fDcmOrden').value   = 'id';
+  $('#fDcmDir').value     = 'desc';
+  dcmSincronizarChipsActivo();
+  dcmActualizarBadgeFiltros();
+  cargarDcm();
+}
+
+function onFiltroDcm(campo, valor) {
+  if (campo === 'codigo')     dcmFiltroCodigo   = (valor || '').trim();
+  if (campo === 'cuenta_id')  dcmFiltroCuentaId = valor || '';
+  if (campo === 'limite')     dcmFiltroLimite   = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')      dcmFiltroOrden    = valor || 'id';
+  if (campo === 'dir')        dcmFiltroDir      = valor || 'desc';
+  dcmActualizarBadgeFiltros();
+  cargarDcm();
+}
+
+function dcmSincronizarChipsActivo() {
+  const chips = document.querySelectorAll('#fDcmActivoChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.val || '') === (dcmFiltroActivo || ''));
+  });
+}
+
+function dcmActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcmFiltroCodigo)                                        n++;
+  if (dcmFiltroCuentaId)                                      n++;
+  if (dcmFiltroActivo === 'si' || dcmFiltroActivo === 'no')   n++;
+  if (Number(dcmFiltroLimite) !== 100)                        n++;
+  if (dcmFiltroOrden !== 'id')                                n++;
+  if (dcmFiltroDir   !== 'desc')                              n++;
+  const badge = $('#dcmFiltrosBadge');
+  const btn   = $('#dcmFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDcm(id) {
+  dcmEditandoId = id;
+  const editando = !!id;
+  const r = editando ? dcmItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar empleado' : 'Nuevo empleado';
+
+  const empresaId = editando ? Number(r?.empresa_id) : (dcGetEmpresaId() || 0);
+  if (!empresaId) {
+    toast('Elegí una empresa antes de crear empleados', { error: true });
+    return;
+  }
+  await dcmCargarCuentasEmpresa(empresaId);
+  const empresas = await dcGetEmpresas();
+  const empresaObj = empresas.find((e) => e.id === empresaId);
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Empresa</label>
+          <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);font-weight:600">
+            🏢 ${esc(empresaObj?.nombre || '#' + empresaId)}
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcmNombre">Nombre *</label>
+            <input type="text" id="dcmNombre" maxlength="100"
+                   placeholder="Ej. Juan Pérez">
+          </div>
+          <div class="form-group">
+            <label for="dcmDocumento">Documento</label>
+            <input type="text" id="dcmDocumento" maxlength="15"
+                   placeholder="Ej. 30123456"
+                   style="font-family:monospace">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcmNacimiento">Nacimiento</label>
+            <input type="date" id="dcmNacimiento">
+          </div>
+          <div class="form-group">
+            <label for="dcmCelular">Celular</label>
+            <input type="text" id="dcmCelular" maxlength="20"
+                   placeholder="Ej. 11 2345 6789">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcmCorreo">Correo</label>
+          <input type="email" id="dcmCorreo" maxlength="120"
+                 placeholder="empleado@empresa.com">
+        </div>
+        <div class="form-group">
+          <label for="dcmDomicilio">Domicilio</label>
+          <input type="text" id="dcmDomicilio" maxlength="200"
+                 placeholder="Calle 123, Ciudad, Provincia">
+        </div>
+        <div class="form-group">
+          <label>Cuenta contable (sueldo)</label>
+          <button type="button" id="dcmCuentaBtn" data-cuenta-id=""
+                  style="text-align:left;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:8px">
+            <span id="dcmCuentaLabel" style="flex:1;color:var(--muted)">— Elegí una cuenta imputable —</span>
+            <i class="fa-solid fa-chevron-down" style="color:var(--muted);flex-shrink:0"></i>
+          </button>
+        </div>
+        <div class="form-group">
+          <label for="dcmSueldo">Sueldo</label>
+          <input type="number" id="dcmSueldo" min="0" step="0.01" placeholder="0.00"
+                 style="font-family:monospace;text-align:right">
+        </div>
+        <div class="form-group">
+          <label for="dcmCvu">CVU / CBU / Alias</label>
+          <input type="text" id="dcmCvu" maxlength="50"
+                 placeholder="Ej. 0000003100099899582443 o alias.banco.mp"
+                 style="font-family:monospace">
+        </div>
+        <div class="form-group">
+          <label for="dcmObservaciones">Observaciones</label>
+          <textarea id="dcmObservaciones" rows="3" maxlength="1000"
+                    placeholder="Notas internas sobre el empleado"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="dcmActivo" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Activo</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && r) {
+    $('#dcmNombre').value        = r.nombre || '';
+    $('#dcmDocumento').value     = r.documento || '';
+    $('#dcmNacimiento').value    = r.nacimiento || '';
+    $('#dcmCelular').value       = r.celular || '';
+    $('#dcmCorreo').value        = r.correo || '';
+    $('#dcmDomicilio').value     = r.domicilio || '';
+    dcmSetCuentaSeleccionada(Number(r.cuenta_id) || 0);
+    $('#dcmSueldo').value        = Number(r.sueldo) > 0 ? r.sueldo : '';
+    $('#dcmCvu').value           = r.cvu || '';
+    $('#dcmObservaciones').value = r.observaciones || '';
+    $('#dcmActivo').checked      = r.activo === 'si';
+  }
+
+  setTimeout(() => $('#dcmNombre')?.focus(), 50);
+
+  $('#modalRoot').dataset.dcmEmpresa = String(empresaId);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcm();
+    if (ev.target.closest('#dcmCuentaBtn'))        dcmAbrirPickerCuenta();
+  });
+}
+
+// Refleja la cuenta elegida en el botón: guarda el id en `data-cuenta-id`
+// y muestra el label con código y nombre. Si el id es 0/null, deja el
+// placeholder.
+function dcmSetCuentaSeleccionada(cuentaId) {
+  const btn   = $('#dcmCuentaBtn');
+  const label = $('#dcmCuentaLabel');
+  if (!btn || !label) return;
+  const c = cuentaId ? dcmTodasCuentasCache.find((x) => x.id === cuentaId) : null;
+  if (c) {
+    btn.dataset.cuentaId = String(c.id);
+    label.style.color = '';
+    label.innerHTML =
+      `<code style="font-family:monospace;font-size:.85rem;margin-right:6px">${esc(c.codigo)}</code>${esc(c.nombre)}`;
+  } else {
+    btn.dataset.cuentaId = '';
+    label.style.color = 'var(--muted)';
+    label.textContent = '— Elegí una cuenta imputable —';
+  }
+}
+
+// ---- Picker de cuentas jerárquico (modal secundario del alta/edición) ----
+function dcmCerrarPickerCuenta() {
+  const p = $('#dcmPickerRoot');
+  if (p) { p.classList.remove('open'); setTimeout(() => p.remove(), 150); }
+}
+
+function dcmAbrirPickerCuenta() {
+  dcmCerrarPickerCuenta();
+  dcmPickerBusqueda = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'dcmPickerRoot';
+  wrap.style.zIndex = '160';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
+      <div class="modal-header">
+        <div class="modal-title">Seleccionar cuenta</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+        <input type="search" id="dcmPickerSearch" class="search-input"
+               style="width:100%;box-sizing:border-box"
+               placeholder="🔍 Buscar por código o nombre…">
+      </div>
+      <div id="dcmPickerArbol"
+           style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="limpiar">Sin cuenta</button>
+        <button class="btn btn-ghost" data-act="close">Cancelar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target === wrap) { dcmCerrarPickerCuenta(); return; }
+    if (ev.target.closest('[data-act="close"]')) { dcmCerrarPickerCuenta(); return; }
+    if (ev.target.closest('[data-act="limpiar"]')) {
+      dcmSetCuentaSeleccionada(0);
+      dcmCerrarPickerCuenta();
+      return;
+    }
+
+    const it = ev.target.closest('[data-cuenta-id]');
+    if (it) {
+      const id = Number(it.dataset.cuentaId);
+      const cs = dcmTodasCuentasCache.find((c) => c.id === id);
+      if (cs && Number(cs.imputable) === 1 && Number(cs.activa) === 1) {
+        dcmSetCuentaSeleccionada(id);
+        dcmCerrarPickerCuenta();
+      }
+      return;
+    }
+    const tog = ev.target.closest('[data-toggle-id]');
+    if (tog) {
+      ev.stopPropagation();
+      const id = Number(tog.dataset.toggleId);
+      if (dcmPickerColapsadas.has(id)) dcmPickerColapsadas.delete(id);
+      else dcmPickerColapsadas.add(id);
+      dcmRenderArbolPicker();
+    }
+  });
+
+  $('#dcmPickerSearch').addEventListener('input', (ev) => {
+    dcmPickerBusqueda = ev.target.value.trim();
+    dcmRenderArbolPicker();
+  });
+
+  dcmRenderArbolPicker();
+  setTimeout(() => $('#dcmPickerSearch')?.focus(), 50);
+}
+
+function dcmRenderArbolPicker() {
+  const container = $('#dcmPickerArbol');
+  if (!container) return;
+  const busq = dcmPickerBusqueda.toLowerCase();
+  const cuentaSeleccionada = Number($('#dcmCuentaBtn')?.dataset.cuentaId) || 0;
+
+  if (!dcmTodasCuentasCache.length) {
+    container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">No hay cuentas disponibles para esta empresa</div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (busq) {
+    // En modo búsqueda aplanamos: solo cuentas imputables+activas que matcheen.
+    const matches = dcmTodasCuentasCache.filter((c) =>
+      Number(c.imputable) === 1 && Number(c.activa) === 1 &&
+      (c.codigo + ' ' + c.nombre).toLowerCase().includes(busq)
+    );
+    if (!matches.length) {
+      container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">Sin resultados para "${esc(dcmPickerBusqueda)}"</div>`;
+      return;
+    }
+    matches.forEach((c) => {
+      const sel = cuentaSeleccionada === c.id;
+      html += `
+        <div data-cuenta-id="${c.id}"
+             style="display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;border-radius:6px;${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;font-weight:600' : ''}">
+          <code style="font-size:.78rem;flex-shrink:0">${esc(c.codigo)}</code>
+          <span style="flex:1">${esc(c.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0">✓</span>' : ''}
+        </div>`;
+    });
+  } else {
+    // Vista árbol: agrupaciones (imputable=0) se muestran pero no se pueden elegir.
+    const byId = {};
+    dcmTodasCuentasCache.forEach((c) => { byId[c.id] = Object.assign({}, c, { children: [] }); });
+    const raices = [];
+    dcmTodasCuentasCache.forEach((c) => {
+      if (c.parent_id && byId[c.parent_id]) byId[c.parent_id].children.push(byId[c.id]);
+      else raices.push(byId[c.id]);
+    });
+
+    const walk = (nodo, depth) => {
+      const isImputable = Number(nodo.imputable) === 1 && Number(nodo.activa) === 1;
+      const tieneHijos  = nodo.children.length > 0;
+      const colapsado   = dcmPickerColapsadas.has(nodo.id);
+      const sel         = cuentaSeleccionada === nodo.id;
+      const pl          = 8 + depth * 20;
+
+      const toggle = tieneHijos
+        ? `<span data-toggle-id="${nodo.id}" style="width:18px;text-align:center;display:inline-block;flex-shrink:0;cursor:pointer">${colapsado ? '▶' : '▼'}</span>`
+        : `<span style="width:18px;display:inline-block;flex-shrink:0"></span>`;
+
+      html += `
+        <div ${isImputable ? `data-cuenta-id="${nodo.id}"` : ''}
+             style="display:flex;align-items:center;gap:4px;padding:7px 8px 7px ${pl}px;border-radius:6px;
+                    cursor:${isImputable ? 'pointer' : 'default'};
+                    ${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;' : !isImputable ? 'color:var(--muted);' : ''}
+                    font-weight:${Number(nodo.imputable) === 0 ? '700' : '400'}">
+          ${toggle}
+          <code style="font-size:.78rem;flex-shrink:0;margin-right:4px">${esc(nodo.codigo)}</code>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nodo.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0;margin-left:4px">✓</span>' : ''}
+        </div>`;
+
+      if (tieneHijos && !colapsado) {
+        nodo.children.forEach((h) => walk(h, depth + 1));
+      }
+    };
+    raices.forEach((r) => walk(r, 0));
+  }
+
+  container.innerHTML = html;
+}
+
+async function guardarDcm() {
+  const nombre        = ($('#dcmNombre').value || '').trim();
+  const documento     = ($('#dcmDocumento').value || '').trim();
+  const nacimiento    = ($('#dcmNacimiento').value || '').trim();
+  const domicilio     = ($('#dcmDomicilio').value || '').trim();
+  const celular       = ($('#dcmCelular').value || '').trim();
+  const correo        = ($('#dcmCorreo').value || '').trim();
+  const cvu           = ($('#dcmCvu').value || '').trim();
+  const observaciones = ($('#dcmObservaciones').value || '').trim();
+  const empresa_id    = Number($('#modalRoot').dataset.dcmEmpresa) || 0;
+  const cuentaRaw     = $('#dcmCuentaBtn')?.dataset.cuentaId || '';
+  const cuenta_id     = cuentaRaw ? Number(cuentaRaw) : null;
+  const sueldo        = Number($('#dcmSueldo').value) || 0;
+  const activo        = $('#dcmActivo').checked ? 'si' : 'no';
+
+  if (!nombre)     { toast('El nombre es obligatorio', { error: true }); return; }
+  if (!empresa_id) { toast('La empresa es obligatoria', { error: true }); return; }
+  if (sueldo < 0)  { toast('El sueldo no puede ser negativo', { error: true }); return; }
+
+  const body = {
+    nombre, documento, nacimiento, domicilio, celular, correo,
+    empresa_id, cuenta_id, sueldo, cvu, activo, observaciones,
+  };
+
+  try {
+    if (dcmEditandoId) {
+      await apiSend(`${DCM_API}?id=${dcmEditandoId}`, 'PUT', body);
+      toast('Empleado actualizado');
+    } else {
+      await apiSend(DCM_API, 'POST', body);
+      toast('Empleado creado');
+    }
+    closeModal();
+    dcmEditandoId = null;
+    await cargarDcm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDcm(id) {
+  const r = dcmItems.find((x) => x.id === id);
+  if (!r) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  const cuentaLabel = r.cuenta_codigo
+    ? `<code style="font-family:monospace">${esc(r.cuenta_codigo)}</code> — ${esc(r.cuenta_nombre || '')}`
+    : (r.cuenta_id ? `#${r.cuenta_id}` : '<span style="color:var(--muted)">—</span>');
+  const sueldoHtml = Number(r.sueldo) > 0
+    ? `<span style="color:var(--success);font-weight:600;font-family:monospace">$ ${dcmFmtMoney(r.sueldo)}</span>`
+    : `<span style="color:var(--muted)">—</span>`;
+  const activoHtml = r.activo === 'si'
+    ? `<span class="badge badge-success">Activo</span>`
+    : `<span class="badge">Inactivo</span>`;
+  const cvuHtml = r.cvu
+    ? `<code style="font-family:monospace">${esc(r.cvu)}</code>`
+    : '<span style="color:var(--muted)">—</span>';
+
+  openModal(`
+    <div class="modal" style="max-width:680px">
+      <div class="modal-header">
+        <div class="modal-title">
+          👤 <span class="modal-subtitle">Empleado #${r.id}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Empresa',     esc(r.empresa_nombre || '#' + r.empresa_id), 'full')}
+          ${card('Nombre',      esc(r.nombre || '—'), 'full')}
+          ${card('Documento',   r.documento ? `<code>${esc(r.documento)}</code>` : '<span style="color:var(--muted)">—</span>')}
+          ${card('Nacimiento',  r.nacimiento ? esc(fmtFecha(r.nacimiento)) : '<span style="color:var(--muted)">—</span>')}
+          ${card('Celular',     r.celular ? esc(r.celular) : '<span style="color:var(--muted)">—</span>')}
+          ${card('Correo',      r.correo ? esc(r.correo) : '<span style="color:var(--muted)">—</span>')}
+          ${card('Domicilio',   r.domicilio ? esc(r.domicilio) : '<span style="color:var(--muted)">—</span>', 'full')}
+          ${card('Cuenta',      cuentaLabel, 'full')}
+          ${card('Sueldo',      sueldoHtml)}
+          ${card('CVU / CBU',   cvuHtml, 'full')}
+          ${card('Estado',      activoHtml)}
+          ${card('Observaciones', r.observaciones ? esc(r.observaciones) : '<span style="color:var(--muted)">—</span>', 'full')}
+          ${card('Código',      `<code>${r.id}</code>`)}
+          ${card('Alta',        esc(fmtFecha(r.created_at)))}
+          ${card('Modificación', esc(fmtFecha(r.updated_at)))}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcm(id); }
+  });
+}
+
+// ---- Modal Copiar a otra empresa ----
+async function abrirCopiarDcm(id) {
+  const r = dcmItems.find((x) => x.id === id);
+  if (!r) return;
+
+  const empresas = await dcGetEmpresas();
+  const opciones = empresas
+    .filter((e) => e.id !== r.empresa_id)
+    .map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`)
+    .join('');
+
+  if (!opciones) {
+    toast('No hay otras empresas donde copiar el empleado', { error: true });
+    return;
+  }
+
+  openModal(`
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <div class="modal-title">📋 <span class="modal-subtitle">Copiar empleado</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom:14px;font-size:.9rem">
+          Vas a copiar el empleado <strong>${esc(r.nombre || '#' + r.id)}</strong>
+          desde <strong>${esc(r.empresa_nombre || '#' + r.empresa_id)}</strong> a otra empresa.
+        </div>
+        <div class="form-group">
+          <label for="dcmCopiarEmpresa">Empresa destino *</label>
+          <select id="dcmCopiarEmpresa">${opciones}</select>
+        </div>
+        <div style="font-size:.78rem;color:var(--muted);line-height:1.4;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px">
+          <i class="fa-solid fa-circle-info"></i>
+          La <strong>cuenta contable</strong> no se copia (queda sin asignar) porque
+          las cuentas son específicas de cada empresa. Todos los demás campos se
+          replican tal cual.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="copiar">Copiar</button>
+      </div>
+    </div>
+  `);
+
+  setTimeout(() => $('#dcmCopiarEmpresa')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+    if (ev.target.closest('[data-act="copiar"]')) {
+      const destinoId = Number($('#dcmCopiarEmpresa').value) || 0;
+      ejecutarCopiaDcm(r, destinoId);
+    }
+  });
+}
+
+async function ejecutarCopiaDcm(origen, empresaDestino) {
+  if (!empresaDestino || empresaDestino === origen.empresa_id) {
+    toast('Elegí una empresa distinta a la del empleado', { error: true });
+    return;
+  }
+  const body = {
+    empresa_id:    empresaDestino,
+    nombre:        origen.nombre,
+    documento:     origen.documento,
+    nacimiento:    origen.nacimiento,
+    domicilio:     origen.domicilio,
+    celular:       origen.celular,
+    correo:        origen.correo,
+    cuenta_id:     null,
+    sueldo:        origen.sueldo,
+    cvu:           origen.cvu,
+    activo:        origen.activo,
+    observaciones: origen.observaciones,
+  };
+  try {
+    await apiSend(DCM_API, 'POST', body);
+    toast('Empleado copiado');
+    closeModal();
+    await cargarDcm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDcm(id) {
+  const r = dcmItems.find((x) => x.id === id);
+  if (!r) return;
+  const desc = r.nombre || `#${id}`;
+  const ok = await confirmar({
+    title:       'Eliminar empleado',
+    message:     `¿Eliminás el empleado "${desc}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCM_API}?id=${id}`, 'DELETE');
+    toast('Empleado eliminado');
+    await cargarDcm();
   } catch (err) {
     toast(err.message, { error: true });
   }

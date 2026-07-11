@@ -313,6 +313,39 @@ CREATE TABLE `datacount_asientos_detalles`  (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for datacount_empleados
+-- ----------------------------
+-- Empleados asociados a una empresa Datacount. Cada fila combina datos
+-- personales (nombre, documento, nacimiento, domicilio), de contacto
+-- (celular, correo) y laborales (cuenta contable donde imputa el sueldo,
+-- sueldo mensual, CVU/CBU, estado y observaciones). `empresa_id` referencia
+-- `datacount_empresas.id` y `cuenta_id` referencia `datacount_cuentas.id`
+-- (validado desde el endpoint PHP). `activo` es ENUM('si','no').
+DROP TABLE IF EXISTS `datacount_empleados`;
+CREATE TABLE `datacount_empleados`  (
+  `id`            int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `empresa_id`    int(11) UNSIGNED NOT NULL,
+  `nombre`        varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `documento`     varchar(15)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `nacimiento`    date NULL DEFAULT NULL,
+  `domicilio`     varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `celular`       varchar(20)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `correo`        varchar(120) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cuenta_id`     int(11) UNSIGNED NULL DEFAULT NULL,
+  `sueldo`        decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `cvu`           varchar(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `activo`        enum('si','no') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'si',
+  `observaciones` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `created_at`    timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_empresa`(`empresa_id`) USING BTREE,
+  INDEX `idx_cuenta_id`(`cuenta_id`) USING BTREE,
+  INDEX `idx_activo`(`activo`) USING BTREE,
+  INDEX `idx_documento`(`documento`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for datacount_empresas
 -- ----------------------------
 -- Catálogo de empresas para las que Datacount lleva la contabilidad.

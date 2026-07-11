@@ -1,8 +1,9 @@
 <?php
 // SPA shell. Todo el render del contenido lo hace assets/js/app.js
 // segun el hash de la URL (#/dashboard, #/...).
-$cssVer = @filemtime(__DIR__ . '/assets/css/style.css') ?: time();
-$jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
+$cssVer  = @filemtime(__DIR__ . '/assets/css/style.css') ?: time();
+$jsVer   = @filemtime(__DIR__ . '/assets/js/app.js')     ?: time();
+$version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
 ?>
 <!doctype html>
 <html lang="es">
@@ -14,6 +15,11 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
   <link rel="stylesheet" href="assets/css/style.css?v=<?= $cssVer ?>">
 </head>
 <body class="auth-checking">
+  <div id="versionBanner" class="version-banner" style="display:none">
+    Hay una nueva versión disponible.
+    <button type="button" onclick="location.reload()">Actualizar ahora</button>
+  </div>
+
   <div class="auth-splash" id="authSplash">
     <div class="spin"></div>
   </div>
@@ -75,6 +81,9 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
             </a>
             <a href="#/datacountasientos" class="nav-item nav-sub-item" data-route="/datacountasientos">
               <span class="nav-icon">📖</span> Asientos
+            </a>
+            <a href="#/datacountempleados" class="nav-item nav-sub-item" data-route="/datacountempleados">
+              <span class="nav-icon">👤</span> Empleados
             </a>
             <a href="#/datacountrecurrentes" class="nav-item nav-sub-item" data-route="/datacountrecurrentes">
               <span class="nav-icon">🔁</span> Recurrentes
@@ -187,7 +196,7 @@ $jsVer  = @filemtime(__DIR__ . '/assets/js/app.js')   ?: time();
         </div>
       </nav>
 
-      <div class="sidebar-footer">v<span id="appVersion">dev</span></div>
+      <div class="sidebar-footer">v<span id="appVersion"><?= htmlspecialchars($version) ?></span></div>
     </aside>
     <div class="sidebar-overlay" id="sidebarOverlay"></div>
 

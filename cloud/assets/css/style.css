@@ -185,6 +185,19 @@ tbody tr:hover { background: var(--row-hover); }
 .dash-ver-mas      { font-size: .78rem; font-weight: 500; color: var(--primary); cursor: pointer; }
 .dash-ver-mas:hover { text-decoration: underline; }
 
+/* 17b. Banner "nueva versión disponible" */
+.version-banner        { position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+                         background: #1e40af; color: #fff;
+                         padding: 10px 20px;
+                         display: flex; align-items: center; justify-content: center; gap: 16px;
+                         font-size: .9rem; font-weight: 500;
+                         box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+.version-banner button { background: #fff; color: #1e40af;
+                         border: none; border-radius: 6px;
+                         padding: 5px 14px; font-size: .85rem; font-weight: 600;
+                         cursor: pointer; }
+.version-banner button:hover { background: #e0e7ff; }
+
 /* 18. Spinner */
 .spin { display: inline-block; width: 28px; height: 28px;
         border: 3px solid var(--border); border-top-color: var(--primary);
