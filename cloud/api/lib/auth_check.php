@@ -146,15 +146,18 @@ function computePermisosUsuario(PDO $pdo, int $userId): array {
     return $slugs;
 }
 
-// Convierte una CSV (con comas, punto y coma o espacios) a array de int > 0,
-// deduplicando en el camino. Se usa para leer `usuarios.roles` y `roles.permisos`.
+// Convierte una CSV (con comas, punto y coma, espacios o parentesis) a array
+// de int > 0, deduplicando. Se usa para leer `usuarios.roles` y `roles.permisos`.
+// Acepta dos formatos porque las tablas se comparten con las UIs legacy del grupo:
+//   - cloud  : "111,112,113"
+//   - legacy : "(111)(112)(113)"
 // Como todos los tokens se castean a int, es seguro interpolarlos despues en
 // un IN () del SQL sin binding — la unica manera de que algo llegue alli es
 // que el (int) haya devuelto un entero positivo.
 function authTokenizarIdsCsv(string $csv): array {
     if ($csv === '') return [];
     $out = [];
-    foreach (preg_split('/[,;\s]+/', $csv) ?: [] as $tok) {
+    foreach (preg_split('/[(),;\s]+/', $csv) ?: [] as $tok) {
         $n = (int)trim($tok);
         if ($n > 0) $out[$n] = true;
     }
