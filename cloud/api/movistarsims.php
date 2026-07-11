@@ -10,12 +10,14 @@
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/auth_check.php';
 
 const MSIM_COLS = "id, nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn, actualizado";
 
 header('Content-Type: application/json; charset=utf-8');
 
 try {
+    requirePermCrud('plataformas.movistar.sims');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

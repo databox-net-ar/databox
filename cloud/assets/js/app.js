@@ -237,6 +237,88 @@ function route(path, handler, title) {
   routes[path] = { handler, title: title || path };
 }
 
+// Mapeo ruta → permiso requerido para navegar.
+// - `perm`   = slug exacto que el usuario debe tener.
+// - `prefix` = habilita la ruta si el usuario tiene AL MENOS UN permiso con
+//              ese prefijo (para landings de plataformas y Herramientas cuyo
+//              contenido son sub-modulos con permisos propios).
+// Rutas ausentes de este mapa quedan libres (fallback: si no se declaro, no se filtra).
+const ROUTE_PERMS = {
+  '/dashboard':                { perm:   'inicio.dashboard.consultar' },
+
+  '/datacountcomprobantes':    { perm:   'datacount.comprobantes.consultar' },
+  '/datacountfacturacion':     { perm:   'datacount.facturacion.consultar' },
+  '/datacountasientos':        { perm:   'datacount.asientos.consultar' },
+  '/datacountempleados':       { perm:   'datacount.empleados.consultar' },
+  '/datacountrecurrentes':     { perm:   'datacount.recurrentes.consultar' },
+  '/datacountcuentas':         { perm:   'datacount.cuentas.consultar' },
+  '/datacountempresas':        { perm:   'datacount.empresas.consultar' },
+
+  '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
+  '/datarocketmensajes':       { perm:   'datarocket.mensajes.consultar' },
+
+  '/prospectos':               { perm:   'datasale.prospectos.consultar' },
+
+  '/aws':                      { prefix: 'plataformas.aws.' },
+  '/awscuentas':               { perm:   'plataformas.aws.cuentas.consultar' },
+
+  '/awsses':                   { prefix: 'plataformas.awsses.' },
+  '/awssescanales':            { perm:   'plataformas.awsses.canales.consultar' },
+  '/awssesmensajes':           { perm:   'plataformas.awsses.mensajes.consultar' },
+
+  '/evolution':                { prefix: 'plataformas.evolution.' },
+  '/evolutioncanales':         { perm:   'plataformas.evolution.canales.consultar' },
+  '/evolutioncontactos':       { perm:   'plataformas.evolution.contactos.consultar' },
+  '/evolutionmensajes':        { perm:   'plataformas.evolution.mensajes.consultar' },
+
+  '/mercadopago':              { prefix: 'plataformas.mercadopago.' },
+  '/mercadopagopagos':         { perm:   'plataformas.mercadopago.pagos.consultar' },
+  '/mercadopagocuentas':       { perm:   'plataformas.mercadopago.cuentas.consultar' },
+  '/mercadopagoregistros':     { perm:   'plataformas.mercadopago.registros.consultar' },
+  '/mercadopagosuscripciones': { perm:   'plataformas.mercadopago.suscripciones.consultar' },
+  '/mercadopagodebitos':       { perm:   'plataformas.mercadopago.debitos.consultar' },
+
+  '/dolarhoy':                 { prefix: 'plataformas.dolarhoy.' },
+  '/dolarhoycotizaciones':     { perm:   'plataformas.dolarhoy.cotizaciones.consultar' },
+
+  '/movistar':                 { prefix: 'plataformas.movistar.' },
+  '/movistarsims':             { perm:   'plataformas.movistar.sims.consultar' },
+
+  '/claro':                    { prefix: 'plataformas.claro.' },
+  '/clarosims':                { perm:   'plataformas.claro.sims.consultar' },
+
+  '/openai':                   { prefix: 'plataformas.openai.' },
+  '/openaiconsumos':           { perm:   'plataformas.openai.consumos.consultar' },
+
+  '/anthropic':                { prefix: 'plataformas.anthropic.' },
+
+  '/usuarios':                 { perm:   'seguridad.usuarios.consultar' },
+  '/roles':                    { perm:   'seguridad.roles.consultar' },
+  '/permisos':                 { perm:   'seguridad.permisos.consultar' },
+
+  '/herramientas':             { prefix: 'administracion.herramientas.' },
+};
+
+// Devuelve true si el usuario logueado puede navegar a la ruta indicada
+// segun `ROUTE_PERMS`. Si la ruta no esta declarada, asume libre acceso.
+function puedeAccederRuta(path) {
+  const g = ROUTE_PERMS[path];
+  if (!g)         return true;
+  if (g.perm)     return hasPermission(g.perm);
+  if (g.prefix)   return hasPermissionPrefix(g.prefix);
+  return true;
+}
+
+// Camina el sidebar (ya filtrado por `aplicarPermisosSidebar`) y devuelve la
+// primera ruta visible. Se usa como fallback cuando el usuario cae en una
+// ruta a la que no tiene acceso (redirect a algo que si puede ver).
+function primerRutaAccesible() {
+  for (const a of $$('.sidebar-nav .nav-sub-item')) {
+    if (a.style.display !== 'none') return a.dataset.route;
+  }
+  return null;
+}
+
 function currentPath() {
   const h = location.hash || '#/dashboard';
   return h.startsWith('#') ? h.slice(1) : h;
@@ -244,6 +326,28 @@ function currentPath() {
 
 async function render() {
   const path = currentPath();
+
+  // Route guard: si la ruta esta declarada en ROUTE_PERMS y el usuario no
+  // tiene el permiso requerido, redirigir a la primera ruta accesible.
+  // Si no tiene NINGUNA ruta accesible, mostrar la pantalla "sin acceso".
+  if (!puedeAccederRuta(path)) {
+    const fallback = primerRutaAccesible();
+    if (fallback && '#' + fallback !== location.hash) {
+      // El cambio de hash dispara hashchange -> render(), asi que salimos aca.
+      location.hash = '#' + fallback;
+      return;
+    }
+    $('#topbarTitle').textContent = 'Sin acceso';
+    $('#view').innerHTML = `
+      <div class="table-empty" style="padding:60px;text-align:center">
+        <div style="font-size:2.5rem;margin-bottom:10px">🔒</div>
+        <div style="font-weight:600;margin-bottom:6px">No tenés permisos para acceder a esta sección</div>
+        <div style="color:var(--muted)">Contactá al administrador si necesitás acceso.</div>
+      </div>
+    `;
+    return;
+  }
+
   const def = routes[path] || routes['/dashboard'];
   // sidebar activo
   $$('.nav-item').forEach((el) => {
@@ -1211,8 +1315,8 @@ route('/roles', async (mount) => {
           <thead>
             <tr>
               <th>Código</th>
-              <th>Slug</th>
               <th>Nombre</th>
+              <th>Slug</th>
               <th>Descripción</th>
               <th style="text-align:right">Permisos</th>
               <th style="text-align:center">Acciones</th>
@@ -1389,8 +1493,8 @@ function pintarTablaRoles(rows) {
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
-      <td>${r.slug ? `<code>${esc(r.slug)}</code>` : '—'}</td>
       <td class="td-nombre">${esc(r.nombre || '—')}</td>
+      <td>${r.slug ? `<code>${esc(r.slug)}</code>` : '—'}</td>
       <td>${esc(r.descripcion || '—')}</td>
       <td style="text-align:right">${fmtNum(r.permisos_count || 0)}</td>
       <td style="text-align:center">
@@ -1804,8 +1908,8 @@ route('/permisos', async (mount) => {
           <thead>
             <tr>
               <th>Código</th>
-              <th>Slug</th>
               <th>Nombre</th>
+              <th>Slug</th>
               <th>Descripción</th>
               <th style="text-align:center">Acciones</th>
             </tr>
@@ -1981,8 +2085,8 @@ function pintarTablaPermisos(rows) {
   tbody.innerHTML = rows.map((p) => `
     <tr data-id="${p.id}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
-      <td>${p.slug ? `<code>${esc(p.slug)}</code>` : '—'}</td>
       <td class="td-nombre">${esc(p.nombre || '—')}</td>
+      <td>${p.slug ? `<code>${esc(p.slug)}</code>` : '—'}</td>
       <td>${esc(p.descripcion || '—')}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
@@ -19695,14 +19799,33 @@ function bindChrome() {
 }
 
 // ------------------------- Auth -------------------------
-const AUTH = { user: null };
+// AUTH.user: perfil basico del usuario logueado (id, uuid, nombre, correo).
+// AUTH.perms: Set<string> con los slugs de permisos efectivos, computados por
+//             el backend en cada respuesta de /login y /me (no viven en el JWT).
+// Los helpers `hasPermission()` y `aplicarPermisosSidebar()` leen de AUTH.perms.
+const AUTH = { user: null, perms: new Set() };
+
+function hasPermission(slug) {
+  return AUTH.perms.has(slug);
+}
+
+// Devuelve true si el usuario tiene AL MENOS UN permiso cuyo slug empieza con
+// el prefijo indicado. Se usa para los items del sidebar que son "landings" de
+// una plataforma con sub-modulos (ej. Plataformas > Evolution API, cuya visibilidad
+// depende de tener acceso a canales, contactos o mensajes).
+function hasPermissionPrefix(prefix) {
+  for (const p of AUTH.perms) if (p.startsWith(prefix)) return true;
+  return false;
+}
 
 async function checkSession() {
   try {
     const r = await fetch('api/auth.php?action=me', { credentials: 'same-origin' });
     if (!r.ok) return null;
     const j = await r.json().catch(() => null);
-    return (j && j.ok) ? j.data.user : null;
+    if (!j || !j.ok) return null;
+    AUTH.perms = new Set(j.data.perms || []);
+    return j.data.user;
   } catch {
     return null;
   }
@@ -19723,7 +19846,35 @@ function showAppShell(user) {
   document.body.classList.add('is-app');
   $('#loginScreen').hidden = true;
   $('#userBtnName').textContent = user?.nombre || user?.correo || '—';
+  aplicarPermisosSidebar();
   setupEnlacesMenu();
+}
+
+// Recorre el sidebar y oculta los items para los que el usuario no tiene el
+// permiso declarado en `data-perm` (slug exacto) o `data-perm-prefix` (any-of
+// para landings de plataformas y para Herramientas). Despues oculta el grupo
+// padre completo si todos sus hijos quedaron ocultos, para no dejar toggles
+// vacios en el sidebar.
+//
+// Aclaracion: esta filtracion es SOLO UX — no es un gate de seguridad real.
+// La proxima fase debe agregar el check en cada endpoint (`requirePermission`)
+// y route-guards en el SPA. Un usuario podria tipear el hash a mano y ver la
+// vista igual (aunque el API le negara la data si el endpoint estuviese gateado).
+function aplicarPermisosSidebar() {
+  $$('.sidebar-nav .nav-sub-item').forEach((el) => {
+    const perm    = el.getAttribute('data-perm');
+    const prefijo = el.getAttribute('data-perm-prefix');
+    let visible;
+    if (perm)         visible = hasPermission(perm);
+    else if (prefijo) visible = hasPermissionPrefix(prefijo);
+    else              visible = true; // items sin declarar quedan visibles (compat)
+    el.style.display = visible ? '' : 'none';
+  });
+
+  $$('.sidebar-nav .nav-group-wrap').forEach((grupo) => {
+    const hijosVisibles = $$('.nav-sub-item', grupo).some((el) => el.style.display !== 'none');
+    grupo.style.display = hijosVisibles ? '' : 'none';
+  });
 }
 
 // ------------------------- Launcher de enlaces (topbar) -------------------------
@@ -19860,6 +20011,7 @@ function bindLogin() {
       });
       const j = await r.json().catch(() => ({ ok: false, error: 'Respuesta no JSON' }));
       if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      AUTH.perms = new Set(j.data.perms || []);
       showAppShell(j.data.user);
       $('#loginContrasena').value = '';
       if (!location.hash) location.hash = '#/dashboard';
@@ -19880,7 +20032,8 @@ async function doLogout() {
       credentials: 'same-origin',
     });
   } catch { /* ignorar */ }
-  AUTH.user = null;
+  AUTH.user  = null;
+  AUTH.perms = new Set();
   $('#userDropdown')?.classList.remove('open');
   $('#view').innerHTML = '';
   showLoginScreen();

@@ -20,6 +20,7 @@ require_once __DIR__ . '/lib/auth_check.php';
 requireAuth();
 
 try {
+    requirePermission('administracion.herramientas.tareas.consultar');
     // /var/www/html/jobs dentro del contenedor.
     $jobsDir = realpath(__DIR__ . '/../jobs');
     if ($jobsDir === false || !is_dir($jobsDir)) {

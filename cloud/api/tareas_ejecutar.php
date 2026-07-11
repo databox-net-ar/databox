@@ -24,6 +24,7 @@ const EJEC_LOG_DIR    = '/var/log/databox/cloud/ejecuciones';
 const EJEC_CLOUD_ROOT = '/var/www/html';
 
 try {
+    requirePermission('administracion.herramientas.tareas.ejecutar');
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         jsonError('Metodo no soportado', 405);
     }

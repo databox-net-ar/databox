@@ -35,6 +35,7 @@ require_once __DIR__ . '/lib/migraciones.php';
 require_once __DIR__ . '/lib/sucesos.php';
 
 try {
+    requirePermission('administracion.herramientas.migrador_db.aplicar');
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         jsonError('Metodo no soportado', 405);
     }

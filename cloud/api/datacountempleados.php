@@ -31,6 +31,7 @@ const DCE_COLS    = 'e.id, e.empresa_id, e.nombre, e.documento, e.nacimiento, e.
                   . 'e.created_at, e.updated_at';
 
 try {
+    requirePermCrud('datacount.empleados');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

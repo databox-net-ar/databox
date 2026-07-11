@@ -32,6 +32,7 @@ const DCC_NATURALEZAS = ['deudora', 'acreedora'];
 const DCC_COLS        = 'id, empresa_id, codigo, nombre, tipo, parent_id, nivel, imputable, naturaleza, descripcion, activa, saldo';
 
 try {
+    requirePermCrud('datacount.cuentas');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

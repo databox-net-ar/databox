@@ -22,6 +22,7 @@ require_once __DIR__ . '/lib/sincronizador.php';
 sincronizadorAssertDev();
 
 try {
+    requirePermission('administracion.herramientas.sincronizador.ejecutar');
     $origen = strtolower(trim((string)($_GET['origen'] ?? '')));
     if ($origen !== 'dev' && $origen !== 'prod') {
         jsonError('Parametro "origen" invalido. Usar dev o prod.', 400);

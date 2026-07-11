@@ -22,6 +22,7 @@ require_once __DIR__ . '/lib/sucesos.php';
 requireAuth();
 
 try {
+    requirePermission('administracion.herramientas.tareas.consultar');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 

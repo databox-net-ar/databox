@@ -45,6 +45,7 @@ const DS_PRO_CAMPO_PREFIX = 'datasale_prospecto_';
 header('Content-Type: application/json; charset=utf-8');
 
 try {
+    requirePermCrud('datasale.prospectos');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

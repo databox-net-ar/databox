@@ -17,6 +17,7 @@ requireAuth();
 require_once __DIR__ . '/db.php';
 
 try {
+    requirePermission('administracion.herramientas.explorador_db.consultar');
     $pdo = db();
     $dbName = (string)$pdo->query('SELECT DATABASE()')->fetchColumn();
     if ($dbName === '') jsonError('No se pudo determinar la base de datos actual', 500);

@@ -26,6 +26,7 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($method !== 'POST') jsonError('Metodo no soportado', 405);
 
 try {
+    requirePermission('plataformas.movistar.sims.sincronizar');
     $cfg   = kiteConfig();
     $t0    = microtime(true);
     $stats = kiteSyncSims($cfg, db());

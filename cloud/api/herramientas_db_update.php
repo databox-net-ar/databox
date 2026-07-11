@@ -47,6 +47,7 @@ function bq(string $ident): string {
 }
 
 try {
+    requirePermission('administracion.herramientas.explorador_db.editar');
     $pdo = db();
     $dbName = (string)$pdo->query('SELECT DATABASE()')->fetchColumn();
     if ($dbName === '') jsonError('No se pudo determinar la base de datos actual', 500);

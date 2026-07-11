@@ -60,7 +60,8 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/dashboard" class="nav-item nav-sub-item" data-route="/dashboard">
+            <a href="#/dashboard" class="nav-item nav-sub-item" data-route="/dashboard"
+               data-perm="inicio.dashboard.consultar">
               <span class="nav-icon">📊</span> Dashboard
             </a>
           </div>
@@ -73,25 +74,32 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/datacountcomprobantes" class="nav-item nav-sub-item" data-route="/datacountcomprobantes">
+            <a href="#/datacountcomprobantes" class="nav-item nav-sub-item" data-route="/datacountcomprobantes"
+               data-perm="datacount.comprobantes.consultar">
               <span class="nav-icon">🧾</span> Comprobantes
             </a>
-            <a href="#/datacountfacturacion" class="nav-item nav-sub-item" data-route="/datacountfacturacion">
+            <a href="#/datacountfacturacion" class="nav-item nav-sub-item" data-route="/datacountfacturacion"
+               data-perm="datacount.facturacion.consultar">
               <span class="nav-icon">🤖</span> Facturación
             </a>
-            <a href="#/datacountasientos" class="nav-item nav-sub-item" data-route="/datacountasientos">
+            <a href="#/datacountasientos" class="nav-item nav-sub-item" data-route="/datacountasientos"
+               data-perm="datacount.asientos.consultar">
               <span class="nav-icon">📖</span> Asientos
             </a>
-            <a href="#/datacountempleados" class="nav-item nav-sub-item" data-route="/datacountempleados">
+            <a href="#/datacountempleados" class="nav-item nav-sub-item" data-route="/datacountempleados"
+               data-perm="datacount.empleados.consultar">
               <span class="nav-icon">👤</span> Empleados
             </a>
-            <a href="#/datacountrecurrentes" class="nav-item nav-sub-item" data-route="/datacountrecurrentes">
+            <a href="#/datacountrecurrentes" class="nav-item nav-sub-item" data-route="/datacountrecurrentes"
+               data-perm="datacount.recurrentes.consultar">
               <span class="nav-icon">🔁</span> Recurrentes
             </a>
-            <a href="#/datacountcuentas" class="nav-item nav-sub-item" data-route="/datacountcuentas">
+            <a href="#/datacountcuentas" class="nav-item nav-sub-item" data-route="/datacountcuentas"
+               data-perm="datacount.cuentas.consultar">
               <span class="nav-icon">📒</span> Plan de cuentas
             </a>
-            <a href="#/datacountempresas" class="nav-item nav-sub-item" data-route="/datacountempresas">
+            <a href="#/datacountempresas" class="nav-item nav-sub-item" data-route="/datacountempresas"
+               data-perm="datacount.empresas.consultar">
               <span class="nav-icon">🏢</span> Empresas
             </a>
           </div>
@@ -104,10 +112,12 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/datarocketcontactos" class="nav-item nav-sub-item" data-route="/datarocketcontactos">
+            <a href="#/datarocketcontactos" class="nav-item nav-sub-item" data-route="/datarocketcontactos"
+               data-perm="datarocket.contactos.consultar">
               <span class="nav-icon">👥</span> Contactos
             </a>
-            <a href="#/datarocketmensajes" class="nav-item nav-sub-item" data-route="/datarocketmensajes">
+            <a href="#/datarocketmensajes" class="nav-item nav-sub-item" data-route="/datarocketmensajes"
+               data-perm="datarocket.mensajes.consultar">
               <span class="nav-icon">✉️</span> Mensajes
             </a>
           </div>
@@ -120,7 +130,8 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/prospectos" class="nav-item nav-sub-item" data-route="/prospectos">
+            <a href="#/prospectos" class="nav-item nav-sub-item" data-route="/prospectos"
+               data-perm="datasale.prospectos.consultar">
               <span class="nav-icon">🎯</span> Prospectos
             </a>
           </div>
@@ -133,31 +144,40 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/aws" class="nav-item nav-sub-item" data-route="/aws">
+            <a href="#/aws" class="nav-item nav-sub-item" data-route="/aws"
+               data-perm-prefix="plataformas.aws.">
               <span class="nav-icon">☁️</span> AWS
             </a>
-            <a href="#/awsses" class="nav-item nav-sub-item" data-route="/awsses">
+            <a href="#/awsses" class="nav-item nav-sub-item" data-route="/awsses"
+               data-perm-prefix="plataformas.awsses.">
               <span class="nav-icon">📧</span> AWS SES
             </a>
-            <a href="#/evolution" class="nav-item nav-sub-item" data-route="/evolution">
+            <a href="#/evolution" class="nav-item nav-sub-item" data-route="/evolution"
+               data-perm-prefix="plataformas.evolution.">
               <span class="nav-icon">💬</span> Evolution API
             </a>
-            <a href="#/mercadopago" class="nav-item nav-sub-item" data-route="/mercadopago">
+            <a href="#/mercadopago" class="nav-item nav-sub-item" data-route="/mercadopago"
+               data-perm-prefix="plataformas.mercadopago.">
               <span class="nav-icon">💳</span> Mercadopago
             </a>
-            <a href="#/dolarhoy" class="nav-item nav-sub-item" data-route="/dolarhoy">
+            <a href="#/dolarhoy" class="nav-item nav-sub-item" data-route="/dolarhoy"
+               data-perm-prefix="plataformas.dolarhoy.">
               <span class="nav-icon">💵</span> Dolarhoy
             </a>
-            <a href="#/movistar" class="nav-item nav-sub-item" data-route="/movistar">
+            <a href="#/movistar" class="nav-item nav-sub-item" data-route="/movistar"
+               data-perm-prefix="plataformas.movistar.">
               <span class="nav-icon">📡</span> Movistar
             </a>
-            <a href="#/claro" class="nav-item nav-sub-item" data-route="/claro">
+            <a href="#/claro" class="nav-item nav-sub-item" data-route="/claro"
+               data-perm-prefix="plataformas.claro.">
               <span class="nav-icon">📡</span> Claro
             </a>
-            <a href="#/openai" class="nav-item nav-sub-item" data-route="/openai">
+            <a href="#/openai" class="nav-item nav-sub-item" data-route="/openai"
+               data-perm-prefix="plataformas.openai.">
               <span class="nav-icon">🤖</span> OpenAI
             </a>
-            <a href="#/anthropic" class="nav-item nav-sub-item" data-route="/anthropic">
+            <a href="#/anthropic" class="nav-item nav-sub-item" data-route="/anthropic"
+               data-perm-prefix="plataformas.anthropic.">
               <span class="nav-icon">✨</span> Anthropic
             </a>
           </div>
@@ -170,13 +190,16 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/usuarios" class="nav-item nav-sub-item" data-route="/usuarios">
+            <a href="#/usuarios" class="nav-item nav-sub-item" data-route="/usuarios"
+               data-perm="seguridad.usuarios.consultar">
               <span class="nav-icon">👥</span> Usuarios
             </a>
-            <a href="#/roles" class="nav-item nav-sub-item" data-route="/roles">
+            <a href="#/roles" class="nav-item nav-sub-item" data-route="/roles"
+               data-perm="seguridad.roles.consultar">
               <span class="nav-icon">🛡️</span> Roles
             </a>
-            <a href="#/permisos" class="nav-item nav-sub-item" data-route="/permisos">
+            <a href="#/permisos" class="nav-item nav-sub-item" data-route="/permisos"
+               data-perm="seguridad.permisos.consultar">
               <span class="nav-icon">🔑</span> Permisos
             </a>
           </div>
@@ -189,7 +212,8 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/herramientas" class="nav-item nav-sub-item" data-route="/herramientas">
+            <a href="#/herramientas" class="nav-item nav-sub-item" data-route="/herramientas"
+               data-perm-prefix="administracion.herramientas.">
               <span class="nav-icon">🛠️</span> Herramientas
             </a>
           </div>

@@ -36,6 +36,7 @@ require_once __DIR__ . '/lib/openai_snapshot.php';
 header('Content-Type: application/json; charset=utf-8');
 
 requireAuth();
+requirePermission('plataformas.openai.consumos.consultar');
 $pdo = db();
 
 $metodo = $_SERVER['REQUEST_METHOD'] ?? 'GET';

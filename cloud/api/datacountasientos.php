@@ -34,6 +34,7 @@ header('Content-Type: application/json; charset=utf-8');
 const DCA_COLS = 'id, empresa_id, numero, fecha, descripcion, total, created_at';
 
 try {
+    requirePermCrud('datacount.asientos');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

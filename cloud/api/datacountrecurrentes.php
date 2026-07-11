@@ -29,6 +29,7 @@ const DCR_ORDENES = ['id', 'nombre', 'empresa', 'cuenta', 'ingreso', 'egreso', '
 const DCR_COLS    = 'r.id, r.nombre, r.empresa, r.cuenta, r.ingreso, r.egreso, r.activo, r.created_at, r.updated_at';
 
 try {
+    requirePermCrud('datacount.recurrentes');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

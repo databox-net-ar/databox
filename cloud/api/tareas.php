@@ -22,6 +22,7 @@ require_once __DIR__ . '/lib/auth_check.php';
 requireAuth();
 
 try {
+    requirePermCrud('administracion.herramientas.tareas');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int) $_GET['id'] : 0;

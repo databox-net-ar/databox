@@ -5,6 +5,7 @@
 // Cachea 60s en /tmp para no golpear a dolarhoy en cada page load.
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/auth_check.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -13,6 +14,7 @@ const DH_RT_CACHE_TTL = 60;
 const DH_RT_CACHE_KEY = 'dolarhoy_oficial_realtime';
 
 try {
+    requirePermission('plataformas.dolarhoy.cotizaciones.consultar');
     $cache = leerCacheDolarhoy();
     if ($cache !== null) {
         jsonOk($cache + ['cache' => true]);

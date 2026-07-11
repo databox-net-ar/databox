@@ -17,6 +17,7 @@ header('Content-Type: application/json; charset=utf-8');
 const TIPOS_SUCESO = ['info', 'error', 'alerta'];
 
 try {
+    requirePermCrud('administracion.herramientas.sucesos');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

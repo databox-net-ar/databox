@@ -10,6 +10,7 @@
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/auth_check.php';
 
 const MP_SUB_COLS = "id, uuid, cuenta, nombre, celular, correo, referencia,
                      concepto, monto, periodo, frecuencia,
@@ -20,6 +21,7 @@ const MP_SUB_COLS = "id, uuid, cuenta, nombre, celular, correo, referencia,
 header('Content-Type: application/json; charset=utf-8');
 
 try {
+    requirePermCrud('plataformas.mercadopago.suscripciones');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

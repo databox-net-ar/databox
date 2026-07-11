@@ -1,21 +1,24 @@
 <?php
 // api/auth.php
-// Autenticacion del panel. Sin roles ni autorizaciones todavia (STACK.md §5).
+// Autenticacion del panel.
 //
-//   POST   api/auth.php?action=login    { correo, contrasena }  -> setea cookie databox_token + datos
+//   POST   api/auth.php?action=login    { correo, contrasena }  -> setea cookie databox_token + datos + perms
 //   POST   api/auth.php?action=logout                            -> borra cookie
-//   GET    api/auth.php?action=me                                -> usuario actual (200) o 401
+//   GET    api/auth.php?action=me                                -> usuario actual + perms (200) o 401
 //
 // Verificacion de contrasena: la columna `usuarios.contrasena` esta cifrada con
 // encriptar()/desencriptar() (cifra reversible legacy del grupo). NO usar hashes.
+//
+// Permisos: se resuelven en cada respuesta (login y me) contra la BD; NO viven
+// en el JWT para evitar cookies enormes y para que cambios de roles impacten
+// al siguiente boot del SPA sin necesidad de re-login. Ver
+// `computePermisosUsuario()` en lib/auth_check.php.
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/jwt.php';
+require_once __DIR__ . '/lib/auth_check.php';
 
 header('Content-Type: application/json; charset=utf-8');
-
-const AUTH_COOKIE = 'databox_token';
-const AUTH_TTL    = 28800; // 8 horas
 
 try {
     $action = $_GET['action'] ?? '';
@@ -69,6 +72,7 @@ function handleLogin(array $in): void {
     jsonOk([
         'token' => $token,
         'user'  => publicUser($u),
+        'perms' => computePermisosUsuario($pdo, (int)$u['id']),
     ]);
 }
 
@@ -80,33 +84,17 @@ function handleLogout(): void {
 function handleMe(): void {
     $payload = currentAuth();
     if (!$payload) jsonError('No autenticado', 401);
+    $userId = (int)($payload['sub'] ?? 0);
     jsonOk([
         'user' => [
-            'id'     => (int)($payload['sub']    ?? 0),
+            'id'     => $userId,
             'uuid'   => $payload['uuid']   ?? null,
             'nombre' => $payload['nombre'] ?? null,
             'correo' => $payload['correo'] ?? null,
         ],
-        'exp' => (int)($payload['exp'] ?? 0),
+        'perms' => $userId > 0 ? computePermisosUsuario(db(), $userId) : [],
+        'exp'   => (int)($payload['exp'] ?? 0),
     ]);
-}
-
-// Devuelve el payload decodificado del JWT actual (cookie o header Authorization),
-// o null si no hay sesion valida. Disponible para futuro requireAuth().
-function currentAuth(): ?array {
-    $token = $_COOKIE[AUTH_COOKIE] ?? '';
-    if ($token === '') {
-        $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-        if (stripos($auth, 'Bearer ') === 0) $token = substr($auth, 7);
-    }
-    if ($token === '') return null;
-    return jwtDecode($token);
-}
-
-function requireAuth(): array {
-    $p = currentAuth();
-    if (!$p) jsonError('No autenticado', 401);
-    return $p;
 }
 
 function publicUser(array $row): array {
@@ -120,7 +108,7 @@ function publicUser(array $row): array {
 
 function setAuthCookie(string $token): void {
     $isProd = (getenv('APP_ENV') ?: 'development') === 'production';
-    setcookie(AUTH_COOKIE, $token, [
+    setcookie(AUTH_COOKIE_NAME, $token, [
         'expires'  => time() + AUTH_TTL,
         'path'     => '/',
         'secure'   => $isProd,
@@ -131,7 +119,7 @@ function setAuthCookie(string $token): void {
 
 function clearAuthCookie(): void {
     $isProd = (getenv('APP_ENV') ?: 'development') === 'production';
-    setcookie(AUTH_COOKIE, '', [
+    setcookie(AUTH_COOKIE_NAME, '', [
         'expires'  => time() - 3600,
         'path'     => '/',
         'secure'   => $isProd,

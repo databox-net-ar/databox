@@ -14,6 +14,7 @@ error_reporting(E_ALL);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 requireAuth();
+requirePermission('administracion.herramientas.tareas.consultar');
 
 // Headers SSE.
 header('Content-Type: text/event-stream; charset=utf-8');

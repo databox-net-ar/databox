@@ -19,6 +19,7 @@ $tabla = isset($_GET['tabla']) ? trim((string)$_GET['tabla']) : '';
 if ($tabla === '') jsonError('Falta el parámetro "tabla"', 400);
 
 try {
+    requirePermission('administracion.herramientas.explorador_db.consultar');
     $pdo = db();
     $dbName = (string)$pdo->query('SELECT DATABASE()')->fetchColumn();
     if ($dbName === '') jsonError('No se pudo determinar la base de datos actual', 500);

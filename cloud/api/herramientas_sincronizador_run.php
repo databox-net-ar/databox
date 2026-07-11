@@ -22,6 +22,7 @@ error_reporting(E_ALL);
 
 require_once __DIR__ . '/lib/auth_check.php';
 requireAuth();
+requirePermission('administracion.herramientas.sincronizador.ejecutar');
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/sincronizador.php';
 

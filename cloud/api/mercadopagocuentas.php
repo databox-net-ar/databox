@@ -10,6 +10,7 @@
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/auth_check.php';
 
 const MP_CTA_COLS = "id, uuid, nombre, logo, cvuAlias, cvuNumero,
                      publicKey, accessToken, publicKeyTesting, accessTokenTesting,
@@ -19,6 +20,7 @@ const MP_CTA_COLS = "id, uuid, nombre, logo, cvuAlias, cvuNumero,
 header('Content-Type: application/json; charset=utf-8');
 
 try {
+    requirePermCrud('plataformas.mercadopago.cuentas');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

@@ -25,6 +25,7 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/migraciones.php';
 
 try {
+    requirePermission('administracion.herramientas.migrador_db.consultar');
     $pdo = db();
     asegurarTablaMigraciones($pdo);
 

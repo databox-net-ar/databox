@@ -10,6 +10,7 @@
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/auth_check.php';
 
 // Columnas SELECT comunes (debe declararse ANTES del dispatch porque PHP procesa
 // los `const` a nivel de archivo secuencialmente).
@@ -22,6 +23,7 @@ const DC_COLS = "id, uuid, talonario, proyecto, empresa, tipo, punto, serie, fis
 header('Content-Type: application/json; charset=utf-8');
 
 try {
+    requirePermCrud('datacount.comprobantes');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

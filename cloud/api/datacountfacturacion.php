@@ -34,10 +34,13 @@ try {
     $action = (string)($_GET['action'] ?? '');
 
     if ($method === 'GET' && $action === 'status') {
+        requirePermission('datacount.facturacion.consultar');
         handleStatus($pdo);
     } elseif ($method === 'GET' && $action === 'log') {
+        requirePermission('datacount.facturacion.consultar');
         handleLog($pdo, $_GET);
     } elseif ($method === 'POST' && $action === 'motor') {
+        requirePermission('datacount.facturacion.ejecutar');
         handleMotor($pdo, readJsonBody());
     } else {
         jsonError('Accion no soportada', 400);

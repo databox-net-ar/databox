@@ -33,6 +33,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') { exit; }
 
 require_once __DIR__ . '/lib/auth_check.php';
 $auth      = requireAuth();
+requirePermission('administracion.herramientas.explorador_s3.subir');
 $usuarioId = (int)($auth['sub'] ?? 0);
 
 require_once __DIR__ . '/lib/s3.php';

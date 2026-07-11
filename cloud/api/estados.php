@@ -23,6 +23,7 @@ requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
 try {
+    requirePermCrud('administracion.herramientas.estados');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

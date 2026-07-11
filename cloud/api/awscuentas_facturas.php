@@ -30,6 +30,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
 }
 
 requireAuth();
+requirePermission('plataformas.aws.cuentas.consultar');
 
 $id     = isset($_GET['id'])     ? (int)$_GET['id']     : 0;
 $months = isset($_GET['months']) ? (int)$_GET['months'] : 6;

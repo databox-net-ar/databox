@@ -4,6 +4,10 @@
 // TODO: cuando exista el esquema de BD (scripts/migrate.php) reemplazar
 // la data hardcodeada por consultas reales y agregar requireAuth().
 
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/auth_check.php';
+
+requirePermission('inicio.dashboard.consultar');
 header('Content-Type: application/json; charset=utf-8');
 
 $hoy = new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires'));

@@ -37,6 +37,7 @@ const DCE_ORDENES = ['id', 'nombre', 'razon', 'cuit', 'inicio'];
 const DCE_COLS    = 'id, nombre, razon, domicilio, condicion, cuit, iibb, inicio, created_at, updated_at';
 
 try {
+    requirePermCrud('datacount.empresas');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

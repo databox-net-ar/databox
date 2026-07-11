@@ -10,6 +10,7 @@
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/auth_check.php';
 
 const DR_CT_COLS = "id, uuid, origen, nombre, empresa, rubro, actividad, cargo,
                     persona, genero, nacimiento, dni, domicilio, ciudad, ubicacion,
@@ -20,6 +21,7 @@ const DR_CT_COLS = "id, uuid, origen, nombre, empresa, rubro, actividad, cargo,
 header('Content-Type: application/json; charset=utf-8');
 
 try {
+    requirePermCrud('datarocket.contactos');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
