@@ -52,6 +52,29 @@ function esc(s) {
   }[c]));
 }
 
+// Convierte texto libre a un slug dot-separated compatible con la regex
+// `^[a-z0-9][a-z0-9._-]*$` que usan `roles.slug` y `permisos.slug`.
+// Normaliza a minusculas, quita diacriticos comunes en espanol y colapsa
+// cualquier corrida de caracteres no [a-z0-9] a un unico punto. Trunca a 100
+// (el maxlength de las columnas `slug` en la BD).
+function slugificarConPuntos(txt) {
+  if (txt == null) return '';
+  return String(txt)
+    .toLowerCase()
+    .replace(/[áàäâã]/g, 'a')
+    .replace(/[éèëê]/g,  'e')
+    .replace(/[íìïî]/g,  'i')
+    .replace(/[óòöôõ]/g, 'o')
+    .replace(/[úùüû]/g,  'u')
+    .replace(/ñ/g,       'n')
+    .replace(/ç/g,       'c')
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^\.+/, '')
+    .replace(/\.+$/, '')
+    .substring(0, 100)
+    .replace(/\.+$/, '');
+}
+
 async function apiGet(url) {
   const r = await fetch(url, { credentials: 'same-origin' });
   const j = await r.json().catch(() => ({ ok: false, error: 'Respuesta no JSON' }));
@@ -461,10 +484,36 @@ function renderMensajes(rows) {
 }
 
 // ------------------------- Vista: Usuarios (ABM) -------------------------
+// Cache de sesion del catalogo de roles cloud (GET api/roles.php ya filtra los
+// legacy por slug — ver 20260711_1200_limpiar_slug_y_descripcion_legacy.sql).
+// Se usa en el picker de roles del editor de usuarios. Misma politica de
+// invalidacion que `permisosCatalogo`: la pagina no invalida despues de altas
+// desde el ABM de roles; el catalogo se refresca al recargar la pestana.
+let rolesCatalogo = null;
+
+async function getRolesCatalogo() {
+  if (rolesCatalogo) return rolesCatalogo;
+  // limite=1000 porque los roles cloud rondan las decenas; con esto entra todo
+  // el set sin paginar. order_by=nombre para que el picker salga ordenado.
+  const data = await apiGet('api/roles.php?order_by=nombre&dir=asc&limite=1000');
+  rolesCatalogo = data.items || [];
+  return rolesCatalogo;
+}
+
+// Tokeniza un CSV de IDs de rol a array de strings sin vacios.
+// Se comparte entre el render del picker y el save (para separar los IDs
+// legacy — que no aparecen en el picker — de los cloud tildados).
+function tokenizarRoles(raw) {
+  if (raw == null) return [];
+  return String(raw)
+    .split(/[,;\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
 const USR_ESTADOS = {
-  A: { label: 'Activo',   badge: 'badge-success' },
-  I: { label: 'Inactivo', badge: 'badge-danger'  },
-  B: { label: 'Baja',     badge: 'badge-danger'  },
+  '1': { label: 'Activo',   badge: 'badge-success' },
+  '0': { label: 'Inactivo', badge: 'badge-danger'  },
 };
 const usuariosFiltrosDefaults = {
   q: '', codigo: '', nombre: '', dni: '', correo: '', celular: '', estado: '',
@@ -583,9 +632,8 @@ route('/usuarios', async (mount) => {
             <label>Estado del usuario</label>
             <div id="fUsrEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
               <button type="button" class="filter-chip" data-estado="" >Todos</button>
-              <button type="button" class="filter-chip" data-estado="A">Activo</button>
-              <button type="button" class="filter-chip" data-estado="I">Inactivo</button>
-              <button type="button" class="filter-chip" data-estado="B">Baja</button>
+              <button type="button" class="filter-chip" data-estado="1">Activo</button>
+              <button type="button" class="filter-chip" data-estado="0">Inactivo</button>
             </div>
           </div>
           <div class="form-row form-row-3">
@@ -885,9 +933,7 @@ async function abrirAltaEdicion(id) {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formUsuarioHtml({})}
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
@@ -896,13 +942,15 @@ async function abrirAltaEdicion(id) {
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const u = await apiGet(`api/usuarios.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formUsuarioHtml(u);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  try {
+    const [u, roles] = await Promise.all([
+      esEdicion ? apiGet(`api/usuarios.php?id=${id}`) : Promise.resolve({}),
+      getRolesCatalogo(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formUsuarioHtml(u, roles);
+    bindRolesBuscadorUsuario();
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
@@ -910,12 +958,40 @@ async function abrirAltaEdicion(id) {
     if (!a) return;
     if (a.dataset.act === 'close') closeModal();
     if (a.dataset.act === 'guardar') await guardarUsuario(id, a);
+    if (a.dataset.act === 'urole-todos')   marcarRolesUsuario(true);
+    if (a.dataset.act === 'urole-ninguno') marcarRolesUsuario(false);
   });
 }
 
-function formUsuarioHtml(u) {
+function formUsuarioHtml(u, rolesCatalogoLocal) {
   const v = (k) => esc(u?.[k] ?? '');
   const sel = (k, val) => (u?.[k] ?? '') === val ? 'selected' : '';
+
+  // Separamos los IDs que el usuario ya tiene asignados en dos grupos:
+  //  - Los que matchean el catalogo cloud actual  -> tildan el checkbox
+  //  - Los que NO matchean (legacy o borrados)    -> se preservan invisibles
+  //    en un input hidden y se re-emiten al guardar, para no destruir data
+  //    legacy que este panel no debe manipular.
+  const catalogo   = rolesCatalogoLocal || [];
+  const idsCloud   = new Set(catalogo.map((r) => String(r.id)));
+  const asignados  = tokenizarRoles(u?.roles);
+  const tildados   = new Set(asignados.filter((id) => idsCloud.has(String(id))).map(String));
+  const preservados = asignados.filter((id) => !idsCloud.has(String(id)));
+
+  const checks = catalogo.map((r) => {
+    const checked = tildados.has(String(r.id)) ? 'checked' : '';
+    return `
+      <label class="perm-item" data-nombre="${esc((r.nombre || '').toLowerCase())}">
+        <input type="checkbox" class="perm-check" value="${esc(r.id)}" ${checked}>
+        <span class="perm-text">
+          <span class="perm-name">${esc(r.nombre || '—')}</span>
+          ${r.descripcion ? `<span class="perm-desc">${esc(r.descripcion)}</span>` : ''}
+        </span>
+        <span class="perm-id">#${esc(r.id)}</span>
+      </label>
+    `;
+  }).join('');
+
   return `
     <div class="form-row">
       <div class="form-group">
@@ -945,9 +1021,8 @@ function formUsuarioHtml(u) {
       <div class="form-group">
         <label>Estado</label>
         <select id="uEstado">
-          <option value="A" ${sel('estado','A') || (!u?.estado ? 'selected' : '')}>Activo</option>
-          <option value="I" ${sel('estado','I')}>Inactivo</option>
-          <option value="B" ${sel('estado','B')}>Baja</option>
+          <option value="1" ${sel('estado','1') || (!u?.estado ? 'selected' : '')}>Activo</option>
+          <option value="0" ${sel('estado','0')}>Inactivo</option>
         </select>
       </div>
     </div>
@@ -957,16 +1032,49 @@ function formUsuarioHtml(u) {
         <input type="text" id="uSistemas" maxlength="10" value="${v('sistemas')}">
       </div>
       <div class="form-group">
-        <label>Roles</label>
-        <input type="text" id="uRoles" value="${v('roles')}">
+        <label>Contraseña${u?.id ? ' <span style="color:var(--muted);font-weight:normal;font-size:.85em">(doble clic para ver)</span>' : ''}</label>
+        <input type="password" id="uContrasena" autocomplete="new-password"
+               value="${v('contrasena')}"
+               title="${u?.id ? 'Doble clic para mostrar / ocultar' : ''}"
+               ondblclick="this.type = this.type === 'password' ? 'text' : 'password'">
       </div>
     </div>
     <div class="form-group">
-      <label>${u?.id ? 'Nueva contraseña (dejar vacío para no cambiar)' : 'Contraseña'}</label>
-      <input type="password" id="uContrasena" autocomplete="new-password">
+      <label>Roles</label>
+      <input type="hidden" id="uRolesLegacy" value="${esc(preservados.join(','))}">
+      <div class="perm-toolbar">
+        <div class="search-wrap" style="flex:1">
+          <input type="search" id="uRolSearch" class="search-input" placeholder="Filtrar roles…" style="width:100%">
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" data-act="urole-todos">Marcar todos</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-act="urole-ninguno">Quitar todos</button>
+      </div>
+      <div class="perm-list" id="uRolList">
+        ${checks || '<div class="table-empty" style="padding:20px">No hay roles definidos en el catálogo.</div>'}
+      </div>
     </div>
     <div class="field-error" id="uError" style="display:none"></div>
   `;
+}
+
+function bindRolesBuscadorUsuario() {
+  const inp = $('#uRolSearch');
+  if (!inp) return;
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    $$('#uRolList .perm-item').forEach((el) => {
+      const nombre = el.dataset.nombre || '';
+      el.style.display = !q || nombre.includes(q) ? '' : 'none';
+    });
+  });
+}
+
+function marcarRolesUsuario(checked) {
+  $$('#uRolList .perm-item').forEach((el) => {
+    if (el.style.display === 'none') return; // respetar el filtro activo
+    const c = el.querySelector('.perm-check');
+    if (c) c.checked = checked;
+  });
 }
 
 async function guardarUsuario(id, btn) {
@@ -982,6 +1090,14 @@ async function guardarUsuario(id, btn) {
     return;
   }
 
+  // El CSV de roles a guardar concatena:
+  //  - Los IDs cloud tildados por el usuario en el picker
+  //  - Los IDs legacy (no presentes en el catalogo cloud) que trajimos ocultos
+  //    en #uRolesLegacy para no perder asignaciones que este panel no muestra.
+  const idsCloud    = $$('#uRolList .perm-check').filter((c) => c.checked).map((c) => c.value);
+  const idsPreserv  = tokenizarRoles($('#uRolesLegacy')?.value ?? '');
+  const rolesCsv    = [...idsPreserv, ...idsCloud].join(',');
+
   const payload = {
     nombre,
     dni:        $('#uDni').value.trim(),
@@ -990,7 +1106,7 @@ async function guardarUsuario(id, btn) {
     nacimiento: $('#uNacimiento').value || null,
     estado:     $('#uEstado').value,
     sistemas:   $('#uSistemas').value.trim(),
-    roles:      $('#uRoles').value.trim(),
+    roles:      rolesCsv,
     contrasena: $('#uContrasena').value,
   };
 
@@ -1449,6 +1565,7 @@ async function abrirAltaEdicionRol(id) {
     ]);
     $('#modalRoot .modal-body').innerHTML = formRolHtml(rol, catalogo);
     bindPermisosBuscador();
+    bindAutoSlugRol();
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -1491,12 +1608,12 @@ function formRolHtml(r, catalogo) {
         <label class="label-with-help">
           <span>Slug *</span>
           <i class="fa-solid fa-circle-question label-help" tabindex="0"
-             title="Identificador que la aplicación usa para validar los permisos a las distintas áreas del sistema. Minúsculas, números, guion y guion bajo."></i>
+             title="Identificador que la aplicación usa para validar los permisos a las distintas áreas del sistema. Minúsculas, números, punto, guion y guion bajo. Se sugiere automáticamente a partir del nombre."></i>
         </label>
         <input type="text" id="rSlug" value="${v('slug')}" required
                style="font-family:var(--font-mono,monospace)"
-               placeholder="ej: admin, editor, vendedor"
-               pattern="^[a-z0-9][a-z0-9_-]*$" maxlength="50">
+               placeholder="ej: administrador.general, editor.contenidos"
+               pattern="^[a-z0-9][a-z0-9._-]*$" maxlength="100">
       </div>
     </div>
     <div class="form-group">
@@ -1536,6 +1653,27 @@ function bindPermisosBuscador() {
   });
 }
 
+// Auto-genera el slug del rol a partir del nombre mientras el usuario tipea,
+// respetando la manualidad: si el usuario edita el campo slug directamente
+// (o abre el modal en edicion con un slug ya cargado), dejamos de sincronizar.
+// Si vuelve a vaciarlo, retomamos la auto-sincronizacion.
+function bindAutoSlugRol() {
+  const nombreEl = $('#rNombre');
+  const slugEl   = $('#rSlug');
+  if (!nombreEl || !slugEl) return;
+
+  let slugManualmenteTocado = slugEl.value.trim() !== '';
+
+  nombreEl.addEventListener('input', () => {
+    if (slugManualmenteTocado) return;
+    slugEl.value = slugificarConPuntos(nombreEl.value);
+  });
+
+  slugEl.addEventListener('input', () => {
+    slugManualmenteTocado = slugEl.value.trim() !== '';
+  });
+}
+
 function marcarPermisos(checked) {
   $$('#rPermList .perm-item').forEach((el) => {
     if (el.style.display === 'none') return; // respetar el filtro activo
@@ -1558,9 +1696,9 @@ async function guardarRol(id, btn) {
     err.style.display = '';
     return;
   }
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(slug)) {
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(slug)) {
     $('#rSlug').classList.add('input-invalid');
-    err.textContent = 'El slug solo admite minúsculas, números, guion y guion bajo, y debe empezar con letra o número.';
+    err.textContent = 'El slug solo admite minúsculas, números, punto, guion y guion bajo, y debe empezar con letra o número.';
     err.style.display = '';
     return;
   }
@@ -2031,7 +2169,7 @@ function formPermisoHtml(p) {
         <input type="text" id="pSlug" value="${v('slug')}" required
                style="font-family:var(--font-mono,monospace)"
                placeholder="ej: usuarios.editar, campanas.enviar"
-               pattern="^[a-z0-9][a-z0-9._-]*$" maxlength="50">
+               pattern="^[a-z0-9][a-z0-9._-]*$" maxlength="100">
       </div>
     </div>
     <div class="form-group">
@@ -20719,6 +20857,7 @@ let sucesosCache         = [];
 let sucesosFiltroQ       = '';
 let sucesosFiltroTipo    = '';
 let _sucesosSearchTimer  = null;
+let sucesoDetalleActual  = null;
 
 // Mapa de estilos por tipo -- usado por chips, celda de listado y detalle.
 const SUCESOS_TIPOS = {
@@ -20826,12 +20965,40 @@ function renderSucesos(rows) {
 function sucesosVerDetalle(id) {
   const s = sucesosCache.find((x) => x.id === id);
   if (!s) return;
+  sucesoDetalleActual = s;
   document.getElementById('sucesoDetalleId').textContent     = s.id;
   document.getElementById('sucesoDetalleFecha').textContent  = s.fecha  || '—';
   document.getElementById('sucesoDetalleOrigen').textContent = s.origen || '—';
   document.getElementById('sucesoDetalleTipo').innerHTML     = sucesoTipoHtml(s.tipo);
   document.getElementById('sucesoDetalleTexto').value        = s.detalle || '';
   document.getElementById('sucesoDetalleBackdrop').classList.add('open');
+}
+
+// Copia el suceso completo al portapapeles con un formato pensado para pegarse
+// directo en un asistente de programación (todos los campos etiquetados +
+// bloque de detalle delimitado para que el asistente pueda parsearlo sin
+// confundir el cuerpo con los metadatos).
+function sucesoDetalleCopiar() {
+  const s = sucesoDetalleActual;
+  if (!s) { toast('No hay suceso para copiar.', { error: true }); return; }
+  if (!navigator.clipboard) { toast('El navegador no permite copiar.', { error: true }); return; }
+  const tipoMeta  = SUCESOS_TIPOS[s.tipo] || SUCESOS_TIPOS.info;
+  const partes = [
+    'Suceso #' + (s.id ?? '—') + ' registrado en el panel cloud de Databox.',
+    '',
+    'Fecha:   ' + (s.fecha  || '—'),
+    'Origen:  ' + (s.origen || '—'),
+    'Tipo:    ' + tipoMeta.label + ' (' + (s.tipo || 'info') + ')',
+    '',
+    'Detalle:',
+    '```',
+    (s.detalle || '').replace(/\r\n/g, '\n'),
+    '```',
+  ];
+  navigator.clipboard.writeText(partes.join('\n')).then(
+    () => toast('Suceso copiado al portapapeles.'),
+    () => toast('No se pudo copiar.', { error: true }),
+  );
 }
 
 document.addEventListener('keydown', (e) => {

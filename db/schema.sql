@@ -1906,7 +1906,7 @@ CREATE TABLE `parametros`  (
 DROP TABLE IF EXISTS `permisos`;
 CREATE TABLE `permisos`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `slug` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `slug` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
@@ -1963,7 +1963,7 @@ CREATE TABLE `remuneraciones`  (
 DROP TABLE IF EXISTS `roles`;
 CREATE TABLE `roles`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `slug` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `slug` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `descripcion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `permisos` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,

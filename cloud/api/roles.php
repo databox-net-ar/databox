@@ -61,7 +61,10 @@ function handleList(PDO $pdo, array $q): void {
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
 
-    $where  = [];
+    // Solo el set "cloud" (con slug). Los roles legacy tienen slug NULL desde
+    // 20260711_1200_limpiar_slug_y_descripcion_legacy.sql y no se exponen en
+    // el ABM del panel — conviven en la tabla para uso de la UI legacy.
+    $where  = ["slug IS NOT NULL AND slug <> ''"];
     $params = [];
 
     if ($codigo !== null) { $where[] = 'id = :codigo';                  $params[':codigo']      = $codigo; }
@@ -81,6 +84,7 @@ function handleList(PDO $pdo, array $q): void {
             COUNT(*) AS total,
             SUM(CASE WHEN permisos IS NULL OR permisos = '' THEN 1 ELSE 0 END) AS sin_permisos
         FROM roles
+        WHERE slug IS NOT NULL AND slug <> ''
     ")->fetch();
 
     $sql = "
@@ -109,7 +113,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('SELECT id, slug, nombre, descripcion, permisos FROM roles WHERE id = :id');
+    $stmt = $pdo->prepare("SELECT id, slug, nombre, descripcion, permisos FROM roles WHERE id = :id AND slug IS NOT NULL AND slug <> ''");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Rol no encontrado', 404);
@@ -118,7 +122,10 @@ function handleGetOne(PDO $pdo, int $id): void {
 }
 
 function handleListarPermisos(PDO $pdo): void {
-    $rows = $pdo->query('SELECT id, nombre, descripcion FROM permisos ORDER BY nombre ASC')->fetchAll();
+    // Solo permisos "cloud" (con slug). Los legacy quedan fuera del catalogo
+    // que el editor de roles ofrece — al asignar permisos a un rol cloud, el
+    // usuario solo ve los permisos del set nuevo.
+    $rows = $pdo->query("SELECT id, nombre, descripcion FROM permisos WHERE slug IS NOT NULL AND slug <> '' ORDER BY nombre ASC")->fetchAll();
     jsonOk(['items' => $rows]);
 }
 
@@ -132,9 +139,12 @@ function sanitizePayload(array $in): array {
 
     $slug = strtolower(trim((string)($in['slug'] ?? '')));
     if ($slug === '') jsonError('El slug es obligatorio', 400);
-    if (strlen($slug) > 50) jsonError('El slug no puede superar los 50 caracteres', 400);
-    if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $slug)) {
-        jsonError('El slug solo admite minusculas, numeros, guion y guion bajo, y debe empezar con letra o numero', 400);
+    if (strlen($slug) > 100) jsonError('El slug no puede superar los 100 caracteres', 400);
+    // Se permite '.' para admitir slugs jerarquicos generados automaticamente
+    // desde el nombre (ej: "Administrador General" -> "administrador.general"),
+    // en linea con el estilo dot-separated usado por permisos.
+    if (!preg_match('/^[a-z0-9][a-z0-9._-]*$/', $slug)) {
+        jsonError('El slug solo admite minusculas, numeros, punto, guion y guion bajo, y debe empezar con letra o numero', 400);
     }
 
     return [
@@ -174,7 +184,7 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM roles WHERE id = :id');
+    $exists = $pdo->prepare("SELECT id FROM roles WHERE id = :id AND slug IS NOT NULL AND slug <> ''");
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Rol no encontrado', 404);
 
@@ -196,7 +206,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM roles WHERE id = :id');
+    $stmt = $pdo->prepare("DELETE FROM roles WHERE id = :id AND slug IS NOT NULL AND slug <> ''");
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Rol no encontrado', 404);
     jsonOk(['id' => $id]);

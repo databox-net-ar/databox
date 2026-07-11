@@ -76,12 +76,13 @@ function handleList(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    // Stats globales (ignoran filtros — son indicadores del recurso)
+    // Stats globales (ignoran filtros — son indicadores del recurso).
+    // estado: '1' = activo, '0' (o cualquier otro valor / NULL) = inactivo.
     $stats = $pdo->query("
         SELECT
-            COUNT(*)                                   AS total,
-            SUM(CASE WHEN estado = 'A' THEN 1 ELSE 0 END) AS activos,
-            SUM(CASE WHEN estado <> 'A' OR estado IS NULL THEN 1 ELSE 0 END) AS inactivos
+            COUNT(*)                                        AS total,
+            SUM(CASE WHEN estado = '1' THEN 1 ELSE 0 END)   AS activos,
+            SUM(CASE WHEN estado <> '1' OR estado IS NULL THEN 1 ELSE 0 END) AS inactivos
         FROM usuarios
     ")->fetch();
 
@@ -109,13 +110,18 @@ function handleList(PDO $pdo, array $q): void {
 
 function handleGetOne(PDO $pdo, int $id): void {
     $stmt = $pdo->prepare("
-        SELECT id, uuid, nombre, dni, nacimiento, celular, correo,
+        SELECT id, uuid, nombre, dni, nacimiento, celular, correo, contrasena,
                registrado, ingresado, terminal, sistemas, roles, estado
         FROM usuarios WHERE id = :id
     ");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Usuario no encontrado', 404);
+    // Devolvemos la contrasena en claro para que el ABM la muestre
+    // (cifra reversible legacy — ver auth.php).
+    $row['contrasena'] = $row['contrasena'] !== null && $row['contrasena'] !== ''
+        ? desencriptar((string)$row['contrasena'])
+        : '';
     jsonOk($row);
 }
 
@@ -127,8 +133,8 @@ function sanitizePayload(array $in, bool $isCreate): array {
     $nombre = trim((string)($in['nombre'] ?? ''));
     if ($nombre === '') jsonError('El nombre es obligatorio', 400);
 
-    $estado = trim((string)($in['estado'] ?? 'A'));
-    if ($estado === '') $estado = 'A';
+    $estado = trim((string)($in['estado'] ?? '1'));
+    if ($estado === '') $estado = '1';
 
     $payload = [
         'nombre'     => $nombre,

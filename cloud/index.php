@@ -909,6 +909,11 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
         </div>
       </div>
       <div class="modal-footer">
+        <button class="btn btn-ghost" style="margin-right:auto"
+                onclick="sucesoDetalleCopiar()"
+                title="Copiar el suceso al portapapeles para pegarlo en un asistente de programación">
+          <i class="fa-solid fa-copy"></i> Copiar
+        </button>
         <button class="btn btn-ghost"
                 onclick="document.getElementById('sucesoDetalleBackdrop').classList.remove('open')">Cerrar</button>
       </div>
