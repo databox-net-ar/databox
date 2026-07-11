@@ -2186,6 +2186,22 @@ CREATE TABLE `usuarios`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 37223 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for usuarios_invitaciones
+-- ----------------------------
+DROP TABLE IF EXISTS `usuarios_invitaciones`;
+CREATE TABLE `usuarios_invitaciones`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `usuario` int(11) NOT NULL,
+  `token` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `expira` datetime(0) NOT NULL,
+  `usado` datetime(0) NULL DEFAULT NULL,
+  `creado` datetime(0) NOT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  KEY `idx_usrinv_token` (`token`) USING BTREE,
+  KEY `idx_usrinv_usuario` (`usuario`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for whapicanales
 -- ----------------------------
 DROP TABLE IF EXISTS `whapicanales`;

@@ -5,6 +5,7 @@
 //   POST   api/auth.php?action=login    { correo, contrasena }  -> setea cookie databox_token + datos + perms
 //   POST   api/auth.php?action=logout                            -> borra cookie
 //   GET    api/auth.php?action=me                                -> usuario actual + perms (200) o 401
+//   GET    api/auth.php?action=magic&token=XX                    -> canjea magic link (invitacion), setea cookie y redirige a /
 //
 // Verificacion de contrasena: la columna `usuarios.contrasena` esta cifrada con
 // encriptar()/desencriptar() (cifra reversible legacy del grupo). NO usar hashes.
@@ -27,6 +28,7 @@ try {
     if ($action === 'login'  && $method === 'POST') { handleLogin(readJsonBody()); }
     elseif ($action === 'logout' && $method === 'POST') { handleLogout(); }
     elseif ($action === 'me'     && $method === 'GET')  { handleMe(); }
+    elseif ($action === 'magic'  && $method === 'GET')  { handleMagic(); }
     else { jsonError('Accion no soportada', 405); }
 } catch (Throwable $e) {
     jsonError($e->getMessage(), 500);
@@ -95,6 +97,59 @@ function handleMe(): void {
         'perms' => $userId > 0 ? computePermisosUsuario(db(), $userId) : [],
         'exp'   => (int)($payload['exp'] ?? 0),
     ]);
+}
+
+// Canje del magic link generado por api/usuarios_invitar.php. Es una peticion
+// GET desde el navegador (usuario clickea el link del mail), asi que a
+// diferencia de las otras acciones responde con `Location:` — no JSON.
+function handleMagic(): void {
+    $token = trim((string)($_GET['token'] ?? ''));
+    if ($token === '') { magicRedirectError('Enlace invalido'); return; }
+
+    $pdo  = db();
+    $stmt = $pdo->prepare(
+        'SELECT i.id AS inv_id, i.usuario, i.expira, i.usado,
+                u.uuid, u.nombre, u.correo, u.estado
+           FROM usuarios_invitaciones i
+           JOIN usuarios u ON u.id = i.usuario
+          WHERE i.token = :t
+          LIMIT 1'
+    );
+    $stmt->execute([':t' => $token]);
+    $row = $stmt->fetch();
+
+    if (!$row)                                        { magicRedirectError('Enlace invalido'); return; }
+    if (!empty($row['usado']))                        { magicRedirectError('Este enlace ya fue usado'); return; }
+    if (strtotime((string)$row['expira']) < time())   { magicRedirectError('Este enlace expiro'); return; }
+    if ((string)($row['estado'] ?? '') !== '1')       { magicRedirectError('Usuario deshabilitado'); return; }
+
+    $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+             ->format('Y-m-d H:i:s');
+
+    // Marcamos la invitacion como usada ANTES de emitir la cookie: si algo
+    // falla mas adelante, preferimos "consumida y no logueado" antes que
+    // "no consumida y logueado" (asi el link no queda reutilizable).
+    $pdo->prepare('UPDATE usuarios_invitaciones SET usado = :now WHERE id = :id')
+        ->execute([':now' => $ahora, ':id' => (int)$row['inv_id']]);
+
+    $pdo->prepare('UPDATE usuarios SET ingresado = :i WHERE id = :id')
+        ->execute([':i' => $ahora, ':id' => (int)$row['usuario']]);
+
+    $jwt = jwtEncode([
+        'sub'    => (int)$row['usuario'],
+        'uuid'   => $row['uuid'],
+        'nombre' => $row['nombre'],
+        'correo' => $row['correo'],
+    ], AUTH_TTL);
+    setAuthCookie($jwt);
+
+    header('Location: /', true, 302);
+    exit;
+}
+
+function magicRedirectError(string $msg): void {
+    header('Location: /?login_error=' . rawurlencode($msg), true, 302);
+    exit;
 }
 
 function publicUser(array $row): array {

@@ -671,7 +671,6 @@ route('/usuarios', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Nombre</th>
-              <th>DNI</th>
               <th>Correo</th>
               <th>Celular</th>
               <th>Estado</th>
@@ -679,7 +678,7 @@ route('/usuarios', async (mount) => {
             </tr>
           </thead>
           <tbody id="usrTbody">
-            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -689,6 +688,9 @@ route('/usuarios', async (mount) => {
     <div id="usrCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="invitar" role="menuitem">
+        <i class="fa-solid fa-paper-plane"></i><span>Invitar</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
@@ -804,6 +806,7 @@ route('/usuarios', async (mount) => {
     if (!data) return;
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarUsuario(data.id);
+    if (b.dataset.action === 'invitar')   invitarUsuario(data.id);
     if (b.dataset.action === 'editar')    abrirAltaEdicion(data.id);
     if (b.dataset.action === 'eliminar')  eliminarUsuario(data.id);
   });
@@ -864,7 +867,7 @@ function pintarStatsUsuarios(s) {
 function pintarTablaUsuarios(rows) {
   const tbody = $('#usrTbody');
   if (!rows || !rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin usuarios.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin usuarios.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((u) => {
@@ -873,7 +876,6 @@ function pintarTablaUsuarios(rows) {
       <tr data-id="${u.id}" class="row-clickable">
         <td class="td-id">#${esc(u.id)}</td>
         <td class="td-nombre">${esc(u.nombre || '—')}</td>
-        <td>${esc(u.dni || '—')}</td>
         <td>${esc(u.correo || '—')}</td>
         <td>${esc(u.celular || '—')}</td>
         <td><span class="badge ${est.badge}">${esc(est.label)}</span></td>
@@ -1229,6 +1231,22 @@ async function guardarUsuario(id, btn) {
     err.textContent = e.message;
     err.style.display = '';
     btn.disabled = false;
+  }
+}
+
+async function invitarUsuario(id) {
+  const ok = await confirmar({
+    title: 'Enviar invitación',
+    message: `Se le enviará al usuario #${id} un correo con un enlace mágico para ingresar al panel sin contraseña. El enlace expira en 7 días y es de un solo uso.`,
+    confirmText: 'Enviar invitación',
+    danger: false,
+  });
+  if (!ok) return;
+  try {
+    const data = await apiSend(`api/usuarios_invitar.php?id=${id}`, 'POST');
+    toast(`Invitación encolada para ${data.destino}.`);
+  } catch (e) {
+    toast(e.message, { error: true });
   }
 }
 
