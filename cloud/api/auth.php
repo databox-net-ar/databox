@@ -108,7 +108,7 @@ function handleMagic(): void {
 
     $pdo  = db();
     $stmt = $pdo->prepare(
-        'SELECT i.id AS inv_id, i.usuario, i.expira, i.usado,
+        'SELECT i.id AS inv_id, i.usuario, i.expira, i.usado, i.un_solo_uso,
                 u.uuid, u.nombre, u.correo, u.estado
            FROM usuarios_invitaciones i
            JOIN usuarios u ON u.id = i.usuario
@@ -118,17 +118,24 @@ function handleMagic(): void {
     $stmt->execute([':t' => $token]);
     $row = $stmt->fetch();
 
-    if (!$row)                                        { magicRedirectError('Enlace invalido'); return; }
-    if (!empty($row['usado']))                        { magicRedirectError('Este enlace ya fue usado'); return; }
-    if (strtotime((string)$row['expira']) < time())   { magicRedirectError('Este enlace expiro'); return; }
-    if ((string)($row['estado'] ?? '') !== '1')       { magicRedirectError('Usuario deshabilitado'); return; }
+    if (!$row) { magicRedirectError('Enlace invalido'); return; }
+
+    // `un_solo_uso` distingue los dos usos del magic link:
+    //   - '1' (default) invitacion por mail: se quema al primer canje.
+    //   - '0'           iniciar sesion como: multi-uso dentro de `expira`.
+    $unSoloUso = (string)($row['un_solo_uso'] ?? '1') === '1';
+
+    if ($unSoloUso && !empty($row['usado']))            { magicRedirectError('Este enlace ya fue usado'); return; }
+    if (strtotime((string)$row['expira']) < time())     { magicRedirectError('Este enlace expiro'); return; }
+    if ((string)($row['estado'] ?? '') !== '1')         { magicRedirectError('Usuario deshabilitado'); return; }
 
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
              ->format('Y-m-d H:i:s');
 
-    // Marcamos la invitacion como usada ANTES de emitir la cookie: si algo
-    // falla mas adelante, preferimos "consumida y no logueado" antes que
-    // "no consumida y logueado" (asi el link no queda reutilizable).
+    // Registramos el uso ANTES de emitir la cookie: para links de un solo uso,
+    // preferimos "consumida y no logueado" antes que "no consumida y logueado"
+    // (asi el link no queda reutilizable). Para multi-uso, `usado` queda como
+    // el timestamp del ultimo acceso.
     $pdo->prepare('UPDATE usuarios_invitaciones SET usado = :now WHERE id = :id')
         ->execute([':now' => $ahora, ':id' => (int)$row['inv_id']]);
 

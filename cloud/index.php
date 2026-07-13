@@ -220,7 +220,7 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
         </div>
       </nav>
 
-      <div class="sidebar-footer">v<span id="appVersion"><?= htmlspecialchars($version) ?></span></div>
+      <span id="appVersion" hidden><?= htmlspecialchars($version) ?></span>
     </aside>
     <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
@@ -940,6 +940,30 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
         </button>
         <button class="btn btn-ghost"
                 onclick="document.getElementById('sucesoDetalleBackdrop').classList.remove('open')">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Editar zona horaria ===== -->
+  <div class="modal-backdrop" id="zonaHorariaBackdrop"
+       onclick="if(event.target===this)cerrarZonaHoraria()">
+    <div class="modal" style="max-width:1000px">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:1.2rem">🕒</span>
+          <span>Editar zona horaria</span>
+          <span class="modal-subtitle">Snapshot informativo del stack (solo lectura)</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarZonaHoraria()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" id="zonaHorariaCuerpo" style="gap:16px">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="cargarZonaHoraria()">
+          <i class="fa-solid fa-rotate"></i> Refrescar
+        </button>
+        <button class="btn btn-ghost" onclick="cerrarZonaHoraria()">Cerrar</button>
       </div>
     </div>
   </div>

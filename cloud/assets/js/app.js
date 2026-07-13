@@ -689,6 +689,9 @@ route('/usuarios', async (mount) => {
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
+      <button type="button" data-action="iniciar" role="menuitem">
+        <i class="fa-solid fa-wand-magic-sparkles"></i><span>Iniciar</span>
+      </button>
       <button type="button" data-action="invitar" role="menuitem">
         <i class="fa-solid fa-paper-plane"></i><span>Invitar</span>
       </button>
@@ -806,6 +809,7 @@ route('/usuarios', async (mount) => {
     if (!data) return;
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarUsuario(data.id);
+    if (b.dataset.action === 'iniciar')   iniciarSesionUsuario(data.id);
     if (b.dataset.action === 'invitar')   invitarUsuario(data.id);
     if (b.dataset.action === 'editar')    abrirAltaEdicion(data.id);
     if (b.dataset.action === 'eliminar')  eliminarUsuario(data.id);
@@ -1248,6 +1252,73 @@ async function invitarUsuario(id) {
   } catch (e) {
     toast(e.message, { error: true });
   }
+}
+
+// Genera un magic link ad-hoc y lo muestra en un modal para que el admin lo
+// abra en una ventana de incognito (no en la misma sesion — la cookie es por
+// dominio y pisaria la sesion del admin). Es la version "impersonacion
+// asistida" del flujo de invitar-por-mail.
+async function iniciarSesionUsuario(id) {
+  let data;
+  try {
+    data = await apiSend(`api/usuarios_iniciar.php?id=${id}`, 'POST');
+  } catch (e) {
+    toast(e.message, { error: true });
+    return;
+  }
+  const link   = data.link;
+  const dest   = data.usuario || {};
+  const expira = fmtFecha(data.expira) || data.expira || '';
+  const nombre = dest.nombre ? `${dest.nombre} (#${dest.id})` : `#${id}`;
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fa-solid fa-wand-magic-sparkles"></i> Iniciar sesión como ${esc(nombre)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 10px">
+          Se generó un <strong>magic link</strong> para el usuario
+          <strong>${esc(dest.correo || nombre)}</strong>. Podés usarlo las veces
+          que necesites hasta que expire el <strong>${esc(expira)}</strong>.
+        </p>
+        <p style="margin:0 0 14px;color:var(--warn)">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+          Abrilo en una <strong>ventana de incógnito</strong> (click derecho sobre
+          el enlace → <em>Abrir en ventana de incógnito</em>) para no reemplazar
+          tu sesión de admin.
+        </p>
+        <div style="padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--primary);font-family:monospace;font-size:.85em;word-break:break-all;margin:0 0 10px">
+          ${esc(link)}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <a class="btn btn-primary" href="${esc(link)}" target="_blank" rel="noopener noreferrer"
+             title="Click derecho → Abrir en ventana de incógnito">
+            <i class="fa-solid fa-up-right-from-square"></i> Abrir
+          </a>
+          <button class="btn btn-ghost" data-act="copiar" title="Copiar al portapapeles">
+            <i class="fa-solid fa-copy"></i> Copiar
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="copiar"]')) {
+      try {
+        await navigator.clipboard.writeText(link);
+        toast('Enlace copiado.');
+      } catch {
+        toast('No se pudo copiar. Seleccioná el enlace manualmente.', { error: true });
+      }
+    }
+  });
 }
 
 async function eliminarUsuario(id) {
@@ -3114,6 +3185,11 @@ route('/herramientas', async (mount) => {
       <!-- Tarjetas ordenadas alfabéticamente por <span class="tile-title">.
            Al agregar, renombrar o reordenar cualquier herramienta, mantener
            el orden alfabético estricto por título visible. -->
+      <button type="button" class="tile-card" onclick="abrirZonaHoraria()">
+        <span class="tile-icon">🕒</span>
+        <span class="tile-title">Editar zona horaria</span>
+        <span class="tile-desc">Confirmá que PHP, el contenedor, MySQL y los demás proyectos del monorepo estén todos en la misma zona horaria.</span>
+      </button>
       <button type="button" class="tile-card" onclick="abrirEstados()">
         <span class="tile-icon">🎚️</span>
         <span class="tile-title">Editor de estados</span>
@@ -19794,10 +19870,18 @@ function bindChrome() {
     $('#sidebarOverlay').classList.remove('active');
   });
 
-  // toggle de grupos colapsables del sidebar
+  // toggle de grupos colapsables del sidebar (modo acordeón: al abrir uno,
+  // se cierran todos los demás)
   $$('.nav-group-toggle').forEach((btn) => {
     btn.addEventListener('click', () => {
-      btn.closest('.nav-group-wrap').classList.toggle('open');
+      const wrap = btn.closest('.nav-group-wrap');
+      const willOpen = !wrap.classList.contains('open');
+      if (willOpen) {
+        $$('.nav-group-wrap.open').forEach((g) => {
+          if (g !== wrap) g.classList.remove('open');
+        });
+      }
+      wrap.classList.toggle('open');
     });
   });
 
@@ -21178,6 +21262,208 @@ document.addEventListener('keydown', (e) => {
   const listado = document.getElementById('sucesosBackdrop');
   if (detalle && detalle.classList.contains('open')) { detalle.classList.remove('open'); return; }
   if (listado && listado.classList.contains('open')) { cerrarVisorSucesos(); }
+});
+
+// ------------------------- Herramientas: Editar zona horaria -------------------------
+// Snapshot informativo (read-only). No cambia timezones — solo confirma que
+// PHP, contenedor, MySQL y los proyectos hermanos del monorepo coinciden.
+// La zona horaria de referencia es la del proceso PHP que sirve este panel.
+
+function abrirZonaHoraria() {
+  document.getElementById('zonaHorariaBackdrop').classList.add('open');
+  cargarZonaHoraria();
+}
+
+function cerrarZonaHoraria() {
+  document.getElementById('zonaHorariaBackdrop').classList.remove('open');
+}
+
+async function cargarZonaHoraria() {
+  const cuerpo = document.getElementById('zonaHorariaCuerpo');
+  if (!cuerpo) return;
+  cuerpo.innerHTML = '<div style="text-align:center;padding:40px"><div class="spin"></div></div>';
+  try {
+    const data = await apiGet('api/herramientas_zona_horaria.php');
+    renderZonaHoraria(data);
+  } catch (e) {
+    cuerpo.innerHTML =
+      '<div class="table-empty" style="color:var(--danger)">✗ ' + esc(e.message) + '</div>';
+  }
+}
+
+function _zhBadge(ok, textoOk, textoNoOk) {
+  if (ok) return '<span class="badge badge-success">' + esc(textoOk || 'Coincide') + '</span>';
+  return '<span class="badge badge-warn">' + esc(textoNoOk || 'Discrepa') + '</span>';
+}
+
+function _zhEstadoBadge(estado) {
+  const meta = {
+    ok:              { cls: 'badge-success', txt: 'Coincide' },
+    mismatch:        { cls: 'badge-danger',  txt: 'Discrepa' },
+    mixto:           { cls: 'badge-warn',    txt: 'Mixto' },
+    sin_declaracion: { cls: 'badge-info',    txt: 'Sin declaración' },
+    sin_codigo:      { cls: 'badge-info',    txt: 'Stub / sin código' },
+    no_visible:      { cls: 'badge-info',    txt: 'No visible' },
+    error:           { cls: 'badge-danger',  txt: 'Error' },
+  };
+  const m = meta[estado] || meta.error;
+  return '<span class="badge ' + m.cls + '">' + m.txt + '</span>';
+}
+
+function renderZonaHoraria(d) {
+  const cuerpo = document.getElementById('zonaHorariaCuerpo');
+  if (!cuerpo) return;
+
+  const ref     = d.referencia || {};
+  const php     = d.php        || {};
+  const os      = d.os         || {};
+  const mysql   = d.mysql      || {};
+  const proyectos = Array.isArray(d.proyectos) ? d.proyectos : [];
+
+  const bannerOk = d.ok;
+  const banner   = bannerOk
+    ? '<div class="badge badge-success" style="padding:8px 14px;font-size:.85rem">✓ Todos los componentes visibles coinciden con la zona de referencia.</div>'
+    : '<div class="badge badge-warn"    style="padding:8px 14px;font-size:.85rem">⚠ Hay componentes que no coinciden con la zona de referencia. Revisá el detalle abajo.</div>';
+
+  const refCard = `
+    <div class="stat-card" style="min-width:0">
+      <span class="stat-label">Zona de referencia</span>
+      <span class="stat-value" style="font-size:1.1rem;color:var(--primary)">${esc(ref.timezone || '—')}</span>
+      <span style="font-size:.75rem;color:var(--muted)">Offset actual: <strong style="font-family:monospace">${esc(ref.offset || '—')}</strong></span>
+      <span style="font-size:.72rem;color:var(--muted);margin-top:4px">${esc(ref.detalle || '')}</span>
+    </div>`;
+
+  const capas = [
+    {
+      titulo: 'PHP (proceso del panel)',
+      icono:  '🐘',
+      badge:  '<span class="badge badge-info">Referencia</span>',
+      filas: [
+        ['Zona horaria',      esc(php.timezone || '—')],
+        ['Offset',            '<span style="font-family:monospace">' + esc(php.offset || '—') + '</span>'],
+        ['Fecha/hora actual', '<span style="font-family:monospace">' + esc(php.now || '—') + '</span>'],
+      ],
+    },
+    {
+      titulo: 'Sistema operativo del contenedor',
+      icono:  '🖥️',
+      badge:  os.presente ? _zhBadge(os.ok, 'Coincide con PHP', 'No coincide con PHP')
+                          : '<span class="badge badge-info">No declarado</span>',
+      filas: [
+        ['Zona horaria', os.presente ? esc(os.timezone) : '<span style="color:var(--muted);font-style:italic">Sin /etc/timezone ni TZ en el entorno</span>'],
+        ['Fuente',       '<span style="font-family:monospace">/etc/timezone → fallback $TZ</span>'],
+      ],
+    },
+    {
+      titulo: 'MySQL',
+      icono:  '🗄️',
+      badge:  _zhBadge(mysql.ok, 'Offset coincide con PHP', 'Offset distinto al de PHP'),
+      filas: [
+        ['@@global.time_zone',   '<span style="font-family:monospace">' + esc(mysql.tz_global  || '—') + '</span>'],
+        ['@@session.time_zone',  '<span style="font-family:monospace">' + esc(mysql.tz_session || '—') + '</span>'],
+        ['@@system_time_zone',   '<span style="font-family:monospace">' + esc(mysql.tz_system  || '—') + '</span>'],
+        ['Offset efectivo',      '<span style="font-family:monospace">' + esc(mysql.offset || '—') + '</span>'],
+        ['NOW() (server)',       '<span style="font-family:monospace">' + esc(mysql.now || '—') + '</span>'],
+        ['UTC_TIMESTAMP()',      '<span style="font-family:monospace">' + esc(mysql.now_utc || '—') + '</span>'],
+        ['Base actual',          '<span style="font-family:monospace">' + esc(mysql.db || '—') + '</span> · ' + esc(mysql.version || '')],
+      ],
+    },
+  ];
+
+  const capasHtml = capas.map((c) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="font-size:1.1rem">${c.icono}</span>
+        <span style="font-weight:600">${esc(c.titulo)}</span>
+        <span style="margin-left:auto">${c.badge}</span>
+      </div>
+      <dl class="data-list" style="gap:8px">
+        ${c.filas.map(([lbl, val]) => `
+          <div class="data-row" style="display:grid;grid-template-columns:180px 1fr;gap:12px;align-items:baseline">
+            <dt class="data-label" style="text-transform:none;letter-spacing:0;font-size:.78rem">${esc(lbl)}</dt>
+            <dd class="data-value" style="font-size:.85rem">${val}</dd>
+          </div>
+        `).join('')}
+      </dl>
+    </div>
+  `).join('');
+
+  const proyectosHtml = !proyectos.length
+    ? '<div class="table-empty">No se descubrieron proyectos PHP en <code>/var/www</code>.</div>'
+    : `
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:160px">Proyecto</th>
+              <th style="width:260px">Ruta en el contenedor</th>
+              <th style="width:120px">Estado</th>
+              <th style="width:80px">.php</th>
+              <th style="width:80px">Con TZ</th>
+              <th>Zonas declaradas / detalle</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${proyectos.map((p) => `
+              <tr>
+                <td style="font-weight:600">${esc(p.nombre || '—')}</td>
+                <td style="font-family:monospace;font-size:.8rem;color:var(--muted)">${esc(p.ruta || '—')}</td>
+                <td>${_zhEstadoBadge(p.estado)}</td>
+                <td style="font-family:monospace">${Number(p.archivos_escaneados || 0).toLocaleString('es-AR')}</td>
+                <td style="font-family:monospace">${Number(p.archivos_con_tz || 0).toLocaleString('es-AR')}</td>
+                <td>
+                  ${
+                    (p.zonas || []).length
+                      ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">' +
+                          p.zonas.map((z) => {
+                            const esRef = z === ref.timezone;
+                            return '<span class="badge ' + (esRef ? 'badge-success' : 'badge-warn') +
+                                   '" style="font-family:monospace">' + esc(z) + '</span>';
+                          }).join('') +
+                        '</div>'
+                      : ''
+                  }
+                  <div style="font-size:.78rem;color:var(--muted);line-height:1.4">${esc(p.detalle || '')}</div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
+  cuerpo.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div>${banner}</div>
+      <div style="display:grid;grid-template-columns:1fr;gap:12px">${refCard}</div>
+      <div style="display:grid;grid-template-columns:1fr;gap:12px">${capasHtml}</div>
+
+      <div>
+        <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+          <span style="font-size:1.1rem">📦</span>
+          <span>Proyectos del monorepo visibles desde el contenedor</span>
+        </div>
+        ${proyectosHtml}
+        <div style="font-size:.75rem;color:var(--muted);line-height:1.5;margin-top:10px">
+          Se descubren automáticamente escaneando <code>/var/www</code>: cualquier subcarpeta bind-monteada
+          con archivos <code>.php</code> aparece acá. Los proyectos que no estén montados en el contenedor
+          no son visibles y no pueden verificarse desde esta herramienta.
+        </div>
+      </div>
+
+      <div style="font-size:.78rem;color:var(--muted);line-height:1.5;border-top:1px solid var(--border);padding-top:12px">
+        Esta herramienta es <strong>de solo lectura</strong>: reporta el estado, no cambia la zona horaria de ningún componente.
+        Para uniformar el stack hay que tocar el código (<code>new DateTimeZone(…)</code> y
+        <code>date_default_timezone_set(…)</code> distribuidos por el proyecto), el <code>SET time_zone</code>
+        de la conexión MySQL y la <code>TZ</code> / <code>/etc/timezone</code> del contenedor.
+      </div>
+    </div>
+  `;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const b = document.getElementById('zonaHorariaBackdrop');
+  if (b && b.classList.contains('open')) cerrarZonaHoraria();
 });
 
 // ------------------------- Herramientas: Programador de tareas -------------------------

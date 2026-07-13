@@ -113,9 +113,6 @@ El sidebar está pintado de plano en `var(--primary)` (`#317535`). Por eso sus e
                       max-width: 100%; object-fit: contain; }   /* <img src="assets/img/logo_light.png"> */
 
 .sidebar-nav   { padding: 8px 0 12px; flex: 1; }
-.sidebar-footer{ padding: 10px 20px; font-size: .75rem; color: rgba(255,255,255,.7);
-                 border-top: 1px solid rgba(0,0,0,.2); text-align: center;
-                 letter-spacing: .03em; font-family: monospace; }
 
 .nav-item { display: flex; align-items: center; gap: 10px;
             padding: 10px 20px; font-size: .9rem; color: rgba(255,255,255,.85);

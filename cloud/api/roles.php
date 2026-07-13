@@ -75,8 +75,13 @@ function handleList(PDO $pdo, array $q): void {
     if ($descripcion !== '') { $where[] = 'descripcion LIKE :descripcion';  $params[':descripcion'] = "%{$descripcion}%"; }
 
     if ($search !== '') {
-        $where[] = '(slug LIKE :s OR nombre LIKE :s OR descripcion LIKE :s)';
-        $params[':s'] = "%{$search}%";
+        // PDO con EMULATE_PREPARES=false no permite reusar el mismo placeholder
+        // nombrado en una sentencia — un placeholder por columna.
+        $where[] = '(slug LIKE :s_slug OR nombre LIKE :s_nombre OR descripcion LIKE :s_descripcion)';
+        $like = "%{$search}%";
+        $params[':s_slug']        = $like;
+        $params[':s_nombre']      = $like;
+        $params[':s_descripcion'] = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
