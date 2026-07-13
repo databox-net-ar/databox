@@ -3185,11 +3185,6 @@ route('/herramientas', async (mount) => {
       <!-- Tarjetas ordenadas alfabéticamente por <span class="tile-title">.
            Al agregar, renombrar o reordenar cualquier herramienta, mantener
            el orden alfabético estricto por título visible. -->
-      <button type="button" class="tile-card" onclick="abrirZonaHoraria()">
-        <span class="tile-icon">🕒</span>
-        <span class="tile-title">Editar zona horaria</span>
-        <span class="tile-desc">Confirmá que PHP, el contenedor, MySQL y los demás proyectos del monorepo estén todos en la misma zona horaria.</span>
-      </button>
       <button type="button" class="tile-card" onclick="abrirEstados()">
         <span class="tile-icon">🎚️</span>
         <span class="tile-title">Editor de estados</span>
@@ -3224,6 +3219,11 @@ route('/herramientas', async (mount) => {
         <span class="tile-icon">🔄</span>
         <span class="tile-title">Sincronizador de tablas</span>
         <span class="tile-desc">Copiá una tabla entera entre desarrollo y producción preservando los IDs. Solo disponible en el panel de dev.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirSistema()">
+        <span class="tile-icon">🖥️</span>
+        <span class="tile-title">Sistema</span>
+        <span class="tile-desc">Versión del panel, entorno, PHP y BD, más el snapshot de zona horaria de PHP, el contenedor, MySQL y los proyectos del monorepo.</span>
       </button>
       <button type="button" class="tile-card" onclick="abrirVisorSucesos()">
         <span class="tile-icon">📰</span>
@@ -21264,18 +21264,266 @@ document.addEventListener('keydown', (e) => {
   if (listado && listado.classList.contains('open')) { cerrarVisorSucesos(); }
 });
 
-// ------------------------- Herramientas: Editar zona horaria -------------------------
-// Snapshot informativo (read-only). No cambia timezones — solo confirma que
-// PHP, contenedor, MySQL y los proyectos hermanos del monorepo coinciden.
-// La zona horaria de referencia es la del proceso PHP que sirve este panel.
+// ------------------------- Herramientas: Sistema -------------------------
+// Modal con dos pestañas informativas (read-only):
+//   - General:      version del panel, entorno, PHP, BD.
+//   - Zona horaria: snapshot de PHP + contenedor + MySQL + monorepo (no cambia
+//                   ninguna TZ, solo confirma que estén alineadas).
+// Los dos endpoints comparten el permiso `administracion.herramientas.sistema.consultar`.
 
-function abrirZonaHoraria() {
-  document.getElementById('zonaHorariaBackdrop').classList.add('open');
-  cargarZonaHoraria();
+let sistemaTabActual = 'general';
+
+function abrirSistema() {
+  sistemaTabActual = 'general';
+  _sistemaMostrarTab('general');
+  document.getElementById('sistemaBackdrop').classList.add('open');
+  cargarSistemaGeneral();
 }
 
-function cerrarZonaHoraria() {
-  document.getElementById('zonaHorariaBackdrop').classList.remove('open');
+function cerrarSistema() {
+  document.getElementById('sistemaBackdrop').classList.remove('open');
+}
+
+function sistemaCambiarTab(tab) {
+  if (tab !== 'general' && tab !== 'entorno' && tab !== 'zona') return;
+  sistemaTabActual = tab;
+  _sistemaMostrarTab(tab);
+  if      (tab === 'general') cargarSistemaGeneral();
+  else if (tab === 'entorno') cargarSistemaEntorno();
+  else                        cargarZonaHoraria();
+}
+
+function _sistemaMostrarTab(tab) {
+  document.querySelectorAll('#sistemaBackdrop .modal-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  const panelG = document.getElementById('sistemaTabGeneral');
+  const panelE = document.getElementById('sistemaTabEntorno');
+  const panelZ = document.getElementById('sistemaTabZona');
+  if (panelG) panelG.hidden = tab !== 'general';
+  if (panelE) panelE.hidden = tab !== 'entorno';
+  if (panelZ) panelZ.hidden = tab !== 'zona';
+}
+
+function cargarSistemaTabActual() {
+  if      (sistemaTabActual === 'general') cargarSistemaGeneral();
+  else if (sistemaTabActual === 'entorno') cargarSistemaEntorno();
+  else                                     cargarZonaHoraria();
+}
+
+async function cargarSistemaGeneral() {
+  const cuerpo = document.getElementById('sistemaGeneralCuerpo');
+  if (!cuerpo) return;
+  cuerpo.innerHTML = '<div style="text-align:center;padding:40px"><div class="spin"></div></div>';
+  try {
+    const data = await apiGet('api/herramientas_sistema.php');
+    renderSistemaGeneral(data);
+  } catch (e) {
+    cuerpo.innerHTML =
+      '<div class="table-empty" style="color:var(--danger)">✗ ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderSistemaGeneral(d) {
+  const cuerpo = document.getElementById('sistemaGeneralCuerpo');
+  if (!cuerpo) return;
+  const php   = d.php   || {};
+  const mysql = d.mysql || {};
+  const env   = String(d.env || 'unknown');
+  const envBadge = env === 'prod'
+    ? '<span class="badge badge-danger">' + esc(env) + '</span>'
+    : env === 'dev'
+      ? '<span class="badge badge-success">' + esc(env) + '</span>'
+      : '<span class="badge badge-info">' + esc(env) + '</span>';
+
+  const capas = [
+    {
+      titulo: 'Plataforma',
+      icono:  '📦',
+      filas: [
+        ['Versión',   '<span style="font-family:monospace;color:var(--primary);font-weight:600">' + esc(d.version || '—') + '</span>'],
+        ['Entorno',   envBadge],
+      ],
+    },
+    {
+      titulo: 'PHP',
+      icono:  '🐘',
+      filas: [
+        ['Versión', '<span style="font-family:monospace">' + esc(php.version || '—') + '</span>'],
+        ['SAPI',    '<span style="font-family:monospace">' + esc(php.sapi    || '—') + '</span>'],
+        ['SO',      '<span style="font-family:monospace">' + esc(php.os      || '—') + '</span>'],
+      ],
+    },
+    {
+      titulo: 'Base de datos',
+      icono:  '🗄️',
+      filas: [
+        ['Versión del server', '<span style="font-family:monospace">' + esc(mysql.version || '—') + '</span>'],
+      ],
+    },
+  ];
+
+  const capasHtml = capas.map((c) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="font-size:1.1rem">${c.icono}</span>
+        <span style="font-weight:600">${esc(c.titulo)}</span>
+      </div>
+      <dl class="data-list" style="gap:8px">
+        ${c.filas.map(([lbl, val]) => `
+          <div class="data-row" style="display:grid;grid-template-columns:180px 1fr;gap:12px;align-items:baseline">
+            <dt class="data-label" style="text-transform:none;letter-spacing:0;font-size:.78rem">${esc(lbl)}</dt>
+            <dd class="data-value" style="font-size:.85rem">${val}</dd>
+          </div>
+        `).join('')}
+      </dl>
+    </div>
+  `).join('');
+
+  cuerpo.innerHTML = capasHtml;
+}
+
+async function cargarSistemaEntorno() {
+  const cuerpo = document.getElementById('sistemaEntornoCuerpo');
+  if (!cuerpo) return;
+  cuerpo.innerHTML = '<div style="text-align:center;padding:40px"><div class="spin"></div></div>';
+  try {
+    const data = await apiGet('api/herramientas_sistema_entorno.php');
+    renderSistemaEntorno(data);
+  } catch (e) {
+    cuerpo.innerHTML =
+      '<div class="table-empty" style="color:var(--danger)">✗ ' + esc(e.message) + '</div>';
+  }
+}
+
+function _sistemaEntornoLeerStorage(store) {
+  const out = [];
+  try {
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      out.push({ name: k, value: store.getItem(k) ?? '' });
+    }
+  } catch (_) { /* modo privado o acceso restringido */ }
+  out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  return out;
+}
+
+function _sistemaEntornoLeerCookiesCliente() {
+  const raw = document.cookie || '';
+  if (!raw) return [];
+  const out = [];
+  raw.split(';').forEach((p) => {
+    const s = p.trim();
+    if (!s) return;
+    const i = s.indexOf('=');
+    const name  = i === -1 ? s : s.slice(0, i);
+    const value = i === -1 ? '' : decodeURIComponent(s.slice(i + 1));
+    out.push({ name, value });
+  });
+  out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  return out;
+}
+
+function _sistemaEntornoTabla(pares, hint) {
+  if (!pares || !pares.length) {
+    return '<div class="table-empty" style="padding:20px 12px;font-size:.82rem">' +
+             esc(hint || 'Sin datos.') +
+           '</div>';
+  }
+  const filas = pares.map((p) => `
+    <tr>
+      <td style="font-family:monospace;font-size:.8rem;word-break:break-all;white-space:pre-wrap;vertical-align:top;width:32%">${esc(p.name)}</td>
+      <td style="font-family:monospace;font-size:.8rem;word-break:break-all;white-space:pre-wrap;color:var(--muted);vertical-align:top">${esc(p.value)}</td>
+    </tr>
+  `).join('');
+  return `
+    <div class="table-card" style="max-height:340px;overflow:auto">
+      <table>
+        <thead>
+          <tr>
+            <th style="position:sticky;top:0;background:var(--bg);z-index:1">Nombre</th>
+            <th style="position:sticky;top:0;background:var(--bg);z-index:1">Valor</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderSistemaEntorno(d) {
+  const cuerpo = document.getElementById('sistemaEntornoCuerpo');
+  if (!cuerpo) return;
+
+  const env     = Array.isArray(d.env)     ? d.env     : [];
+  const server  = Array.isArray(d.server)  ? d.server  : [];
+  const cookies = Array.isArray(d.cookies) ? d.cookies : [];
+  const session = d.session || { activa: false, id: null, vars: [] };
+
+  const cookiesCliente    = _sistemaEntornoLeerCookiesCliente();
+  const localStorageArr   = _sistemaEntornoLeerStorage(window.localStorage);
+  const sessionStorageArr = _sistemaEntornoLeerStorage(window.sessionStorage);
+
+  // Cada sub-pestaña tiene: key, icono, titulo (visible en la pestaña), y el
+  // contenido (una tabla nombre/valor). El count aparece como badge dentro
+  // de la propia pestaña para que se vea de un vistazo cuántas entradas trae.
+  const subtabs = [
+    { key: 'env',        icono: '🌱',  titulo: 'Entorno',        pares: env,               vacio: 'El proceso no expone variables de entorno.' },
+    { key: 'server',     icono: '🖧',  titulo: '$_SERVER',       pares: server,            vacio: 'Sin datos en $_SERVER.' },
+    { key: 'cookies_s',  icono: '🍪', titulo: 'Cookies (server)', pares: cookies,           vacio: 'No hay cookies en el request actual.',
+      nota:  'Vistas por PHP en $_COOKIE — incluye HttpOnly.' },
+    { key: 'cookies_c',  icono: '🍪', titulo: 'Cookies (cliente)', pares: cookiesCliente,   vacio: 'document.cookie está vacío.',
+      nota:  'Vistas por el navegador en document.cookie — NO incluye HttpOnly.' },
+    { key: 'ls',         icono: '💾', titulo: 'localStorage',    pares: localStorageArr,   vacio: 'localStorage está vacío para este origen.' },
+    { key: 'ss',         icono: '🗂️', titulo: 'sessionStorage',  pares: sessionStorageArr, vacio: 'sessionStorage está vacío para este origen.' },
+    { key: 'session',    icono: '🧾', titulo: 'Sesión PHP',      pares: session.vars,      vacio: 'No hay sesión PHP nativa activa en este request.',
+      nota:  session.activa
+              ? 'Sesión PHP activa · id ' + esc(session.id || '')
+              : 'Este panel autentica con JWT en cookie, no con sesión PHP nativa — por eso normalmente está vacía.' },
+  ];
+
+  const advertencia = `
+    <div class="badge badge-warn" style="padding:8px 14px;font-size:.8rem;line-height:1.4">
+      ⚠ Este panel muestra valores crudos (incluidos posibles secretos). Es visible solo con el permiso
+      <code style="font-family:monospace">administracion.herramientas.sistema.consultar</code>.
+    </div>`;
+
+  const tabsHtml = `
+    <div class="modal-tabs" role="tablist" style="flex-wrap:wrap">
+      ${subtabs.map((s, i) => `
+        <button type="button" class="modal-tab${i === 0 ? ' active' : ''}" role="tab"
+                data-subtab="${s.key}"
+                onclick="sistemaEntornoCambiarSubtab('${s.key}')">
+          <span>${s.icono}</span> ${esc(s.titulo)}
+          <span class="badge badge-info" style="font-family:monospace;margin-left:4px">${s.pares.length}</span>
+        </button>
+      `).join('')}
+    </div>`;
+
+  const panelsHtml = subtabs.map((s, i) => `
+    <div class="modal-tabpanel" data-subtab-content="${s.key}"${i === 0 ? '' : ' hidden'}>
+      ${s.nota
+        ? '<div style="font-size:.78rem;color:var(--muted);line-height:1.4">' + s.nota + '</div>'
+        : ''}
+      ${_sistemaEntornoTabla(s.pares, s.vacio)}
+    </div>
+  `).join('');
+
+  cuerpo.innerHTML = `
+    ${advertencia}
+    ${tabsHtml}
+    ${panelsHtml}
+  `;
+}
+
+function sistemaEntornoCambiarSubtab(key) {
+  const cuerpo = document.getElementById('sistemaEntornoCuerpo');
+  if (!cuerpo) return;
+  cuerpo.querySelectorAll('.modal-tab[data-subtab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.subtab === key);
+  });
+  cuerpo.querySelectorAll('[data-subtab-content]').forEach((p) => {
+    p.hidden = p.dataset.subtabContent !== key;
+  });
 }
 
 async function cargarZonaHoraria() {
@@ -21431,39 +21679,74 @@ function renderZonaHoraria(d) {
         </table>
       </div>`;
 
+  const proyectosPanel = `
+    <div>
+      <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:1.1rem">📦</span>
+        <span>Proyectos del monorepo visibles desde el contenedor</span>
+        <span class="badge badge-info" style="font-family:monospace;margin-left:4px">${proyectos.length}</span>
+      </div>
+      ${proyectosHtml}
+      <div style="font-size:.75rem;color:var(--muted);line-height:1.5;margin-top:10px">
+        Se descubren automáticamente escaneando <code>/var/www</code>: cualquier subcarpeta bind-monteada
+        con archivos <code>.php</code> aparece acá. Los proyectos que no estén montados en el contenedor
+        no son visibles y no pueden verificarse desde esta herramienta.
+      </div>
+    </div>`;
+
+  const subtabsHtml = `
+    <div class="modal-tabs" role="tablist" style="flex-wrap:wrap">
+      <button type="button" class="modal-tab active" role="tab"
+              data-zh-subtab="general"
+              onclick="zonaHorariaCambiarSubtab('general')">
+        <i class="fa-solid fa-server"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-zh-subtab="proyectos"
+              onclick="zonaHorariaCambiarSubtab('proyectos')">
+        <i class="fa-solid fa-boxes-stacked"></i> Proyectos
+        <span class="badge badge-info" style="font-family:monospace;margin-left:4px">${proyectos.length}</span>
+      </button>
+    </div>`;
+
   cuerpo.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:16px">
-      <div>${banner}</div>
-      <div style="display:grid;grid-template-columns:1fr;gap:12px">${refCard}</div>
+    <div>${banner}</div>
+    <div style="display:grid;grid-template-columns:1fr;gap:12px">${refCard}</div>
+
+    ${subtabsHtml}
+
+    <div class="modal-tabpanel" data-zh-content="general">
       <div style="display:grid;grid-template-columns:1fr;gap:12px">${capasHtml}</div>
+    </div>
 
-      <div>
-        <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px">
-          <span style="font-size:1.1rem">📦</span>
-          <span>Proyectos del monorepo visibles desde el contenedor</span>
-        </div>
-        ${proyectosHtml}
-        <div style="font-size:.75rem;color:var(--muted);line-height:1.5;margin-top:10px">
-          Se descubren automáticamente escaneando <code>/var/www</code>: cualquier subcarpeta bind-monteada
-          con archivos <code>.php</code> aparece acá. Los proyectos que no estén montados en el contenedor
-          no son visibles y no pueden verificarse desde esta herramienta.
-        </div>
-      </div>
+    <div class="modal-tabpanel" data-zh-content="proyectos" hidden>
+      ${proyectosPanel}
+    </div>
 
-      <div style="font-size:.78rem;color:var(--muted);line-height:1.5;border-top:1px solid var(--border);padding-top:12px">
-        Esta herramienta es <strong>de solo lectura</strong>: reporta el estado, no cambia la zona horaria de ningún componente.
-        Para uniformar el stack hay que tocar el código (<code>new DateTimeZone(…)</code> y
-        <code>date_default_timezone_set(…)</code> distribuidos por el proyecto), el <code>SET time_zone</code>
-        de la conexión MySQL y la <code>TZ</code> / <code>/etc/timezone</code> del contenedor.
-      </div>
+    <div style="font-size:.78rem;color:var(--muted);line-height:1.5;border-top:1px solid var(--border);padding-top:12px">
+      Esta herramienta es <strong>de solo lectura</strong>: reporta el estado, no cambia la zona horaria de ningún componente.
+      Para uniformar el stack hay que tocar el código (<code>new DateTimeZone(…)</code> y
+      <code>date_default_timezone_set(…)</code> distribuidos por el proyecto), el <code>SET time_zone</code>
+      de la conexión MySQL y la <code>TZ</code> / <code>/etc/timezone</code> del contenedor.
     </div>
   `;
 }
 
+function zonaHorariaCambiarSubtab(key) {
+  const cuerpo = document.getElementById('zonaHorariaCuerpo');
+  if (!cuerpo) return;
+  cuerpo.querySelectorAll('.modal-tab[data-zh-subtab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.zhSubtab === key);
+  });
+  cuerpo.querySelectorAll('[data-zh-content]').forEach((p) => {
+    p.hidden = p.dataset.zhContent !== key;
+  });
+}
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  const b = document.getElementById('zonaHorariaBackdrop');
-  if (b && b.classList.contains('open')) cerrarZonaHoraria();
+  const b = document.getElementById('sistemaBackdrop');
+  if (b && b.classList.contains('open')) cerrarSistema();
 });
 
 // ------------------------- Herramientas: Programador de tareas -------------------------

@@ -944,26 +944,57 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
     </div>
   </div>
 
-  <!-- ===== Modal Editar zona horaria ===== -->
-  <div class="modal-backdrop" id="zonaHorariaBackdrop"
-       onclick="if(event.target===this)cerrarZonaHoraria()">
+  <!-- ===== Modal Sistema (tabs: General / Zona horaria) ===== -->
+  <div class="modal-backdrop" id="sistemaBackdrop"
+       onclick="if(event.target===this)cerrarSistema()">
     <div class="modal" style="max-width:1000px">
       <div class="modal-header">
         <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="font-size:1.2rem">🕒</span>
-          <span>Editar zona horaria</span>
-          <span class="modal-subtitle">Snapshot informativo del stack (solo lectura)</span>
+          <span style="font-size:1.2rem">🖥️</span>
+          <span>Sistema</span>
+          <span class="modal-subtitle">Snapshot informativo del panel (solo lectura)</span>
         </div>
-        <button class="btn-icon-sm" type="button" onclick="cerrarZonaHoraria()" title="Cerrar">×</button>
+        <button class="btn-icon-sm" type="button" onclick="cerrarSistema()" title="Cerrar">×</button>
       </div>
-      <div class="modal-body" id="zonaHorariaCuerpo" style="gap:16px">
-        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      <div class="modal-body" style="gap:12px">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab"
+                  data-tab="general" onclick="sistemaCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-tab="entorno" onclick="sistemaCambiarTab('entorno')">
+            <i class="fa-solid fa-list"></i> Variables de entorno
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-tab="zona" onclick="sistemaCambiarTab('zona')">
+            <i class="fa-solid fa-clock"></i> Zona horaria
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" id="sistemaTabGeneral" role="tabpanel">
+          <div id="sistemaGeneralCuerpo" style="display:flex;flex-direction:column;gap:16px">
+            <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" id="sistemaTabEntorno" role="tabpanel" hidden>
+          <div id="sistemaEntornoCuerpo" style="display:flex;flex-direction:column;gap:16px">
+            <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" id="sistemaTabZona" role="tabpanel" hidden>
+          <div id="zonaHorariaCuerpo" style="display:flex;flex-direction:column;gap:16px">
+            <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-ghost" onclick="cargarZonaHoraria()">
+        <button class="btn btn-ghost" onclick="cargarSistemaTabActual()">
           <i class="fa-solid fa-rotate"></i> Refrescar
         </button>
-        <button class="btn btn-ghost" onclick="cerrarZonaHoraria()">Cerrar</button>
+        <button class="btn btn-ghost" onclick="cerrarSistema()">Cerrar</button>
       </div>
     </div>
   </div>

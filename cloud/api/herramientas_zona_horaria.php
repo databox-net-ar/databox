@@ -36,7 +36,7 @@ requireAuth();
 require_once __DIR__ . '/db.php';
 
 try {
-    requirePermission('administracion.herramientas.zona_horaria.consultar');
+    requirePermission('administracion.herramientas.sistema.consultar');
 
     // --- PHP del proceso actual -----------------------------------------
     $phpTz  = date_default_timezone_get();
