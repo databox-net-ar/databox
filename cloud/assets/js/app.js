@@ -246,6 +246,7 @@ function route(path, handler, title) {
 const ROUTE_PERMS = {
   '/dashboard':                { perm:   'inicio.dashboard.consultar' },
 
+  '/datacount':                { prefix: 'datacount.' },
   '/datacountcomprobantes':    { perm:   'datacount.comprobantes.consultar' },
   '/datacountfacturacion':     { perm:   'datacount.facturacion.consultar' },
   '/datacountasientos':        { perm:   'datacount.asientos.consultar' },
@@ -254,9 +255,11 @@ const ROUTE_PERMS = {
   '/datacountcuentas':         { perm:   'datacount.cuentas.consultar' },
   '/datacountempresas':        { perm:   'datacount.empresas.consultar' },
 
+  '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
   '/datarocketmensajes':       { perm:   'datarocket.mensajes.consultar' },
 
+  '/datasale':                 { prefix: 'datasale.' },
   '/prospectos':               { perm:   'datasale.prospectos.consultar' },
 
   '/aws':                      { prefix: 'plataformas.aws.' },
@@ -366,10 +369,29 @@ async function render() {
   // render
   try {
     await def.handler($('#view'));
+    syncBackButtonHeights();
   } catch (e) {
     $('#view').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
+
+// Iguala la altura de los botones "Volver a X" a la del `.module-help` vecino.
+// Necesario porque `<button>` como flex/grid item no siempre honra el
+// `align-items:stretch` del padre en todos los browsers.
+function syncBackButtonHeights() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('button[title^="Volver a "]').forEach((btn) => {
+      const wrap = btn.parentElement;
+      const help = wrap?.querySelector(':scope > .module-help');
+      if (help) btn.style.height = help.offsetHeight + 'px';
+    });
+  });
+}
+
+window.addEventListener('resize', () => {
+  if (window.__backBtnResizeT) clearTimeout(window.__backBtnResizeT);
+  window.__backBtnResizeT = setTimeout(syncBackButtonHeights, 100);
+});
 
 // ------------------------- Catálogo de enlaces externos -------------------------
 // Datos hardcodeados que alimentan el launcher cascada de la topbar
@@ -2476,15 +2498,18 @@ let awsCuentasFiltrosSnapshot = null;
 route('/awscuentas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a AWS" onclick="location.hash='#/aws'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS" onclick="location.hash='#/aws'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div class="module-help-icon">☁️</div>
-        <div class="module-help-text">
-          Las cuentas AWS son los accesos a las cuentas de Amazon Web Services que usan
-          las apps del grupo, con su número de cuenta, contraseña de consola y
-          credenciales programáticas (access key + secreto).
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">☁️</div>
+          <div class="module-help-text">
+            Las cuentas AWS son los accesos a las cuentas de Amazon Web Services que usan
+            las apps del grupo, con su número de cuenta, contraseña de consola y
+            credenciales programáticas (access key + secreto).
+          </div>
         </div>
       </div>
 
@@ -4012,6 +4037,54 @@ document.addEventListener('keydown', (e) => {
   if (back && back.classList.contains('open')) cerrarExploradorDB();
 });
 
+// ------------------------- Vista: Datacount (landing) -------------------------
+route('/datacount', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Datacount</div>
+      <div class="page-subtitle">Sistema contable: comprobantes, asientos, plan de cuentas, empleados y empresas.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountcomprobantes'">
+        <span class="tile-icon">🧾</span>
+        <span class="tile-title">Comprobantes</span>
+        <span class="tile-desc">Comprobantes emitidos y recibidos con tipo, punto, serie, cliente, CUIT, estado y totales.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountfacturacion'">
+        <span class="tile-icon">🤖</span>
+        <span class="tile-title">Facturación</span>
+        <span class="tile-desc">Motor de facturación automática con log de corridas y estado de emisión.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountasientos'">
+        <span class="tile-icon">📖</span>
+        <span class="tile-title">Asientos</span>
+        <span class="tile-desc">Asientos contables con fecha, cuenta, debe/haber, glosa y agrupamiento.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountempleados'">
+        <span class="tile-icon">👤</span>
+        <span class="tile-title">Empleados</span>
+        <span class="tile-desc">Nómina de empleados con legajo, datos personales y situación laboral.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountrecurrentes'">
+        <span class="tile-icon">🔁</span>
+        <span class="tile-title">Recurrentes</span>
+        <span class="tile-desc">Movimientos que se repiten según una cadencia definida (mensuales, quincenales, etc.).</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountcuentas'">
+        <span class="tile-icon">📒</span>
+        <span class="tile-title">Plan de cuentas</span>
+        <span class="tile-desc">Estructura jerárquica de cuentas contables con código, nombre y tipo.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountempresas'">
+        <span class="tile-icon">🏢</span>
+        <span class="tile-title">Empresas</span>
+        <span class="tile-desc">Empresas administradas por Datacount con razón social, CUIT y datos fiscales.</span>
+      </button>
+    </div>
+  `;
+}, 'Datacount');
+
 // ------------------------- Vista: Datacount > Comprobantes (ABM) -------------------------
 const dcCompFiltrosDefaults = {
   q: '', codigo: '', tipo: '', punto: '', serie: '', cliente: '',
@@ -4091,11 +4164,17 @@ function dcCompEstadoBadge(e) {
 route('/datacountcomprobantes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help">
-        <div class="module-help-icon">🧾</div>
-        <div class="module-help-text">
-          Los comprobantes son las facturas, recibos y demás documentos que Datacount
-          emite a los clientes, con su numeración, importes, datos fiscales y estado de autorización.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">🧾</div>
+          <div class="module-help-text">
+            Los comprobantes son las facturas, recibos y demás documentos que Datacount
+            emite a los clientes, con su numeración, importes, datos fiscales y estado de autorización.
+          </div>
         </div>
       </div>
 
@@ -4982,11 +5061,17 @@ route('/datacountfacturacion', async (mount) => {
 
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help">
-        <div class="module-help-icon">🤖</div>
-        <div class="module-help-text">
-          El motor de facturación es el proceso que registra automáticamente los comprobantes
-          de Datacount ante AFIP. Desde acá se lo prende o apaga y se sigue su actividad en vivo.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">🤖</div>
+          <div class="module-help-text">
+            El motor de facturación es el proceso que registra automáticamente los comprobantes
+            de Datacount ante AFIP. Desde acá se lo prende o apaga y se sigue su actividad en vivo.
+          </div>
         </div>
       </div>
 
@@ -5120,12 +5205,18 @@ function dccFmtMoney(n) {
 route('/datacountcuentas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help">
-        <div class="module-help-icon">📒</div>
-        <div class="module-help-text">
-          El plan de cuentas es la lista jerárquica de cuentas contables que Datacount usa
-          para clasificar movimientos: cada cuenta tiene un código (ej. 1.1.01.02), un tipo
-          (activo, pasivo, patrimonio, ingreso o egreso) y una naturaleza (deudora o acreedora).
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">📒</div>
+          <div class="module-help-text">
+            El plan de cuentas es la lista jerárquica de cuentas contables que Datacount usa
+            para clasificar movimientos: cada cuenta tiene un código (ej. 1.1.01.02), un tipo
+            (activo, pasivo, patrimonio, ingreso o egreso) y una naturaleza (deudora o acreedora).
+          </div>
         </div>
       </div>
 
@@ -5724,12 +5815,18 @@ function dceCondicionBadge(v) {
 route('/datacountempresas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <div style="font-size:1.6rem;line-height:1">🏢</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Las empresas son las entidades para las que Datacount lleva la contabilidad:
-          cada fila reúne el nombre de fantasía, la razón social, la condición fiscal
-          ante AFIP, CUIT, IIBB, domicilio y fecha de inicio de actividades.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🏢</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las empresas son las entidades para las que Datacount lleva la contabilidad:
+            cada fila reúne el nombre de fantasía, la razón social, la condición fiscal
+            ante AFIP, CUIT, IIBB, domicilio y fecha de inicio de actividades.
+          </div>
         </div>
       </div>
 
@@ -6293,12 +6390,18 @@ function dcaFmtFechaAR(iso) {
 route('/datacountasientos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help">
-        <div class="module-help-icon">📖</div>
-        <div class="module-help-text">
-          Los asientos son los movimientos contables de Datacount. Cada asiento agrupa
-          dos o más líneas contra cuentas del plan (Debe/Haber) y debe balancear.
-          Los saldos del plan de cuentas se recalculan automáticamente al guardar o eliminar.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">📖</div>
+          <div class="module-help-text">
+            Los asientos son los movimientos contables de Datacount. Cada asiento agrupa
+            dos o más líneas contra cuentas del plan (Debe/Haber) y debe balancear.
+            Los saldos del plan de cuentas se recalculan automáticamente al guardar o eliminar.
+          </div>
         </div>
       </div>
 
@@ -7149,12 +7252,18 @@ async function dcrCargarCuentasEmpresa(empresaId) {
 route('/datacountrecurrentes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <div style="font-size:1.6rem;line-height:1">🔁</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los movimientos recurrentes son plantillas de ingresos/egresos esperados por
-          empresa y cuenta contable. Cada fila combina una empresa, una cuenta imputable
-          del plan de cuentas y los montos previstos de ingreso y egreso.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🔁</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los movimientos recurrentes son plantillas de ingresos/egresos esperados por
+            empresa y cuenta contable. Cada fila combina una empresa, una cuenta imputable
+            del plan de cuentas y los montos previstos de ingreso y egreso.
+          </div>
         </div>
       </div>
 
@@ -7989,12 +8098,18 @@ async function dcmCargarCuentasEmpresa(empresaId) {
 route('/datacountempleados', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <div style="font-size:1.6rem;line-height:1">👤</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los empleados son las personas contratadas por cada empresa. Cada
-          fila combina datos personales, de contacto y laborales (cuenta contable
-          donde imputa el sueldo, sueldo mensual, CVU/CBU y estado).
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">👤</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los empleados son las personas contratadas por cada empresa. Cada
+            fila combina datos personales, de contacto y laborales (cuenta contable
+            donde imputa el sueldo, sueldo mensual, CVU/CBU y estado).
+          </div>
         </div>
       </div>
 
@@ -8912,6 +9027,29 @@ async function eliminarDcm(id) {
   }
 }
 
+// ------------------------- Vista: Datarocket (landing) -------------------------
+route('/datarocket', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Datarocket</div>
+      <div class="page-subtitle">Motor de mensajería masiva multi-canal: contactos y envíos.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketcontactos'">
+        <span class="tile-icon">👥</span>
+        <span class="tile-title">Contactos</span>
+        <span class="tile-desc">Base de contactos destino con nombre, canal, teléfono, email y estado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketmensajes'">
+        <span class="tile-icon">✉️</span>
+        <span class="tile-title">Mensajes</span>
+        <span class="tile-desc">Envíos individuales con medio, canal, campaña, contacto, estado y resultado.</span>
+      </button>
+    </div>
+  `;
+}, 'Datarocket');
+
 // ------------------------- Vista: Datarocket > Mensajes (ABM) -------------------------
 const drMsgFiltrosDefaults = {
   q: '', codigo: '', medio: '', proyecto: '', canal: '', campana: '', contacto: '',
@@ -8982,12 +9120,18 @@ function drMsgFmtDemora(seg) {
 route('/datarocketmensajes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <div style="font-size:1.6rem;line-height:1">✉️</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los mensajes de Datarocket son los envíos individuales de correo, WhatsApp,
-          SMS y demás medios que el motor genera a partir de las campañas y
-          plantillas, con su destinatario, cuerpo, estado y resultado del envío.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">✉️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los mensajes de Datarocket son los envíos individuales de correo, WhatsApp,
+            SMS y demás medios que el motor genera a partir de las campañas y
+            plantillas, con su destinatario, cuerpo, estado y resultado del envío.
+          </div>
         </div>
       </div>
 
@@ -9765,12 +9909,18 @@ function drCtVerificacionBadge(v) {
 route('/datarocketcontactos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <div style="font-size:1.6rem;line-height:1">👥</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los contactos de Datarocket son las personas y empresas registradas en la
-          base del motor de envíos, con sus datos personales, medios de contacto,
-          suscripciones a listas y el resultado de la verificación previa al envío.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">👥</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los contactos de Datarocket son las personas y empresas registradas en la
+            base del motor de envíos, con sus datos personales, medios de contacto,
+            suscripciones a listas y el resultado de la verificación previa al envío.
+          </div>
         </div>
       </div>
 
@@ -10533,6 +10683,24 @@ async function eliminarDrCt(id) {
   }
 }
 
+// ------------------------- Vista: Datasale (landing) -------------------------
+route('/datasale', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Datasale</div>
+      <div class="page-subtitle">Sistema comercial: gestión de prospectos y oportunidades.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/prospectos'">
+        <span class="tile-icon">🎯</span>
+        <span class="tile-title">Prospectos</span>
+        <span class="tile-desc">Prospectos con proyecto, estado, asignación, atendido, sentido, tipo y origen.</span>
+      </button>
+    </div>
+  `;
+}, 'Datasale');
+
 // ------------------------- Vista: Datasale > Prospectos (ABM) -------------------------
 const dsProFiltrosDefaults = {
   q: '', codigo: '', proyecto: '', estado: '', asignado: '', atendido: '',
@@ -10641,12 +10809,18 @@ route('/prospectos', async (mount) => {
 
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <div style="font-size:1.6rem;line-height:1">🎯</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los prospectos son los interesados que llegan al equipo comercial desde los distintos
-          canales de captación, con sus datos de contacto, producto de interés, estado del
-          seguimiento y el usuario asignado para atenderlos.
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datasale" onclick="location.hash='#/datasale'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🎯</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los prospectos son los interesados que llegan al equipo comercial desde los distintos
+            canales de captación, con sus datos de contacto, producto de interés, estado del
+            seguimiento y el usuario asignado para atenderlos.
+          </div>
         </div>
       </div>
 
@@ -11677,15 +11851,18 @@ function sesMsgFmtDemora(seg) {
 route('/awssesmensajes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a AWS SES" onclick="location.hash='#/awsses'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS SES" onclick="location.hash='#/awsses'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">✉️</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los mensajes AWS SES son cada correo individual que el motor SES procesa,
-          con su remitente, destinatario, asunto, cuerpo y el estado del envío
-          registrado por Amazon.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">✉️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los mensajes AWS SES son cada correo individual que el motor SES procesa,
+            con su remitente, destinatario, asunto, cuerpo y el estado del envío
+            registrado por Amazon.
+          </div>
         </div>
       </div>
 
@@ -12374,15 +12551,18 @@ function sesChHabilitadoBadge(h) {
 route('/awssescanales', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a AWS SES" onclick="location.hash='#/awsses'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS SES" onclick="location.hash='#/awsses'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">📡</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los canales AWS SES son cada configuración SMTP que el motor puede usar
-          para despachar correos, con su servidor, usuario, contraseña y correo
-          remitente asociado.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📡</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los canales AWS SES son cada configuración SMTP que el motor puede usar
+            para despachar correos, con su servidor, usuario, contraseña y correo
+            remitente asociado.
+          </div>
         </div>
       </div>
 
@@ -12942,15 +13122,18 @@ function evoMsgFmtDemora(seg) {
 route('/evolutionmensajes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Evolution API" onclick="location.hash='#/evolution'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Evolution API" onclick="location.hash='#/evolution'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">✉️</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los mensajes de Evolution API son cada WhatsApp individual que el motor
-          procesa, con su remitente, destinatario, asunto, cuerpo y el estado del
-          envío registrado por la plataforma.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">✉️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los mensajes de Evolution API son cada WhatsApp individual que el motor
+            procesa, con su remitente, destinatario, asunto, cuerpo y el estado del
+            envío registrado por la plataforma.
+          </div>
         </div>
       </div>
 
@@ -13643,15 +13826,18 @@ function evoChOnlineBadge(o) {
 route('/evolutioncanales', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Evolution API" onclick="location.hash='#/evolution'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Evolution API" onclick="location.hash='#/evolution'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">📡</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los canales de Evolution API son cada instancia conectada de WhatsApp,
-          con su número, token, webhook, intervalos de envío y estado de conexión
-          con la plataforma.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📡</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los canales de Evolution API son cada instancia conectada de WhatsApp,
+            con su número, token, webhook, intervalos de envío y estado de conexión
+            con la plataforma.
+          </div>
         </div>
       </div>
 
@@ -14293,15 +14479,18 @@ function evoCtEstadoBadge(e) {
 route('/evolutioncontactos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Evolution API" onclick="location.hash='#/evolution'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Evolution API" onclick="location.hash='#/evolution'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">👥</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los contactos de Evolution API son los destinos que la plataforma verifica
-          antes de enviar. Cada registro guarda el número consultado, el estado del
-          chequeo y el error si la verificación falló.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">👥</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los contactos de Evolution API son los destinos que la plataforma verifica
+            antes de enviar. Cada registro guarda el número consultado, el estado del
+            chequeo y el error si la verificación falló.
+          </div>
         </div>
       </div>
 
@@ -14929,17 +15118,20 @@ function msimFmtEstado(v) {
 route('/movistarsims', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Movistar" onclick="location.hash='#/movistar'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Movistar" onclick="location.hash='#/movistar'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">📶</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Las SIMs de Movistar son las líneas M2M administradas desde Kite
-          Platform (Telefónica) — cada fila trae el nombre (field1), la línea,
-          el ICC, el estado general/GPRS/LTE, el límite de datos, el IMEI del
-          equipo asociado y el MSISDN. El botón "Sincronizar con Kite" trae
-          las líneas vigentes desde la API de Kite y las mantiene actualizadas.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📶</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las SIMs de Movistar son las líneas M2M administradas desde Kite
+            Platform (Telefónica) — cada fila trae el nombre (field1), la línea,
+            el ICC, el estado general/GPRS/LTE, el límite de datos, el IMEI del
+            equipo asociado y el MSISDN. El botón "Sincronizar con Kite" trae
+            las líneas vigentes desde la API de Kite y las mantiene actualizadas.
+          </div>
         </div>
       </div>
 
@@ -15462,10 +15654,60 @@ route('/claro', async (mount) => {
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://autogestion-empresas.claro.com.ar/sites/launchpad#Shell-home', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
-        <span class="tile-title">Plataforma</span>
+        <span class="tile-icon">💼</span>
+        <span class="tile-title">Comercial</span>
         <span class="tile-desc">Abre la consola de Autogestión Empresas de Claro en una pestaña nueva.</span>
       </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://iotgestion.claro.com.ar', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre la consola de IoT Gestión de Claro en una pestaña nueva.</span>
+      </button>
+    </div>
+
+    <div style="display:block;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;margin-top:20px;box-shadow:var(--shadow);font-size:.88rem;color:var(--text);line-height:1.55">
+      <div style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">Credenciales</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px">
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+          <div style="font-weight:700;color:var(--text);margin-bottom:10px">M2M Claro</div>
+          <dl style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0">
+            <dt style="color:var(--muted)">Razón social:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">ALFATEC SRL</code></dd>
+            <dt style="color:var(--muted)">CUIT:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">30-70818059-9</code></dd>
+            <dt style="color:var(--muted)">Correo asociado:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">javieralvarez@alfatec.net.ar</code></dd>
+            <dt style="color:var(--muted)">Número de cuenta:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">1698694500</code></dd>
+            <dt style="color:var(--muted)">Línea principal:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">2645754593</code></dd>
+            <dt style="color:var(--muted)">Usuario:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">javieralvarez1</code></dd>
+            <dt style="color:var(--muted)">Contraseña:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">BFD73nSrrLKL</code></dd>
+          </dl>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+          <div style="font-weight:700;color:var(--text);margin-bottom:10px">Corporativo Claro</div>
+          <dl style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0">
+            <dt style="color:var(--muted)">Razón social:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">ALVAREZ LEONARDO JAVIER</code></dd>
+            <dt style="color:var(--muted)">CUIT:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">20-24836945-1</code></dd>
+            <dt style="color:var(--muted)">Correo asociado:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">javieralvarez@databox.net.ar</code></dd>
+            <dt style="color:var(--muted)">Número de cuenta:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">840881346</code></dd>
+            <dt style="color:var(--muted)">Línea principal:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">2644984568</code></dd>
+            <dt style="color:var(--muted)">Usuario:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">databox</code></dd>
+            <dt style="color:var(--muted)">Contraseña:</dt>
+            <dd style="margin:0"><code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px">Pitagoras1</code></dd>
+          </dl>
+        </div>
+      </div>
     </div>
   `;
 }, 'Claro');
@@ -15696,17 +15938,20 @@ route('/openai', async (mount) => {
 route('/openaiconsumos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a OpenAI" onclick="location.hash='#/openai'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a OpenAI" onclick="location.hash='#/openai'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">📊</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Snapshots del estado de cuenta OpenAI: costos del mes en curso y anterior, tokens, requests
-          y consumo por API key. Cada snapshot queda guardado en <code>openai_consumos</code>;
-          desde <strong>Snapshots</strong> podés navegar a versiones históricas.
-          El <em>spend estimado</em> por key surge de tokens × tabla de precios interna — puede diferir
-          del gasto oficial (no incluye descuentos batch, cached-input reducido ni modelos sin precio).
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📊</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Snapshots del estado de cuenta OpenAI: costos del mes en curso y anterior, tokens, requests
+            y consumo por API key. Cada snapshot queda guardado en <code>openai_consumos</code>;
+            desde <strong>Snapshots</strong> podés navegar a versiones históricas.
+            El <em>spend estimado</em> por key surge de tokens × tabla de precios interna — puede diferir
+            del gasto oficial (no incluye descuentos batch, cached-input reducido ni modelos sin precio).
+          </div>
         </div>
       </div>
 
@@ -15817,16 +16062,19 @@ function csimFmtEstado(v) {
 route('/clarosims', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Claro" onclick="location.hash='#/claro'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Claro" onclick="location.hash='#/claro'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">📶</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Las SIMs de Claro son las líneas M2M administradas desde
-          Autogestión Empresas — cada fila trae el nombre, la línea,
-          el ICC, el estado general/GPRS/LTE, el límite de datos, el IMEI
-          del equipo asociado y el MSISDN.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📶</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las SIMs de Claro son las líneas M2M administradas desde
+            Autogestión Empresas — cada fila trae el nombre, la línea,
+            el ICC, el estado general/GPRS/LTE, el límite de datos, el IMEI
+            del equipo asociado y el MSISDN.
+          </div>
         </div>
       </div>
 
@@ -16327,15 +16575,18 @@ function dhCotFmtDec(v) {
 route('/dolarhoycotizaciones', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Dolarhoy" onclick="location.hash='#/dolarhoy'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Dolarhoy" onclick="location.hash='#/dolarhoy'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">💵</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Las cotizaciones de Dolarhoy son el registro histórico del tipo de cambio
-          del dólar tomado de la plataforma — cada fila trae la fecha del día con el
-          precio de compra y el precio de venta publicados.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">💵</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las cotizaciones de Dolarhoy son el registro histórico del tipo de cambio
+            del dólar tomado de la plataforma — cada fila trae la fecha del día con el
+            precio de compra y el precio de venta publicados.
+          </div>
         </div>
       </div>
 
@@ -16839,15 +17090,18 @@ function mpPagFmtMonto(v) {
 route('/mercadopagopagos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">💳</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los pagos de Mercadopago son cada cobro procesado por la pasarela,
-          con la cuenta origen, factura o recibo asociado, monto, número de
-          operación y el estado devuelto por la plataforma.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">💳</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los pagos de Mercadopago son cada cobro procesado por la pasarela,
+            con la cuenta origen, factura o recibo asociado, monto, número de
+            operación y el estado devuelto por la plataforma.
+          </div>
         </div>
       </div>
 
@@ -17472,15 +17726,18 @@ function mpCtaMask(s) {
 route('/mercadopagocuentas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">🏦</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Las cuentas Mercadopago concentran las credenciales (public key y access
-          token, en producción y testing), el CVU / alias de acreditación, los
-          webhooks configurados y la imputación contable de cada cuenta.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🏦</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las cuentas Mercadopago concentran las credenciales (public key y access
+            token, en producción y testing), el CVU / alias de acreditación, los
+            webhooks configurados y la imputación contable de cada cuenta.
+          </div>
         </div>
       </div>
 
@@ -18088,15 +18345,18 @@ let mpRegTiposCache      = [];
 route('/mercadopagoregistros', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">📰</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los registros de Mercadopago son el log crudo de eventos y notificaciones
-          recibidos de la plataforma — cada línea trae fecha, tipo y el cuerpo
-          completo del evento tal como llegó al webhook.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📰</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los registros de Mercadopago son el log crudo de eventos y notificaciones
+            recibidos de la plataforma — cada línea trae fecha, tipo y el cuerpo
+            completo del evento tal como llegó al webhook.
+          </div>
         </div>
       </div>
 
@@ -18583,16 +18843,19 @@ function mpSubFmtCiclo(s) {
 route('/mercadopagosuscripciones', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">🔁</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Las suscripciones de Mercadopago definen los cobros recurrentes de la
-          plataforma — cada una lleva el suscriptor, el ciclo (frecuencia y período),
-          el monto, las fechas del ciclo de vida (inicio, pausa, reactivación, fin)
-          y el estado devuelto por Mercadopago.
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🔁</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las suscripciones de Mercadopago definen los cobros recurrentes de la
+            plataforma — cada una lleva el suscriptor, el ciclo (frecuencia y período),
+            el monto, las fechas del ciclo de vida (inicio, pausa, reactivación, fin)
+            y el estado devuelto por Mercadopago.
+          </div>
         </div>
       </div>
 
@@ -19270,15 +19533,18 @@ function mpDebFmtMonto(v) {
 route('/mercadopagodebitos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center">
-        <button type="button" class="btn btn-primary btn-icon" title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Mercadopago" onclick="location.hash='#/mercadopago'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
-        <div style="font-size:1.6rem;line-height:1">📉</div>
-        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-          Los débitos son cada ejecución de cobro que Mercadopago aplica sobre una
-          suscripción — con cuenta, suscripción, referencia, monto, número de
-          operación y el resultado del cobro (aprobado, rechazado, pendiente).
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📉</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los débitos son cada ejecución de cobro que Mercadopago aplica sobre una
+            suscripción — con cuenta, suscripción, referencia, monto, número de
+            operación y el resultado del cobro (aprobado, rechazado, pendiente).
+          </div>
         </div>
       </div>
 

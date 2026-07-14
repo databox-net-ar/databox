@@ -67,72 +67,24 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
           </div>
         </div>
 
-        <div class="nav-group-wrap" data-group="datacount">
+        <div class="nav-group-wrap" data-group="sistemas">
           <button type="button" class="nav-item nav-group-toggle">
-            <span class="nav-icon">📒</span>
-            <span class="nav-group-label">Datacount</span>
+            <span class="nav-icon">🧩</span>
+            <span class="nav-group-label">Sistemas</span>
             <span class="nav-group-arrow">+</span>
           </button>
           <div class="nav-sub">
-            <a href="#/datacountcomprobantes" class="nav-item nav-sub-item" data-route="/datacountcomprobantes"
-               data-perm="datacount.comprobantes.consultar">
-              <span class="nav-icon">🧾</span> Comprobantes
+            <a href="#/datacount" class="nav-item nav-sub-item" data-route="/datacount"
+               data-perm-prefix="datacount.">
+              <span class="nav-icon">📒</span> Datacount
             </a>
-            <a href="#/datacountfacturacion" class="nav-item nav-sub-item" data-route="/datacountfacturacion"
-               data-perm="datacount.facturacion.consultar">
-              <span class="nav-icon">🤖</span> Facturación
+            <a href="#/datarocket" class="nav-item nav-sub-item" data-route="/datarocket"
+               data-perm-prefix="datarocket.">
+              <span class="nav-icon">🚀</span> Datarocket
             </a>
-            <a href="#/datacountasientos" class="nav-item nav-sub-item" data-route="/datacountasientos"
-               data-perm="datacount.asientos.consultar">
-              <span class="nav-icon">📖</span> Asientos
-            </a>
-            <a href="#/datacountempleados" class="nav-item nav-sub-item" data-route="/datacountempleados"
-               data-perm="datacount.empleados.consultar">
-              <span class="nav-icon">👤</span> Empleados
-            </a>
-            <a href="#/datacountrecurrentes" class="nav-item nav-sub-item" data-route="/datacountrecurrentes"
-               data-perm="datacount.recurrentes.consultar">
-              <span class="nav-icon">🔁</span> Recurrentes
-            </a>
-            <a href="#/datacountcuentas" class="nav-item nav-sub-item" data-route="/datacountcuentas"
-               data-perm="datacount.cuentas.consultar">
-              <span class="nav-icon">📒</span> Plan de cuentas
-            </a>
-            <a href="#/datacountempresas" class="nav-item nav-sub-item" data-route="/datacountempresas"
-               data-perm="datacount.empresas.consultar">
-              <span class="nav-icon">🏢</span> Empresas
-            </a>
-          </div>
-        </div>
-
-        <div class="nav-group-wrap" data-group="datarocket">
-          <button type="button" class="nav-item nav-group-toggle">
-            <span class="nav-icon">🚀</span>
-            <span class="nav-group-label">Datarocket</span>
-            <span class="nav-group-arrow">+</span>
-          </button>
-          <div class="nav-sub">
-            <a href="#/datarocketcontactos" class="nav-item nav-sub-item" data-route="/datarocketcontactos"
-               data-perm="datarocket.contactos.consultar">
-              <span class="nav-icon">👥</span> Contactos
-            </a>
-            <a href="#/datarocketmensajes" class="nav-item nav-sub-item" data-route="/datarocketmensajes"
-               data-perm="datarocket.mensajes.consultar">
-              <span class="nav-icon">✉️</span> Mensajes
-            </a>
-          </div>
-        </div>
-
-        <div class="nav-group-wrap" data-group="datasale">
-          <button type="button" class="nav-item nav-group-toggle">
-            <span class="nav-icon">💰</span>
-            <span class="nav-group-label">Datasale</span>
-            <span class="nav-group-arrow">+</span>
-          </button>
-          <div class="nav-sub">
-            <a href="#/prospectos" class="nav-item nav-sub-item" data-route="/prospectos"
-               data-perm="datasale.prospectos.consultar">
-              <span class="nav-icon">🎯</span> Prospectos
+            <a href="#/datasale" class="nav-item nav-sub-item" data-route="/datasale"
+               data-perm-prefix="datasale.">
+              <span class="nav-icon">💰</span> Datasale
             </a>
           </div>
         </div>
