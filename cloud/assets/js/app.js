@@ -248,6 +248,7 @@ const ROUTE_PERMS = {
 
   '/datacount':                { prefix: 'datacount.' },
   '/datacountcomprobantes':    { perm:   'datacount.comprobantes.consultar' },
+  '/datacountpagos':           { perm:   'datacount.pagos.consultar' },
   '/datacountfacturacion':     { perm:   'datacount.facturacion.consultar' },
   '/datacountasientos':        { perm:   'datacount.asientos.consultar' },
   '/datacountempleados':       { perm:   'datacount.empleados.consultar' },
@@ -4051,6 +4052,11 @@ route('/datacount', async (mount) => {
         <span class="tile-title">Comprobantes</span>
         <span class="tile-desc">Comprobantes emitidos y recibidos con tipo, punto, serie, cliente, CUIT, estado y totales.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountpagos'">
+        <span class="tile-icon">💵</span>
+        <span class="tile-title">Pagos</span>
+        <span class="tile-desc">Facturas recibidas y demás documentos digitalizados con período, monto, moneda y estado de contabilización.</span>
+      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datacountfacturacion'">
         <span class="tile-icon">🤖</span>
         <span class="tile-title">Facturación</span>
@@ -4968,6 +4974,944 @@ async function eliminarDcComp(id) {
     await apiSend(`api/datacountcomprobantes.php?id=${id}`, 'DELETE');
     toast('Comprobante eliminado.');
     cargarDcComp();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Pagos (ABM) -------------------------
+// Cada fila representa un documento digitalizado (factura recibida, VEP,
+// comprobante de transferencia, etc.). Los campos `tipo`, `moneda`, `estado`
+// y `clasificado` guardan valores crudos que se traducen a texto amigable
+// contra la tabla `estados` (campos `datacount_pago_*`).
+
+const dcPagoFiltrosDefaults = {
+  q: '', codigo: '', empresa: '', proyecto: '',
+  tipo: '', moneda: '', razon: '', cuit: '', estado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const dcPagoFiltros = { ...dcPagoFiltrosDefaults };
+let dcPagoBuscadorTimer   = null;
+let dcPagoFiltrosSnapshot = null;
+
+// Catalogos de estados posibles para pagos, leidos de `estados` donde
+// `campo IN ('datacount_pago_tipo', 'datacount_pago_moneda',
+// 'datacount_pago_estado', 'datacount_pago_clasificado')`. Se cachean entre
+// navegaciones. `dcPagoEstadosCat[campo]` -> [{valor, texto}].
+const DCPAGO_CAMPOS_ESTADO = [
+  'datacount_pago_tipo',
+  'datacount_pago_moneda',
+  'datacount_pago_estado',
+  'datacount_pago_clasificado',
+];
+let dcPagoEstadosCat     = null;
+let dcPagoEstadosPromesa = null;
+
+async function dcPagoCargarCatalogosEstados() {
+  if (dcPagoEstadosCat)     return dcPagoEstadosCat;
+  if (dcPagoEstadosPromesa) return dcPagoEstadosPromesa;
+  dcPagoEstadosPromesa = (async () => {
+    const cargas = await Promise.all(DCPAGO_CAMPOS_ESTADO.map((c) =>
+      apiGet('api/estados.php?campo=' + encodeURIComponent(c) + '&order_by=campo_orden&dir=asc&limite=500')
+        .then((d) => (d.items || []).map((r) => ({
+          valor: String(r.valor ?? ''),
+          texto: String(r.texto ?? '').trim() || String(r.valor ?? ''),
+        })))
+        .catch(() => [])
+    ));
+    dcPagoEstadosCat = {};
+    DCPAGO_CAMPOS_ESTADO.forEach((c, i) => { dcPagoEstadosCat[c] = cargas[i]; });
+    return dcPagoEstadosCat;
+  })();
+  try { return await dcPagoEstadosPromesa; }
+  finally { dcPagoEstadosPromesa = null; }
+}
+
+function dcPagoTraducir(campo, valor) {
+  if (valor == null || valor === '') return '';
+  const cat = dcPagoEstadosCat?.[campo] || [];
+  const it  = cat.find((x) => String(x.valor) === String(valor));
+  return it ? it.texto : String(valor);
+}
+
+function dcPagoOpcionesSelect(campo, actual) {
+  const cat = dcPagoEstadosCat?.[campo] || [];
+  const opts = [`<option value=""${actual === '' || actual == null ? ' selected' : ''}>—</option>`];
+  for (const it of cat) {
+    const sel = String(actual ?? '') === String(it.valor) ? ' selected' : '';
+    opts.push(`<option value="${esc(it.valor)}"${sel}>${esc(it.texto)}</option>`);
+  }
+  return opts.join('');
+}
+
+function dcPagoPintarChips(contenedorId, campo, actual, onclickKey) {
+  const box = document.getElementById(contenedorId);
+  if (!box) return;
+  const items = dcPagoEstadosCat?.[campo] || [];
+  box.innerHTML =
+    `<button type="button" class="filter-chip${actual === '' ? ' active' : ''}" data-valor="">Todos</button>` +
+    items.map((e) =>
+      `<button type="button" class="filter-chip${actual === e.valor ? ' active' : ''}" data-valor="${esc(e.valor)}">${esc(e.texto)}</button>`
+    ).join('');
+  box.querySelectorAll('.filter-chip').forEach((c) => {
+    c.onclick = () => {
+      onFiltroDcPago(onclickKey, c.dataset.valor || '');
+      sincronizarControlesFiltrosDcPago();
+    };
+  });
+}
+
+function dcPagoFmtImporte(v) {
+  if (v == null || v === '' || isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function dcPagoEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  // Colores heredados del legacy: 2=Contabilizado (success), 1=Pendiente (warn),
+  // 0=Descartado (danger). El resto cae en badge-info.
+  const colorMap = { '2': 'badge-success', '1': 'badge-warn', '0': 'badge-danger' };
+  const cls   = colorMap[String(e)] || 'badge-info';
+  const label = dcPagoTraducir('datacount_pago_estado', e) || String(e);
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
+function dcPagoFmtPeriodo(v) {
+  if (!v) return '—';
+  const s = String(v);
+  // periodo es una fecha (YYYY-MM-DD) pero se muestra como YYYY-MM.
+  return s.length >= 7 ? s.slice(0, 7) : s;
+}
+
+route('/datacountpagos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">💵</div>
+          <div class="module-help-text">
+            Los pagos son las facturas recibidas y demás documentos digitalizados
+            que Datacount registra, con su período, monto, moneda y estado de contabilización.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dcPagoStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Importe total</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcPagoSearch"
+                   placeholder="🔍 Buscar razón, CUIT, número o descripción…">
+            <button class="search-clear" id="dcPagoSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcPagoFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcPagoFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcPagoRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcPagoNuevoBtn">+ Nuevo pago</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Período</th>
+              <th>Tipo</th>
+              <th>Emisión</th>
+              <th>Número</th>
+              <th>Razón</th>
+              <th>CUIT</th>
+              <th style="text-align:right">Valor</th>
+              <th>Moneda</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcPagoTbody">
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dcPagoCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros -->
+    <div class="modal-backdrop" id="filtrosDcPagoBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcPago()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDcPago()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcPagoCodigo" min="1" placeholder="ID …" oninput="onFiltroDcPago('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Empresa (ID)</label>
+              <input type="number" id="fDcPagoEmpresa" min="1" oninput="onFiltroDcPago('empresa', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fDcPagoProyecto" min="1" oninput="onFiltroDcPago('proyecto', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Razón social</label>
+              <input type="text" id="fDcPagoRazon" oninput="onFiltroDcPago('razon', this.value)">
+            </div>
+            <div class="form-group">
+              <label>CUIT</label>
+              <input type="text" id="fDcPagoCuit" oninput="onFiltroDcPago('cuit', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Tipo</label>
+            <div id="fDcPagoTipoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip active" data-valor="">Todos</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Moneda</label>
+            <div id="fDcPagoMonedaChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip active" data-valor="">Todas</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado del pago</label>
+            <div id="fDcPagoEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip active" data-valor="">Todos</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcPagoLimite" min="1" max="1000" value="100" onchange="onFiltroDcPago('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcPagoOrderBy" onchange="onFiltroDcPago('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="periodo">Período</option>
+                <option value="emision">Emisión</option>
+                <option value="tipo">Tipo</option>
+                <option value="razon">Razón social</option>
+                <option value="cuit">CUIT</option>
+                <option value="valor">Valor</option>
+                <option value="monto">Monto</option>
+                <option value="registrado">Fecha de registro</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcPagoDir" onchange="onFiltroDcPago('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcPago()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcPago()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcPago()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#dcPagoNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcPago(null));
+  $('#dcPagoFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDcPago());
+  $('#dcPagoRefrescarBtn').addEventListener('click', () => cargarDcPago());
+
+  const inp = $('#dcPagoSearch');
+  const clr = $('#dcPagoSearchClear');
+  inp.value = dcPagoFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcPagoFiltros.q = inp.value.trim();
+    clearTimeout(dcPagoBuscadorTimer);
+    dcPagoBuscadorTimer = setTimeout(() => { cargarDcPago(); refrescarBadgeFiltrosDcPago(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    dcPagoFiltros.q = '';
+    cargarDcPago();
+    refrescarBadgeFiltrosDcPago();
+  });
+
+  // Menú contextual
+  $('#dcPagoCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDcPago(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDcPago(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDcPago(data.id);
+  });
+
+  // Clic en fila → consultar; clic en hamburguesa → menú
+  $('#dcPagoTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dcPagoCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDcPago(Number(tr.dataset.id));
+  });
+  $('#dcPagoTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dcPagoCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDcPago();
+  // Cargamos los 4 catalogos de estados en paralelo con el listado para que
+  // los chips y la tabla ya tengan las traducciones cuando se pinten.
+  dcPagoCargarCatalogosEstados().then(() => {
+    dcPagoPintarChips('fDcPagoTipoChips',   'datacount_pago_tipo',   dcPagoFiltros.tipo,   'tipo');
+    dcPagoPintarChips('fDcPagoMonedaChips', 'datacount_pago_moneda', dcPagoFiltros.moneda, 'moneda');
+    dcPagoPintarChips('fDcPagoEstadoChips', 'datacount_pago_estado', dcPagoFiltros.estado, 'estado');
+  }).catch(() => {});
+  await cargarDcPago();
+}, 'Pagos');
+
+async function cargarDcPago() {
+  const tbody = $('#dcPagoTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(dcPagoFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const [data] = await Promise.all([
+      apiGet('api/datacountpagos.php?' + qs.toString()),
+      dcPagoCargarCatalogosEstados().catch(() => null),
+    ]);
+    pintarStatsDcPago(data.stats);
+    pintarTablaDcPago(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcPago(s) {
+  const cards = $$('#dcPagoStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = '$ ' + dcPagoFmtImporte(s.importe_total);
+}
+
+function pintarTablaDcPago(rows) {
+  const tbody = $('#dcPagoTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin pagos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((p) => `
+    <tr data-id="${p.id}" class="row-clickable">
+      <td class="td-id">#${esc(p.id)}</td>
+      <td>${esc(dcPagoFmtPeriodo(p.periodo))}</td>
+      <td>${esc(dcPagoTraducir('datacount_pago_tipo', p.tipo) || '—')}</td>
+      <td>${esc(p.emision || '—')}</td>
+      <td style="font-family:monospace">${esc(p.numero || '—')}</td>
+      <td class="td-nombre">${esc(p.razon || '—')}</td>
+      <td>${esc(p.cuit || '—')}</td>
+      <td style="text-align:right">${p.valor != null ? '$ ' + dcPagoFmtImporte(p.valor) : '—'}</td>
+      <td>${esc(dcPagoTraducir('datacount_pago_moneda', p.moneda) || '—')}</td>
+      <td>${dcPagoEstadoBadge(p.estado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de Filtros ----
+function onFiltroDcPago(key, value) {
+  if (key === 'razon' || key === 'cuit' || key === 'tipo' || key === 'moneda' || key === 'estado') {
+    dcPagoFiltros[key] = String(value).trim();
+  } else if (key === 'codigo' || key === 'empresa' || key === 'proyecto') {
+    const v = String(value).trim();
+    dcPagoFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    dcPagoFiltros.limite = n;
+  } else {
+    dcPagoFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDcPago();
+  cargarDcPago();
+}
+
+function refrescarBadgeFiltrosDcPago() {
+  const btn   = $('#dcPagoFiltrosBtn');
+  const badge = $('#dcPagoFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(dcPagoFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(dcPagoFiltros[k]) !== String(dcPagoFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDcPago() {
+  const f = dcPagoFiltros;
+  $('#fDcPagoCodigo').value   = f.codigo;
+  $('#fDcPagoEmpresa').value  = f.empresa;
+  $('#fDcPagoProyecto').value = f.proyecto;
+  $('#fDcPagoRazon').value    = f.razon;
+  $('#fDcPagoCuit').value     = f.cuit;
+  $('#fDcPagoLimite').value   = f.limite;
+  $('#fDcPagoOrderBy').value  = f.order_by;
+  $('#fDcPagoDir').value      = f.dir;
+  $$('#fDcPagoTipoChips .filter-chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.valor || '') === (f.tipo || ''));
+  });
+  $$('#fDcPagoMonedaChips .filter-chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.valor || '') === (f.moneda || ''));
+  });
+  $$('#fDcPagoEstadoChips .filter-chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.valor || '') === (f.estado || ''));
+  });
+}
+
+function abrirModalFiltrosDcPago() {
+  dcPagoFiltrosSnapshot = { ...dcPagoFiltros };
+  const pintar = () => {
+    dcPagoPintarChips('fDcPagoTipoChips',   'datacount_pago_tipo',   dcPagoFiltros.tipo,   'tipo');
+    dcPagoPintarChips('fDcPagoMonedaChips', 'datacount_pago_moneda', dcPagoFiltros.moneda, 'moneda');
+    dcPagoPintarChips('fDcPagoEstadoChips', 'datacount_pago_estado', dcPagoFiltros.estado, 'estado');
+  };
+  if (!dcPagoEstadosCat) dcPagoCargarCatalogosEstados().then(pintar).catch(() => {});
+  else pintar();
+  sincronizarControlesFiltrosDcPago();
+  $('#filtrosDcPagoBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDcPago() {
+  $('#filtrosDcPagoBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDcPago() {
+  if (dcPagoFiltrosSnapshot) {
+    Object.assign(dcPagoFiltros, dcPagoFiltrosSnapshot);
+    refrescarBadgeFiltrosDcPago();
+    cargarDcPago();
+  }
+  cerrarModalFiltrosDcPago();
+}
+
+function limpiarFiltrosDcPago() {
+  Object.assign(dcPagoFiltros, dcPagoFiltrosDefaults);
+  dcPagoFiltros.q = $('#dcPagoSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDcPago();
+  refrescarBadgeFiltrosDcPago();
+  cargarDcPago();
+}
+
+window.onFiltroDcPago           = onFiltroDcPago;
+window.cancelarFiltrosDcPago    = cancelarFiltrosDcPago;
+window.limpiarFiltrosDcPago     = limpiarFiltrosDcPago;
+window.cerrarModalFiltrosDcPago = cerrarModalFiltrosDcPago;
+
+// ---- Tabs ----
+// Los modales de Consultar y de Alta/Edición viven ambos en #modalRoot y sólo
+// hay uno abierto a la vez, asi que una unica funcion alcanza para conmutar
+// tabs en cualquiera de los dos.
+function dcPagoCambiarTab(tab) {
+  if (tab !== 'general' && tab !== 'adjuntos') return;
+  document.querySelectorAll('#modalRoot .modal-tab[data-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-tab]').forEach((p) => {
+    p.hidden = p.dataset.tab !== tab;
+  });
+}
+window.dcPagoCambiarTab = dcPagoCambiarTab;
+
+// Header con las dos pestañas (mismo markup para Consultar y Alta/Edición).
+function dcPagoTabsHeaderHtml() {
+  return `
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-tab="general" onclick="dcPagoCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-tab="adjuntos" onclick="dcPagoCambiarTab('adjuntos')">
+        <i class="fa-solid fa-paperclip"></i> Adjuntos
+      </button>
+    </div>
+  `;
+}
+
+// Panel de Adjuntos (compartido por Consultar y Alta/Edición). Es solo lectura:
+// todavia no hay endpoint para subir/borrar adjuntos desde cloud. `hint`
+// permite mostrar el mensaje "Se cargan una vez guardado el pago" en Alta.
+function dcPagoRenderAdjuntos(adjuntos, hint = '') {
+  if (!adjuntos || !adjuntos.length) {
+    return `<div class="table-empty">${esc(hint || 'Este pago no tiene adjuntos.')}</div>`;
+  }
+  return `
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Nombre</th>
+            <th>Cargado</th>
+            <th>Tipo</th>
+            <th>Formato</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${adjuntos.map((a) => `
+            <tr>
+              <td class="td-id">#${esc(a.id)}</td>
+              <td>${esc(a.nombre || a.archivo || '—')}</td>
+              <td>${esc(fmtFecha(a.cargado) || '—')}</td>
+              <td>${esc(a.tipo || '—')}</td>
+              <td>${esc(a.formato || '—')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ---- Modal Consultar ----
+async function abrirConsultarDcPago(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1200px">
+      <div class="modal-header">
+        <div class="modal-title">Pago <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcPago(id); }
+  });
+
+  try {
+    const [p] = await Promise.all([
+      apiGet(`api/datacountpagos.php?id=${id}`),
+      dcPagoCargarCatalogosEstados().catch(() => null),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = `
+      ${dcPagoTabsHeaderHtml()}
+      <div class="modal-tabpanel" data-tab="general" role="tabpanel">
+        ${renderConsultaDcPago(p)}
+      </div>
+      <div class="modal-tabpanel" data-tab="adjuntos" role="tabpanel" hidden>
+        ${dcPagoRenderAdjuntos(p.adjuntos)}
+      </div>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDcPago(p) {
+  const money = (v) => (v == null || v === '') ? '—' : '$ ' + dcPagoFmtImporte(v);
+
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const tipoTxt        = dcPagoTraducir('datacount_pago_tipo',        p.tipo);
+  const monedaTxt      = dcPagoTraducir('datacount_pago_moneda',      p.moneda);
+  const clasificadoTxt = dcPagoTraducir('datacount_pago_clasificado', p.clasificado);
+
+  return `
+    <!-- Encabezado -->
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.5rem;font-weight:700">${esc(tipoTxt || p.tipo || '—')}</span>
+          <span style="font-family:monospace;font-size:1.2rem;color:var(--muted)">${esc(p.numero || '—')}</span>
+        </div>
+        <div style="font-size:.78rem;color:var(--muted);margin-top:6px">#${esc(p.id)} · UUID <code>${esc(p.uuid || '—')}</code></div>
+      </div>
+      <div style="text-align:right;min-width:180px">
+        <div>${dcPagoEstadoBadge(p.estado)}</div>
+        <div style="margin-top:10px;font-size:.85rem;line-height:1.6">
+          <div><span style="color:var(--muted)">Período:</span> ${esc(dcPagoFmtPeriodo(p.periodo))}</div>
+          <div><span style="color:var(--muted)">Emisión:</span> ${esc(p.emision || '—')}</div>
+          <div><span style="color:var(--muted)">Cancelación:</span> ${esc(p.cancelacion || '—')}</div>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Contraparte')}
+    <dl class="data-list">
+      ${card('Razón social', p.razon, true)}
+      ${card('CUIT',         p.cuit)}
+      ${card('Número',       p.numero)}
+    </dl>
+
+    ${seccion('Importes')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Moneda',     monedaTxt || p.moneda)}
+      ${card('Monto',      money(p.monto))}
+      ${card('Cotización', p.cotizacion != null && p.cotizacion !== '' ? dcPagoFmtImporte(p.cotizacion) : null)}
+      ${card('Valor',      money(p.valor))}
+      ${card('Billetera',  p.billetera)}
+      ${card('Clasificado',clasificadoTxt || p.clasificado)}
+    </dl>
+
+    ${seccion('Contexto')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Empresa (ID)',   p.empresa)}
+      ${card('Proyecto (ID)',  p.proyecto)}
+      ${card('Comprobante',    p.comprobante)}
+      ${card('Transacción',    p.transaccion)}
+      ${card('Remuneración',   p.remuneracion)}
+      ${card('Medio (legacy)', p.medio_legacy)}
+    </dl>
+
+    ${seccion('Notas')}
+    <dl class="data-list">
+      ${card('Descripción', p.descripcion, true)}
+    </dl>
+
+    ${seccion('Auditoría')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Registrado',     fmtFecha(p.registrado))}
+      ${card('Registrador',    p.registrador)}
+      ${card('Contabilizado',  fmtFecha(p.contabilizado))}
+    </dl>
+
+    ${p.adjuntos && p.adjuntos.length ? `
+      ${seccion('Adjuntos')}
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Nombre</th>
+              <th>Cargado</th>
+              <th>Tipo</th>
+              <th>Formato</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${p.adjuntos.map((a) => `
+              <tr>
+                <td class="td-id">#${esc(a.id)}</td>
+                <td>${esc(a.nombre || a.archivo || '—')}</td>
+                <td>${esc(fmtFecha(a.cargado) || '—')}</td>
+                <td>${esc(a.tipo || '—')}</td>
+                <td>${esc(a.formato || '—')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : ''}
+  `;
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDcPago(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar pago <span class="modal-subtitle">#${id}</span>` : 'Nuevo pago'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    // Nos aseguramos de tener los catalogos antes de renderizar el form (los
+    // selects de tipo/moneda/estado/clasificado dependen de ellos).
+    await dcPagoCargarCatalogosEstados().catch(() => null);
+    const datos = esEdicion ? await apiGet(`api/datacountpagos.php?id=${id}`) : {};
+    const hintAdj = esEdicion
+      ? 'Este pago no tiene adjuntos.'
+      : 'Los adjuntos se pueden cargar una vez guardado el pago.';
+    $('#modalRoot .modal-body').innerHTML = `
+      ${dcPagoTabsHeaderHtml()}
+      <div class="modal-tabpanel" data-tab="general" role="tabpanel">
+        ${formDcPagoHtml(datos)}
+      </div>
+      <div class="modal-tabpanel" data-tab="adjuntos" role="tabpanel" hidden>
+        ${dcPagoRenderAdjuntos(datos.adjuntos, hintAdj)}
+      </div>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDcPago(id, a);
+  });
+}
+
+function formDcPagoHtml(p) {
+  const v  = (k) => esc(p?.[k] ?? '');
+  const dt = (k) => {
+    const raw = p?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  // periodo es DATE en BD (YYYY-MM-DD) pero se maneja como mes calendario.
+  const periodoValor = (() => {
+    const raw = p?.periodo;
+    if (!raw) return '';
+    return esc(String(raw).slice(0, 7));
+  })();
+
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Empresa (ID)</label>
+        <input type="number" id="dcPagEmpresa" min="1" value="${v('empresa')}">
+      </div>
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="dcPagProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Período (YYYY-MM)</label>
+        <input type="month" id="dcPagPeriodo" value="${periodoValor}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Tipo</label>
+        <select id="dcPagTipo">${dcPagoOpcionesSelect('datacount_pago_tipo', p?.tipo)}</select>
+      </div>
+      <div class="form-group">
+        <label>Emisión</label>
+        <input type="date" id="dcPagEmision" value="${v('emision')}">
+      </div>
+      <div class="form-group">
+        <label>Cancelación</label>
+        <input type="date" id="dcPagCancelacion" value="${v('cancelacion')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Razón social</label>
+      <input type="text" id="dcPagRazon" maxlength="255" value="${v('razon')}">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>CUIT</label>
+        <input type="text" id="dcPagCuit" maxlength="20" value="${v('cuit')}">
+      </div>
+      <div class="form-group">
+        <label>Número</label>
+        <input type="text" id="dcPagNumero" maxlength="50" value="${v('numero')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Moneda</label>
+        <select id="dcPagMoneda">${dcPagoOpcionesSelect('datacount_pago_moneda', p?.moneda)}</select>
+      </div>
+      <div class="form-group">
+        <label>Monto</label>
+        <input type="number" id="dcPagMonto" step="0.01" value="${v('monto')}">
+      </div>
+      <div class="form-group">
+        <label>Cotización</label>
+        <input type="number" id="dcPagCotizacion" step="0.01" value="${v('cotizacion')}">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Valor</label>
+        <input type="number" id="dcPagValor" step="0.01" value="${v('valor')}">
+      </div>
+      <div class="form-group">
+        <label>Billetera (ID)</label>
+        <input type="number" id="dcPagBilletera" min="1" value="${v('billetera')}">
+      </div>
+      <div class="form-group">
+        <label>Remuneración (ID)</label>
+        <input type="number" id="dcPagRemuneracion" min="1" value="${v('remuneracion')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Descripción</label>
+      <textarea id="dcPagDescripcion" maxlength="255">${v('descripcion')}</textarea>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Comprobante (ID)</label>
+        <input type="number" id="dcPagComprobante" min="1" value="${v('comprobante')}">
+      </div>
+      <div class="form-group">
+        <label>Transacción (ID)</label>
+        <input type="number" id="dcPagTransaccion" min="1" value="${v('transaccion')}">
+      </div>
+      <div class="form-group">
+        <label>Contabilizado</label>
+        <input type="datetime-local" id="dcPagContabilizado" value="${dt('contabilizado')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Clasificado</label>
+        <select id="dcPagClasificado">${dcPagoOpcionesSelect('datacount_pago_clasificado', p?.clasificado)}</select>
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="dcPagEstado">${dcPagoOpcionesSelect('datacount_pago_estado', p?.estado)}</select>
+      </div>
+    </div>
+    <div class="field-error" id="dcPagError" style="display:none"></div>
+  `;
+}
+
+async function guardarDcPago(id, btn) {
+  const err = $('#dcPagError');
+  err.style.display = 'none';
+
+  // periodo viene como YYYY-MM (input type="month"); el schema espera DATE, asi
+  // que le pegamos el dia 01 antes de mandarlo.
+  const periodoInp = $('#dcPagPeriodo').value.trim();
+  const periodo = periodoInp
+    ? (periodoInp.length === 7 ? periodoInp + '-01' : periodoInp)
+    : null;
+
+  const payload = {
+    empresa:       $('#dcPagEmpresa').value,
+    proyecto:      $('#dcPagProyecto').value,
+    periodo:       periodo,
+    tipo:          $('#dcPagTipo').value,
+    emision:       $('#dcPagEmision').value || null,
+    cancelacion:   $('#dcPagCancelacion').value || null,
+    razon:         $('#dcPagRazon').value.trim(),
+    cuit:          $('#dcPagCuit').value.trim(),
+    numero:        $('#dcPagNumero').value.trim(),
+    moneda:        $('#dcPagMoneda').value,
+    monto:         $('#dcPagMonto').value,
+    cotizacion:    $('#dcPagCotizacion').value,
+    valor:         $('#dcPagValor').value,
+    billetera:     $('#dcPagBilletera').value,
+    descripcion:   $('#dcPagDescripcion').value,
+    comprobante:   $('#dcPagComprobante').value,
+    transaccion:   $('#dcPagTransaccion').value,
+    contabilizado: $('#dcPagContabilizado').value || null,
+    remuneracion:  $('#dcPagRemuneracion').value,
+    clasificado:   $('#dcPagClasificado').value,
+    estado:        $('#dcPagEstado').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/datacountpagos.php', 'POST', payload);
+      toast('Pago creado.');
+    } else {
+      await apiSend(`api/datacountpagos.php?id=${id}`, 'PUT', payload);
+      toast('Pago actualizado.');
+    }
+    closeModal();
+    cargarDcPago();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDcPago(id) {
+  const ok = await confirmar({
+    title: 'Eliminar pago',
+    message: `Se eliminará el pago #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datacountpagos.php?id=${id}`, 'DELETE');
+    toast('Pago eliminado.');
+    cargarDcPago();
   } catch (e) {
     toast(e.message, { error: true });
   }

@@ -221,6 +221,7 @@ tbody tr:hover { background: var(--row-hover); }
 /* 7. Inputs, selects, textareas */
 input[type=text], input[type=number], input[type=url], input[type=tel],
 input[type=email], input[type=date], input[type=time], input[type=datetime-local],
+input[type=month], input[type=week],
 input[type=password], input[type=search], select, textarea {
   border: 1px solid var(--border); border-radius: var(--radius);
   padding: 8px 12px; font-size: .88rem; background: var(--surface);
