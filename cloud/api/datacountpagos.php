@@ -23,6 +23,11 @@ const DCP_COLS = "id, uuid, empresa, proyecto, periodo, tipo, emision, cancelaci
                   comprobante, transaccion, contabilizado, registrador, registrado,
                   remuneracion, clasificado, estado";
 
+// URL publica donde vive el binario de cada adjunto. Es el mismo prefijo que
+// usaba el admin legacy (mcDatacountPago::$url). Se sirve por CDN detras de
+// https://media.databox.net.ar → S3.
+const DCPAGO_MEDIA_URL = 'https://media.databox.net.ar/datacount/pagos';
+
 header('Content-Type: application/json; charset=utf-8');
 
 try {
@@ -143,7 +148,14 @@ function handleGetOneDcPago(PDO $pdo, int $id): void {
         ORDER BY cargado ASC, id ASC
     ");
     $stmtA->execute([':id' => $id]);
-    $row['adjuntos'] = $stmtA->fetchAll();
+    $adjuntos = $stmtA->fetchAll();
+    foreach ($adjuntos as &$a) {
+        // URL publica del binario. El front la usa para embeber el PDF o la
+        // imagen directamente sin pasar por el back.
+        $a['url'] = !empty($a['archivo']) ? DCPAGO_MEDIA_URL . '/' . $a['archivo'] : null;
+    }
+    unset($a);
+    $row['adjuntos'] = $adjuntos;
 
     jsonOk($row);
 }

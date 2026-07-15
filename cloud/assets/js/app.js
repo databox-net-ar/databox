@@ -5496,10 +5496,10 @@ function dcPagoTabsHeaderHtml() {
   `;
 }
 
-// Panel de Adjuntos (compartido por Consultar y Alta/Edición). Es solo lectura:
-// todavia no hay endpoint para subir/borrar adjuntos desde cloud. `hint`
-// permite mostrar el mensaje "Se cargan una vez guardado el pago" en Alta.
-function dcPagoRenderAdjuntos(adjuntos, hint = '') {
+// Tabla read-only de adjuntos (para la pestaña Adjuntos del modal Editar).
+// Todavia no hay endpoint para subir/borrar adjuntos desde cloud. `hint`
+// permite mostrar "Los adjuntos se cargan una vez guardado el pago" en Alta.
+function dcPagoRenderAdjuntosTabla(adjuntos, hint = '') {
   if (!adjuntos || !adjuntos.length) {
     return `<div class="table-empty">${esc(hint || 'Este pago no tiene adjuntos.')}</div>`;
   }
@@ -5531,15 +5531,95 @@ function dcPagoRenderAdjuntos(adjuntos, hint = '') {
   `;
 }
 
+// Determina si un adjunto es imagen o PDF en base a `formato` o extension
+// del `archivo`. Devuelve 'pdf' | 'img' | 'otro'.
+function dcPagoTipoVisor(a) {
+  const fmt = String(a?.formato || '').toLowerCase().trim();
+  const ext = (String(a?.archivo || '').match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase();
+  const hint = fmt || ext;
+  if (hint === 'pdf') return 'pdf';
+  if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(hint)) return 'img';
+  return 'otro';
+}
+
+// Panel de Adjuntos con visor embebido (para la pestaña Adjuntos del modal
+// Consultar). Muestra chips para elegir entre multiples adjuntos y abajo un
+// visor que embebe el binario:
+//   - PDF   -> <iframe>
+//   - imagen -> <img> con object-fit: contain
+//   - otros -> tarjeta con link "Abrir en nueva pestaña"
+// La URL de cada adjunto viene precomputada en `a.url` desde el back
+// (media.databox.net.ar/datacount/pagos/<archivo>).
+function dcPagoRenderAdjuntosVisor(adjuntos) {
+  if (!adjuntos || !adjuntos.length) {
+    return `<div class="dcp-adj-empty">Este pago no tiene adjuntos.</div>`;
+  }
+  const chips = adjuntos.length <= 1 ? '' : `
+    <div class="dcp-adj-selector">
+      ${adjuntos.map((a, i) => `
+        <button type="button" class="filter-chip${i === 0 ? ' active' : ''}"
+                data-idx="${i}" onclick="dcPagoMostrarAdjunto(${i})"
+                title="${esc(a.nombre || a.archivo || '')}">
+          ${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}
+        </button>
+      `).join('')}
+    </div>
+  `;
+  return `
+    ${chips}
+    <div class="dcp-adj-viewer" id="dcPagoAdjViewer"></div>
+  `;
+}
+
+// Renderiza el binario dentro del visor. Se llama al armar la pestaña
+// (indice 0) y al hacer click en un chip.
+function dcPagoMostrarAdjunto(idx) {
+  const cont = document.getElementById('dcPagoAdjViewer');
+  if (!cont) return;
+  const a = (dcPagoAdjuntosCache || [])[idx];
+  if (!a || !a.url) {
+    cont.innerHTML = `<div class="dcp-adj-empty">Este adjunto no tiene archivo.</div>`;
+    return;
+  }
+  // Marcar chip activo (si hay selector).
+  document.querySelectorAll('#modalRoot .dcp-adj-selector .filter-chip').forEach((c) => {
+    c.classList.toggle('active', Number(c.dataset.idx) === idx);
+  });
+  const url = a.url;
+  const tipo = dcPagoTipoVisor(a);
+  if (tipo === 'pdf') {
+    cont.innerHTML = `<iframe src="${esc(url)}#toolbar=1&navpanes=0" title="${esc(a.nombre || '')}"></iframe>`;
+  } else if (tipo === 'img') {
+    cont.innerHTML = `<img src="${esc(url)}" alt="${esc(a.nombre || '')}">`;
+  } else {
+    cont.innerHTML = `
+      <div class="dcp-adj-fallback">
+        <div><i class="fa-solid fa-file" style="font-size:2rem"></i></div>
+        <div>No se puede previsualizar este formato (${esc(a.formato || 'desconocido')}).</div>
+        <a class="btn btn-primary" href="${esc(url)}" target="_blank" rel="noopener">
+          <i class="fa-solid fa-external-link-alt"></i> Abrir en nueva pestaña
+        </a>
+      </div>
+    `;
+  }
+}
+window.dcPagoMostrarAdjunto = dcPagoMostrarAdjunto;
+
+// Cache de los adjuntos del pago actualmente abierto en Consultar. Se popula
+// en abrirConsultarDcPago() y se lee desde dcPagoMostrarAdjunto(). Se limpia
+// al cerrar el modal (via reset al abrir el proximo).
+let dcPagoAdjuntosCache = [];
+
 // ---- Modal Consultar ----
 async function abrirConsultarDcPago(id) {
+  dcPagoAdjuntosCache = [];
   openModal(`
-    <div class="modal" style="width:80vw;max-width:1200px">
+    <div class="modal dcp-consulta-modal">
       <div class="modal-header">
         <div class="modal-title">Pago <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body" style="gap:12px"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cerrar</button>
         <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
@@ -5556,15 +5636,19 @@ async function abrirConsultarDcPago(id) {
       apiGet(`api/datacountpagos.php?id=${id}`),
       dcPagoCargarCatalogosEstados().catch(() => null),
     ]);
+    dcPagoAdjuntosCache = p.adjuntos || [];
     $('#modalRoot .modal-body').innerHTML = `
       ${dcPagoTabsHeaderHtml()}
       <div class="modal-tabpanel" data-tab="general" role="tabpanel">
         ${renderConsultaDcPago(p)}
       </div>
       <div class="modal-tabpanel" data-tab="adjuntos" role="tabpanel" hidden>
-        ${dcPagoRenderAdjuntos(p.adjuntos)}
+        ${dcPagoRenderAdjuntosVisor(dcPagoAdjuntosCache)}
       </div>
     `;
+    // Precargamos el primer adjunto en el visor asi cuando el usuario cambia
+    // a la pestaña ya lo ve, sin flash vacio.
+    if (dcPagoAdjuntosCache.length) dcPagoMostrarAdjunto(0);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -5716,7 +5800,7 @@ async function abrirAltaEdicionDcPago(id) {
         ${formDcPagoHtml(datos)}
       </div>
       <div class="modal-tabpanel" data-tab="adjuntos" role="tabpanel" hidden>
-        ${dcPagoRenderAdjuntos(datos.adjuntos, hintAdj)}
+        ${dcPagoRenderAdjuntosTabla(datos.adjuntos, hintAdj)}
       </div>
     `;
   } catch (e) {
