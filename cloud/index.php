@@ -200,6 +200,7 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <span id="userBtnName">—</span> <i class="fa-solid fa-chevron-down" style="font-size:.7rem"></i>
           </button>
           <div class="user-dropdown" id="userDropdown">
+            <button class="action-menu-item" id="perfilBtn"><i class="fa-solid fa-user"></i> Mi perfil</button>
             <button class="action-menu-item" id="logoutBtn"><i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión</button>
           </div>
         </div>
@@ -207,6 +208,59 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
 
       <div class="content" id="view">
         <div style="text-align:center;padding:60px 0"><div class="spin"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Mi Perfil ===== -->
+  <div class="modal-backdrop" id="perfilBackdrop"
+       onclick="if(event.target===this)cerrarPerfil()">
+    <div class="modal" style="max-width:560px">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:1.2rem">👤</span>
+          <span>Mi perfil</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarPerfil()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:14px">
+        <div class="form-group">
+          <label>Nombre</label>
+          <div id="perfilNombre" style="font-family:monospace">—</div>
+        </div>
+        <div class="form-group">
+          <label>Correo</label>
+          <div id="perfilCorreo" style="font-family:monospace">—</div>
+        </div>
+        <div class="form-group">
+          <label>Celular</label>
+          <div id="perfilCelular" style="font-family:monospace">—</div>
+        </div>
+
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+          <div style="font-size:.85rem;font-weight:600;color:var(--muted);margin-bottom:10px">
+            <i class="fa-solid fa-key" style="margin-right:6px"></i>Cambiar contraseña
+          </div>
+          <div class="form-group">
+            <label for="perfilContrasenaNueva">Contraseña nueva</label>
+            <div style="display:flex;gap:6px">
+              <input type="password" id="perfilContrasenaNueva" autocomplete="new-password"
+                     maxlength="100" style="flex:1">
+              <button type="button" class="btn-icon-sm" id="perfilTogglePass"
+                      title="Mostrar / ocultar" aria-label="Mostrar contraseña"
+                      style="border:1px solid var(--border);border-radius:var(--radius);width:38px">
+                <i class="fa-solid fa-eye"></i>
+              </button>
+            </div>
+            <div class="field-error" id="perfilContrasenaNuevaError" style="display:none"></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" type="button" onclick="cerrarPerfil()">Cerrar</button>
+        <button class="btn btn-primary" id="btnGuardarPerfil" type="button" onclick="guardarPerfilContrasena()">
+          Guardar contraseña
+        </button>
       </div>
     </div>
   </div>

@@ -8580,7 +8580,7 @@ function renderDcr() {
       : '<span class="badge">Inactivo</span>';
     const cuentaStr = r.cuenta_codigo
       ? `<code style="font-family:monospace;font-size:.82rem">${esc(r.cuenta_codigo)}</code> — ${esc(r.cuenta_nombre || '')}`
-      : `#${r.cuenta}`;
+      : (r.cuenta ? `#${r.cuenta}` : `<span style="color:var(--muted)">— Sin cuenta —</span>`);
     return `
       <tr data-id="${r.id}" class="row-clickable">
         <td><code style="font-size:.82rem">${r.id}</code></td>
@@ -8740,12 +8740,18 @@ async function abrirAltaEdicionDcr(id) {
                  style="width:100%;box-sizing:border-box">
         </div>
         <div class="form-group">
-          <label>Cuenta *</label>
-          <button type="button" id="dcrCuentaBtn" data-cuenta-id=""
-                  style="text-align:left;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:8px">
-            <span id="dcrCuentaLabel" style="flex:1;color:var(--muted)">— Elegí una cuenta imputable —</span>
-            <i class="fa-solid fa-chevron-down" style="color:var(--muted);flex-shrink:0"></i>
-          </button>
+          <label>Cuenta <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+          <div style="display:flex;gap:6px">
+            <button type="button" id="dcrCuentaBtn" data-cuenta-id=""
+                    style="text-align:left;flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:8px">
+              <span id="dcrCuentaLabel" style="flex:1;color:var(--muted)">— Sin cuenta imputada —</span>
+              <i class="fa-solid fa-chevron-down" style="color:var(--muted);flex-shrink:0"></i>
+            </button>
+            <button type="button" class="btn-icon-sm" id="dcrCuentaClear"
+                    title="Quitar cuenta" style="border:1px solid var(--border);border-radius:var(--radius)">
+              ×
+            </button>
+          </div>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -8788,6 +8794,7 @@ async function abrirAltaEdicionDcr(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))   closeModal();
     if (ev.target.closest('[data-act="guardar"]')) guardarDcr();
+    if (ev.target.closest('#dcrCuentaClear'))     { dcrSetCuentaSeleccionada(0); return; }
     if (ev.target.closest('#dcrCuentaBtn'))        dcrAbrirPickerCuenta();
   });
 }
@@ -8808,7 +8815,7 @@ function dcrSetCuentaSeleccionada(cuentaId) {
   } else {
     btn.dataset.cuentaId = '';
     label.style.color = 'var(--muted)';
-    label.textContent = '— Elegí una cuenta imputable —';
+    label.textContent = '— Sin cuenta imputada —';
   }
 }
 
@@ -8959,14 +8966,14 @@ function dcrRenderArbolPicker() {
 async function guardarDcr() {
   const nombre  = ($('#dcrNombre').value || '').trim();
   const empresa = Number($('#modalRoot').dataset.dcrEmpresa) || 0;
-  const cuenta  = Number($('#dcrCuentaBtn')?.dataset.cuentaId) || 0;
+  const cuentaId = Number($('#dcrCuentaBtn')?.dataset.cuentaId) || 0;
+  const cuenta  = cuentaId > 0 ? cuentaId : null;
   const ingreso = Number($('#dcrIngreso').value) || 0;
   const egreso  = Number($('#dcrEgreso').value)  || 0;
   const activo  = $('#dcrActivo').checked ? 1 : 0;
 
   if (!nombre)  { toast('El nombre es obligatorio', { error: true }); return; }
   if (!empresa) { toast('La empresa es obligatoria', { error: true }); return; }
-  if (!cuenta)  { toast('La cuenta es obligatoria',  { error: true }); return; }
   if (ingreso < 0 || egreso < 0) { toast('Los montos no pueden ser negativos', { error: true }); return; }
 
   const body = { nombre, empresa, cuenta, ingreso, egreso, activo };
@@ -9003,7 +9010,7 @@ function abrirConsultaDcr(id) {
 
   const cuentaLabel = r.cuenta_codigo
     ? `<code style="font-family:monospace">${esc(r.cuenta_codigo)}</code> — ${esc(r.cuenta_nombre || '')}`
-    : `#${r.cuenta}`;
+    : (r.cuenta ? `#${r.cuenta}` : `<span style="color:var(--muted)">— Sin cuenta —</span>`);
   const ingresoHtml = Number(r.ingreso) > 0
     ? `<span style="color:var(--success);font-weight:600;font-family:monospace">$ ${dcrFmtMoney(r.ingreso)}</span>`
     : `<span style="color:var(--muted)">—</span>`;
@@ -21435,6 +21442,101 @@ async function doLogout() {
   showLoginScreen();
 }
 
+// ------------------------- Mi perfil -------------------------
+// Modal accesible desde el dropdown del usuario en la topbar. Muestra nombre,
+// correo y celular (read-only) y permite cambiar la contrasena. La contrasena
+// se guarda con encriptar() (cifra reversible legacy — ver api/perfil.php).
+
+let _perfilGuardando = false;
+
+async function abrirPerfil() {
+  $('#userDropdown')?.classList.remove('open');
+  const bd = document.getElementById('perfilBackdrop');
+  if (!bd) return;
+  $('#perfilNombre').textContent  = '—';
+  $('#perfilCorreo').textContent  = '—';
+  $('#perfilCelular').textContent = '—';
+  const input = $('#perfilContrasenaNueva');
+  if (input) { input.value = ''; input.type = 'password'; }
+  perfilSetToggleIcon(false);
+  perfilLimpiarErrores();
+  bd.classList.add('open');
+  try {
+    const r = await fetch('api/perfil.php', { credentials: 'same-origin' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    $('#perfilNombre').textContent  = j.data.nombre  || '—';
+    $('#perfilCorreo').textContent  = j.data.correo  || '—';
+    $('#perfilCelular').textContent = j.data.celular || '—';
+  } catch (e) {
+    $('#perfilNombre').textContent = 'Error: ' + e.message;
+  }
+  setTimeout(() => $('#perfilContrasenaNueva')?.focus(), 50);
+}
+
+function cerrarPerfil() {
+  document.getElementById('perfilBackdrop')?.classList.remove('open');
+}
+
+function perfilLimpiarErrores() {
+  const el = document.getElementById('perfilContrasenaNuevaError');
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
+}
+
+function _perfilError(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = '';
+}
+
+function perfilSetToggleIcon(mostrando) {
+  const btn = document.getElementById('perfilTogglePass');
+  if (!btn) return;
+  const icon = btn.querySelector('i');
+  if (icon) icon.className = mostrando ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+  btn.setAttribute('aria-label', mostrando ? 'Ocultar contraseña' : 'Mostrar contraseña');
+}
+
+function perfilToggleVerContrasena() {
+  const input = document.getElementById('perfilContrasenaNueva');
+  if (!input) return;
+  const mostrar = input.type === 'password';
+  input.type = mostrar ? 'text' : 'password';
+  perfilSetToggleIcon(mostrar);
+}
+
+async function guardarPerfilContrasena() {
+  if (_perfilGuardando) return;
+  perfilLimpiarErrores();
+  const nueva = $('#perfilContrasenaNueva').value;
+
+  if (!nueva)              { _perfilError('perfilContrasenaNuevaError', 'Ingresá la nueva contraseña.'); return; }
+  if (nueva.length < 4)    { _perfilError('perfilContrasenaNuevaError', 'Debe tener al menos 4 caracteres.'); return; }
+
+  _perfilGuardando = true;
+  const btn = document.getElementById('btnGuardarPerfil');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('api/perfil.php', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contrasena_nueva: nueva }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    $('#perfilContrasenaNueva').value = '';
+    cerrarPerfil();
+    alert('Contraseña actualizada.');
+  } catch (e) {
+    _perfilError('perfilContrasenaNuevaError', e.message);
+  } finally {
+    _perfilGuardando = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ------------------------- Herramientas: Editor de parámetros -------------------------
 // Editor de parámetros runtime. Sobre la tabla `parametros` (columnas
 // `variable` / `valor` / `comentario`) compartida con otras apps del grupo.
@@ -23041,6 +23143,8 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const b = document.getElementById('sistemaBackdrop');
   if (b && b.classList.contains('open')) cerrarSistema();
+  const p = document.getElementById('perfilBackdrop');
+  if (p && p.classList.contains('open')) cerrarPerfil();
 });
 
 // ------------------------- Herramientas: Programador de tareas -------------------------
@@ -24045,6 +24149,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   bindChrome();
   bindLogin();
   $('#logoutBtn')?.addEventListener('click', doLogout);
+  $('#perfilBtn')?.addEventListener('click', abrirPerfil);
+  $('#perfilTogglePass')?.addEventListener('click', perfilToggleVerContrasena);
 
   const user = await checkSession();
   if (!user) {

@@ -378,12 +378,14 @@ CREATE TABLE `datacount_empresas`  (
 -- plantilla para generar asientos periódicos o para reporting de
 -- expectativas. `empresa` referencia `datacount_empresas.id` y `cuenta`
 -- referencia `datacount_cuentas.id` (validado desde el endpoint PHP).
+-- `cuenta` es NULLABLE: el recurrente puede crearse sin cuenta asignada
+-- (queda pendiente de imputación).
 DROP TABLE IF EXISTS `datacount_recurrentes`;
 CREATE TABLE `datacount_recurrentes`  (
   `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
   `nombre`     varchar(150) NOT NULL DEFAULT '',
   `empresa`    int(11) UNSIGNED NOT NULL,
-  `cuenta`     int(11) UNSIGNED NOT NULL,
+  `cuenta`     int(11) UNSIGNED NULL DEFAULT NULL,
   `ingreso`    decimal(14, 2) NOT NULL DEFAULT 0.00,
   `egreso`     decimal(14, 2) NOT NULL DEFAULT 0.00,
   `activo`     tinyint(1) NOT NULL DEFAULT 1,

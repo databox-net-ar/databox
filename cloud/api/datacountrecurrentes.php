@@ -58,12 +58,13 @@ try {
 // ----------------------------------------------------------------------------
 
 function normalizarFila(array $r): array {
+    $cuentaRaw = $r['cuenta'] ?? null;
     return [
         'id'             => (int)($r['id'] ?? 0),
         'nombre'         => (string)($r['nombre'] ?? ''),
         'empresa'        => (int)($r['empresa'] ?? 0),
         'empresa_nombre' => $r['empresa_nombre'] ?? null,
-        'cuenta'         => (int)($r['cuenta'] ?? 0),
+        'cuenta'         => $cuentaRaw === null ? null : (int)$cuentaRaw,
         'cuenta_codigo'  => $r['cuenta_codigo'] ?? null,
         'cuenta_nombre'  => $r['cuenta_nombre'] ?? null,
         'ingreso'        => (float)($r['ingreso'] ?? 0),
@@ -78,7 +79,12 @@ function sanitizePayload(array $in, bool $esAlta): array {
     $nombre  = trim((string)($in['nombre'] ?? ''));
     if (mb_strlen($nombre) > 150) $nombre = mb_substr($nombre, 0, 150);
     $empresa = isset($in['empresa']) ? (int)$in['empresa'] : 0;
-    $cuenta  = isset($in['cuenta'])  ? (int)$in['cuenta']  : 0;
+    // `cuenta` es opcional: null / 0 / '' → sin cuenta imputada.
+    $cuenta  = null;
+    if (array_key_exists('cuenta', $in) && $in['cuenta'] !== null && $in['cuenta'] !== '') {
+        $c = (int)$in['cuenta'];
+        if ($c > 0) $cuenta = $c;
+    }
     $ingreso = isset($in['ingreso']) ? round((float)$in['ingreso'], 2) : 0.0;
     $egreso  = isset($in['egreso'])  ? round((float)$in['egreso'],  2) : 0.0;
     $activo  = array_key_exists('activo', $in) ? (int)!!$in['activo'] : 1;
@@ -86,7 +92,6 @@ function sanitizePayload(array $in, bool $esAlta): array {
     if ($esAlta) {
         if ($nombre === '') jsonError('El nombre es obligatorio.', 400);
         if ($empresa <= 0)  jsonError('La empresa es obligatoria.', 400);
-        if ($cuenta  <= 0)  jsonError('La cuenta es obligatoria.', 400);
     }
 
     if ($ingreso < 0) jsonError('El ingreso no puede ser negativo.', 400);
@@ -207,7 +212,9 @@ function handleGetOne(PDO $pdo, int $id): void {
 function handleCreate(PDO $pdo, array $body): void {
     $p = sanitizePayload($body, true);
     validarEmpresa($pdo, $p['empresa']);
-    validarCuentaDeEmpresa($pdo, $p['cuenta'], $p['empresa']);
+    if ($p['cuenta'] !== null) {
+        validarCuentaDeEmpresa($pdo, $p['cuenta'], $p['empresa']);
+    }
 
     $st = $pdo->prepare(
         'INSERT INTO datacount_recurrentes
@@ -215,18 +222,18 @@ function handleCreate(PDO $pdo, array $body): void {
          VALUES
             (:nombre, :empresa, :cuenta, :ingreso, :egreso, :activo)'
     );
-    $st->execute([
-        ':nombre'  => $p['nombre'],
-        ':empresa' => $p['empresa'],
-        ':cuenta'  => $p['cuenta'],
-        ':ingreso' => $p['ingreso'],
-        ':egreso'  => $p['egreso'],
-        ':activo'  => $p['activo'],
-    ]);
+    $st->bindValue(':nombre',  $p['nombre']);
+    $st->bindValue(':empresa', $p['empresa'], PDO::PARAM_INT);
+    $st->bindValue(':cuenta',  $p['cuenta'], $p['cuenta'] === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+    $st->bindValue(':ingreso', $p['ingreso']);
+    $st->bindValue(':egreso',  $p['egreso']);
+    $st->bindValue(':activo',  $p['activo'], PDO::PARAM_INT);
+    $st->execute();
 
     $id = (int)$pdo->lastInsertId();
+    $cuentaTxt = $p['cuenta'] === null ? 'sin cuenta' : "cuenta {$p['cuenta']}";
     registrarSuceso($pdo, 'datacountrecurrentes', 'info',
-        "Alta movimiento recurrente #{$id} — empresa {$p['empresa']} cuenta {$p['cuenta']}");
+        "Alta movimiento recurrente #{$id} — empresa {$p['empresa']} {$cuentaTxt}");
 
     handleGetOne($pdo, $id);
 }
@@ -243,47 +250,53 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
     $empresaFinal = (array_key_exists('empresa', $body) && $p['empresa'] > 0)
         ? $p['empresa']
         : (int)$prev['empresa'];
-    $cuentaFinal  = (array_key_exists('cuenta', $body) && $p['cuenta'] > 0)
-        ? $p['cuenta']
-        : (int)$prev['cuenta'];
 
-    $sets   = [];
-    $params = [':id' => $id];
+    // Cuenta final: si vino en el body respetamos lo que trae (incluso null para
+    // desasignarla); si no vino, mantenemos la anterior.
+    $prevCuenta = $prev['cuenta'] === null ? null : (int)$prev['cuenta'];
+    $cuentaFinal = array_key_exists('cuenta', $body) ? $p['cuenta'] : $prevCuenta;
+
+    $sets    = [];
+    $binds   = [];   // [placeholder, valor, tipo PDO]
 
     if (array_key_exists('nombre', $body)) {
         if ($p['nombre'] === '') jsonError('El nombre es obligatorio.', 400);
-        $sets[] = 'nombre = :nombre';
-        $params[':nombre'] = $p['nombre'];
+        $sets[]  = 'nombre = :nombre';
+        $binds[] = [':nombre', $p['nombre'], PDO::PARAM_STR];
     }
     if (array_key_exists('empresa', $body) && $p['empresa'] > 0) {
         validarEmpresa($pdo, $p['empresa']);
-        $sets[] = 'empresa = :empresa';
-        $params[':empresa'] = $p['empresa'];
+        $sets[]  = 'empresa = :empresa';
+        $binds[] = [':empresa', $p['empresa'], PDO::PARAM_INT];
     }
-    if (array_key_exists('cuenta', $body) && $p['cuenta'] > 0) {
-        $sets[] = 'cuenta = :cuenta';
-        $params[':cuenta'] = $p['cuenta'];
+    if (array_key_exists('cuenta', $body)) {
+        $sets[]  = 'cuenta = :cuenta';
+        $binds[] = [':cuenta', $p['cuenta'], $p['cuenta'] === null ? PDO::PARAM_NULL : PDO::PARAM_INT];
     }
-    // Validar coherencia empresa <-> cuenta con el estado final.
-    validarCuentaDeEmpresa($pdo, $cuentaFinal, $empresaFinal);
+    // Validar coherencia empresa <-> cuenta con el estado final (solo si hay cuenta).
+    if ($cuentaFinal !== null) {
+        validarCuentaDeEmpresa($pdo, $cuentaFinal, $empresaFinal);
+    }
     if (array_key_exists('ingreso', $body)) {
-        $sets[] = 'ingreso = :ingreso';
-        $params[':ingreso'] = $p['ingreso'];
+        $sets[]  = 'ingreso = :ingreso';
+        $binds[] = [':ingreso', $p['ingreso'], PDO::PARAM_STR];
     }
     if (array_key_exists('egreso', $body)) {
-        $sets[] = 'egreso = :egreso';
-        $params[':egreso'] = $p['egreso'];
+        $sets[]  = 'egreso = :egreso';
+        $binds[] = [':egreso', $p['egreso'], PDO::PARAM_STR];
     }
     if (array_key_exists('activo', $body)) {
-        $sets[] = 'activo = :activo';
-        $params[':activo'] = $p['activo'];
+        $sets[]  = 'activo = :activo';
+        $binds[] = [':activo', $p['activo'], PDO::PARAM_INT];
     }
 
     if (empty($sets)) jsonError('No hay campos para actualizar.', 400);
 
     $sql = 'UPDATE datacount_recurrentes SET ' . implode(', ', $sets) . ' WHERE id = :id';
     $st  = $pdo->prepare($sql);
-    $st->execute($params);
+    foreach ($binds as [$k, $v, $t]) $st->bindValue($k, $v, $t);
+    $st->bindValue(':id', $id, PDO::PARAM_INT);
+    $st->execute();
 
     registrarSuceso($pdo, 'datacountrecurrentes', 'info',
         "Modificación movimiento recurrente #{$id}");
