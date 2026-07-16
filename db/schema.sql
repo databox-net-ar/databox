@@ -80,6 +80,7 @@ CREATE TABLE `awscuentas`  (
   `facturas_moneda` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `facturas_actualizado` datetime(0) NULL DEFAULT NULL,
   `facturas_json` json NULL DEFAULT NULL,
+  `actualizada` datetime(0) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 100 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
@@ -1504,6 +1505,7 @@ CREATE TABLE `evolutioncanales`  (
   `habilitado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `canalEstado` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   `gruposEstado` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `actualizado` datetime(0) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 136 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 

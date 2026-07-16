@@ -542,74 +542,112 @@ route('/dashboard', async (mount) => {
       </div>
     </div>
 
-    <div class="dash-grid">
-      <div class="table-card">
-        <div class="dash-table-header">
-          <span>Últimas campañas</span>
-          <span class="dash-ver-mas">Ver más</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Nombre</th><th>Canal</th><th>Estado</th>
-              <th style="text-align:right">Enviados</th><th>Fecha</th>
-            </tr>
-          </thead>
-          <tbody>${renderCampanias(data.ultimas_campanias)}</tbody>
-        </table>
-      </div>
-
-      <div class="table-card">
-        <div class="dash-table-header">
-          <span>Últimas conversaciones</span>
-          <span class="dash-ver-mas">Ver más</span>
-        </div>
-        <table>
-          <thead>
-            <tr><th>Contacto</th><th>Teléfono</th><th>Último mensaje</th><th>Fecha</th></tr>
-          </thead>
-          <tbody>${renderMensajes(data.ultimos_mensajes)}</tbody>
-        </table>
-      </div>
-    </div>
+    ${renderDashAwsCuentas(data.aws_cuentas)}
+    ${renderDashEvolutionCanales(data.evolution_canales)}
   `;
 });
 
-function renderCampanias(rows) {
-  if (!rows || !rows.length) {
-    return `<tr><td colspan="5" class="table-empty">Sin campañas todavía.</td></tr>`;
-  }
-  const badgeFor = (e) => {
-    const cls = e === 'enviada' ? 'badge-success'
-              : e === 'enviando' ? 'badge-info'
-              : e === 'pausada'  ? 'badge-warn'
-              : e === 'fallida'  ? 'badge-danger'
-              : 'badge-info';
-    return `<span class="badge ${cls}">${esc(e)}</span>`;
-  };
-  return rows.map((c) => `
-    <tr>
-      <td class="td-nombre">${esc(c.nombre)}</td>
-      <td>${c.canal === 'whatsapp' ? '💬 WhatsApp' : '📧 Email'}</td>
-      <td>${badgeFor(c.estado)}</td>
-      <td style="text-align:right">${fmtNum(c.enviados)}</td>
-      <td>${fmtFecha(c.fecha)}</td>
-    </tr>
-  `).join('');
+// Bloque "Estado de cuentas AWS" del dashboard. La API omite este bloque si
+// el usuario no tiene permiso `plataformas.aws.cuentas.consultar`; en ese caso
+// no renderizamos nada. Si estamos entre el dia 1 y el 5 del mes la alerta
+// esta desactivada (los cargos del mes recien emitidos no cuentan como mora).
+function renderDashAwsCuentas(aws) {
+  if (!aws) return '';
+  const total    = Number(aws.total)    || 0;
+  const criticas = Number(aws.criticas) || 0;
+  const items    = aws.items || [];
+  const hayCriticas = criticas > 0;
+
+  const filas = items.length
+    ? items.map((c) => {
+        const moneda = c.facturas_moneda || 'USD';
+        const totalDeuda = c.facturas_total != null ? Number(c.facturas_total).toFixed(2) : '—';
+        return `
+          <tr class="row-clickable" onclick="location.hash='#/awscuentas'"
+              style="background:rgba(230,42,42,.12)">
+            <td class="td-id">#${esc(c.id)}</td>
+            <td class="td-nombre">${esc(c.nombre || '—')}</td>
+            <td><code>${esc(c.numero || '—')}</code></td>
+            <td style="text-align:right">${esc(c.facturas_cantidad)}</td>
+            <td style="text-align:right;white-space:nowrap">${esc(moneda)} ${esc(totalDeuda)}</td>
+            <td>${fmtFecha(c.actualizada)}</td>
+          </tr>
+        `;
+      }).join('')
+    : `<tr><td colspan="6" class="table-empty">
+         Todo bien${aws.activo ? '' : ' (recién arranca el mes: la alerta se activa a partir del día 5)'}.
+       </td></tr>`;
+
+  return `
+    <div class="table-card" style="margin-top:16px">
+      <div class="dash-table-header">
+        <span>☁️ Estado de cuentas AWS ${hayCriticas ? `<span class="badge badge-danger" style="margin-left:6px">${criticas} crítica${criticas === 1 ? '' : 's'}</span>` : ''}</span>
+        <span class="dash-ver-mas" onclick="location.hash='#/awscuentas'" style="cursor:pointer">Ver más</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Nombre</th>
+            <th>Número</th>
+            <th style="text-align:right">Facturas pend.</th>
+            <th style="text-align:right">Deuda</th>
+            <th>Actualizado</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
 }
 
-function renderMensajes(rows) {
-  if (!rows || !rows.length) {
-    return `<tr><td colspan="4" class="table-empty">Sin conversaciones todavía.</td></tr>`;
-  }
-  return rows.map((m) => `
-    <tr>
-      <td class="td-nombre">${esc(m.contacto)}</td>
-      <td class="td-id">${esc(m.telefono)}</td>
-      <td>${esc(m.ultimo_mensaje)}</td>
-      <td>${fmtFecha(m.fecha)}</td>
-    </tr>
-  `).join('');
+// Bloque "Estado de canales Evolution" del dashboard. La API omite este bloque
+// si el usuario no tiene permiso `plataformas.evolution.canales.consultar`; en
+// ese caso no renderizamos nada. Un canal se considera problematico solo si
+// `habilitado='1'` (el operador quiere que este activo) Y `online='0'`
+// (Evolution nos contesto que la instancia esta desconectada).
+function renderDashEvolutionCanales(evo) {
+  if (!evo) return '';
+  const offline = Number(evo.offline) || 0;
+  const items   = evo.items || [];
+  const hayOffline = offline > 0;
+
+  const filas = items.length
+    ? items.map((c) => {
+        const numero = (c.prefijo ? '+' + c.prefijo + ' ' : '') + (c.numero || '—');
+        return `
+          <tr class="row-clickable" onclick="location.hash='#/evolutioncanales'"
+              style="background:rgba(230,42,42,.12)">
+            <td class="td-id">#${esc(c.id)}</td>
+            <td class="td-nombre">${esc(c.nombre || '—')}</td>
+            <td style="font-family:monospace">${esc(numero)}</td>
+            <td style="font-family:monospace">${esc(c.celular || '—')}</td>
+            <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
+          </tr>
+        `;
+      }).join('')
+    : `<tr><td colspan="5" class="table-empty">Todo bien.</td></tr>`;
+
+  return `
+    <div class="table-card" style="margin-top:16px">
+      <div class="dash-table-header">
+        <span>📡 Estado de canales Evolution ${hayOffline ? `<span class="badge badge-danger" style="margin-left:6px">${offline} offline</span>` : ''}</span>
+        <span class="dash-ver-mas" onclick="location.hash='#/evolutioncanales'" style="cursor:pointer">Ver más</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Nombre</th>
+            <th>Número</th>
+            <th>Celular</th>
+            <th>Actualizado</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 // ------------------------- Vista: Usuarios (ABM) -------------------------
@@ -2518,6 +2556,9 @@ route('/awscuentas', async (mount) => {
 
       <div class="stats-bar" id="awsCuentasStats">
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card" title="Cuentas con 2 o más facturas pendientes (a partir del día 5 del mes).">
+          <span class="stat-label">Críticas</span><span class="stat-value red">—</span>
+        </div>
       </div>
 
       <div class="toolbar">
@@ -2544,16 +2585,17 @@ route('/awscuentas', async (mount) => {
         <table>
           <thead>
             <tr>
-              <th>Código</th>
               <th>Nombre</th>
               <th>Número</th>
               <th>Usuario</th>
               <th style="text-align:right">Facturas</th>
+              <th style="text-align:center">Estado</th>
+              <th>Actualizada</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="awsCuentasTbody">
-            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -2694,7 +2736,7 @@ route('/awscuentas', async (mount) => {
 async function cargarAwsCuentas() {
   const tbody = $('#awsCuentasTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(awsCuentasFiltros).forEach(([k, v]) => {
@@ -2705,7 +2747,7 @@ async function cargarAwsCuentas() {
     pintarStatsAwsCuentas(data.stats);
     pintarTablaAwsCuentas(data.items);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -2713,18 +2755,20 @@ function pintarStatsAwsCuentas(s) {
   const cards = $$('#awsCuentasStats .stat-card .stat-value');
   if (!cards.length) return;
   cards[0].textContent = fmtNum(s.total);
+  if (cards[1]) cards[1].textContent = fmtNum(s.criticas);
 }
 
 function pintarTablaAwsCuentas(rows) {
   const tbody = $('#awsCuentasTbody');
   if (!rows || !rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin cuentas AWS.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin cuentas AWS.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => {
-    const sinData    = r.facturas_actualizado == null;
+    const sinData    = r.actualizada == null;
     const cantidad   = r.facturas_cantidad != null ? Number(r.facturas_cantidad) : 0;
     const total      = r.facturas_total    != null ? Number(r.facturas_total)    : 0;
+    const critico    = !!r.es_critico;
     let cellHtml;
     if (sinData) {
       cellHtml = '<span style="color:var(--muted)">—</span>';
@@ -2734,13 +2778,18 @@ function pintarTablaAwsCuentas(rows) {
       const moneda  = r.facturas_moneda || 'USD';
       cellHtml = `${esc(cantTxt)} x ${esc(moneda)} ${esc(total.toFixed(2))}`;
     }
+    const rowStyle = critico ? ' style="background:rgba(230,42,42,.12)"' : '';
+    const actualizadaTxt = r.actualizada
+      ? `<span title="${esc(fmtFecha(r.actualizada))}">${esc(fmtHace(r.actualizada))}</span>`
+      : '<span style="color:var(--muted)">—</span>';
     return `
-    <tr data-id="${r.id}" class="row-clickable">
-      <td class="td-id">#${esc(r.id)}</td>
+    <tr data-id="${r.id}" class="row-clickable"${rowStyle}>
       <td class="td-nombre">${esc(r.nombre || '—')}</td>
       <td><code>${esc(r.numero || '—')}</code></td>
       <td><code>${esc(r.usuario || '—')}</code></td>
       <td style="text-align:right;white-space:nowrap">${cellHtml}</td>
+      <td style="text-align:center">${renderEstadoAwsCuentaIcono(r.estado)}</td>
+      <td style="white-space:nowrap">${actualizadaTxt}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
@@ -2751,6 +2800,39 @@ function pintarTablaAwsCuentas(rows) {
     </tr>
   `;
   }).join('');
+}
+
+// Icono de la columna Estado (info / warn / danger). Sin datos se muestra como
+// un guion, no como un cuarto icono, para no ensuciar la columna cuando la
+// cuenta todavia no se sincronizo con AWS.
+function renderEstadoAwsCuentaIcono(estado) {
+  const meta = metaEstadoAwsCuenta(estado);
+  if (!meta) {
+    return `<span style="color:var(--muted)" title="Sin datos — todavía no se sincronizó con AWS">—</span>`;
+  }
+  return `<i class="fa-solid ${meta.icono}" style="color:var(--${meta.color})" title="${meta.tooltip}"></i>`;
+}
+
+// Icono + texto para las tarjetas del modal de Consulta (donde hay lugar para
+// el nombre del estado al lado del icono).
+function renderEstadoAwsCuentaTexto(estado) {
+  const meta = metaEstadoAwsCuenta(estado);
+  if (!meta) {
+    return `<span class="muted" style="font-style:italic">Sin datos</span>`;
+  }
+  return `<span style="display:inline-flex;align-items:center;gap:6px">
+    <i class="fa-solid ${meta.icono}" style="color:var(--${meta.color})"></i>
+    <span>${meta.label}</span>
+  </span>`;
+}
+
+function metaEstadoAwsCuenta(estado) {
+  switch (estado) {
+    case 'normal':      return { icono: 'fa-circle-info',           color: 'info',   label: 'Normal',      tooltip: 'Normal — sin deuda' };
+    case 'advertencia': return { icono: 'fa-triangle-exclamation',  color: 'warn',   label: 'Advertencia', tooltip: 'Advertencia — hay saldo a pagar' };
+    case 'critico':     return { icono: 'fa-circle-exclamation',    color: 'danger', label: 'Crítico',     tooltip: 'Crítico — 2 o más facturas pendientes' };
+    default:            return null;
+  }
 }
 
 // ---- Modal de Filtros (AWS Cuentas) ----
@@ -2841,7 +2923,6 @@ async function abrirConsultarAwsCuenta(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))    closeModal();
     if (ev.target.closest('[data-act="editar"]'))   { closeModal(); abrirAltaEdicionAwsCuenta(id); }
-    if (ev.target.closest('[data-act="facturas"]')) consultarFacturasAwsCuenta(id, ev.target.closest('[data-act="facturas"]'));
 
     const tabBtn = ev.target.closest('[data-tab]');
     if (tabBtn) {
@@ -2866,13 +2947,16 @@ async function abrirConsultarAwsCuenta(id) {
     const facturasHtml = (() => {
       const cantidad = r.facturas_cantidad != null ? Number(r.facturas_cantidad) : 0;
       const total    = r.facturas_total    != null ? Number(r.facturas_total)    : 0;
-      if (r.facturas_actualizado == null) {
+      if (r.actualizada == null) {
         return '<span class="muted">—</span>';
       }
       const cantTxt = (cantidad === 0 && total > 0) ? '?' : cantidad;
       const moneda  = r.facturas_moneda || 'USD';
       return `${esc(cantTxt)} x ${esc(moneda)} ${esc(total.toFixed(2))}`;
     })();
+    const actualizadaHtml = r.actualizada
+      ? esc(fmtFecha(r.actualizada))
+      : '<span class="muted">—</span>';
     $('#modalRoot .modal-body').innerHTML = `
       <div class="modal-tabs">
         <button type="button" class="modal-tab active" data-tab="general">General</button>
@@ -2881,32 +2965,31 @@ async function abrirConsultarAwsCuenta(id) {
 
       <div class="modal-tabpanel" data-panel="general">
         <dl class="data-list">
-          ${fila('Código',      '#' + r.id)}
           ${fila('Nombre',      r.nombre)}
           ${fila('Número',      r.numero, false, true)}
           ${fila('Usuario',     r.usuario, false, true)}
           ${fila('Contraseña',  r.contrasena, false, true)}
           ${fila('Access Key',  r.accesskey, true, true)}
           ${fila('Secreto',     r.secreto, true, true)}
-          <div class="data-row full">
+        </dl>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">
+          <div class="data-row">
             <span class="data-label">Facturas</span>
             <span class="data-value">${facturasHtml}</span>
           </div>
-        </dl>
+          <div class="data-row">
+            <span class="data-label">Estado</span>
+            <span class="data-value">${renderEstadoAwsCuentaTexto(r.estado)}</span>
+          </div>
+          <div class="data-row">
+            <span class="data-label">Actualizada</span>
+            <span class="data-value${r.actualizada ? '' : ' muted'}">${actualizadaHtml}</span>
+          </div>
+        </div>
       </div>
 
       <div class="modal-tabpanel" data-panel="facturacion" hidden>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px">
-          <div id="awsFacturasSubtitulo" style="color:var(--muted);font-size:.85rem">
-            ${r.facturas_json
-              ? 'Última sincronización: ' + esc(fmtFechaCorta(r.facturas_actualizado)) + '. Actualizá para consultar de nuevo a AWS.'
-              : 'Presioná «Consultar en AWS» para traer BCM (deuda) + Invoicing (facturas).'}
-          </div>
-          <button class="btn btn-primary btn-sm" data-act="facturas">
-            ${r.facturas_json ? 'Actualizar' : 'Consultar en AWS'}
-          </button>
-        </div>
-        <div id="awsFacturasResult"${r.facturas_json ? '' : ' class="table-empty"'}>
+        <div${r.facturas_json ? '' : ' class="table-empty"'}>
           ${r.facturas_json
             ? renderFacturasAwsCuenta(r.facturas_json)
             : 'Sin datos cacheados de AWS todavía.'}
@@ -2915,44 +2998,6 @@ async function abrirConsultarAwsCuenta(id) {
     `;
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-  }
-}
-
-function fmtFechaCorta(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso.replace(' ', 'T'));
-  if (isNaN(d)) return iso;
-  const pad = (x) => String(x).padStart(2, '0');
-  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-async function consultarFacturasAwsCuenta(id, btn) {
-  const box = $('#awsFacturasResult');
-  if (!box) return;
-  btn.disabled = true;
-  btn.textContent = 'Consultando…';
-  box.className = '';
-  box.style.padding = '';
-  box.innerHTML = `<div style="text-align:center;padding:24px"><div class="spin"></div></div>`;
-
-  try {
-    const r = await apiGet(`api/awscuentas_facturas.php?id=${id}`);
-    box.innerHTML = renderFacturasAwsCuenta(r);
-    const sub = $('#awsFacturasSubtitulo');
-    if (sub) {
-      const ahora = new Date();
-      const pad   = (x) => String(x).padStart(2, '0');
-      const stamp = `${pad(ahora.getDate())}/${pad(ahora.getMonth()+1)}/${ahora.getFullYear()} ${pad(ahora.getHours())}:${pad(ahora.getMinutes())}`;
-      sub.textContent = `Última sincronización: ${stamp}. Actualizá para consultar de nuevo a AWS.`;
-    }
-    btn.textContent = 'Actualizar';
-  } catch (e) {
-    box.className = 'table-empty';
-    box.style.padding = '12px';
-    box.textContent = 'Error: ' + e.message;
-    btn.textContent = 'Reintentar';
-  } finally {
-    btn.disabled = false;
   }
 }
 
@@ -3019,7 +3064,7 @@ function renderPaymentsAwsCuenta(p, match) {
 }
 
 function renderInvoicingAwsCuenta(inv, adeudadas) {
-  const titulo = `<div style="font-weight:600;margin:4px 0 6px;color:var(--text)">🧾 Facturas emitidas (AWS Invoicing)</div>`;
+  const titulo = `<div style="font-weight:600;margin:10px 0 6px;color:var(--text)">🧾 Facturas emitidas (AWS Invoicing)</div>`;
   if (!inv || !inv.ok) {
     return titulo + `<div class="table-empty">AWS Invoicing no respondió: ${esc(inv?.error || 'desconocido')}</div>`;
   }
@@ -3052,9 +3097,6 @@ function renderInvoicingAwsCuenta(inv, adeudadas) {
     `;
   }).join('');
   return titulo + `
-    <div style="font-size:.8rem;color:var(--muted);margin-bottom:6px">
-      ${inv.count} factura${inv.count === 1 ? '' : 's'} entre ${esc(inv.range.start)} y ${esc(inv.range.end)}.
-    </div>
     <div class="table-card">
       <table>
         <thead>
@@ -3109,15 +3151,9 @@ async function abrirAltaEdicionAwsCuenta(id) {
 function formAwsCuentaHtml(r) {
   const v = (k) => esc(r?.[k] ?? '');
   return `
-    <div class="form-row">
-      <div class="form-group">
-        <label>Nombre *</label>
-        <input type="text" id="awsNombre" value="${v('nombre')}" required>
-      </div>
-      <div class="form-group">
-        <label>Código</label>
-        <input type="text" value="${r?.id ? '#' + r.id : '(se asigna al crear)'}" readonly>
-      </div>
+    <div class="form-group">
+      <label>Nombre *</label>
+      <input type="text" id="awsNombre" value="${v('nombre')}" required>
     </div>
     <div class="form-row form-row-3">
       <div class="form-group">
@@ -3185,6 +3221,11 @@ async function guardarAwsCuenta(id, btn) {
   }
 }
 
+// ---- Actualizar todas las cuentas AWS (bulk facturación) ----
+// Recorre secuencialmente todas las cuentas y por cada una llama al mismo
+// endpoint que dispara el botón "Consultar en AWS" / "Actualizar" de la
+// pestaña Facturación del modal Consultar. Los errores por cuenta son
+// no-bloqueantes: se loguean y se sigue con la próxima.
 async function eliminarAwsCuenta(id) {
   const ok = await confirmar({
     title: 'Eliminar cuenta AWS',
@@ -15984,6 +16025,7 @@ const evoChFiltrosDefaults = {
 const evoChFiltros = { ...evoChFiltrosDefaults };
 let evoChBuscadorTimer   = null;
 let evoChFiltrosSnapshot = null;
+let evoChCache           = []; // ultima respuesta del listado, para lookup del ctx-menu
 
 function evoChHabilitadoBadge(h) {
   if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
@@ -16045,7 +16087,8 @@ route('/evolutioncanales', async (mount) => {
         <table>
           <thead>
             <tr>
-              <th>Código</th>
+              <!-- Columna "Código" oculta a proposito: el id sigue disponible
+                   en el filtro por Codigo y en el header del modal Consultar. -->
               <th>Nombre</th>
               <th>Proyecto</th>
               <th>Número</th>
@@ -16053,6 +16096,7 @@ route('/evolutioncanales', async (mount) => {
               <th>Enviados</th>
               <th>Habilitado</th>
               <th>Online</th>
+              <th>Actualizado</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
@@ -16068,6 +16112,9 @@ route('/evolutioncanales', async (mount) => {
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
       <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="toggle-habilitado" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Deshabilitar</span>
+      </button>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
       </button>
@@ -16176,9 +16223,10 @@ route('/evolutioncanales', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarEvoCh(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionEvoCh(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarEvoCh(data.id);
+    if (b.dataset.action === 'consultar')         abrirConsultarEvoCh(data.id);
+    if (b.dataset.action === 'toggle-habilitado') toggleHabilitadoEvoCh(data.id);
+    if (b.dataset.action === 'editar')            abrirAltaEdicionEvoCh(data.id);
+    if (b.dataset.action === 'eliminar')          eliminarEvoCh(data.id);
   });
 
   $('#evoChTbody').addEventListener('click', (ev) => {
@@ -16187,7 +16235,7 @@ route('/evolutioncanales', async (mount) => {
       ev.stopPropagation();
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#evoChCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      abrirMenuContextoEvoCh(id, r.right - 190, r.bottom + 4);
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -16198,7 +16246,7 @@ route('/evolutioncanales', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#evoChCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    abrirMenuContextoEvoCh(Number(tr.dataset.id), ev.clientX, ev.clientY);
   });
 
   refrescarBadgeFiltrosEvoCh();
@@ -16216,8 +16264,9 @@ async function cargarEvoCh() {
   });
   try {
     const data = await apiGet('api/evolutioncanales.php?' + qs.toString());
+    evoChCache = data.items || [];
     pintarStatsEvoCh(data.stats);
-    pintarTablaEvoCh(data.items || []);
+    pintarTablaEvoCh(evoChCache);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
@@ -16239,7 +16288,6 @@ function pintarTablaEvoCh(rows) {
   }
   tbody.innerHTML = rows.map((c) => `
     <tr data-id="${c.id}" class="row-clickable">
-      <td class="td-id">#${esc(c.id)}</td>
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
       <td>${esc(c.proyecto ?? '—')}</td>
       <td style="font-family:monospace">${esc((c.prefijo ? '+' + c.prefijo + ' ' : '') + (c.numero || '—'))}</td>
@@ -16247,6 +16295,7 @@ function pintarTablaEvoCh(rows) {
       <td style="font-family:monospace">${esc(fmtNum(c.enviados ?? 0))}</td>
       <td>${evoChHabilitadoBadge(c.habilitado)}</td>
       <td>${evoChOnlineBadge(c.online)}</td>
+      <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
@@ -16341,6 +16390,13 @@ async function abrirConsultarEvoCh(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionEvoCh(id); }
+
+    const tabBtn = ev.target.closest('#modalRoot [data-tab]');
+    if (tabBtn) {
+      const target = tabBtn.dataset.tab;
+      $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+      $$('#modalRoot .modal-tabpanel').forEach((p) => p.hidden = p.dataset.panel !== target);
+    }
   });
 
   try {
@@ -16372,7 +16428,7 @@ function renderConsultaEvoCh(c) {
   const numeroFull = (c.prefijo ? '+' + c.prefijo + ' ' : '') + (c.numero || '');
 
   return `
-    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
       <div>
         <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
         <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
@@ -16385,37 +16441,45 @@ function renderConsultaEvoCh(c) {
       </div>
     </div>
 
-    ${seccion('Identificación')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Nombre',   c.nombre)}
-      ${card('Proyecto', c.proyecto)}
-      ${card('Número',   numeroFull, false, true)}
-      ${card('Celular',  c.celular, false, true)}
-      ${card('Token',    c.token ? '••••••••' : null, false, true)}
-      ${card('Webhook',  c.webhook, false, true)}
-    </dl>
+    <div class="modal-tabs">
+      <button type="button" class="modal-tab active" data-tab="general">General</button>
+      <button type="button" class="modal-tab"        data-tab="estados">Estados</button>
+    </div>
 
-    ${seccion('Comportamiento')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Prompt',          c.prompt)}
-      ${card('Intervalo corto', c.intervaloCorto)}
-      ${card('Intervalo largo', c.intervaloLargo)}
-      ${card('Alerta',          c.alerta)}
-      ${card('Límite',          c.limite)}
-      ${card('Último',          c.ultimo)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="general">
+      ${seccion('Identificación')}
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Nombre',   c.nombre)}
+        ${card('Proyecto', c.proyecto)}
+        ${card('Número',   numeroFull, false, true)}
+        ${card('Celular',  c.celular, false, true)}
+        ${card('Token',    c.token ? '••••••••' : null, false, true)}
+        ${card('Webhook',  c.webhook, false, true)}
+      </dl>
 
-    ${seccion('Contadores')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Enviados',   fmtNum(c.enviados ?? 0))}
-      ${card('Acumulados', fmtNum(c.acumulados ?? 0))}
-    </dl>
+      ${seccion('Comportamiento')}
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Prompt',          c.prompt)}
+        ${card('Intervalo corto', c.intervaloCorto)}
+        ${card('Intervalo largo', c.intervaloLargo)}
+        ${card('Alerta',          c.alerta)}
+        ${card('Límite',          c.limite)}
+        ${card('Último',          c.ultimo)}
+      </dl>
 
-    ${seccion('Estado interno')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Canal estado',  c.canalEstado, true, true)}
-      ${card('Grupos estado', c.gruposEstado, true, true)}
-    </dl>
+      ${seccion('Contadores')}
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Enviados',   fmtNum(c.enviados ?? 0))}
+        ${card('Acumulados', fmtNum(c.acumulados ?? 0))}
+      </dl>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="estados" hidden>
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Canal estado',  c.canalEstado, true, true)}
+        ${card('Grupos estado', c.gruposEstado, true, true)}
+      </dl>
+    </div>
   `;
 }
 
@@ -16619,6 +16683,33 @@ async function eliminarEvoCh(id) {
   try {
     await apiSend(`api/evolutioncanales.php?id=${id}`, 'DELETE');
     toast('Canal eliminado.');
+    cargarEvoCh();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Abre el menu contextual actualizando el label del toggle habilitar/deshabilitar
+// segun el estado actual de la fila (mismo patron que el menu de tareas).
+function abrirMenuContextoEvoCh(id, x, y) {
+  const menu = $('#evoChCtxMenu');
+  if (!menu) return;
+  const c   = evoChCache.find((r) => Number(r.id) === Number(id));
+  const lbl = menu.querySelector('[data-action="toggle-habilitado"] [data-label]');
+  if (lbl) lbl.textContent = (c && c.habilitado === '1') ? 'Deshabilitar' : 'Habilitar';
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+// Toggle habilitado <-> deshabilitado. El endpoint PUT del ABM requiere el
+// payload completo (sanitizePayload nulla los campos ausentes), asi que
+// primero traemos la fila y volvemos a mandarla intacta cambiando solo
+// `habilitado`. Mismo enfoque que hace el modal de Edicion internamente.
+async function toggleHabilitadoEvoCh(id) {
+  try {
+    const c = await apiGet(`api/evolutioncanales.php?id=${id}`);
+    const nuevo = c.habilitado === '1' ? '0' : '1';
+    await apiSend(`api/evolutioncanales.php?id=${id}`, 'PUT', { ...c, habilitado: nuevo });
+    toast(nuevo === '1' ? 'Canal habilitado.' : 'Canal deshabilitado.');
     cargarEvoCh();
   } catch (e) {
     toast(e.message, { error: true });

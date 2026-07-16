@@ -39,6 +39,32 @@ try {
 }
 
 // ----------------------------------------------------------------------------
+// Estado de una cuenta AWS
+// ----------------------------------------------------------------------------
+// Las facturas AWS se emiten el dia 1 de cada mes. Del dia 5 en adelante, una
+// cuenta con 2 o mas facturas pendientes esta en mora real (arrastra al menos
+// la factura del mes anterior sin pagar) y se considera "critica".
+//
+// Estados posibles:
+//   'sin_datos'   -> nunca se sincronizo (actualizada IS NULL)
+//   'normal'      -> sin deuda (cantidad == 0 y total == 0)
+//   'advertencia' -> hay saldo a pagar pero no llega a critico
+//   'critico'     -> facturas_cantidad >= 2 y dia del mes >= 5
+function estadoAwsCuenta(
+    ?int $facturasCantidad,
+    ?float $facturasTotal,
+    ?string $actualizada,
+    int $diaDelMes
+): string {
+    if ($actualizada === null || $actualizada === '') return 'sin_datos';
+    $cant  = (int)($facturasCantidad ?? 0);
+    $total = (float)($facturasTotal  ?? 0);
+    if ($cant >= 2 && $diaDelMes >= 5) return 'critico';
+    if ($cant === 0 && $total <= 0)    return 'normal';
+    return 'advertencia';
+}
+
+// ----------------------------------------------------------------------------
 // Listado y stats
 // ----------------------------------------------------------------------------
 
@@ -76,11 +102,20 @@ function handleList(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    $stats = $pdo->query("SELECT COUNT(*) AS total FROM awscuentas")->fetch();
+    $diaDelMes = (int)date('j');
+
+    // stats.criticas cuenta *todas* las cuentas criticas (no aplica el WHERE del
+    // listado): la tarjeta de arriba tiene que reflejar el estado global aunque
+    // el usuario filtre la tabla — sino "0 criticos" seria enganoso.
+    $totalGlobal = (int)$pdo->query("SELECT COUNT(*) FROM awscuentas")->fetchColumn();
+    $criticasGlobal = (int)$pdo->query(
+        "SELECT COUNT(*) FROM awscuentas WHERE facturas_cantidad >= 2 AND actualizada IS NOT NULL"
+    )->fetchColumn();
+    if ($diaDelMes < 5) $criticasGlobal = 0;
 
     $sql = "
         SELECT id, nombre, numero, usuario, contrasena, accesskey, secreto,
-               facturas_cantidad, facturas_total, facturas_moneda, facturas_actualizado
+               facturas_cantidad, facturas_total, facturas_moneda, actualizada
         FROM awscuentas
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
@@ -90,9 +125,21 @@ function handleList(PDO $pdo, array $q): void {
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
 
+    foreach ($rows as &$r) {
+        $r['estado'] = estadoAwsCuenta(
+            isset($r['facturas_cantidad']) ? (int)$r['facturas_cantidad']    : null,
+            isset($r['facturas_total'])    ? (float)$r['facturas_total']     : null,
+            $r['actualizada']              ?? null,
+            $diaDelMes
+        );
+        $r['es_critico'] = $r['estado'] === 'critico';
+    }
+    unset($r);
+
     jsonOk([
         'stats' => [
-            'total' => (int)($stats['total'] ?? 0),
+            'total'    => $totalGlobal,
+            'criticas' => $criticasGlobal,
         ],
         'items' => $rows,
     ]);
@@ -102,7 +149,7 @@ function handleGetOne(PDO $pdo, int $id): void {
     // El listado NO incluye facturas_json (puede ser grande); el getOne si.
     $stmt = $pdo->prepare('
         SELECT id, nombre, numero, usuario, contrasena, accesskey, secreto,
-               facturas_cantidad, facturas_total, facturas_moneda, facturas_actualizado,
+               facturas_cantidad, facturas_total, facturas_moneda, actualizada,
                facturas_json
         FROM awscuentas WHERE id = :id
     ');
@@ -117,6 +164,13 @@ function handleGetOne(PDO $pdo, int $id): void {
     } else {
         $row['facturas_json'] = null;
     }
+    $row['estado'] = estadoAwsCuenta(
+        isset($row['facturas_cantidad']) ? (int)$row['facturas_cantidad']    : null,
+        isset($row['facturas_total'])    ? (float)$row['facturas_total']     : null,
+        $row['actualizada']              ?? null,
+        (int)date('j')
+    );
+    $row['es_critico'] = $row['estado'] === 'critico';
     jsonOk($row);
 }
 

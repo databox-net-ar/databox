@@ -121,5 +121,6 @@ echo ""
 
 echo "================================================"
 echo "  Deploy completo -- https://cloud.databox.net.ar"
+echo "  Finalizado: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================"
 echo ""

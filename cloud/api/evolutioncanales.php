@@ -15,7 +15,7 @@ require_once __DIR__ . '/lib/auth_check.php';
 const EVO_CH_COLS = "id, uuid, proyecto, nombre, prefijo, numero, celular, token,
                      prompt, intervaloCorto, intervaloLargo, ultimo, alerta, limite,
                      enviados, acumulados, webhook, online, habilitado,
-                     canalEstado, gruposEstado";
+                     canalEstado, gruposEstado, actualizado";
 
 header('Content-Type: application/json; charset=utf-8');
 
