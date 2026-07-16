@@ -68,8 +68,10 @@ function handleList(PDO $pdo, array $q): void {
     if ($accesskey !== '')   { $where[] = 'accesskey LIKE :accesskey';     $params[':accesskey'] = "%{$accesskey}%"; }
 
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s OR numero LIKE :s OR accesskey LIKE :s)';
-        $params[':s'] = "%{$search}%";
+        $where[] = '(nombre LIKE :s_nombre OR numero LIKE :s_numero OR accesskey LIKE :s_accesskey)';
+        $params[':s_nombre']    = "%{$search}%";
+        $params[':s_numero']    = "%{$search}%";
+        $params[':s_accesskey'] = "%{$search}%";
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';

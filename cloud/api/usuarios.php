@@ -10,6 +10,7 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/sucesos.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -195,9 +196,10 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM usuarios WHERE id = :id');
-    $exists->execute([':id' => $id]);
-    if (!$exists->fetch()) jsonError('Usuario no encontrado', 404);
+    $existsStmt = $pdo->prepare('SELECT id, correo FROM usuarios WHERE id = :id');
+    $existsStmt->execute([':id' => $id]);
+    $target = $existsStmt->fetch();
+    if (!$target) jsonError('Usuario no encontrado', 404);
 
     $p = sanitizePayload($in, false);
     $fields = [
@@ -229,6 +231,22 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $sql = 'UPDATE usuarios SET ' . implode(', ', $fields) . ' WHERE id = :id';
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
+
+    // Si el admin toco la contrasena de otro usuario, lo registramos en sucesos
+    // como evento de autenticacion — igual que el cambio de contrasena propia
+    // desde perfil.php, pero dejando expreso quien la reseteo a quien.
+    if (array_key_exists('contrasena', $p)) {
+        $caller       = currentAuth() ?: [];
+        $callerId     = (int)($caller['sub']    ?? 0);
+        $callerCorreo = (string)($caller['correo'] ?? '');
+        $targetCorreo = (string)($target['correo'] ?? '');
+        registrarSuceso(
+            $pdo, 'Autenticacion', 'alerta',
+            "Contrasena restablecida por administrador \"{$callerCorreo}\" (#{$callerId}) "
+          . "sobre usuario \"{$targetCorreo}\" (#{$id})"
+        );
+    }
+
     jsonOk(['id' => $id]);
 }
 

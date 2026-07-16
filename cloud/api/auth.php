@@ -18,6 +18,11 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/jwt.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/sucesos.php';
+
+// Origen unico para todos los sucesos del flujo de autenticacion (login,
+// magic link, ingresos fallidos, restablecimientos de contrasena).
+const SUCESO_ORIGEN_AUTH = 'Autenticacion';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -51,10 +56,25 @@ function handleLogin(array $in): void {
     $stmt->execute([':correo' => $correo]);
     $u = $stmt->fetch();
 
-    if (!$u || (string)$u['contrasena'] === '' || desencriptar((string)$u['contrasena']) !== $contrasena) {
+    if (!$u) {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            "Intento de ingreso fallido: correo desconocido \"{$correo}\""
+        );
+        jsonError('Credenciales invalidas', 401);
+    }
+    if ((string)$u['contrasena'] === '' || desencriptar((string)$u['contrasena']) !== $contrasena) {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            "Intento de ingreso fallido (contrasena invalida): usuario \"{$u['correo']}\" (#{$u['id']})"
+        );
         jsonError('Credenciales invalidas', 401);
     }
     if ((string)($u['estado'] ?? '') !== '1') {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            "Intento de ingreso de usuario deshabilitado: \"{$u['correo']}\" (#{$u['id']})"
+        );
         jsonError('Usuario deshabilitado', 403);
     }
 
@@ -70,6 +90,11 @@ function handleLogin(array $in): void {
     ], AUTH_TTL);
 
     setAuthCookie($token);
+
+    registrarSuceso(
+        $pdo, SUCESO_ORIGEN_AUTH, 'info',
+        "Ingreso exitoso (credenciales): usuario \"{$u['correo']}\" (#{$u['id']})"
+    );
 
     jsonOk([
         'token' => $token,
@@ -104,9 +129,17 @@ function handleMe(): void {
 // diferencia de las otras acciones responde con `Location:` — no JSON.
 function handleMagic(): void {
     $token = trim((string)($_GET['token'] ?? ''));
-    if ($token === '') { magicRedirectError('Enlace invalido'); return; }
+    $pdo   = db();
 
-    $pdo  = db();
+    if ($token === '') {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            'Intento de ingreso via magic link fallido: token vacio (usuario desconocido)'
+        );
+        magicRedirectError('Enlace invalido');
+        return;
+    }
+
     $stmt = $pdo->prepare(
         'SELECT i.id AS inv_id, i.usuario, i.expira, i.usado, i.un_solo_uso,
                 u.uuid, u.nombre, u.correo, u.estado
@@ -118,16 +151,44 @@ function handleMagic(): void {
     $stmt->execute([':t' => $token]);
     $row = $stmt->fetch();
 
-    if (!$row) { magicRedirectError('Enlace invalido'); return; }
+    if (!$row) {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            'Intento de ingreso via magic link fallido: token no encontrado (usuario desconocido)'
+        );
+        magicRedirectError('Enlace invalido');
+        return;
+    }
 
     // `un_solo_uso` distingue los dos usos del magic link:
     //   - '1' (default) invitacion por mail: se quema al primer canje.
     //   - '0'           iniciar sesion como: multi-uso dentro de `expira`.
     $unSoloUso = (string)($row['un_solo_uso'] ?? '1') === '1';
 
-    if ($unSoloUso && !empty($row['usado']))            { magicRedirectError('Este enlace ya fue usado'); return; }
-    if (strtotime((string)$row['expira']) < time())     { magicRedirectError('Este enlace expiro'); return; }
-    if ((string)($row['estado'] ?? '') !== '1')         { magicRedirectError('Usuario deshabilitado'); return; }
+    if ($unSoloUso && !empty($row['usado'])) {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            "Intento de ingreso via magic link fallido (enlace ya usado): usuario \"{$row['correo']}\" (#{$row['usuario']})"
+        );
+        magicRedirectError('Este enlace ya fue usado');
+        return;
+    }
+    if (strtotime((string)$row['expira']) < time()) {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            "Intento de ingreso via magic link fallido (enlace expirado): usuario \"{$row['correo']}\" (#{$row['usuario']})"
+        );
+        magicRedirectError('Este enlace expiro');
+        return;
+    }
+    if ((string)($row['estado'] ?? '') !== '1') {
+        registrarSuceso(
+            $pdo, SUCESO_ORIGEN_AUTH, 'alerta',
+            "Intento de ingreso via magic link de usuario deshabilitado: \"{$row['correo']}\" (#{$row['usuario']})"
+        );
+        magicRedirectError('Usuario deshabilitado');
+        return;
+    }
 
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
              ->format('Y-m-d H:i:s');
@@ -149,6 +210,11 @@ function handleMagic(): void {
         'correo' => $row['correo'],
     ], AUTH_TTL);
     setAuthCookie($jwt);
+
+    registrarSuceso(
+        $pdo, SUCESO_ORIGEN_AUTH, 'info',
+        "Ingreso exitoso (magic link): usuario \"{$row['correo']}\" (#{$row['usuario']})"
+    );
 
     header('Location: /', true, 302);
     exit;

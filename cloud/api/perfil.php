@@ -14,6 +14,7 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/sucesos.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -65,6 +66,14 @@ function handleCambiarContrasena(PDO $pdo, int $userId, array $in): void {
         $chk->execute([':id' => $userId]);
         if (!$chk->fetch()) jsonError('Usuario no encontrado', 404);
     }
+
+    $u = $pdo->prepare('SELECT correo FROM usuarios WHERE id = :id LIMIT 1');
+    $u->execute([':id' => $userId]);
+    $correo = (string)($u->fetchColumn() ?: '');
+    registrarSuceso(
+        $pdo, 'Autenticacion', 'info',
+        "Contrasena restablecida por el propio usuario \"{$correo}\" (#{$userId})"
+    );
 
     jsonOk(['ok' => true]);
 }

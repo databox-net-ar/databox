@@ -255,6 +255,8 @@ const ROUTE_PERMS = {
   '/datacountrecurrentes':     { perm:   'datacount.recurrentes.consultar' },
   '/datacountcuentas':         { perm:   'datacount.cuentas.consultar' },
   '/datacountempresas':        { perm:   'datacount.empresas.consultar' },
+  '/datacountclientes':        { perm:   'datacount.clientes.consultar' },
+  '/datacountproveedores':     { perm:   'datacount.proveedores.consultar' },
 
   '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
@@ -4086,6 +4088,16 @@ route('/datacount', async (mount) => {
         <span class="tile-icon">🏢</span>
         <span class="tile-title">Empresas</span>
         <span class="tile-desc">Empresas administradas por Datacount con razón social, CUIT y datos fiscales.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountclientes'">
+        <span class="tile-icon">🧑‍💼</span>
+        <span class="tile-title">Clientes</span>
+        <span class="tile-desc">Catálogo transversal de clientes (multiempresa) con datos identificatorios, de contacto y bancarios.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacountproveedores'">
+        <span class="tile-icon">🏭</span>
+        <span class="tile-title">Proveedores</span>
+        <span class="tile-desc">Catálogo transversal de proveedores (multiempresa) con datos identificatorios, de contacto y bancarios.</span>
       </button>
     </div>
   `;
@@ -10057,6 +10069,1133 @@ async function eliminarDcm(id) {
     await apiSend(`${DCM_API}?id=${id}`, 'DELETE');
     toast('Empleado eliminado');
     await cargarDcm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Clientes (ABM) -------------------------
+// Catálogo transversal de clientes (multiempresa). Estructura idéntica al ABM
+// de proveedores más abajo — mismos campos, misma tabla en la BD (`datacount_clientes`),
+// mismo modal de filtros. Se reutilizan las constantes de condición fiscal
+// (DCE_CONDICIONES / dceCondicionBadge / dceFmtCuit / dceFmtFecha) declaradas
+// en el ABM de empresas más arriba.
+const DCCL_API = 'api/datacountclientes.php';
+
+let dcclItems           = [];
+let dcclBusqueda        = '';
+let dcclFiltroCodigo    = '';
+let dcclFiltroCondicion = '';
+let dcclFiltroLimite    = 100;
+let dcclFiltroOrden     = 'id';
+let dcclFiltroDir       = 'desc';
+let dcclEditandoId      = null;
+let dcclBuscadorTimer   = null;
+let dcclFiltrosSnapshot = null;
+
+route('/datacountclientes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🧑‍💼</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los clientes son las personas o empresas a las que les facturamos.
+            Este catálogo es transversal (multiempresa): el mismo cliente puede
+            facturarse desde cualquiera de las empresas administradas por Datacount.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dcclStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dcclStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Cons. Final</span><span class="stat-value" style="color:#93c5fd" id="dcclStatCF">—</span></div>
+        <div class="stat-card"><span class="stat-label">Resp. Inscripto</span><span class="stat-value green" id="dcclStatRI">—</span></div>
+        <div class="stat-card"><span class="stat-label">Monotributistas</span><span class="stat-value" style="color:#fcd34d" id="dcclStatMono">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcclSearch"
+                   placeholder="🔍 Buscar nombre, razón, CUIT, correo, celular o domicilio…">
+            <button class="search-clear" id="dcclSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcclFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcclFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcclRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcclNuevoBtn">+ Nuevo cliente</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Nombre</th>
+              <th>Razón social</th>
+              <th style="width:180px">Condición</th>
+              <th style="width:140px">CUIT</th>
+              <th style="width:180px">Contacto</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcclTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dcclCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDcclBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDccl()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDccl()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcclCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDccl('codigo', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Condición fiscal</label>
+            <div id="fDcclCondChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcclLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDccl('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcclOrden" onchange="onFiltroDccl('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="razon">Razón social</option>
+                <option value="cuit">CUIT</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcclDir" onchange="onFiltroDccl('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDccl()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDccl()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDccl()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcclSearch');
+  const clr = $('#dcclSearchClear');
+  inp.value = dcclBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcclBusqueda = inp.value.trim();
+    clearTimeout(dcclBuscadorTimer);
+    dcclBuscadorTimer = setTimeout(cargarDccl, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcclBusqueda = ''; cargarDccl();
+  });
+
+  $('#dcclFiltrosBtn').addEventListener('click', abrirModalFiltrosDccl);
+  $('#dcclRefrescarBtn').addEventListener('click', cargarDccl);
+  $('#dcclNuevoBtn').addEventListener('click', () => abrirAltaEdicionDccl(null));
+
+  const chipsCont = $('#fDcclCondChips');
+  chipsCont.innerHTML = `
+    <button type="button" class="filter-chip" data-cond="">Todas</button>
+    ${DCE_CONDICIONES.map((c) => `
+      <button type="button" class="filter-chip" data-cond="${c.v}">${esc(c.label)}</button>
+    `).join('')}
+  `;
+  chipsCont.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    dcclFiltroCondicion = b.dataset.cond || '';
+    dcclSincronizarChipsCondicion();
+    dcclActualizarBadgeFiltros();
+    cargarDccl();
+  });
+
+  $('#dcclCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDccl(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDccl(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDccl(data.id);
+  });
+
+  $('#dcclTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dcclCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDccl(Number(tr.dataset.id));
+  });
+  $('#dcclTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dcclCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  dcclActualizarBadgeFiltros();
+  await cargarDccl();
+}, 'Clientes');
+
+async function cargarDccl() {
+  const tbody = $('#dcclTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dcclBusqueda)        qs.set('q', dcclBusqueda);
+  if (dcclFiltroCondicion) qs.set('condicion', dcclFiltroCondicion);
+  if (dcclFiltroLimite)    qs.set('limite', dcclFiltroLimite);
+  if (dcclFiltroOrden)     qs.set('orden', dcclFiltroOrden);
+  if (dcclFiltroDir)       qs.set('dir', dcclFiltroDir);
+
+  try {
+    const data = await apiGet(DCCL_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dcclItems = data.items || [];
+    pintarStatsDccl(data.stats || {});
+    renderDccl();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDccl(s) {
+  $('#dcclStatTotal').textContent  = fmtNum(s.total ?? dcclItems.length);
+  $('#dcclStatCF').textContent     = fmtNum(s.consumidor_final ?? 0);
+  $('#dcclStatRI').textContent     = fmtNum(s.responsable_inscripto ?? 0);
+  $('#dcclStatMono').textContent   = fmtNum(s.monotributista ?? 0);
+}
+
+function renderDccl() {
+  const tbody = $('#dcclTbody');
+  if (!tbody) return;
+  if (!dcclItems.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin clientes registrados.</td></tr>`;
+    return;
+  }
+
+  let filas = dcclItems;
+  if (dcclFiltroCodigo) {
+    const cod = Number(dcclFiltroCodigo);
+    filas = filas.filter((e) => e.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((e) => {
+    const contacto = e.correo || e.celular || '—';
+    return `
+    <tr data-id="${e.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${e.id}</code></td>
+      <td style="font-weight:600">${esc(e.nombre)}</td>
+      <td style="color:var(--muted)">${esc(e.razon || '—')}</td>
+      <td>${dceCondicionBadge(e.condicion)}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(dceFmtCuit(e.cuit))}</td>
+      <td style="font-size:.85rem;color:var(--muted)">${esc(contacto)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+function abrirModalFiltrosDccl() {
+  dcclFiltrosSnapshot = {
+    codigo:    dcclFiltroCodigo,
+    condicion: dcclFiltroCondicion,
+    limite:    dcclFiltroLimite,
+    orden:     dcclFiltroOrden,
+    dir:       dcclFiltroDir,
+  };
+  $('#fDcclCodigo').value = dcclFiltroCodigo || '';
+  $('#fDcclLimite').value = dcclFiltroLimite || 100;
+  $('#fDcclOrden').value  = dcclFiltroOrden  || 'id';
+  $('#fDcclDir').value    = dcclFiltroDir    || 'desc';
+  dcclSincronizarChipsCondicion();
+  document.getElementById('filtrosDcclBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDccl() {
+  document.getElementById('filtrosDcclBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDccl() {
+  if (dcclFiltrosSnapshot) {
+    dcclFiltroCodigo    = dcclFiltrosSnapshot.codigo;
+    dcclFiltroCondicion = dcclFiltrosSnapshot.condicion;
+    dcclFiltroLimite    = dcclFiltrosSnapshot.limite;
+    dcclFiltroOrden     = dcclFiltrosSnapshot.orden;
+    dcclFiltroDir       = dcclFiltrosSnapshot.dir;
+    dcclActualizarBadgeFiltros();
+    cargarDccl();
+  }
+  cerrarModalFiltrosDccl();
+}
+
+function limpiarFiltrosDccl() {
+  dcclFiltroCodigo    = '';
+  dcclFiltroCondicion = '';
+  dcclFiltroLimite    = 100;
+  dcclFiltroOrden     = 'id';
+  dcclFiltroDir       = 'desc';
+  $('#fDcclCodigo').value = '';
+  $('#fDcclLimite').value = 100;
+  $('#fDcclOrden').value  = 'id';
+  $('#fDcclDir').value    = 'desc';
+  dcclSincronizarChipsCondicion();
+  dcclActualizarBadgeFiltros();
+  cargarDccl();
+}
+
+function onFiltroDccl(campo, valor) {
+  if (campo === 'codigo') dcclFiltroCodigo = (valor || '').trim();
+  if (campo === 'limite') dcclFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dcclFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    dcclFiltroDir    = valor || 'desc';
+  dcclActualizarBadgeFiltros();
+  cargarDccl();
+}
+
+function dcclSincronizarChipsCondicion() {
+  const chips = document.querySelectorAll('#fDcclCondChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.cond || '') === (dcclFiltroCondicion || ''));
+  });
+}
+
+function dcclActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcclFiltroCodigo)                  n++;
+  if (dcclFiltroCondicion)               n++;
+  if (Number(dcclFiltroLimite) !== 100)  n++;
+  if (dcclFiltroOrden !== 'id')          n++;
+  if (dcclFiltroDir   !== 'desc')        n++;
+  const badge = $('#dcclFiltrosBadge');
+  const btn   = $('#dcclFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+function abrirAltaEdicionDccl(id) {
+  dcclEditandoId = id;
+  const editando = !!id;
+  const e = editando ? dcclItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar cliente' : 'Nuevo cliente';
+  const opciones = DCE_CONDICIONES.map((c) =>
+    `<option value="${c.v}">${esc(c.label)}</option>`
+  ).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcclNombre">Nombre *</label>
+            <input type="text" id="dcclNombre" placeholder="Nombre de fantasía o del contacto" maxlength="160" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcclRazon">Razón social</label>
+            <input type="text" id="dcclRazon" placeholder="Razón social completa" maxlength="200" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcclCondicion">Condición fiscal *</label>
+            <select id="dcclCondicion">${opciones}</select>
+          </div>
+          <div class="form-group">
+            <label for="dcclCuit">CUIT</label>
+            <input type="text" id="dcclCuit" placeholder="20123456789 o 20-12345678-9" maxlength="15"
+                   style="font-family:monospace" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcclDomicilio">Domicilio</label>
+          <input type="text" id="dcclDomicilio" placeholder="Calle, número, ciudad, provincia" maxlength="255" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcclCelular">Celular</label>
+            <input type="text" id="dcclCelular" placeholder="+54 9 …" maxlength="20" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcclCorreo">Correo</label>
+            <input type="email" id="dcclCorreo" placeholder="contacto@empresa.com" maxlength="120" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcclWeb">Web</label>
+            <input type="text" id="dcclWeb" placeholder="https://…" maxlength="200" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcclCbu">CBU</label>
+            <input type="text" id="dcclCbu" placeholder="22 dígitos o alias" maxlength="50"
+                   style="font-family:monospace" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && e) {
+    $('#dcclNombre').value    = e.nombre    || '';
+    $('#dcclRazon').value     = e.razon     || '';
+    $('#dcclCondicion').value = e.condicion || 'consumidor_final';
+    $('#dcclCuit').value      = e.cuit      || '';
+    $('#dcclDomicilio').value = e.domicilio || '';
+    $('#dcclCelular').value   = e.celular   || '';
+    $('#dcclCorreo').value    = e.correo    || '';
+    $('#dcclWeb').value       = e.web       || '';
+    $('#dcclCbu').value       = e.cbu       || '';
+  } else {
+    $('#dcclCondicion').value = 'consumidor_final';
+  }
+
+  setTimeout(() => $('#dcclNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDccl();
+  });
+}
+
+async function guardarDccl() {
+  const nombre    = $('#dcclNombre').value.trim();
+  const razon     = $('#dcclRazon').value.trim();
+  const condicion = $('#dcclCondicion').value;
+  const cuit      = $('#dcclCuit').value.trim();
+  const domicilio = $('#dcclDomicilio').value.trim();
+  const celular   = $('#dcclCelular').value.trim();
+  const correo    = $('#dcclCorreo').value.trim();
+  const web       = $('#dcclWeb').value.trim();
+  const cbu       = $('#dcclCbu').value.trim();
+
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+
+  const body = { nombre, razon, condicion, cuit, domicilio, celular, correo, web, cbu };
+
+  try {
+    if (dcclEditandoId) {
+      await apiSend(`${DCCL_API}?id=${dcclEditandoId}`, 'PUT', body);
+      toast('Cliente actualizado');
+    } else {
+      await apiSend(DCCL_API, 'POST', body);
+      toast('Cliente creado');
+    }
+    closeModal();
+    dcclEditandoId = null;
+    await cargarDccl();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+function abrirConsultaDccl(id) {
+  const e = dcclItems.find((x) => x.id === id);
+  if (!e) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  openModal(`
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🧑‍💼 <span class="modal-subtitle">${esc(e.nombre)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',           `<code>${e.id}</code>`)}
+          ${card('Condición fiscal', dceCondicionBadge(e.condicion))}
+          ${card('Nombre',           esc(e.nombre), 'full')}
+          ${card('Razón social',     esc(e.razon || '—'), 'full')}
+          ${card('CUIT',             `<span style="font-family:monospace">${esc(dceFmtCuit(e.cuit))}</span>`)}
+          ${card('Domicilio',        esc(e.domicilio || '—'), 'full')}
+          ${card('Celular',          esc(e.celular || '—'))}
+          ${card('Correo',           esc(e.correo || '—'))}
+          ${card('Web',              esc(e.web || '—'), 'full')}
+          ${card('CBU',              `<span style="font-family:monospace">${esc(e.cbu || '—')}</span>`, 'full')}
+          ${card('Alta',             esc(fmtFecha(e.created_at)))}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDccl(id); }
+  });
+}
+
+async function eliminarDccl(id) {
+  const e = dcclItems.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar cliente',
+    message:     `¿Eliminás el cliente "${e.nombre}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCCL_API}?id=${id}`, 'DELETE');
+    toast('Cliente eliminado');
+    await cargarDccl();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Proveedores (ABM) -------------------------
+// Catálogo transversal de proveedores (multiempresa). Estructura idéntica al
+// ABM de clientes de arriba — misma tabla en la BD (`datacount_proveedores`),
+// mismos campos y mismo modal de filtros. Se reutilizan las constantes de
+// condición fiscal (DCE_CONDICIONES / dceCondicionBadge / dceFmtCuit) del
+// ABM de empresas.
+const DCPR_API = 'api/datacountproveedores.php';
+
+let dcprItems           = [];
+let dcprBusqueda        = '';
+let dcprFiltroCodigo    = '';
+let dcprFiltroCondicion = '';
+let dcprFiltroLimite    = 100;
+let dcprFiltroOrden     = 'id';
+let dcprFiltroDir       = 'desc';
+let dcprEditandoId      = null;
+let dcprBuscadorTimer   = null;
+let dcprFiltrosSnapshot = null;
+
+route('/datacountproveedores', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🏭</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los proveedores son las personas o empresas a las que les compramos
+            bienes o servicios. Este catálogo es transversal (multiempresa):
+            el mismo proveedor puede recibir pagos desde cualquiera de las
+            empresas administradas por Datacount.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dcprStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dcprStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Resp. Inscripto</span><span class="stat-value" style="color:#93c5fd" id="dcprStatRI">—</span></div>
+        <div class="stat-card"><span class="stat-label">Monotributistas</span><span class="stat-value green" id="dcprStatMono">—</span></div>
+        <div class="stat-card"><span class="stat-label">Exentos</span><span class="stat-value" style="color:#fcd34d" id="dcprStatExento">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcprSearch"
+                   placeholder="🔍 Buscar nombre, razón, CUIT, correo, celular o domicilio…">
+            <button class="search-clear" id="dcprSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcprFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcprFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcprRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcprNuevoBtn">+ Nuevo proveedor</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Nombre</th>
+              <th>Razón social</th>
+              <th style="width:180px">Condición</th>
+              <th style="width:140px">CUIT</th>
+              <th style="width:180px">Contacto</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcprTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dcprCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDcprBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcpr()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDcpr()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcprCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDcpr('codigo', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Condición fiscal</label>
+            <div id="fDcprCondChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcprLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDcpr('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcprOrden" onchange="onFiltroDcpr('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="razon">Razón social</option>
+                <option value="cuit">CUIT</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcprDir" onchange="onFiltroDcpr('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcpr()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcpr()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcpr()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcprSearch');
+  const clr = $('#dcprSearchClear');
+  inp.value = dcprBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcprBusqueda = inp.value.trim();
+    clearTimeout(dcprBuscadorTimer);
+    dcprBuscadorTimer = setTimeout(cargarDcpr, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcprBusqueda = ''; cargarDcpr();
+  });
+
+  $('#dcprFiltrosBtn').addEventListener('click', abrirModalFiltrosDcpr);
+  $('#dcprRefrescarBtn').addEventListener('click', cargarDcpr);
+  $('#dcprNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcpr(null));
+
+  const chipsCont = $('#fDcprCondChips');
+  chipsCont.innerHTML = `
+    <button type="button" class="filter-chip" data-cond="">Todas</button>
+    ${DCE_CONDICIONES.map((c) => `
+      <button type="button" class="filter-chip" data-cond="${c.v}">${esc(c.label)}</button>
+    `).join('')}
+  `;
+  chipsCont.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    dcprFiltroCondicion = b.dataset.cond || '';
+    dcprSincronizarChipsCondicion();
+    dcprActualizarBadgeFiltros();
+    cargarDcpr();
+  });
+
+  $('#dcprCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDcpr(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDcpr(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDcpr(data.id);
+  });
+
+  $('#dcprTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dcprCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcpr(Number(tr.dataset.id));
+  });
+  $('#dcprTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dcprCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  dcprActualizarBadgeFiltros();
+  await cargarDcpr();
+}, 'Proveedores');
+
+async function cargarDcpr() {
+  const tbody = $('#dcprTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dcprBusqueda)        qs.set('q', dcprBusqueda);
+  if (dcprFiltroCondicion) qs.set('condicion', dcprFiltroCondicion);
+  if (dcprFiltroLimite)    qs.set('limite', dcprFiltroLimite);
+  if (dcprFiltroOrden)     qs.set('orden', dcprFiltroOrden);
+  if (dcprFiltroDir)       qs.set('dir', dcprFiltroDir);
+
+  try {
+    const data = await apiGet(DCPR_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dcprItems = data.items || [];
+    pintarStatsDcpr(data.stats || {});
+    renderDcpr();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcpr(s) {
+  $('#dcprStatTotal').textContent  = fmtNum(s.total ?? dcprItems.length);
+  $('#dcprStatRI').textContent     = fmtNum(s.responsable_inscripto ?? 0);
+  $('#dcprStatMono').textContent   = fmtNum(s.monotributista ?? 0);
+  $('#dcprStatExento').textContent = fmtNum(s.exento ?? 0);
+}
+
+function renderDcpr() {
+  const tbody = $('#dcprTbody');
+  if (!tbody) return;
+  if (!dcprItems.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin proveedores registrados.</td></tr>`;
+    return;
+  }
+
+  let filas = dcprItems;
+  if (dcprFiltroCodigo) {
+    const cod = Number(dcprFiltroCodigo);
+    filas = filas.filter((e) => e.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((e) => {
+    const contacto = e.correo || e.celular || '—';
+    return `
+    <tr data-id="${e.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${e.id}</code></td>
+      <td style="font-weight:600">${esc(e.nombre)}</td>
+      <td style="color:var(--muted)">${esc(e.razon || '—')}</td>
+      <td>${dceCondicionBadge(e.condicion)}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(dceFmtCuit(e.cuit))}</td>
+      <td style="font-size:.85rem;color:var(--muted)">${esc(contacto)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+function abrirModalFiltrosDcpr() {
+  dcprFiltrosSnapshot = {
+    codigo:    dcprFiltroCodigo,
+    condicion: dcprFiltroCondicion,
+    limite:    dcprFiltroLimite,
+    orden:     dcprFiltroOrden,
+    dir:       dcprFiltroDir,
+  };
+  $('#fDcprCodigo').value = dcprFiltroCodigo || '';
+  $('#fDcprLimite').value = dcprFiltroLimite || 100;
+  $('#fDcprOrden').value  = dcprFiltroOrden  || 'id';
+  $('#fDcprDir').value    = dcprFiltroDir    || 'desc';
+  dcprSincronizarChipsCondicion();
+  document.getElementById('filtrosDcprBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDcpr() {
+  document.getElementById('filtrosDcprBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDcpr() {
+  if (dcprFiltrosSnapshot) {
+    dcprFiltroCodigo    = dcprFiltrosSnapshot.codigo;
+    dcprFiltroCondicion = dcprFiltrosSnapshot.condicion;
+    dcprFiltroLimite    = dcprFiltrosSnapshot.limite;
+    dcprFiltroOrden     = dcprFiltrosSnapshot.orden;
+    dcprFiltroDir       = dcprFiltrosSnapshot.dir;
+    dcprActualizarBadgeFiltros();
+    cargarDcpr();
+  }
+  cerrarModalFiltrosDcpr();
+}
+
+function limpiarFiltrosDcpr() {
+  dcprFiltroCodigo    = '';
+  dcprFiltroCondicion = '';
+  dcprFiltroLimite    = 100;
+  dcprFiltroOrden     = 'id';
+  dcprFiltroDir       = 'desc';
+  $('#fDcprCodigo').value = '';
+  $('#fDcprLimite').value = 100;
+  $('#fDcprOrden').value  = 'id';
+  $('#fDcprDir').value    = 'desc';
+  dcprSincronizarChipsCondicion();
+  dcprActualizarBadgeFiltros();
+  cargarDcpr();
+}
+
+function onFiltroDcpr(campo, valor) {
+  if (campo === 'codigo') dcprFiltroCodigo = (valor || '').trim();
+  if (campo === 'limite') dcprFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dcprFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    dcprFiltroDir    = valor || 'desc';
+  dcprActualizarBadgeFiltros();
+  cargarDcpr();
+}
+
+function dcprSincronizarChipsCondicion() {
+  const chips = document.querySelectorAll('#fDcprCondChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.cond || '') === (dcprFiltroCondicion || ''));
+  });
+}
+
+function dcprActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcprFiltroCodigo)                  n++;
+  if (dcprFiltroCondicion)               n++;
+  if (Number(dcprFiltroLimite) !== 100)  n++;
+  if (dcprFiltroOrden !== 'id')          n++;
+  if (dcprFiltroDir   !== 'desc')        n++;
+  const badge = $('#dcprFiltrosBadge');
+  const btn   = $('#dcprFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+function abrirAltaEdicionDcpr(id) {
+  dcprEditandoId = id;
+  const editando = !!id;
+  const e = editando ? dcprItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar proveedor' : 'Nuevo proveedor';
+  const opciones = DCE_CONDICIONES.map((c) =>
+    `<option value="${c.v}">${esc(c.label)}</option>`
+  ).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcprNombre">Nombre *</label>
+            <input type="text" id="dcprNombre" placeholder="Nombre de fantasía o del contacto" maxlength="160" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcprRazon">Razón social</label>
+            <input type="text" id="dcprRazon" placeholder="Razón social completa" maxlength="200" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcprCondicion">Condición fiscal *</label>
+            <select id="dcprCondicion">${opciones}</select>
+          </div>
+          <div class="form-group">
+            <label for="dcprCuit">CUIT</label>
+            <input type="text" id="dcprCuit" placeholder="20123456789 o 20-12345678-9" maxlength="15"
+                   style="font-family:monospace" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcprDomicilio">Domicilio</label>
+          <input type="text" id="dcprDomicilio" placeholder="Calle, número, ciudad, provincia" maxlength="255" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcprCelular">Celular</label>
+            <input type="text" id="dcprCelular" placeholder="+54 9 …" maxlength="20" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcprCorreo">Correo</label>
+            <input type="email" id="dcprCorreo" placeholder="contacto@empresa.com" maxlength="120" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcprWeb">Web</label>
+            <input type="text" id="dcprWeb" placeholder="https://…" maxlength="200" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcprCbu">CBU</label>
+            <input type="text" id="dcprCbu" placeholder="22 dígitos o alias" maxlength="50"
+                   style="font-family:monospace" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && e) {
+    $('#dcprNombre').value    = e.nombre    || '';
+    $('#dcprRazon').value     = e.razon     || '';
+    $('#dcprCondicion').value = e.condicion || 'responsable_inscripto';
+    $('#dcprCuit').value      = e.cuit      || '';
+    $('#dcprDomicilio').value = e.domicilio || '';
+    $('#dcprCelular').value   = e.celular   || '';
+    $('#dcprCorreo').value    = e.correo    || '';
+    $('#dcprWeb').value       = e.web       || '';
+    $('#dcprCbu').value       = e.cbu       || '';
+  } else {
+    $('#dcprCondicion').value = 'responsable_inscripto';
+  }
+
+  setTimeout(() => $('#dcprNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcpr();
+  });
+}
+
+async function guardarDcpr() {
+  const nombre    = $('#dcprNombre').value.trim();
+  const razon     = $('#dcprRazon').value.trim();
+  const condicion = $('#dcprCondicion').value;
+  const cuit      = $('#dcprCuit').value.trim();
+  const domicilio = $('#dcprDomicilio').value.trim();
+  const celular   = $('#dcprCelular').value.trim();
+  const correo    = $('#dcprCorreo').value.trim();
+  const web       = $('#dcprWeb').value.trim();
+  const cbu       = $('#dcprCbu').value.trim();
+
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+
+  const body = { nombre, razon, condicion, cuit, domicilio, celular, correo, web, cbu };
+
+  try {
+    if (dcprEditandoId) {
+      await apiSend(`${DCPR_API}?id=${dcprEditandoId}`, 'PUT', body);
+      toast('Proveedor actualizado');
+    } else {
+      await apiSend(DCPR_API, 'POST', body);
+      toast('Proveedor creado');
+    }
+    closeModal();
+    dcprEditandoId = null;
+    await cargarDcpr();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+function abrirConsultaDcpr(id) {
+  const e = dcprItems.find((x) => x.id === id);
+  if (!e) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  openModal(`
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🏭 <span class="modal-subtitle">${esc(e.nombre)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',           `<code>${e.id}</code>`)}
+          ${card('Condición fiscal', dceCondicionBadge(e.condicion))}
+          ${card('Nombre',           esc(e.nombre), 'full')}
+          ${card('Razón social',     esc(e.razon || '—'), 'full')}
+          ${card('CUIT',             `<span style="font-family:monospace">${esc(dceFmtCuit(e.cuit))}</span>`)}
+          ${card('Domicilio',        esc(e.domicilio || '—'), 'full')}
+          ${card('Celular',          esc(e.celular || '—'))}
+          ${card('Correo',           esc(e.correo || '—'))}
+          ${card('Web',              esc(e.web || '—'), 'full')}
+          ${card('CBU',              `<span style="font-family:monospace">${esc(e.cbu || '—')}</span>`, 'full')}
+          ${card('Alta',             esc(fmtFecha(e.created_at)))}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcpr(id); }
+  });
+}
+
+async function eliminarDcpr(id) {
+  const e = dcprItems.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar proveedor',
+    message:     `¿Eliminás el proveedor "${e.nombre}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCPR_API}?id=${id}`, 'DELETE');
+    toast('Proveedor eliminado');
+    await cargarDcpr();
   } catch (err) {
     toast(err.message, { error: true });
   }

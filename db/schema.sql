@@ -398,6 +398,62 @@ CREATE TABLE `datacount_recurrentes`  (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for datacount_clientes
+-- ----------------------------
+-- Catálogo transversal de clientes de Datacount. NO está asociado a
+-- una empresa en particular (multiempresa): el mismo cliente puede
+-- facturarse desde cualquiera de las `datacount_empresas`. Cada fila
+-- reúne los datos identificatorios (nombre, razón social, condición
+-- fiscal AFIP, CUIT), de contacto (domicilio, celular, correo, web)
+-- y bancarios (CBU).
+DROP TABLE IF EXISTS `datacount_clientes`;
+CREATE TABLE `datacount_clientes`  (
+  `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `nombre`     varchar(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `razon`      varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `condicion`  enum('responsable_inscripto','monotributista','exento','consumidor_final','no_responsable','no_categorizado') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'consumidor_final',
+  `cuit`       varchar(15)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `domicilio`  varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `celular`    varchar(20)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `correo`     varchar(120) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `web`        varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cbu`        varchar(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_nombre`(`nombre`) USING BTREE,
+  INDEX `idx_cuit`(`cuit`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_proveedores
+-- ----------------------------
+-- Catálogo transversal de proveedores de Datacount. NO está asociado
+-- a una empresa en particular (multiempresa): el mismo proveedor puede
+-- recibir pagos desde cualquiera de las `datacount_empresas`. Cada fila
+-- reúne los datos identificatorios (nombre, razón social, condición
+-- fiscal AFIP, CUIT), de contacto (domicilio, celular, correo, web)
+-- y bancarios (CBU, para transferencias).
+DROP TABLE IF EXISTS `datacount_proveedores`;
+CREATE TABLE `datacount_proveedores`  (
+  `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `nombre`     varchar(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `razon`      varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `condicion`  enum('responsable_inscripto','monotributista','exento','consumidor_final','no_responsable','no_categorizado') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'responsable_inscripto',
+  `cuit`       varchar(15)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `domicilio`  varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `celular`    varchar(20)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `correo`     varchar(120) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `web`        varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cbu`        varchar(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_nombre`(`nombre`) USING BTREE,
+  INDEX `idx_cuit`(`cuit`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for datacountempleados
 -- ----------------------------
 DROP TABLE IF EXISTS `datacountempleados`;
