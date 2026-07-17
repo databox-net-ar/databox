@@ -12,7 +12,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const MSIM_COLS = "id, nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn, actualizado";
+const MSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, actualizado";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -48,6 +48,8 @@ try {
 function handleList(PDO $pdo, array $q): void {
     $codigo = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
     $estado = trim((string)($q['estado'] ?? ''));
+    $nombre = trim((string)($q['nombre'] ?? ''));
+    $linea  = trim((string)($q['linea']  ?? ''));
     $search = trim((string)($q['q']      ?? ''));
 
     $orderBy = $q['order_by'] ?? 'id';
@@ -56,15 +58,32 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 2000) $limite = 2000;
 
-    $allowedOrder = ['id', 'nombre', 'linea', 'icc', 'estado', 'msisdn', 'actualizado'];
-    if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
-    $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
+    // limite_datos / consumo_datos son VARCHAR con formato "N MB" — ordenar
+    // alfabeticamente ("100 MB" < "20 MB") es ilegible. Casteamos los digitos
+    // a UNSIGNED para tener sort numerico. REGEXP_REPLACE existe en MySQL 8
+    // y MariaDB 10.11 (los dos entornos del proyecto).
+    $orderMap = [
+        'id'            => 'id',
+        'nombre'        => 'nombre',
+        'linea'         => 'linea',
+        'icc'           => 'icc',
+        'estado'        => 'estado',
+        'msisdn'        => 'msisdn',
+        'actualizado'   => 'actualizado',
+        'limite_datos'  => "CAST(REGEXP_REPLACE(COALESCE(limite_datos,  ''), '[^0-9]', '') AS UNSIGNED)",
+        'consumo_datos' => "CAST(REGEXP_REPLACE(COALESCE(consumo_datos, ''), '[^0-9]', '') AS UNSIGNED)",
+    ];
+    if (!isset($orderMap[$orderBy])) $orderBy = 'id';
+    $orderExpr = $orderMap[$orderBy];
+    $dirSql    = $dir === 'asc' ? 'ASC' : 'DESC';
 
     $where  = [];
     $params = [];
 
     if ($codigo !== null) { $where[] = 'id = :codigo';       $params[':codigo'] = $codigo; }
     if ($estado !== '')   { $where[] = 'estado = :estado';   $params[':estado'] = $estado; }
+    if ($nombre !== '')   { $where[] = 'nombre LIKE :nombre'; $params[':nombre'] = "%{$nombre}%"; }
+    if ($linea  !== '')   { $where[] = 'linea LIKE :linea';   $params[':linea']  = "%{$linea}%"; }
 
     if ($search !== '') {
         $where[] = '(nombre LIKE :s OR linea LIKE :s OR icc LIKE :s OR msisdn LIKE :s OR imei LIKE :s)';
@@ -82,11 +101,22 @@ function handleList(PDO $pdo, array $q): void {
         FROM movistarsims
     ")->fetch();
 
+    // Lista de estados distintos que hoy tienen las SIMs, para poblar el
+    // <select> del modal de Filtros (asi el usuario solo puede elegir valores
+    // que realmente existen en la BD, sin tener que memorizar la nomenclatura
+    // exacta que devuelve Kite).
+    $estados = $pdo->query("
+        SELECT DISTINCT estado
+        FROM movistarsims
+        WHERE estado IS NOT NULL AND estado <> ''
+        ORDER BY estado
+    ")->fetchAll(PDO::FETCH_COLUMN);
+
     $sql = "
         SELECT " . MSIM_COLS . "
         FROM movistarsims
         {$sqlWhere}
-        ORDER BY {$orderBy} {$dirSql}
+        ORDER BY {$orderExpr} {$dirSql}
         LIMIT {$limite}
     ";
     $stmt = $pdo->prepare($sql);
@@ -99,6 +129,7 @@ function handleList(PDO $pdo, array $q): void {
             'activas'     => (int)($stats['activas']    ?? 0),
             'sin_estado'  => (int)($stats['sin_estado'] ?? 0),
             'ultima_sync' => $stats['ultima_sync']      ?? null,
+            'estados'     => $estados,
         ],
         'items' => $rows,
     ]);
@@ -173,39 +204,14 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('SIM no encontrada', 404);
 
-    $p = sanitizePayload($in);
+    // Solo `nombre` es editable desde el ABM. El resto (alias, linea, icc,
+    // estado*, limite_datos, consumo_datos, imei, msisdn) lo sobreescribe el
+    // sync con Kite Platform, asi que aceptarlos aca solo generaria drift
+    // hasta la proxima corrida del sync.
+    $nombre = nullableStr($in['nombre'] ?? null, 255);
 
-    try {
-        $sql = "
-            UPDATE movistarsims SET
-                nombre       = :nombre,
-                linea        = :linea,
-                icc          = :icc,
-                estado       = :estado,
-                estado_gprs  = :estado_gprs,
-                estado_lte   = :estado_lte,
-                limite_datos = :limite_datos,
-                imei         = :imei,
-                msisdn       = :msisdn
-            WHERE id = :id
-        ";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            ':nombre'       => $p['nombre'],
-            ':linea'        => $p['linea'],
-            ':icc'          => $p['icc'],
-            ':estado'       => $p['estado'],
-            ':estado_gprs'  => $p['estado_gprs'],
-            ':estado_lte'   => $p['estado_lte'],
-            ':limite_datos' => $p['limite_datos'],
-            ':imei'         => $p['imei'],
-            ':msisdn'       => $p['msisdn'],
-            ':id'           => $id,
-        ]);
-    } catch (PDOException $e) {
-        if (($e->errorInfo[1] ?? 0) === 1062) jsonError('Ya existe otra SIM con ese ICC', 409);
-        throw $e;
-    }
+    $stmt = $pdo->prepare('UPDATE movistarsims SET nombre = :nombre WHERE id = :id');
+    $stmt->execute([':nombre' => $nombre, ':id' => $id]);
 
     jsonOk(['id' => $id]);
 }

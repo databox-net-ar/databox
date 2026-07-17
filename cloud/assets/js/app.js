@@ -37,6 +37,22 @@ function fmtHace(iso) {
   return 'hace ' + Math.floor(diff / 31536000) + ' a';
 }
 
+// Version verbose de fmtHace: "hace 2 horas", "hace 3 dias" — con singular/plural
+// y palabras completas. Pensado para tarjetas donde importa la lectura natural.
+function fmtHaceLargo(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const diff = Math.max(0, (Date.now() - d.getTime()) / 1000);
+  const plural = (n, sing, plu) => `hace ${n} ${n === 1 ? sing : plu}`;
+  if (diff < 60)       return plural(Math.floor(diff),               'segundo', 'segundos');
+  if (diff < 3600)     return plural(Math.floor(diff / 60),           'minuto', 'minutos');
+  if (diff < 86400)    return plural(Math.floor(diff / 3600),         'hora',   'horas');
+  if (diff < 2592000)  return plural(Math.floor(diff / 86400),        'día',    'días');
+  if (diff < 31536000) return plural(Math.floor(diff / 2592000),      'mes',    'meses');
+  return                      plural(Math.floor(diff / 31536000),     'año',    'años');
+}
+
 // YYYY-MM-DD HH:MM:SS — para listados donde importa el segundo (log de mensajes).
 function fmtFechaLarga(iso) {
   if (!iso) return '—';
@@ -50,6 +66,47 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+}
+
+// Cabecera de tabla ordenable. Devuelve el HTML del <th> para una columna
+// que dispara sort al hacer click. `col` es la clave que se pasa al backend
+// (matchea el `orderMap` del endpoint). El indicador ↑/↓ lo pinta
+// `actualizarSortIndicadores` en base al estado actual del filtro.
+function thOrdenable(col, label, extra = '') {
+  return `<th data-sort="${col}" style="cursor:pointer;user-select:none${extra ? ';' + extra : ''}">`
+       + `${label} <span data-sort-ind style="color:var(--muted);font-size:.85em"></span></th>`;
+}
+
+// Sincroniza los indicadores ↑/↓ de un thead con el filtro (order_by + dir).
+function actualizarSortIndicadores(theadRoot, filtros) {
+  if (!theadRoot) return;
+  theadRoot.querySelectorAll('th[data-sort]').forEach((th) => {
+    const activo = th.dataset.sort === filtros.order_by;
+    const flecha = activo ? (filtros.dir === 'asc' ? '↑' : '↓') : '';
+    const ind = th.querySelector('[data-sort-ind]');
+    if (ind) ind.textContent = flecha;
+    th.style.color = activo ? 'var(--text)' : '';
+  });
+}
+
+// Wiring del click en el thead: alterna dir si se clickea la misma columna,
+// arranca en 'asc' si se clickea otra. Llama a `recargar` despues de mutar
+// el filtro. `filtrosRef` es el objeto de filtros (mutado in-place).
+function activarSortEnThead(theadEl, filtrosRef, recargar) {
+  if (!theadEl || theadEl.dataset.sortWired === '1') return;
+  theadEl.dataset.sortWired = '1';
+  theadEl.addEventListener('click', (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (filtrosRef.order_by === col) {
+      filtrosRef.dir = filtrosRef.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      filtrosRef.order_by = col;
+      filtrosRef.dir      = 'asc';
+    }
+    recargar();
+  });
 }
 
 // Convierte texto libre a un slug dot-separated compatible con la regex
@@ -77,6 +134,7 @@ function slugificarConPuntos(txt) {
 
 async function apiGet(url) {
   const r = await fetch(url, { credentials: 'same-origin' });
+  if (r.status === 401) { handleSessionExpired(); throw new Error('Sesión expirada'); }
   const j = await r.json().catch(() => ({ ok: false, error: 'Respuesta no JSON' }));
   if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j.data;
@@ -89,9 +147,31 @@ async function apiSend(url, method, body) {
     headers: { 'Content-Type': 'application/json' },
     body: body == null ? null : JSON.stringify(body),
   });
+  if (r.status === 401) { handleSessionExpired(); throw new Error('Sesión expirada'); }
   const j = await r.json().catch(() => ({ ok: false, error: 'Respuesta no JSON' }));
   if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j.data;
+}
+
+// Cuando la cookie de sesión vence, cualquier apiGet/apiSend devuelve 401.
+// En vez de dejar que cada módulo renderice el error crudo "No autenticado",
+// limpiamos el estado local y volvemos a la pantalla de login. Idempotente:
+// múltiples requests fallando en paralelo no muestran múltiples toasts ni
+// pisan el login que ya está en pantalla.
+let _sessionExpiredFlag = false;
+function handleSessionExpired() {
+  if (_sessionExpiredFlag) return;
+  if (!AUTH.user) return; // aún no autenticados: dejá que el flujo de login normal siga
+  _sessionExpiredFlag = true;
+  AUTH.user  = null;
+  AUTH.perms = new Set();
+  try { closeModal(); } catch (_) {}
+  try { cerrarCtxMenu(); } catch (_) {}
+  const view = document.getElementById('view');
+  if (view) view.innerHTML = '';
+  showLoginScreen();
+  toast('Sesión expirada. Ingresá de nuevo.', { error: true });
+  setTimeout(() => { _sessionExpiredFlag = false; }, 1500);
 }
 
 // ------------------------- Polling de versión -------------------------
@@ -19419,12 +19499,16 @@ route('/movistar', async (mount) => {
 
 // ------------------------- Vista: Movistar > SIMs (ABM) -------------------------
 const msimFiltrosDefaults = {
-  q: '', codigo: '', estado: '',
+  q: '', codigo: '', nombre: '', linea: '', estado: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const msimFiltros = { ...msimFiltrosDefaults };
 let msimBuscadorTimer   = null;
 let msimFiltrosSnapshot = null;
+// Cache de los estados distintos actualmente presentes en la BD. Se refresca
+// con cada corrida de `cargarMsim` (viene en `stats.estados`) y se usa para
+// poblar el <select> de estado del modal de Filtros.
+let msimEstadosCache    = [];
 
 function msimFmtEstado(v) {
   if (v == null || v === '') return `<span class="badge badge-info">—</span>`;
@@ -19463,7 +19547,7 @@ route('/movistarsims', async (mount) => {
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" data-slot="total">—</span></div>
         <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value" data-slot="activas">—</span></div>
         <div class="stat-card"><span class="stat-label">Sin estado</span><span class="stat-value" data-slot="sin_estado">—</span></div>
-        <div class="stat-card"><span class="stat-label">Última sync</span><span class="stat-value" data-slot="ultima_sync" style="font-size:1rem">—</span></div>
+        <div class="stat-card"><span class="stat-label">Última sync</span><span class="stat-value" data-slot="ultima_sync">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -19480,31 +19564,30 @@ route('/movistarsims', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="msimRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
-        </div>
-        <div class="toolbar-right" style="gap:8px">
-          <button class="btn btn-ghost" id="msimSyncBtn" title="Sincronizar con Kite Platform">
-            <i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar con Kite
+          <button class="btn btn-ghost btn-icon" id="msimMenuBtn" title="Más acciones">
+            <i class="fa-solid fa-bars"></i>
           </button>
-          <button class="btn btn-primary" id="msimNuevoBtn">+ Nueva SIM</button>
         </div>
       </div>
 
       <div class="table-card">
         <table>
-          <thead>
+          <thead id="msimThead">
             <tr>
               <th style="width:90px">Código</th>
-              <th>Nombre</th>
-              <th>Línea</th>
-              <th style="width:180px">ICC</th>
-              <th style="width:120px">Estado</th>
-              <th style="width:130px">Límite datos</th>
+              ${thOrdenable('nombre',        'Nombre')}
+              <th>Alias</th>
+              ${thOrdenable('linea',         'Línea')}
               <th>MSISDN</th>
+              <th style="width:180px">ICC</th>
+              ${thOrdenable('estado',        'Estado', 'width:120px')}
+              ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
+              ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="msimTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -19523,6 +19606,12 @@ route('/movistarsims', async (mount) => {
       </button>
     </div>
 
+    <div id="msimToolbarMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="sincronizar" role="menuitem">
+        <i class="fa-solid fa-cloud-arrow-down"></i><span>Sincronizar</span>
+      </button>
+    </div>
+
     <div class="modal-backdrop" id="filtrosMsimBackdrop"
          onclick="if(event.target===this)cancelarFiltrosMsim()">
       <div class="modal" style="max-width:560px">
@@ -19538,7 +19627,19 @@ route('/movistarsims', async (mount) => {
             </div>
             <div class="form-group">
               <label>Estado</label>
-              <input type="text" id="fMsimEstado" placeholder="Ej: Activada" oninput="onFiltroMsim('estado', this.value)">
+              <select id="fMsimEstado" onchange="onFiltroMsim('estado', this.value)">
+                <option value="">Todos</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fMsimNombre" placeholder="Contiene…" oninput="onFiltroMsim('nombre', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Línea</label>
+              <input type="text" id="fMsimLinea" placeholder="Contiene…" oninput="onFiltroMsim('linea', this.value)" style="font-family:monospace">
             </div>
           </div>
           <div class="form-row form-row-3">
@@ -19554,6 +19655,8 @@ route('/movistarsims', async (mount) => {
                 <option value="linea">Línea</option>
                 <option value="icc">ICC</option>
                 <option value="estado">Estado</option>
+                <option value="limite_datos">Límite datos</option>
+                <option value="consumo_datos">Consumo datos</option>
                 <option value="msisdn">MSISDN</option>
                 <option value="actualizado">Última sync</option>
               </select>
@@ -19576,10 +19679,20 @@ route('/movistarsims', async (mount) => {
     </div>
   `;
 
-  $('#msimNuevoBtn').addEventListener('click',    () => abrirAltaEdicionMsim(null));
   $('#msimFiltrosBtn').addEventListener('click',  () => abrirModalFiltrosMsim());
   $('#msimRefrescarBtn').addEventListener('click',() => cargarMsim());
-  $('#msimSyncBtn').addEventListener('click',     () => sincronizarMsim());
+  activarSortEnThead($('#msimThead'), msimFiltros, () => cargarMsim());
+  $('#msimMenuBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu($('#msimToolbarMenu'), r.right - 190, r.bottom + 4, {});
+  });
+  $('#msimToolbarMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'sincronizar') sincronizarMsim();
+  });
 
   const inp = $('#msimSearch');
   const clr = $('#msimSearchClear');
@@ -19637,7 +19750,7 @@ route('/movistarsims', async (mount) => {
 async function cargarMsim() {
   const tbody = $('#msimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(msimFiltros).forEach(([k, v]) => {
@@ -19649,7 +19762,7 @@ async function cargarMsim() {
     pintarStatsMsim(data.stats);
     pintarTablaMsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -19661,24 +19774,28 @@ function pintarStatsMsim(s) {
   setSlot('total',      fmtNum(s?.total      ?? 0));
   setSlot('activas',    fmtNum(s?.activas    ?? 0));
   setSlot('sin_estado', fmtNum(s?.sin_estado ?? 0));
-  setSlot('ultima_sync', s?.ultima_sync ? String(s.ultima_sync).replace('T', ' ').slice(0, 16) : '—');
+  setSlot('ultima_sync', s?.ultima_sync ? fmtHaceLargo(s.ultima_sync) : '—');
+  actualizarSortIndicadores($('#msimThead'), msimFiltros);
+  if (Array.isArray(s?.estados)) msimEstadosCache = s.estados;
 }
 
 function pintarTablaMsim(rows) {
   const tbody = $('#msimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
       <td>${esc(r.nombre || '—')}</td>
+      <td>${esc(r.alias || '—')}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
+      <td style="font-family:monospace">${esc(r.msisdn || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
       <td>${msimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
-      <td style="font-family:monospace">${esc(r.msisdn || '—')}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
@@ -19722,10 +19839,22 @@ function refrescarBadgeFiltrosMsim() {
 function sincronizarControlesFiltrosMsim() {
   const f = msimFiltros;
   $('#fMsimCodigo').value  = f.codigo;
-  $('#fMsimEstado').value  = f.estado;
+  $('#fMsimNombre').value  = f.nombre;
+  $('#fMsimLinea').value   = f.linea;
   $('#fMsimLimite').value  = f.limite;
   $('#fMsimOrderBy').value = f.order_by;
   $('#fMsimDir').value     = f.dir;
+
+  // Poblar el <select> de estado desde la cache (viene del stats del ultimo
+  // cargarMsim). Si el valor actualmente filtrado no esta en la lista (raro
+  // pero puede pasar si el sync lo removio despues del ultimo load), lo
+  // agregamos para no perder la seleccion.
+  const sel  = $('#fMsimEstado');
+  const list = [...msimEstadosCache];
+  if (f.estado && !list.includes(f.estado)) list.push(f.estado);
+  sel.innerHTML = `<option value="">Todos</option>`
+    + list.map((e) => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+  sel.value = f.estado;
 }
 
 function abrirModalFiltrosMsim() {
@@ -19755,11 +19884,12 @@ window.limpiarFiltrosMsim     = limpiarFiltrosMsim;
 window.cerrarModalFiltrosMsim = cerrarModalFiltrosMsim;
 
 async function sincronizarMsim() {
-  const btn = $('#msimSyncBtn');
-  if (!btn) return;
-  const html = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;margin-right:6px"></div> Sincronizando…`;
+  const btn = $('#msimMenuBtn');
+  const html = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px"></div>`;
+  }
   try {
     const r = await apiSend('api/movistarsims_sync.php', 'POST', {});
     const ins = r?.insertados ?? 0, act = r?.actualizados ?? 0, tot = r?.fetched ?? 0;
@@ -19768,8 +19898,10 @@ async function sincronizarMsim() {
   } catch (e) {
     toast(e.message || 'Sync de Kite pendiente de implementación.', { error: true });
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = html;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = html;
+    }
   }
 }
 
@@ -19780,7 +19912,16 @@ async function abrirConsultarMsim(id) {
         <div class="modal-title">SIM Movistar <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-body">
+        <div class="modal-tabs">
+          <button type="button" class="modal-tab active" data-tab="general">General</button>
+          <button type="button" class="modal-tab"        data-tab="estado">Estado</button>
+        </div>
+        <div class="modal-tabpanel" data-panel="general">
+          <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+        </div>
+        <div class="modal-tabpanel" data-panel="estado" hidden></div>
+      </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cerrar</button>
         <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
@@ -19790,67 +19931,134 @@ async function abrirConsultarMsim(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionMsim(id); }
+    const tab = ev.target.closest('.modal-tab[data-tab]');
+    if (tab) {
+      const t = tab.dataset.tab;
+      $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+      $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== t; });
+    }
   });
 
   try {
     const r = await apiGet(`api/movistarsims.php?id=${id}`);
-    const card = (label, val, extra = '') => `
-      <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px${extra ? ';' + extra : ''}">
-        <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">${label}</div>
-        <div style="font-family:monospace">${val}</div>
-      </div>
-    `;
-    const est   = r.estado ? msimFmtEstado(r.estado)      : '—';
-    const gprs  = r.estado_gprs ? msimFmtEstado(r.estado_gprs) : '—';
-    const lte   = r.estado_lte  ? msimFmtEstado(r.estado_lte)  : '—';
-    const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
-    $('#modalRoot .modal-body').innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        ${card('Código',        `#${esc(r.id)}`)}
-        ${card('Nombre',        esc(r.nombre || '—'))}
-        ${card('Línea',         esc(r.linea  || '—'))}
-        ${card('ICC',           esc(r.icc    || '—'))}
-        ${card('Estado',        est)}
-        ${card('Estado GPRS',   gprs)}
-        ${card('Estado LTE',    lte)}
-        ${card('Límite datos',  esc(r.limite_datos || '—'))}
-        ${card('IMEI',          esc(r.imei   || '—'))}
-        ${card('MSISDN',        esc(r.msisdn || '—'))}
-        ${card('Última sync',   esc(sync), 'grid-column:1 / -1')}
-      </div>
-    `;
+    pintarConsultarMsimGeneral(r);
+    pintarConsultarMsimEstado(r);
   } catch (e) {
-    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    $('#modalRoot [data-panel="general"]').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
 
+function pintarConsultarMsimGeneral(r) {
+  const card = (label, val, extra = '') => `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px${extra ? ';' + extra : ''}">
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">${label}</div>
+      <div style="font-family:monospace">${val}</div>
+    </div>
+  `;
+  const est   = r.estado      ? msimFmtEstado(r.estado)      : '—';
+  const gprs  = r.estado_gprs ? msimFmtEstado(r.estado_gprs) : '—';
+  const lte   = r.estado_lte  ? msimFmtEstado(r.estado_lte)  : '—';
+  const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
+  $('#modalRoot [data-panel="general"]').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      ${card('Código',        `#${esc(r.id)}`)}
+      ${card('Nombre',        esc(r.nombre || '—'))}
+      ${card('Alias',         esc(r.alias  || '—'))}
+      ${card('Línea',         esc(r.linea  || '—'))}
+      ${card('MSISDN',        esc(r.msisdn || '—'))}
+      ${card('ICC',           esc(r.icc    || '—'))}
+      ${card('Estado',        est)}
+      ${card('Estado GPRS',   gprs)}
+      ${card('Estado LTE',    lte)}
+      ${card('Límite datos',  esc(r.limite_datos  || '—'))}
+      ${card('Consumo datos', esc(r.consumo_datos || '—'))}
+      ${card('IMEI',          esc(r.imei   || '—'))}
+      ${card('Última sync',   esc(sync), 'grid-column:1 / -1')}
+    </div>
+  `;
+}
+
+// Panel Estado del modal Consultar de Movistar. Muestra el estado actual
+// grande y dos botones para cambiarlo en Kite (activar/desactivar). El
+// cambio en Kite es asincronico — la BD se actualiza en la proxima corrida
+// del sync — por eso no toco `movistarsims.estado` aca; solo aviso al
+// usuario que la operacion se envio.
+function pintarConsultarMsimEstado(r) {
+  const activa = /^activ(a|ada|e)$/i.test(String(r.estado || ''));
+  $('#modalRoot [data-panel="estado"]').innerHTML = `
+    <div style="text-align:center;padding:20px 0 30px">
+      <div style="font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Estado actual</div>
+      <div style="font-size:2.4rem;font-weight:700;color:var(--text);line-height:1.1">${esc(r.estado || '—')}</div>
+      <div style="font-size:.82rem;color:var(--muted);margin-top:8px">ICC ${esc(r.icc || '—')}</div>
+    </div>
+    <div style="display:flex;gap:12px;justify-content:center;padding-bottom:10px">
+      <button class="btn btn-primary" data-lifecycle="ACTIVATED"   ${activa  ? 'disabled' : ''}>
+        <i class="fa-solid fa-play"></i> Activar
+      </button>
+      <button class="btn btn-danger" data-lifecycle="DEACTIVATED" ${!activa ? 'disabled' : ''}>
+        <i class="fa-solid fa-stop"></i> Desactivar
+      </button>
+    </div>
+    <div style="font-size:.82rem;color:var(--muted);text-align:center;margin-top:14px;line-height:1.5">
+      El cambio se envia a Kite Platform. La actualizacion se refleja en el listado
+      despues de la proxima sincronizacion (unos segundos a un par de minutos).
+    </div>
+  `;
+
+  $$('#modalRoot [data-panel="estado"] [data-lifecycle]').forEach((b) => {
+    b.addEventListener('click', () => cambiarEstadoMsim(r.id, b.dataset.lifecycle, b));
+  });
+}
+
+async function cambiarEstadoMsim(id, target, btn) {
+  const label = target === 'ACTIVATED' ? 'Activar' : 'Desactivar';
+  const ok = await confirmar({
+    title: `${label} SIM`,
+    message: `Se enviara el pedido a Kite Platform para ${label.toLowerCase()} esta SIM.`,
+    confirmText: label,
+  });
+  if (!ok) return;
+  const html = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;margin-right:6px"></div> Enviando…`;
+  try {
+    await apiSend('api/movistarsims_lifecycle.php', 'POST', { id, target });
+    toast(`Pedido enviado a Kite (${label.toLowerCase()}). El estado se refresca en la proxima sincronizacion.`);
+    closeModal();
+    cargarMsim();
+  } catch (e) {
+    toast(e.message, { error: true });
+    btn.disabled = false;
+    btn.innerHTML = html;
+  }
+}
+
+// Edicion: `nombre` es el unico campo editable. El resto (alias, linea, icc,
+// estado, limite_datos, consumo_datos, imei, msisdn, ...) proviene del sync
+// con Kite y se sobreescribe en cada corrida — mostrarlos como editables
+// confundiria al usuario. Los datos read-only estan en el modal Consultar.
 async function abrirAltaEdicionMsim(id) {
-  const esEdicion = id != null;
   openModal(`
-    <div class="modal" style="max-width:720px">
+    <div class="modal" style="max-width:520px">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar SIM <span class="modal-subtitle">#${id}</span>` : 'Nueva SIM'}</div>
+        <div class="modal-title">Editar SIM <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formMsimHtml({})}
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const r = await apiGet(`api/movistarsims.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formMsimHtml(r);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  try {
+    const r = await apiGet(`api/movistarsims.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = formMsimHtml(r);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
@@ -19864,49 +20072,12 @@ async function abrirAltaEdicionMsim(id) {
 function formMsimHtml(r) {
   const v = (k) => esc(r?.[k] ?? '');
   return `
-    <div class="form-row">
-      <div class="form-group">
-        <label>Nombre <span style="color:var(--muted);font-weight:400">(field1)</span></label>
-        <input type="text" id="msimNombre" maxlength="255" value="${v('nombre')}">
-      </div>
-      <div class="form-group">
-        <label>Línea</label>
-        <input type="text" id="msimLinea" maxlength="30" value="${v('linea')}" style="font-family:monospace">
-      </div>
+    <div class="form-group">
+      <label>Nombre</label>
+      <input type="text" id="msimNombre" maxlength="255" value="${v('nombre')}" autofocus>
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>ICC</label>
-        <input type="text" id="msimIcc" maxlength="25" value="${v('icc')}" style="font-family:monospace">
-      </div>
-      <div class="form-group">
-        <label>MSISDN</label>
-        <input type="text" id="msimMsisdn" maxlength="30" value="${v('msisdn')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Estado</label>
-        <input type="text" id="msimEstado" maxlength="40" value="${v('estado')}">
-      </div>
-      <div class="form-group">
-        <label>Estado GPRS</label>
-        <input type="text" id="msimEstadoGprs" maxlength="40" value="${v('estado_gprs')}">
-      </div>
-      <div class="form-group">
-        <label>Estado LTE</label>
-        <input type="text" id="msimEstadoLte" maxlength="40" value="${v('estado_lte')}">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Límite datos</label>
-        <input type="text" id="msimLimiteDatos" maxlength="40" value="${v('limite_datos')}">
-      </div>
-      <div class="form-group">
-        <label>Número IMEI</label>
-        <input type="text" id="msimImei" maxlength="30" value="${v('imei')}" style="font-family:monospace">
-      </div>
+    <div style="font-size:.82rem;color:var(--muted);margin-top:6px">
+      El resto de los datos de la SIM se actualiza automaticamente desde Kite Platform en cada sincronizacion.
     </div>
     <div class="field-error" id="msimFormError" style="display:none"></div>
   `;
@@ -19917,26 +20088,13 @@ async function guardarMsim(id, btn) {
   err.style.display = 'none';
 
   const payload = {
-    nombre:       $('#msimNombre').value.trim()       || null,
-    linea:        $('#msimLinea').value.trim()        || null,
-    icc:          $('#msimIcc').value.trim()          || null,
-    estado:       $('#msimEstado').value.trim()       || null,
-    estado_gprs:  $('#msimEstadoGprs').value.trim()   || null,
-    estado_lte:   $('#msimEstadoLte').value.trim()    || null,
-    limite_datos: $('#msimLimiteDatos').value.trim()  || null,
-    imei:         $('#msimImei').value.trim()         || null,
-    msisdn:       $('#msimMsisdn').value.trim()       || null,
+    nombre: $('#msimNombre').value.trim() || null,
   };
 
   btn.disabled = true;
   try {
-    if (id == null) {
-      await apiSend('api/movistarsims.php', 'POST', payload);
-      toast('SIM creada.');
-    } else {
-      await apiSend(`api/movistarsims.php?id=${id}`, 'PUT', payload);
-      toast('SIM actualizada.');
-    }
+    await apiSend(`api/movistarsims.php?id=${id}`, 'PUT', payload);
+    toast('SIM actualizada.');
     closeModal();
     cargarMsim();
   } catch (e) {
@@ -20406,7 +20564,7 @@ route('/clarosims', async (mount) => {
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" data-slot="total">—</span></div>
         <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value" data-slot="activas">—</span></div>
         <div class="stat-card"><span class="stat-label">Sin estado</span><span class="stat-value" data-slot="sin_estado">—</span></div>
-        <div class="stat-card"><span class="stat-label">Última sync</span><span class="stat-value" data-slot="ultima_sync" style="font-size:1rem">—</span></div>
+        <div class="stat-card"><span class="stat-label">Última sync</span><span class="stat-value" data-slot="ultima_sync">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -20423,28 +20581,36 @@ route('/clarosims', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="csimRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="csimSyncBtn" title="Más acciones">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
-        <div class="toolbar-right" style="gap:8px">
-          <button class="btn btn-primary" id="csimNuevoBtn">+ Nueva SIM</button>
-        </div>
+      </div>
+
+      <div id="csimSyncCtxMenu" class="ctx-menu" role="menu">
+        <button type="button" data-action="sincronizar" role="menuitem">
+          <i class="fa-solid fa-cloud-arrow-down"></i><span>Sincronizar</span>
+        </button>
       </div>
 
       <div class="table-card">
         <table>
-          <thead>
+          <thead id="csimThead">
             <tr>
               <th style="width:90px">Código</th>
-              <th>Nombre</th>
-              <th>Línea</th>
-              <th style="width:180px">ICC</th>
-              <th style="width:120px">Estado</th>
-              <th style="width:130px">Límite datos</th>
+              ${thOrdenable('nombre',        'Nombre')}
+              <th>Alias</th>
+              ${thOrdenable('linea',         'Línea')}
               <th>MSISDN</th>
+              <th style="width:180px">ICC</th>
+              ${thOrdenable('estado',        'Estado', 'width:120px')}
+              ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
+              ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="csimTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -20494,6 +20660,8 @@ route('/clarosims', async (mount) => {
                 <option value="linea">Línea</option>
                 <option value="icc">ICC</option>
                 <option value="estado">Estado</option>
+                <option value="limite_datos">Límite datos</option>
+                <option value="consumo_datos">Consumo datos</option>
                 <option value="msisdn">MSISDN</option>
                 <option value="actualizado">Última sync</option>
               </select>
@@ -20516,9 +20684,20 @@ route('/clarosims', async (mount) => {
     </div>
   `;
 
-  $('#csimNuevoBtn').addEventListener('click',    () => abrirAltaEdicionCsim(null));
   $('#csimFiltrosBtn').addEventListener('click',  () => abrirModalFiltrosCsim());
   $('#csimRefrescarBtn').addEventListener('click',() => cargarCsim());
+  activarSortEnThead($('#csimThead'), csimFiltros, () => cargarCsim());
+  $('#csimSyncBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu($('#csimSyncCtxMenu'), r.right - 190, r.bottom + 4, {});
+  });
+  $('#csimSyncCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'sincronizar') abrirModalSincCsim();
+  });
 
   const inp = $('#csimSearch');
   const clr = $('#csimSearchClear');
@@ -20576,7 +20755,7 @@ route('/clarosims', async (mount) => {
 async function cargarCsim() {
   const tbody = $('#csimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(csimFiltros).forEach(([k, v]) => {
@@ -20588,7 +20767,7 @@ async function cargarCsim() {
     pintarStatsCsim(data.stats);
     pintarTablaCsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -20600,24 +20779,27 @@ function pintarStatsCsim(s) {
   setSlot('total',      fmtNum(s?.total      ?? 0));
   setSlot('activas',    fmtNum(s?.activas    ?? 0));
   setSlot('sin_estado', fmtNum(s?.sin_estado ?? 0));
-  setSlot('ultima_sync', s?.ultima_sync ? String(s.ultima_sync).replace('T', ' ').slice(0, 16) : '—');
+  setSlot('ultima_sync', s?.ultima_sync ? fmtHaceLargo(s.ultima_sync) : '—');
+  actualizarSortIndicadores($('#csimThead'), csimFiltros);
 }
 
 function pintarTablaCsim(rows) {
   const tbody = $('#csimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
       <td>${esc(r.nombre || '—')}</td>
+      <td>${esc(r.alias || '—')}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
+      <td style="font-family:monospace">${esc(r.msisdn || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
       <td>${csimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
-      <td style="font-family:monospace">${esc(r.msisdn || '—')}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
@@ -20693,6 +20875,127 @@ window.cancelarFiltrosCsim    = cancelarFiltrosCsim;
 window.limpiarFiltrosCsim     = limpiarFiltrosCsim;
 window.cerrarModalFiltrosCsim = cerrarModalFiltrosCsim;
 
+// -------------------------- Sincronizar SIMs Claro ---------------------------
+// El portal iotgestion.claro.com.ar tiene un WAF con fingerprint dinamico que
+// bloquea a PHP+cURL, asi que el scraping lo hace el agente externo `openclaw`
+// (ver api/clarosims_sync_pedido.php + api/clarosims_sync.php). Este modal es
+// el disparador: PUT api/clarosims_sync_pedido.php marca la bandera y openclaw
+// la levanta en el proximo poll (cada 5 min).
+
+function abrirModalSincCsim() {
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar SIMs Claro</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 12px;line-height:1.55">
+          Se le pedirá al agente <strong>openclaw</strong> que traiga el listado
+          actualizado de líneas activas desde el portal de Claro y lo cargue en
+          este panel.
+        </p>
+        <p style="margin:0;line-height:1.55;color:var(--muted);font-size:.9rem">
+          openclaw pollea el pedido cada 5&nbsp;min. Desde que apretás
+          <em>Sincronizar</em> hasta ver las filas actualizadas suelen pasar
+          entre <strong>5 y 15 minutos</strong>. Podés cerrar este modal, el
+          proceso corre en segundo plano.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-ghost"   data-act="detalles">Detalles</button>
+        <button class="btn btn-primary" data-act="sincronizar">
+          <i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar
+        </button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')      closeModal();
+    if (a.dataset.act === 'detalles')   abrirModalDetallesSincCsim();
+    if (a.dataset.act === 'sincronizar') await disparaSincCsim(a);
+  });
+}
+
+function abrirModalDetallesSincCsim() {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fa-solid fa-circle-info"></i> Detalles del proceso de sincronización</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body" style="line-height:1.6">
+        <p style="margin:0 0 12px">
+          El portal <code>iotgestion.claro.com.ar</code> no expone una API pública
+          y está protegido por un WAF que bloquea cualquier cliente HTTP puro
+          (PHP&nbsp;+&nbsp;cURL). Para no depender de un scraper frágil dentro del
+          backend, la sincronización la ejecuta un agente externo llamado
+          <strong>openclaw</strong>, con navegador real.
+        </p>
+        <p style="margin:0 0 8px;font-weight:600">Flujo completo</p>
+        <ol style="margin:0 0 12px 22px;padding:0">
+          <li>Apretás <em>Sincronizar</em>. El panel hace
+              <code>PUT&nbsp;api/clarosims_sync_pedido.php</code> y se guarda
+              la bandera <code>pedido_clarosims_sincronizar&nbsp;=&nbsp;1</code>
+              en la tabla <code>parametros</code>.</li>
+          <li>openclaw pollea cada 5&nbsp;min haciendo
+              <code>POST&nbsp;api/clarosims_sync_pedido.php</code> con su
+              <em>API key</em> (fila de <code>aplicaciones</code>). Cuando ve la
+              bandera en 1, la baja a 0 y arranca a trabajar.</li>
+          <li>openclaw se loguea en el portal de Claro, pagina el listado de
+              líneas activas y arma un CSV con las columnas
+              <code>iccid</code>, <code>msisdn</code>, <code>estado</code>, etc.</li>
+          <li>openclaw envía el CSV con
+              <code>POST&nbsp;api/clarosims_sync.php</code> (misma API key). El
+              endpoint hace UPSERT por ICCID sobre <code>clarosims</code> —
+              actualiza líneas existentes y agrega las nuevas, sin pisar los
+              campos que hayas editado a mano (nombre, IMEI, límite de datos).</li>
+        </ol>
+        <p style="margin:0 0 8px;font-weight:600">Tiempos esperados</p>
+        <ul style="margin:0 0 12px 22px;padding:0">
+          <li>Espera al próximo poll: hasta 5&nbsp;min.</li>
+          <li>Scraping&nbsp;+&nbsp;paginación del portal: hasta 10&nbsp;min.</li>
+          <li>Total: <strong>≤&nbsp;15&nbsp;min</strong> desde el click.</li>
+        </ul>
+        <p style="margin:0;color:var(--muted);font-size:.88rem">
+          Si apretás <em>Sincronizar</em> varias veces mientras hay un pedido
+          pendiente, no pasa nada: la bandera es idempotente y openclaw
+          igualmente va a correr una sola vez.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close') closeModal();
+  });
+}
+
+async function disparaSincCsim(btn) {
+  const html = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;margin-right:6px"></div> Solicitando…`;
+  try {
+    const r = await apiSend('api/clarosims_sync_pedido.php', 'PUT', {});
+    const msg = r?.ya_pendiente
+      ? 'Ya hay un pedido en curso — openclaw lo va a levantar en el próximo poll.'
+      : 'Pedido enviado. openclaw lo va a levantar en el próximo poll (hasta 5 min).';
+    toast(msg);
+    closeModal();
+  } catch (e) {
+    toast(e.message || 'No se pudo enviar el pedido.', { error: true });
+    btn.disabled = false;
+    btn.innerHTML = html;
+  }
+}
+
 async function abrirConsultarCsim(id) {
   openModal(`
     <div class="modal" style="width:80vw;max-width:820px">
@@ -20700,7 +21003,16 @@ async function abrirConsultarCsim(id) {
         <div class="modal-title">SIM Claro <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-body">
+        <div class="modal-tabs">
+          <button type="button" class="modal-tab active" data-tab="general">General</button>
+          <button type="button" class="modal-tab"        data-tab="estado">Estado</button>
+        </div>
+        <div class="modal-tabpanel" data-panel="general">
+          <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+        </div>
+        <div class="modal-tabpanel" data-panel="estado" hidden></div>
+      </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cerrar</button>
         <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
@@ -20710,67 +21022,102 @@ async function abrirConsultarCsim(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionCsim(id); }
+    const tab = ev.target.closest('.modal-tab[data-tab]');
+    if (tab) {
+      const t = tab.dataset.tab;
+      $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+      $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== t; });
+    }
   });
 
   try {
     const r = await apiGet(`api/clarosims.php?id=${id}`);
-    const card = (label, val, extra = '') => `
-      <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px${extra ? ';' + extra : ''}">
-        <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">${label}</div>
-        <div style="font-family:monospace">${val}</div>
-      </div>
-    `;
-    const est   = r.estado ? csimFmtEstado(r.estado)      : '—';
-    const gprs  = r.estado_gprs ? csimFmtEstado(r.estado_gprs) : '—';
-    const lte   = r.estado_lte  ? csimFmtEstado(r.estado_lte)  : '—';
-    const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
-    $('#modalRoot .modal-body').innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        ${card('Código',        `#${esc(r.id)}`)}
-        ${card('Nombre',        esc(r.nombre || '—'))}
-        ${card('Línea',         esc(r.linea  || '—'))}
-        ${card('ICC',           esc(r.icc    || '—'))}
-        ${card('Estado',        est)}
-        ${card('Estado GPRS',   gprs)}
-        ${card('Estado LTE',    lte)}
-        ${card('Límite datos',  esc(r.limite_datos || '—'))}
-        ${card('IMEI',          esc(r.imei   || '—'))}
-        ${card('MSISDN',        esc(r.msisdn || '—'))}
-        ${card('Última sync',   esc(sync), 'grid-column:1 / -1')}
-      </div>
-    `;
+    pintarConsultarCsimGeneral(r);
+    pintarConsultarCsimEstado(r);
   } catch (e) {
-    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    $('#modalRoot [data-panel="general"]').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
 
+function pintarConsultarCsimGeneral(r) {
+  const card = (label, val, extra = '') => `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px${extra ? ';' + extra : ''}">
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">${label}</div>
+      <div style="font-family:monospace">${val}</div>
+    </div>
+  `;
+  const est   = r.estado      ? csimFmtEstado(r.estado)      : '—';
+  const gprs  = r.estado_gprs ? csimFmtEstado(r.estado_gprs) : '—';
+  const lte   = r.estado_lte  ? csimFmtEstado(r.estado_lte)  : '—';
+  const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
+  $('#modalRoot [data-panel="general"]').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      ${card('Código',        `#${esc(r.id)}`)}
+      ${card('Nombre',        esc(r.nombre || '—'))}
+      ${card('Alias',         esc(r.alias  || '—'))}
+      ${card('Línea',         esc(r.linea  || '—'))}
+      ${card('MSISDN',        esc(r.msisdn || '—'))}
+      ${card('ICC',           esc(r.icc    || '—'))}
+      ${card('Estado',        est)}
+      ${card('Estado GPRS',   gprs)}
+      ${card('Estado LTE',    lte)}
+      ${card('Límite datos',  esc(r.limite_datos  || '—'))}
+      ${card('Consumo datos', esc(r.consumo_datos || '—'))}
+      ${card('IMEI',          esc(r.imei   || '—'))}
+      ${card('Última sync',   esc(sync), 'grid-column:1 / -1')}
+    </div>
+  `;
+}
+
+// Panel Estado del modal Consultar de Claro. Mismo layout visual que el de
+// Movistar pero los botones estan deshabilitados: el portal de Claro no
+// expone una API para cambiar el estado del ciclo de vida — hay que hacerlo
+// a mano en la autogestion. Se dejan visibles con `disabled` para que el
+// usuario entienda que la accion existe, pero no se puede disparar desde aca.
+function pintarConsultarCsimEstado(r) {
+  $('#modalRoot [data-panel="estado"]').innerHTML = `
+    <div style="text-align:center;padding:20px 0 30px">
+      <div style="font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Estado actual</div>
+      <div style="font-size:2.4rem;font-weight:700;color:var(--text);line-height:1.1">${esc(r.estado || '—')}</div>
+      <div style="font-size:.82rem;color:var(--muted);margin-top:8px">ICC ${esc(r.icc || '—')}</div>
+    </div>
+    <div style="display:flex;gap:12px;justify-content:center;padding-bottom:10px">
+      <button class="btn btn-primary" disabled>
+        <i class="fa-solid fa-play"></i> Activar
+      </button>
+      <button class="btn btn-danger" disabled>
+        <i class="fa-solid fa-stop"></i> Desactivar
+      </button>
+    </div>
+  `;
+}
+
+// Edicion: `nombre` es el unico campo editable. El resto proviene del CSV
+// que sube openclaw y se sobreescribe en cada corrida — mostrarlos como
+// editables confundiria al usuario. Los datos read-only estan en el modal
+// Consultar.
 async function abrirAltaEdicionCsim(id) {
-  const esEdicion = id != null;
   openModal(`
-    <div class="modal" style="max-width:720px">
+    <div class="modal" style="max-width:520px">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar SIM <span class="modal-subtitle">#${id}</span>` : 'Nueva SIM'}</div>
+        <div class="modal-title">Editar SIM <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formCsimHtml({})}
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const r = await apiGet(`api/clarosims.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formCsimHtml(r);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  try {
+    const r = await apiGet(`api/clarosims.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = formCsimHtml(r);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
@@ -20784,49 +21131,12 @@ async function abrirAltaEdicionCsim(id) {
 function formCsimHtml(r) {
   const v = (k) => esc(r?.[k] ?? '');
   return `
-    <div class="form-row">
-      <div class="form-group">
-        <label>Nombre</label>
-        <input type="text" id="csimNombre" maxlength="255" value="${v('nombre')}">
-      </div>
-      <div class="form-group">
-        <label>Línea</label>
-        <input type="text" id="csimLinea" maxlength="30" value="${v('linea')}" style="font-family:monospace">
-      </div>
+    <div class="form-group">
+      <label>Nombre</label>
+      <input type="text" id="csimNombre" maxlength="255" value="${v('nombre')}" autofocus>
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>ICC</label>
-        <input type="text" id="csimIcc" maxlength="25" value="${v('icc')}" style="font-family:monospace">
-      </div>
-      <div class="form-group">
-        <label>MSISDN</label>
-        <input type="text" id="csimMsisdn" maxlength="30" value="${v('msisdn')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Estado</label>
-        <input type="text" id="csimEstado" maxlength="40" value="${v('estado')}">
-      </div>
-      <div class="form-group">
-        <label>Estado GPRS</label>
-        <input type="text" id="csimEstadoGprs" maxlength="40" value="${v('estado_gprs')}">
-      </div>
-      <div class="form-group">
-        <label>Estado LTE</label>
-        <input type="text" id="csimEstadoLte" maxlength="40" value="${v('estado_lte')}">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Límite datos</label>
-        <input type="text" id="csimLimiteDatos" maxlength="40" value="${v('limite_datos')}">
-      </div>
-      <div class="form-group">
-        <label>Número IMEI</label>
-        <input type="text" id="csimImei" maxlength="30" value="${v('imei')}" style="font-family:monospace">
-      </div>
+    <div style="font-size:.82rem;color:var(--muted);margin-top:6px">
+      El resto de los datos de la SIM se actualiza automaticamente desde el portal de Claro en cada sincronizacion.
     </div>
     <div class="field-error" id="csimFormError" style="display:none"></div>
   `;
@@ -20837,26 +21147,13 @@ async function guardarCsim(id, btn) {
   err.style.display = 'none';
 
   const payload = {
-    nombre:       $('#csimNombre').value.trim()       || null,
-    linea:        $('#csimLinea').value.trim()        || null,
-    icc:          $('#csimIcc').value.trim()          || null,
-    estado:       $('#csimEstado').value.trim()       || null,
-    estado_gprs:  $('#csimEstadoGprs').value.trim()   || null,
-    estado_lte:   $('#csimEstadoLte').value.trim()    || null,
-    limite_datos: $('#csimLimiteDatos').value.trim()  || null,
-    imei:         $('#csimImei').value.trim()         || null,
-    msisdn:       $('#csimMsisdn').value.trim()       || null,
+    nombre: $('#csimNombre').value.trim() || null,
   };
 
   btn.disabled = true;
   try {
-    if (id == null) {
-      await apiSend('api/clarosims.php', 'POST', payload);
-      toast('SIM creada.');
-    } else {
-      await apiSend(`api/clarosims.php?id=${id}`, 'PUT', payload);
-      toast('SIM actualizada.');
-    }
+    await apiSend(`api/clarosims.php?id=${id}`, 'PUT', payload);
+    toast('SIM actualizada.');
     closeModal();
     cargarCsim();
   } catch (e) {
