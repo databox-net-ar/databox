@@ -1208,6 +1208,28 @@ CREATE TABLE `dataphonechips`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for datarocket_dominios
+-- ----------------------------
+DROP TABLE IF EXISTS `datarocket_dominios`;
+CREATE TABLE `datarocket_dominios`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `dominio` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `titular_dominio` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `entidad_registrante` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `responsable` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'Databox',
+  `fecha_registro` date NULL DEFAULT NULL,
+  `fecha_ultima_renovacion` date NULL DEFAULT NULL,
+  `fecha_siguiente_renovacion` date NULL DEFAULT NULL,
+  `costo_renovacion` decimal(12, 2) NULL DEFAULT NULL,
+  `moneda` varchar(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'ARS',
+  `fecha_creacion` datetime(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uq_datarocket_dominios_dominio`(`dominio`) USING BTREE,
+  INDEX `idx_datarocket_dominios_prox_renov`(`fecha_siguiente_renovacion`) USING BTREE,
+  INDEX `idx_datarocket_dominios_responsable`(`responsable`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for datarocketcampanas
 -- ----------------------------
 DROP TABLE IF EXISTS `datarocketcampanas`;

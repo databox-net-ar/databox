@@ -260,6 +260,7 @@ const ROUTE_PERMS = {
 
   '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
+  '/datarocketdominios':       { perm:   'datarocket.dominios.consultar' },
   '/datarocketmensajes':       { perm:   'datarocket.mensajes.consultar' },
 
   '/datasale':                 { prefix: 'datasale.' },
@@ -11256,6 +11257,11 @@ route('/datarocket', async (mount) => {
         <span class="tile-title">Contactos</span>
         <span class="tile-desc">Base de contactos destino con nombre, canal, teléfono, email y estado.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketdominios'">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Dominios</span>
+        <span class="tile-desc">Catálogo de dominios DNS administrados por Databox con titular, responsable, fechas y costo de renovación.</span>
+      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketmensajes'">
         <span class="tile-icon">✉️</span>
         <span class="tile-title">Mensajes</span>
@@ -11264,6 +11270,619 @@ route('/datarocket', async (mount) => {
     </div>
   `;
 }, 'Datarocket');
+
+// ------------------------- Vista: Datarocket > Dominios (ABM) -------------------------
+// Catálogo de dominios DNS administrados por Databox. Portado del módulo
+// `dominios` de dex sin la columna `cuenta_id`. Estructura y patrones
+// tomados de datacount_clientes (misma skill abm_design).
+const DRDO_API           = 'api/datarocketdominios.php';
+const DRDO_RESPONSABLES  = ['Databox', 'Cliente'];
+const DRDO_MONEDAS       = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
+
+let drdoItems            = [];
+let drdoBusqueda         = '';
+let drdoFiltroCodigo     = '';
+let drdoFiltroResponsable = '';
+let drdoFiltroLimite     = 100;
+let drdoFiltroOrden      = 'id';
+let drdoFiltroDir        = 'desc';
+let drdoEditandoId       = null;
+let drdoBuscadorTimer    = null;
+let drdoFiltrosSnapshot  = null;
+
+function drdoResponsableBadge(r) {
+  if (!r) return `<span class="badge badge-info">—</span>`;
+  const cls = r === 'Databox' ? 'badge-success' : 'badge-info';
+  return `<span class="badge ${cls}">${esc(r)}</span>`;
+}
+
+function drdoFmtFecha(f) {
+  if (!f) return '—';
+  const s = String(f).substring(0, 10);
+  const [y, m, d] = s.split('-');
+  if (!y || !m || !d) return s;
+  return `${d}/${m}/${y}`;
+}
+
+function drdoFmtMoneda(monto, moneda) {
+  if (monto === null || monto === undefined || monto === '') return '—';
+  const n = Number(monto);
+  if (!isFinite(n)) return '—';
+  const s = n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${moneda || 'ARS'} ${s}`;
+}
+
+function drdoFechaVencimientoInfo(fecha) {
+  if (!fecha) return { badge: '—', vencido: false, proximo: false };
+  const hoy   = new Date(); hoy.setHours(0, 0, 0, 0);
+  const [y, m, d] = String(fecha).substring(0, 10).split('-').map(Number);
+  const fx = new Date(y, (m || 1) - 1, d || 1); fx.setHours(0, 0, 0, 0);
+  const diff = Math.round((fx - hoy) / 86400000);
+  const txt = drdoFmtFecha(fecha);
+  if (diff < 0)  return { badge: `<span class="badge badge-danger">${txt}</span>`, vencido: true, proximo: false };
+  if (diff <= 30) return { badge: `<span class="badge badge-warn">${txt}</span>`, vencido: false, proximo: true };
+  return { badge: `<span class="badge badge-info">${txt}</span>`, vencido: false, proximo: false };
+}
+
+route('/datarocketdominios', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🌐</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los dominios son los nombres DNS que Databox administra: cada fila
+            registra el dominio, su titular WHOIS, la entidad registrante,
+            quién lo renueva (Databox o el cliente) y las fechas y el costo
+            del ciclo de renovación.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drdoStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="drdoStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Databox</span><span class="stat-value green" id="drdoStatDatabox">—</span></div>
+        <div class="stat-card"><span class="stat-label">Cliente</span><span class="stat-value" style="color:#93c5fd" id="drdoStatCliente">—</span></div>
+        <div class="stat-card"><span class="stat-label">Por vencer (30d)</span><span class="stat-value" style="color:#fcd34d" id="drdoStatProx">—</span></div>
+        <div class="stat-card"><span class="stat-label">Vencidos</span><span class="stat-value" style="color:#fca5a5" id="drdoStatVenc">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drdoSearch"
+                   placeholder="🔍 Buscar dominio, titular o entidad registrante…">
+            <button class="search-clear" id="drdoSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drdoFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drdoFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drdoRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drdoNuevoBtn">+ Nuevo dominio</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Dominio</th>
+              <th>Titular</th>
+              <th style="width:160px">Registrante</th>
+              <th style="width:110px">Responsable</th>
+              <th style="width:130px">Próx. renov.</th>
+              <th style="width:130px">Costo</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drdoTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="drdoCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDrdoBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrdo()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrdo()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrdoCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDrdo('codigo', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Responsable</label>
+            <div id="fDrdoResponsableChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrdoLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDrdo('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrdoOrden" onchange="onFiltroDrdo('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="dominio">Dominio</option>
+                <option value="fecha_registro">Fecha registro</option>
+                <option value="fecha_siguiente_renovacion">Próx. renovación</option>
+                <option value="costo_renovacion">Costo</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrdoDir" onchange="onFiltroDrdo('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrdo()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrdo()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrdo()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#drdoSearch');
+  const clr = $('#drdoSearchClear');
+  inp.value = drdoBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drdoBusqueda = inp.value.trim();
+    clearTimeout(drdoBuscadorTimer);
+    drdoBuscadorTimer = setTimeout(cargarDrdo, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; drdoBusqueda = ''; cargarDrdo();
+  });
+
+  $('#drdoFiltrosBtn').addEventListener('click', abrirModalFiltrosDrdo);
+  $('#drdoRefrescarBtn').addEventListener('click', cargarDrdo);
+  $('#drdoNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrdo(null));
+
+  const chipsCont = $('#fDrdoResponsableChips');
+  chipsCont.innerHTML = `
+    <button type="button" class="filter-chip" data-resp="">Todos</button>
+    ${DRDO_RESPONSABLES.map((r) => `
+      <button type="button" class="filter-chip" data-resp="${r}">${esc(r)}</button>
+    `).join('')}
+  `;
+  chipsCont.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    drdoFiltroResponsable = b.dataset.resp || '';
+    drdoSincronizarChipsResponsable();
+    drdoActualizarBadgeFiltros();
+    cargarDrdo();
+  });
+
+  $('#drdoCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDrdo(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDrdo(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDrdo(data.id);
+  });
+
+  $('#drdoTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#drdoCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDrdo(Number(tr.dataset.id));
+  });
+  $('#drdoTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#drdoCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  drdoActualizarBadgeFiltros();
+  await cargarDrdo();
+}, 'Datarocket › Dominios');
+
+async function cargarDrdo() {
+  const tbody = $('#drdoTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (drdoBusqueda)          qs.set('q', drdoBusqueda);
+  if (drdoFiltroResponsable) qs.set('responsable', drdoFiltroResponsable);
+  if (drdoFiltroLimite)      qs.set('limite', drdoFiltroLimite);
+  if (drdoFiltroOrden)       qs.set('orden', drdoFiltroOrden);
+  if (drdoFiltroDir)         qs.set('dir', drdoFiltroDir);
+
+  try {
+    const data = await apiGet(DRDO_API + (qs.toString() ? '?' + qs.toString() : ''));
+    drdoItems = data.items || [];
+    pintarStatsDrdo(data.stats || {});
+    renderDrdo();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDrdo(s) {
+  $('#drdoStatTotal').textContent   = fmtNum(s.total      ?? drdoItems.length);
+  $('#drdoStatDatabox').textContent = fmtNum(s.databox    ?? 0);
+  $('#drdoStatCliente').textContent = fmtNum(s.cliente    ?? 0);
+  $('#drdoStatProx').textContent    = fmtNum(s.por_vencer ?? 0);
+  $('#drdoStatVenc').textContent    = fmtNum(s.vencidos   ?? 0);
+}
+
+function renderDrdo() {
+  const tbody = $('#drdoTbody');
+  if (!tbody) return;
+  if (!drdoItems.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin dominios registrados.</td></tr>`;
+    return;
+  }
+
+  let filas = drdoItems;
+  if (drdoFiltroCodigo) {
+    const cod = Number(drdoFiltroCodigo);
+    filas = filas.filter((e) => e.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((e) => {
+    const venc = drdoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
+    return `
+    <tr data-id="${e.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${e.id}</code></td>
+      <td style="font-weight:600">${esc(e.dominio)}</td>
+      <td style="color:var(--muted)">${esc(e.titular_dominio || '—')}</td>
+      <td style="font-size:.85rem;color:var(--muted)">${esc(e.entidad_registrante || '—')}</td>
+      <td>${drdoResponsableBadge(e.responsable)}</td>
+      <td>${venc.badge}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+function abrirModalFiltrosDrdo() {
+  drdoFiltrosSnapshot = {
+    codigo:      drdoFiltroCodigo,
+    responsable: drdoFiltroResponsable,
+    limite:      drdoFiltroLimite,
+    orden:       drdoFiltroOrden,
+    dir:         drdoFiltroDir,
+  };
+  $('#fDrdoCodigo').value = drdoFiltroCodigo || '';
+  $('#fDrdoLimite').value = drdoFiltroLimite || 100;
+  $('#fDrdoOrden').value  = drdoFiltroOrden  || 'id';
+  $('#fDrdoDir').value    = drdoFiltroDir    || 'desc';
+  drdoSincronizarChipsResponsable();
+  document.getElementById('filtrosDrdoBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDrdo() {
+  document.getElementById('filtrosDrdoBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDrdo() {
+  if (drdoFiltrosSnapshot) {
+    drdoFiltroCodigo      = drdoFiltrosSnapshot.codigo;
+    drdoFiltroResponsable = drdoFiltrosSnapshot.responsable;
+    drdoFiltroLimite      = drdoFiltrosSnapshot.limite;
+    drdoFiltroOrden       = drdoFiltrosSnapshot.orden;
+    drdoFiltroDir         = drdoFiltrosSnapshot.dir;
+    drdoActualizarBadgeFiltros();
+    cargarDrdo();
+  }
+  cerrarModalFiltrosDrdo();
+}
+
+function limpiarFiltrosDrdo() {
+  drdoFiltroCodigo      = '';
+  drdoFiltroResponsable = '';
+  drdoFiltroLimite      = 100;
+  drdoFiltroOrden       = 'id';
+  drdoFiltroDir         = 'desc';
+  $('#fDrdoCodigo').value = '';
+  $('#fDrdoLimite').value = 100;
+  $('#fDrdoOrden').value  = 'id';
+  $('#fDrdoDir').value    = 'desc';
+  drdoSincronizarChipsResponsable();
+  drdoActualizarBadgeFiltros();
+  cargarDrdo();
+}
+
+function onFiltroDrdo(campo, valor) {
+  if (campo === 'codigo') drdoFiltroCodigo = (valor || '').trim();
+  if (campo === 'limite') drdoFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  drdoFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    drdoFiltroDir    = valor || 'desc';
+  drdoActualizarBadgeFiltros();
+  cargarDrdo();
+}
+
+function drdoSincronizarChipsResponsable() {
+  const chips = document.querySelectorAll('#fDrdoResponsableChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.resp || '') === (drdoFiltroResponsable || ''));
+  });
+}
+
+function drdoActualizarBadgeFiltros() {
+  let n = 0;
+  if (drdoFiltroCodigo)                 n++;
+  if (drdoFiltroResponsable)            n++;
+  if (Number(drdoFiltroLimite) !== 100) n++;
+  if (drdoFiltroOrden !== 'id')         n++;
+  if (drdoFiltroDir   !== 'desc')       n++;
+  const badge = $('#drdoFiltrosBadge');
+  const btn   = $('#drdoFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+function abrirAltaEdicionDrdo(id) {
+  drdoEditandoId = id;
+  const editando = !!id;
+  const e = editando ? drdoItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar dominio' : 'Nuevo dominio';
+  const opcResp = DRDO_RESPONSABLES.map((r) => `<option value="${r}">${esc(r)}</option>`).join('');
+  const opcMon  = DRDO_MONEDAS.map((m) => `<option value="${m}">${esc(m)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="drdoDominio">Dominio *</label>
+          <input type="text" id="drdoDominio" placeholder="ejemplo.com" maxlength="255"
+                 style="font-family:monospace" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="drdoTitular">Titular WHOIS</label>
+            <input type="text" id="drdoTitular" placeholder="Persona o razón social a nombre del dominio" maxlength="200" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="drdoEntidad">Entidad registrante</label>
+            <input type="text" id="drdoEntidad" placeholder="NIC Argentina, GoDaddy, Network Solutions…" maxlength="200" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="drdoResponsable">Responsable *</label>
+            <select id="drdoResponsable">${opcResp}</select>
+          </div>
+          <div class="form-group">
+            <label for="drdoFechaRegistro">Fecha registro</label>
+            <input type="date" id="drdoFechaRegistro">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="drdoFechaUltima">Última renovación</label>
+            <input type="date" id="drdoFechaUltima">
+          </div>
+          <div class="form-group">
+            <label for="drdoFechaSiguiente">Próxima renovación</label>
+            <input type="date" id="drdoFechaSiguiente">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="drdoCosto">Costo renovación</label>
+            <input type="number" id="drdoCosto" step="0.01" min="0" placeholder="0.00" style="font-family:monospace" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="drdoMoneda">Moneda *</label>
+            <select id="drdoMoneda">${opcMon}</select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && e) {
+    $('#drdoDominio').value        = e.dominio             || '';
+    $('#drdoTitular').value        = e.titular_dominio     || '';
+    $('#drdoEntidad').value        = e.entidad_registrante || '';
+    $('#drdoResponsable').value    = e.responsable         || 'Databox';
+    $('#drdoFechaRegistro').value  = (e.fecha_registro             || '').substring(0, 10);
+    $('#drdoFechaUltima').value    = (e.fecha_ultima_renovacion    || '').substring(0, 10);
+    $('#drdoFechaSiguiente').value = (e.fecha_siguiente_renovacion || '').substring(0, 10);
+    $('#drdoCosto').value          = e.costo_renovacion !== null && e.costo_renovacion !== undefined ? e.costo_renovacion : '';
+    $('#drdoMoneda').value         = e.moneda || 'ARS';
+  } else {
+    $('#drdoResponsable').value = 'Databox';
+    $('#drdoMoneda').value      = 'ARS';
+  }
+
+  setTimeout(() => $('#drdoDominio')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDrdo();
+  });
+}
+
+async function guardarDrdo() {
+  const dominio                    = $('#drdoDominio').value.trim().toLowerCase();
+  const titular_dominio            = $('#drdoTitular').value.trim();
+  const entidad_registrante        = $('#drdoEntidad').value.trim();
+  const responsable                = $('#drdoResponsable').value;
+  const fecha_registro             = $('#drdoFechaRegistro').value;
+  const fecha_ultima_renovacion    = $('#drdoFechaUltima').value;
+  const fecha_siguiente_renovacion = $('#drdoFechaSiguiente').value;
+  const costoStr                   = $('#drdoCosto').value.trim();
+  const moneda                     = $('#drdoMoneda').value;
+
+  if (!dominio) { toast('El dominio es obligatorio', { error: true }); return; }
+
+  const body = {
+    dominio,
+    titular_dominio,
+    entidad_registrante,
+    responsable,
+    fecha_registro,
+    fecha_ultima_renovacion,
+    fecha_siguiente_renovacion,
+    costo_renovacion: costoStr === '' ? null : Number(costoStr),
+    moneda,
+  };
+
+  try {
+    if (drdoEditandoId) {
+      await apiSend(`${DRDO_API}?id=${drdoEditandoId}`, 'PUT', body);
+      toast('Dominio actualizado');
+    } else {
+      await apiSend(DRDO_API, 'POST', body);
+      toast('Dominio creado');
+    }
+    closeModal();
+    drdoEditandoId = null;
+    await cargarDrdo();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+function abrirConsultaDrdo(id) {
+  const e = drdoItems.find((x) => x.id === id);
+  if (!e) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  const venc = drdoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
+
+  openModal(`
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🌐 <span class="modal-subtitle">${esc(e.dominio)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',              `<code>${e.id}</code>`)}
+          ${card('Responsable',         drdoResponsableBadge(e.responsable))}
+          ${card('Dominio',             `<span style="font-family:monospace">${esc(e.dominio)}</span>`, 'full')}
+          ${card('Titular WHOIS',       esc(e.titular_dominio || '—'), 'full')}
+          ${card('Entidad registrante', esc(e.entidad_registrante || '—'), 'full')}
+          ${card('Fecha registro',      esc(drdoFmtFecha(e.fecha_registro)))}
+          ${card('Última renovación',   esc(drdoFmtFecha(e.fecha_ultima_renovacion)))}
+          ${card('Próxima renovación',  venc.badge)}
+          ${card('Costo renovación',    `<span style="font-family:monospace">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</span>`)}
+          ${card('Alta',                esc(drdoFmtFecha(e.fecha_creacion)))}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrdo(id); }
+  });
+}
+
+async function eliminarDrdo(id) {
+  const e = drdoItems.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar dominio',
+    message:     `¿Eliminás el dominio "${e.dominio}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DRDO_API}?id=${id}`, 'DELETE');
+    toast('Dominio eliminado');
+    await cargarDrdo();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
 
 // ------------------------- Vista: Datarocket > Mensajes (ABM) -------------------------
 const drMsgFiltrosDefaults = {
