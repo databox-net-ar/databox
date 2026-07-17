@@ -136,25 +136,30 @@ function handleList(PDO $pdo, array $q): void {
     $orden   = in_array(($q['orden'] ?? ''), DCR_ORDENES, true) ? $q['orden'] : 'id';
     $dir     = strtolower((string)($q['dir'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
 
-    $where  = [];
-    $params = [];
+    // Filtros base compartidos entre listado y stats (todo menos `activo`).
+    $whereBase  = [];
+    $paramsBase = [];
 
     if ($search !== '') {
         // EMULATE_PREPARES=false → placeholders distintos por columna.
-        $where[] = '(r.nombre LIKE :s_nom OR e.nombre LIKE :s_emp OR c.codigo LIKE :s_cod OR c.nombre LIKE :s_cta)';
-        $params[':s_nom'] = "%{$search}%";
-        $params[':s_emp'] = "%{$search}%";
-        $params[':s_cod'] = "%{$search}%";
-        $params[':s_cta'] = "%{$search}%";
+        $whereBase[] = '(r.nombre LIKE :s_nom OR e.nombre LIKE :s_emp OR c.codigo LIKE :s_cod OR c.nombre LIKE :s_cta)';
+        $paramsBase[':s_nom'] = "%{$search}%";
+        $paramsBase[':s_emp'] = "%{$search}%";
+        $paramsBase[':s_cod'] = "%{$search}%";
+        $paramsBase[':s_cta'] = "%{$search}%";
     }
     if ($empresa > 0) {
-        $where[] = 'r.empresa = :empresa';
-        $params[':empresa'] = $empresa;
+        $whereBase[] = 'r.empresa = :empresa';
+        $paramsBase[':empresa'] = $empresa;
     }
     if ($cuenta > 0) {
-        $where[] = 'r.cuenta = :cuenta';
-        $params[':cuenta'] = $cuenta;
+        $whereBase[] = 'r.cuenta = :cuenta';
+        $paramsBase[':cuenta'] = $cuenta;
     }
+
+    // Listado: filtros base + filtro `activo` si vino en la query.
+    $where  = $whereBase;
+    $params = $paramsBase;
     if ($activo === '0' || $activo === '1') {
         $where[] = 'r.activo = :activo';
         $params[':activo'] = (int)$activo;
@@ -176,10 +181,32 @@ function handleList(PDO $pdo, array $q): void {
     $st->execute($params);
     $rows = array_map('normalizarFila', $st->fetchAll());
 
-    $total    = (int)$pdo->query('SELECT COUNT(*) FROM datacount_recurrentes')->fetchColumn();
-    $activos  = (int)$pdo->query('SELECT COUNT(*) FROM datacount_recurrentes WHERE activo = 1')->fetchColumn();
-    $ingresos = (float)$pdo->query('SELECT COALESCE(SUM(ingreso),0) FROM datacount_recurrentes WHERE activo = 1')->fetchColumn();
-    $egresos  = (float)$pdo->query('SELECT COALESCE(SUM(egreso),0)  FROM datacount_recurrentes WHERE activo = 1')->fetchColumn();
+    // Stats: se recalculan con los mismos filtros del listado. `Total` respeta
+    // también el filtro `activo` (para que coincida con el conteo visible),
+    // mientras que `Activos`/`Ingresos`/`Egresos` siempre fuerzan activo=1
+    // porque las tarjetas están rotuladas "(activos)".
+    $joinsStats = 'FROM datacount_recurrentes r
+                   LEFT JOIN datacount_empresas e ON e.id = r.empresa
+                   LEFT JOIN datacount_cuentas  c ON c.id = r.cuenta';
+    $sqlWhereTotal   = $sqlWhere;
+    $whereActivos    = array_merge($whereBase, ['r.activo = 1']);
+    $sqlWhereActivos = 'WHERE ' . implode(' AND ', $whereActivos);
+
+    $stTotal = $pdo->prepare("SELECT COUNT(*) {$joinsStats} {$sqlWhereTotal}");
+    $stTotal->execute($params);
+    $total = (int)$stTotal->fetchColumn();
+
+    $stActivos = $pdo->prepare("SELECT COUNT(*) {$joinsStats} {$sqlWhereActivos}");
+    $stActivos->execute($paramsBase);
+    $activos = (int)$stActivos->fetchColumn();
+
+    $stIngresos = $pdo->prepare("SELECT COALESCE(SUM(r.ingreso),0) {$joinsStats} {$sqlWhereActivos}");
+    $stIngresos->execute($paramsBase);
+    $ingresos = (float)$stIngresos->fetchColumn();
+
+    $stEgresos = $pdo->prepare("SELECT COALESCE(SUM(r.egreso),0) {$joinsStats} {$sqlWhereActivos}");
+    $stEgresos->execute($paramsBase);
+    $egresos = (float)$stEgresos->fetchColumn();
 
     jsonOk([
         'items' => $rows,

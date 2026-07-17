@@ -31,7 +31,7 @@ const DRDO_MONEDAS      = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
 const DRDO_ORDENES      = ['id', 'dominio', 'fecha_registro', 'fecha_siguiente_renovacion', 'costo_renovacion'];
 const DRDO_COLS         = 'id, dominio, titular_dominio, entidad_registrante, responsable, '
                         . 'fecha_registro, fecha_ultima_renovacion, fecha_siguiente_renovacion, '
-                        . 'costo_renovacion, moneda, fecha_creacion';
+                        . 'costo_renovacion, moneda, actualizado, fecha_creacion';
 
 try {
     requirePermCrud('datarocket.dominios');
@@ -74,6 +74,7 @@ function normalizarFilaDominio(array $r): array {
         'fecha_siguiente_renovacion'  => $r['fecha_siguiente_renovacion']  ?: null,
         'costo_renovacion'            => $r['costo_renovacion'] !== null ? (float)$r['costo_renovacion'] : null,
         'moneda'                      => (string)($r['moneda'] ?? 'ARS'),
+        'actualizado'                 => $r['actualizado']    ?? null,
         'fecha_creacion'              => $r['fecha_creacion'] ?? null,
     ];
 }

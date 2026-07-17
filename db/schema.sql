@@ -1222,6 +1222,7 @@ CREATE TABLE `datarocket_dominios`  (
   `fecha_siguiente_renovacion` date NULL DEFAULT NULL,
   `costo_renovacion` decimal(12, 2) NULL DEFAULT NULL,
   `moneda` varchar(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'ARS',
+  `actualizado` datetime(0) NULL DEFAULT NULL,
   `fecha_creacion` datetime(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uq_datarocket_dominios_dominio`(`dominio`) USING BTREE,

@@ -12,6 +12,52 @@ header('Content-Type: application/json; charset=utf-8');
 
 $hoy = new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires'));
 
+// Datarocket dominios: bloque "dominios por vencer en los proximos 30 dias".
+// Incluye tambien los ya vencidos (fecha_siguiente_renovacion < hoy). Se muestra
+// solo si el usuario tiene permiso de ver el modulo Dominios. Si no hay ninguno
+// por vencer ni vencido, `items` viene vacio y el UI renderiza "Todo bien".
+$datarocketDominios = null;
+if (hasPermission('datarocket.dominios.consultar')) {
+    $pdo = db();
+
+    $total = (int)$pdo->query('SELECT COUNT(*) FROM datarocket_dominios')->fetchColumn();
+
+    $porVencer = (int)$pdo->query('
+        SELECT COUNT(*) FROM datarocket_dominios
+         WHERE fecha_siguiente_renovacion IS NOT NULL
+           AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+           AND fecha_siguiente_renovacion >= CURDATE()
+    ')->fetchColumn();
+
+    $vencidos = (int)$pdo->query('
+        SELECT COUNT(*) FROM datarocket_dominios
+         WHERE fecha_siguiente_renovacion IS NOT NULL
+           AND fecha_siguiente_renovacion < CURDATE()
+    ')->fetchColumn();
+
+    $items = [];
+    if (($porVencer + $vencidos) > 0) {
+        $stmt = $pdo->query('
+            SELECT id, dominio, titular_dominio, responsable,
+                   fecha_siguiente_renovacion, costo_renovacion, moneda,
+                   DATEDIFF(fecha_siguiente_renovacion, CURDATE()) AS dias
+              FROM datarocket_dominios
+             WHERE fecha_siguiente_renovacion IS NOT NULL
+               AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+             ORDER BY fecha_siguiente_renovacion ASC
+             LIMIT 20
+        ');
+        $items = $stmt->fetchAll();
+    }
+
+    $datarocketDominios = [
+        'total'      => $total,
+        'por_vencer' => $porVencer,
+        'vencidos'   => $vencidos,
+        'items'      => $items,
+    ];
+}
+
 // AWS Cuentas: bloque de estado (total + criticas + listado de criticas).
 // Se muestra solo si el usuario tiene permiso de ver el modulo AWS Cuentas;
 // sino se omite silenciosamente para no filtrar la existencia del recurso.
@@ -19,7 +65,7 @@ $hoy = new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires'));
 // facturas_cantidad >= 2 (arrastra al menos la factura del mes anterior).
 $awsCuentas = null;
 if (hasPermission('plataformas.aws.cuentas.consultar')) {
-    $pdo    = db();
+    $pdo    = $pdo ?? db();
     $diaMes = (int)$hoy->format('j');
     $activo = $diaMes >= 5;
 
@@ -92,8 +138,9 @@ $data = [
         'campanias_activas' => 7,
         'clientes'          => 38,
     ],
-    'aws_cuentas'       => $awsCuentas,
-    'evolution_canales' => $evolutionCanales,
+    'datarocket_dominios' => $datarocketDominios,
+    'aws_cuentas'         => $awsCuentas,
+    'evolution_canales'   => $evolutionCanales,
 ];
 
 echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE);

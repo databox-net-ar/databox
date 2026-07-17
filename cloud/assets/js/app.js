@@ -543,10 +543,87 @@ route('/dashboard', async (mount) => {
       </div>
     </div>
 
+    ${renderDashDatarocketDominios(data.datarocket_dominios)}
     ${renderDashAwsCuentas(data.aws_cuentas)}
     ${renderDashEvolutionCanales(data.evolution_canales)}
   `;
 });
+
+// Bloque "Dominios por vencer" del dashboard. La API lo omite si el usuario no
+// tiene permiso `datarocket.dominios.consultar`; en ese caso no renderizamos
+// nada. Incluye dominios con `fecha_siguiente_renovacion` dentro de los proximos
+// 30 dias y tambien los ya vencidos. Fila roja para vencidos, amarilla para
+// proximos, y "Todo bien" cuando no hay ninguno.
+function renderDashDatarocketDominios(dom) {
+  if (!dom) return '';
+  const porVencer = Number(dom.por_vencer) || 0;
+  const vencidos  = Number(dom.vencidos)   || 0;
+  const items     = dom.items || [];
+  const hayAlerta = (porVencer + vencidos) > 0;
+
+  const fmtCosto = (m, mon) => {
+    if (m === null || m === undefined || m === '') return '—';
+    const n = Number(m);
+    if (!isFinite(n)) return '—';
+    return `${esc(mon || 'ARS')} ${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+  const badgeDias = (dias) => {
+    const d = Number(dias);
+    if (!isFinite(d)) return '';
+    if (d < 0)  return `<span class="badge badge-danger">Vencido hace ${-d} d${-d === 1 ? 'ía' : 'ías'}</span>`;
+    if (d === 0) return `<span class="badge badge-danger">Vence hoy</span>`;
+    return `<span class="badge badge-warn">En ${d} d${d === 1 ? 'ía' : 'ías'}</span>`;
+  };
+  const respBadge = (r) => {
+    if (!r) return '';
+    const cls = r === 'Databox' ? 'badge-success' : 'badge-info';
+    return `<span class="badge ${cls}">${esc(r)}</span>`;
+  };
+
+  const filas = items.length
+    ? items.map((d) => {
+        const vencido = Number(d.dias) < 0;
+        const bg      = vencido ? 'rgba(230,42,42,.12)' : 'rgba(250,204,21,.10)';
+        return `
+          <tr class="row-clickable" onclick="location.hash='#/datarocketdominios'"
+              style="background:${bg}">
+            <td class="td-id">#${esc(d.id)}</td>
+            <td class="td-nombre" style="font-family:monospace">${esc(d.dominio || '—')}</td>
+            <td style="color:var(--muted)">${esc(d.titular_dominio || '—')}</td>
+            <td>${respBadge(d.responsable)}</td>
+            <td>${esc(String(d.fecha_siguiente_renovacion || '—').substring(0,10))} ${badgeDias(d.dias)}</td>
+            <td style="text-align:right;white-space:nowrap;font-family:monospace">${fmtCosto(d.costo_renovacion, d.moneda)}</td>
+          </tr>
+        `;
+      }).join('')
+    : `<tr><td colspan="6" class="table-empty">Todo bien. Ningún dominio vence en los próximos 30 días.</td></tr>`;
+
+  const badgeHeader = hayAlerta
+    ? `<span class="badge badge-danger" style="margin-left:6px">${porVencer + vencidos} ${porVencer + vencidos === 1 ? 'dominio' : 'dominios'}</span>`
+    : '';
+
+  return `
+    <div class="table-card" style="margin-top:16px">
+      <div class="dash-table-header">
+        <span>🌐 Dominios por vencer (30 días) ${badgeHeader}</span>
+        <span class="dash-ver-mas" onclick="location.hash='#/datarocketdominios'" style="cursor:pointer">Ver más</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Dominio</th>
+            <th>Titular</th>
+            <th style="width:110px">Responsable</th>
+            <th>Próx. renov.</th>
+            <th style="text-align:right">Costo</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
+}
 
 // Bloque "Estado de cuentas AWS" del dashboard. La API omite este bloque si
 // el usuario no tiene permiso `plataformas.aws.cuentas.consultar`; en ese caso
@@ -8350,10 +8427,10 @@ route('/datacountrecurrentes', async (mount) => {
       </div>
 
       <div class="stats-bar" id="dcrStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dcrStatTotal">—</span></div>
-        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green" id="dcrStatActivos">—</span></div>
-        <div class="stat-card"><span class="stat-label">Ingresos (activos)</span><span class="stat-value" style="color:#93c5fd" id="dcrStatIngresos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value" id="dcrStatActivos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Ingresos (activos)</span><span class="stat-value blue" id="dcrStatIngresos">—</span></div>
         <div class="stat-card"><span class="stat-label">Egresos (activos)</span><span class="stat-value red" id="dcrStatEgresos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Resultado</span><span class="stat-value" id="dcrStatResultado">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -8602,10 +8679,15 @@ async function cargarDcr() {
 }
 
 function pintarStatsDcr(s) {
-  $('#dcrStatTotal').textContent    = fmtNum(s.total ?? dcrItems.length);
   $('#dcrStatActivos').textContent  = fmtNum(s.activos ?? 0);
   $('#dcrStatIngresos').textContent = '$ ' + dcrFmtMoney(s.ingresos ?? 0);
   $('#dcrStatEgresos').textContent  = '$ ' + dcrFmtMoney(s.egresos ?? 0);
+
+  const resultado = Number(s.ingresos ?? 0) - Number(s.egresos ?? 0);
+  const $res = $('#dcrStatResultado');
+  $res.textContent = '$ ' + dcrFmtMoney(resultado);
+  $res.classList.remove('blue', 'red');
+  $res.classList.add(resultado < 0 ? 'red' : 'blue');
 }
 
 function renderDcr() {
@@ -11313,15 +11395,50 @@ function drdoFmtMoneda(monto, moneda) {
 }
 
 function drdoFechaVencimientoInfo(fecha) {
-  if (!fecha) return { badge: '—', vencido: false, proximo: false };
+  if (!fecha) return { html: '—', dias: null, vencido: false, proximo: false };
   const hoy   = new Date(); hoy.setHours(0, 0, 0, 0);
   const [y, m, d] = String(fecha).substring(0, 10).split('-').map(Number);
   const fx = new Date(y, (m || 1) - 1, d || 1); fx.setHours(0, 0, 0, 0);
-  const diff = Math.round((fx - hoy) / 86400000);
-  const txt = drdoFmtFecha(fecha);
-  if (diff < 0)  return { badge: `<span class="badge badge-danger">${txt}</span>`, vencido: true, proximo: false };
-  if (diff <= 30) return { badge: `<span class="badge badge-warn">${txt}</span>`, vencido: false, proximo: true };
-  return { badge: `<span class="badge badge-info">${txt}</span>`, vencido: false, proximo: false };
+  const dias = Math.round((fx - hoy) / 86400000);
+  const iso  = String(fecha).substring(0, 10);
+  const dateLine = `<div>${esc(iso)}</div>`;
+
+  if (dias < 0) {
+    const badge = `<span class="badge badge-danger">Vencido hace ${-dias} d${-dias === 1 ? 'ía' : 'ías'}</span>`;
+    return { html: `${dateLine}${badge}`, dias, vencido: true, proximo: false };
+  }
+  if (dias === 0) {
+    const badge = `<span class="badge badge-danger">Vence hoy</span>`;
+    return { html: `${dateLine}${badge}`, dias, vencido: false, proximo: true };
+  }
+  if (dias <= 30) {
+    const badge = `<span class="badge badge-warn">En ${dias} d${dias === 1 ? 'ía' : 'ías'}</span>`;
+    return { html: `${dateLine}${badge}`, dias, vencido: false, proximo: true };
+  }
+  return { html: dateLine, dias, vencido: false, proximo: false };
+}
+
+function drdoFmtHace(dt) {
+  if (!dt) return `<span style="color:var(--muted)">Nunca</span>`;
+  const ahora = new Date();
+  const then  = new Date(String(dt).replace(' ', 'T'));
+  if (isNaN(then.getTime())) return `<span style="color:var(--muted)">—</span>`;
+  const seg  = Math.max(0, Math.round((ahora - then) / 1000));
+  const min  = Math.round(seg / 60);
+  const hs   = Math.round(seg / 3600);
+  const dias = Math.round(seg / 86400);
+  let txt, tone = 'var(--muted)';
+  if      (seg  < 60)   txt = 'recién';
+  else if (min  < 60)   txt = `hace ${min} min`;
+  else if (hs   < 24)   txt = `hace ${hs} h`;
+  else if (dias === 1)  txt = 'hace 1 día';
+  else if (dias <= 30)  txt = `hace ${dias} días`;
+  else if (dias <= 365) txt = `hace ${Math.round(dias / 30)} meses`;
+  else                  txt = `hace ${Math.round(dias / 365)} años`;
+  // Dias muy grandes -> tono de alerta suave.
+  if (dias > 7) tone = '#fcd34d';
+  if (dias > 60) tone = '#fca5a5';
+  return `<span style="color:${tone}">${esc(txt)}</span>`;
 }
 
 route('/datarocketdominios', async (mount) => {
@@ -11380,13 +11497,14 @@ route('/datarocketdominios', async (mount) => {
               <th>Titular</th>
               <th style="width:160px">Registrante</th>
               <th style="width:110px">Responsable</th>
-              <th style="width:130px">Próx. renov.</th>
+              <th style="width:150px">Próx. renov.</th>
               <th style="width:130px">Costo</th>
+              <th style="width:120px">Actualizado</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="drdoTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -11395,6 +11513,9 @@ route('/datarocketdominios', async (mount) => {
     <div id="drdoCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="actualizar" role="menuitem">
+        <i class="fa-solid fa-cloud-arrow-down"></i><span>Actualizar WHOIS</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
@@ -11498,9 +11619,10 @@ route('/datarocketdominios', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultaDrdo(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionDrdo(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarDrdo(data.id);
+    if (b.dataset.action === 'consultar')  abrirConsultaDrdo(data.id);
+    if (b.dataset.action === 'actualizar') actualizarDrdoDesdeWhois(data.id);
+    if (b.dataset.action === 'editar')     abrirAltaEdicionDrdo(data.id);
+    if (b.dataset.action === 'eliminar')   eliminarDrdo(data.id);
   });
 
   $('#drdoTbody').addEventListener('click', (ev) => {
@@ -11530,7 +11652,7 @@ route('/datarocketdominios', async (mount) => {
 async function cargarDrdo() {
   const tbody = $('#drdoTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (drdoBusqueda)          qs.set('q', drdoBusqueda);
@@ -11545,7 +11667,7 @@ async function cargarDrdo() {
     pintarStatsDrdo(data.stats || {});
     renderDrdo();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -11561,7 +11683,7 @@ function renderDrdo() {
   const tbody = $('#drdoTbody');
   if (!tbody) return;
   if (!drdoItems.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin dominios registrados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin dominios registrados.</td></tr>`;
     return;
   }
 
@@ -11572,7 +11694,7 @@ function renderDrdo() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -11585,8 +11707,9 @@ function renderDrdo() {
       <td style="color:var(--muted)">${esc(e.titular_dominio || '—')}</td>
       <td style="font-size:.85rem;color:var(--muted)">${esc(e.entidad_registrante || '—')}</td>
       <td>${drdoResponsableBadge(e.responsable)}</td>
-      <td>${venc.badge}</td>
+      <td>${venc.html}</td>
       <td style="font-family:monospace;font-size:.85rem">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</td>
+      <td style="font-size:.85rem">${drdoFmtHace(e.actualizado)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
@@ -11847,8 +11970,9 @@ function abrirConsultaDrdo(id) {
           ${card('Entidad registrante', esc(e.entidad_registrante || '—'), 'full')}
           ${card('Fecha registro',      esc(drdoFmtFecha(e.fecha_registro)))}
           ${card('Última renovación',   esc(drdoFmtFecha(e.fecha_ultima_renovacion)))}
-          ${card('Próxima renovación',  venc.badge)}
+          ${card('Próxima renovación',  venc.html)}
           ${card('Costo renovación',    `<span style="font-family:monospace">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</span>`)}
+          ${card('Actualizado WHOIS',   drdoFmtHace(e.actualizado))}
           ${card('Alta',                esc(drdoFmtFecha(e.fecha_creacion)))}
         </div>
       </div>
@@ -11881,6 +12005,101 @@ async function eliminarDrdo(id) {
     await cargarDrdo();
   } catch (err) {
     toast(err.message, { error: true });
+  }
+}
+
+async function actualizarDrdoDesdeWhois(id) {
+  const e = drdoItems.find((x) => x.id === id);
+  if (!e) return;
+
+  openModal(`
+    <div class="modal" style="max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🌐 <span class="modal-subtitle">Actualizar WHOIS — ${esc(e.dominio)}</span>
+          <span id="drdoWhoisEstado" class="badge badge-info" style="margin-left:8px">Consultando…</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="drdoWhoisLog" style="background:#0b1220;color:#d1d5db;border:1px solid var(--border);border-radius:8px;padding:12px;height:360px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;white-space:pre-wrap;margin:0"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+
+  const pre    = document.getElementById('drdoWhoisLog');
+  const estado = document.getElementById('drdoWhoisEstado');
+  const append = (s) => { if (!pre) return; pre.textContent += s + '\n'; pre.scrollTop = pre.scrollHeight; };
+  const setEstado = (cls, txt) => {
+    if (!estado) return;
+    estado.className = `badge ${cls}`;
+    estado.textContent = txt;
+  };
+
+  try {
+    const r = await fetch('api/datarocketdominios_whois.php', {
+      method:      'POST',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ id: e.id }),
+      credentials: 'same-origin',
+    });
+
+    if (!r.ok && r.status !== 200) {
+      append(`✖ HTTP ${r.status} ${r.statusText}`);
+      setEstado('badge-danger', 'Error');
+      return;
+    }
+
+    const reader  = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let resumen = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const linea = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        if (linea.startsWith('___END___ ')) {
+          try { resumen = JSON.parse(linea.slice(10)); }
+          catch (_) { resumen = { ok: false, detail: 'Respuesta final inválida.' }; }
+        } else if (linea !== '') {
+          append(linea);
+        }
+      }
+    }
+    if (buffer !== '') append(buffer);
+
+    if (!resumen) {
+      setEstado('badge-danger', 'Error');
+      append('✖ El servidor cerró la conexión sin enviar resumen.');
+      return;
+    }
+    if (!resumen.ok) {
+      setEstado('badge-danger', 'Error');
+      toast(resumen.detail || 'No se pudo consultar el WHOIS.', { error: true });
+    } else if ((resumen.cambios || 0) === 0) {
+      setEstado('badge-info', 'Sin cambios');
+      toast('WHOIS consultado — no hubo cambios.');
+    } else {
+      setEstado('badge-success', `OK (${resumen.cambios} cambio${resumen.cambios === 1 ? '' : 's'})`);
+      toast(`Dominio actualizado desde ${resumen.fuente}.`);
+    }
+    await cargarDrdo();
+  } catch (err) {
+    setEstado('badge-danger', 'Error');
+    append('✖ Error de red: ' + (err.message || err));
+    toast('Error de red: ' + (err.message || err), { error: true });
   }
 }
 
