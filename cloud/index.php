@@ -154,6 +154,14 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
                data-perm="seguridad.permisos.consultar">
               <span class="nav-icon">🔑</span> Permisos
             </a>
+            <a href="#/aplicaciones" class="nav-item nav-sub-item" data-route="/aplicaciones"
+               data-perm="seguridad.aplicaciones.consultar">
+              <span class="nav-icon">🧩</span> Aplicaciones
+            </a>
+            <a href="#/accesos" class="nav-item nav-sub-item" data-route="/accesos"
+               data-perm="seguridad.accesos.consultar">
+              <span class="nav-icon">🗝️</span> Accesos
+            </a>
           </div>
         </div>
 

@@ -1,0 +1,1 @@
+<?php header("Content-Type:application/json"); echo json_encode(["auth_server"=>$_SERVER["HTTP_AUTHORIZATION"] ?? null, "redir_auth"=>$_SERVER["REDIRECT_HTTP_AUTHORIZATION"] ?? null, "getallheaders"=>function_exists("getallheaders")?getallheaders():null]);

@@ -28,7 +28,8 @@ header('Content-Type: application/json; charset=utf-8');
 
 const DRDO_RESPONSABLES = ['Databox', 'Cliente'];
 const DRDO_MONEDAS      = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
-const DRDO_ORDENES      = ['id', 'dominio', 'fecha_registro', 'fecha_siguiente_renovacion', 'costo_renovacion'];
+const DRDO_ORDENES      = ['id', 'dominio', 'titular_dominio', 'entidad_registrante',
+                           'fecha_registro', 'fecha_siguiente_renovacion', 'costo_renovacion'];
 const DRDO_COLS         = 'id, dominio, titular_dominio, entidad_registrante, responsable, '
                         . 'fecha_registro, fecha_ultima_renovacion, fecha_siguiente_renovacion, '
                         . 'costo_renovacion, moneda, actualizado, fecha_creacion';

@@ -302,6 +302,8 @@ const ROUTE_PERMS = {
   '/usuarios':                 { perm:   'seguridad.usuarios.consultar' },
   '/roles':                    { perm:   'seguridad.roles.consultar' },
   '/permisos':                 { perm:   'seguridad.permisos.consultar' },
+  '/aplicaciones':             { perm:   'seguridad.aplicaciones.consultar' },
+  '/accesos':                  { perm:   'seguridad.accesos.consultar' },
 
   '/herramientas':             { prefix: 'administracion.herramientas.' },
 };
@@ -572,31 +574,21 @@ function renderDashDatarocketDominios(dom) {
     if (!isFinite(d)) return '';
     if (d < 0)  return `<span class="badge badge-danger">Vencido hace ${-d} d${-d === 1 ? 'ía' : 'ías'}</span>`;
     if (d === 0) return `<span class="badge badge-danger">Vence hoy</span>`;
-    return `<span class="badge badge-warn">En ${d} d${d === 1 ? 'ía' : 'ías'}</span>`;
-  };
-  const respBadge = (r) => {
-    if (!r) return '';
-    const cls = r === 'Databox' ? 'badge-success' : 'badge-info';
-    return `<span class="badge ${cls}">${esc(r)}</span>`;
+    return `<span class="badge badge-danger">En ${d} d${d === 1 ? 'ía' : 'ías'}</span>`;
   };
 
   const filas = items.length
-    ? items.map((d) => {
-        const vencido = Number(d.dias) < 0;
-        const bg      = vencido ? 'rgba(230,42,42,.12)' : 'rgba(250,204,21,.10)';
-        return `
+    ? items.map((d) => `
           <tr class="row-clickable" onclick="location.hash='#/datarocketdominios'"
-              style="background:${bg}">
+              style="background:rgba(230,42,42,.12)">
             <td class="td-id">#${esc(d.id)}</td>
             <td class="td-nombre" style="font-family:monospace">${esc(d.dominio || '—')}</td>
             <td style="color:var(--muted)">${esc(d.titular_dominio || '—')}</td>
-            <td>${respBadge(d.responsable)}</td>
             <td>${esc(String(d.fecha_siguiente_renovacion || '—').substring(0,10))} ${badgeDias(d.dias)}</td>
             <td style="text-align:right;white-space:nowrap;font-family:monospace">${fmtCosto(d.costo_renovacion, d.moneda)}</td>
           </tr>
-        `;
-      }).join('')
-    : `<tr><td colspan="6" class="table-empty">Todo bien. Ningún dominio vence en los próximos 30 días.</td></tr>`;
+        `).join('')
+    : `<tr><td colspan="5" class="table-empty">Todo bien.</td></tr>`;
 
   const badgeHeader = hayAlerta
     ? `<span class="badge badge-danger" style="margin-left:6px">${porVencer + vencidos} ${porVencer + vencidos === 1 ? 'dominio' : 'dominios'}</span>`
@@ -614,8 +606,7 @@ function renderDashDatarocketDominios(dom) {
             <th>Código</th>
             <th>Dominio</th>
             <th>Titular</th>
-            <th style="width:110px">Responsable</th>
-            <th>Próx. renov.</th>
+            <th>Vencimiento</th>
             <th style="text-align:right">Costo</th>
           </tr>
         </thead>
@@ -2582,6 +2573,1225 @@ async function eliminarPermiso(id) {
     toast('Permiso eliminado.');
     permisosCatalogo = null;
     cargarPermisos();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Accesos (ABM) -------------------------
+// Catalogo de credenciales para conectarse a sistemas externos (Movistar
+// Kite, Claro Portal, paneles de proveedores, consolas de dominios, etc.).
+// La contrasena se guarda cifrada en la BD y solo se pide al backend cuando
+// hace falta mostrarla en claro (consultar / editar) — el listado la
+// enmascara. El flag `privado` es solo un metadato por ahora: la UI no
+// cambia el comportamiento en base a el.
+const accesosFiltrosDefaults = {
+  q: '', codigo: '', privado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const accesosFiltros = { ...accesosFiltrosDefaults };
+let accesosBuscadorTimer  = null;
+let accesosFiltrosSnapshot = null;
+let accesosCacheRows       = [];
+let accesosEmpresasCatalogo = null;
+
+async function getEmpresasCatalogoAccesos() {
+  if (accesosEmpresasCatalogo) return accesosEmpresasCatalogo;
+  const data = await apiGet('api/accesos.php?listar=empresas');
+  accesosEmpresasCatalogo = data.items || [];
+  return accesosEmpresasCatalogo;
+}
+
+route('/accesos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">🗝️</div>
+        <div class="module-help-text">
+          Los accesos son las credenciales para conectarse a sistemas externos
+          (paneles de proveedores, consolas de dominios, portales de operadoras)
+          que Databox necesita administrar. Cada uno tiene su URL, usuario y contraseña.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="accStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Públicos</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Privados</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="accSearch"
+                   placeholder="🔍 Buscar nombre, URL o usuario…">
+            <button class="search-clear" id="accSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="accFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="accFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="accRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="accNuevoBtn">+ Nuevo acceso</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Empresa</th>
+              <th>Nombre</th>
+              <th>URL</th>
+              <th>Usuario</th>
+              <th>Actualizado</th>
+              <th style="text-align:center">Privado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="accTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="accCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="copiar-usuario" role="menuitem">
+        <i class="fa-solid fa-copy"></i><span>Copiar usuario</span>
+      </button>
+      <button type="button" data-action="copiar-contrasena" role="menuitem">
+        <i class="fa-solid fa-key"></i><span>Copiar contraseña</span>
+      </button>
+      <button type="button" data-action="abrir-url" role="menuitem">
+        <i class="fa-solid fa-up-right-from-square"></i><span>Abrir URL</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md §Modal de filtros) -->
+    <div class="modal-backdrop" id="filtrosAccesosBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosAccesos()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAccesos()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Código</label>
+            <input type="number" id="fAccCodigo" min="1" placeholder="ID …" oninput="onFiltroAccesos('codigo', this.value)">
+          </div>
+          <div class="form-group">
+            <label>Privado</label>
+            <div id="fAccPrivadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-privado="" >Todos</button>
+              <button type="button" class="filter-chip" data-privado="0">Públicos</button>
+              <button type="button" class="filter-chip" data-privado="1">Privados</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAccLimite" min="1" max="1000" value="100" onchange="onFiltroAccesos('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAccOrderBy" onchange="onFiltroAccesos('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="url">URL</option>
+                <option value="usuario">Usuario</option>
+                <option value="actualizado">Actualizado</option>
+                <option value="privado">Privado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAccDir" onchange="onFiltroAccesos('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAccesos()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAccesos()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAccesos()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#accNuevoBtn').addEventListener('click', () => abrirAltaEdicionAcceso(null));
+  $('#accFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAccesos());
+  $('#accRefrescarBtn').addEventListener('click', () => cargarAccesos());
+
+  const inp = $('#accSearch');
+  const clr = $('#accSearchClear');
+  inp.value = accesosFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    accesosFiltros.q = inp.value.trim();
+    clearTimeout(accesosBuscadorTimer);
+    accesosBuscadorTimer = setTimeout(() => { cargarAccesos(); refrescarBadgeFiltrosAccesos(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    accesosFiltros.q = '';
+    cargarAccesos();
+    refrescarBadgeFiltrosAccesos();
+  });
+
+  $('#accCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')          abrirConsultarAcceso(data.id);
+    if (b.dataset.action === 'editar')             abrirAltaEdicionAcceso(data.id);
+    if (b.dataset.action === 'eliminar')           eliminarAcceso(data.id);
+    if (b.dataset.action === 'copiar-usuario')     copiarCampoAcceso(data.id, 'usuario');
+    if (b.dataset.action === 'copiar-contrasena')  copiarCampoAcceso(data.id, 'contrasena');
+    if (b.dataset.action === 'abrir-url')          abrirUrlAcceso(data.id);
+  });
+
+  $('#accTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#accCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAcceso(Number(tr.dataset.id));
+  });
+  $('#accTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#accCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosAccesos();
+  await cargarAccesos();
+}, 'Accesos');
+
+async function cargarAccesos() {
+  const tbody = $('#accTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(accesosFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/accesos.php?' + qs.toString());
+    pintarStatsAccesos(data.stats);
+    accesosCacheRows = data.items || [];
+    pintarTablaAccesos(accesosCacheRows);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAccesos(s) {
+  const cards = $$('#accStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.publicos);
+  cards[2].textContent = fmtNum(s.privados);
+}
+
+function pintarTablaAccesos(rows) {
+  const tbody = $('#accTbody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin accesos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((a) => {
+    const urlHtml = a.url
+      ? `<a href="${esc(a.url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" style="color:var(--primary);text-decoration:none">${esc(a.url)}</a>`
+      : '<span style="color:var(--muted)">—</span>';
+    const privBadge = a.privado
+      ? `<span class="badge badge-warn" title="Privado"><i class="fa-solid fa-lock"></i> Sí</span>`
+      : `<span style="color:var(--muted)">No</span>`;
+    const empresaHtml = a.empresa_nombre
+      ? esc(a.empresa_nombre)
+      : '<span style="color:var(--muted)">—</span>';
+    return `
+      <tr data-id="${a.id}" class="row-clickable">
+        <td class="td-id">#${esc(a.id)}</td>
+        <td>${empresaHtml}</td>
+        <td class="td-nombre">${esc(a.nombre || '—')}</td>
+        <td>${urlHtml}</td>
+        <td>${esc(a.usuario || '—')}</td>
+        <td>${esc(fmtFecha(a.actualizado) || '—')}</td>
+        <td style="text-align:center">${privBadge}</td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${a.id}">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ---- Modal de Filtros (Accesos) ----
+function onFiltroAccesos(key, value) {
+  if (key === 'codigo') {
+    accesosFiltros.codigo = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    accesosFiltros.limite = n;
+  } else {
+    accesosFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAccesos();
+  cargarAccesos();
+}
+
+function refrescarBadgeFiltrosAccesos() {
+  const btn   = $('#accFiltrosBtn');
+  const badge = $('#accFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(accesosFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(accesosFiltros[k]) !== String(accesosFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosAccesos() {
+  const f = accesosFiltros;
+  $('#fAccCodigo').value  = f.codigo;
+  $('#fAccLimite').value  = f.limite;
+  $('#fAccOrderBy').value = f.order_by;
+  $('#fAccDir').value     = f.dir;
+  $$('#fAccPrivadoChips .filter-chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.privado || '') === (f.privado || ''));
+  });
+}
+
+function abrirModalFiltrosAccesos() {
+  accesosFiltrosSnapshot = { ...accesosFiltros };
+  sincronizarControlesFiltrosAccesos();
+  $$('#fAccPrivadoChips .filter-chip').forEach((c) => {
+    c.onclick = () => { onFiltroAccesos('privado', c.dataset.privado || ''); sincronizarControlesFiltrosAccesos(); };
+  });
+  $('#filtrosAccesosBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosAccesos() {
+  $('#filtrosAccesosBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosAccesos() {
+  if (accesosFiltrosSnapshot) {
+    Object.assign(accesosFiltros, accesosFiltrosSnapshot);
+    refrescarBadgeFiltrosAccesos();
+    cargarAccesos();
+  }
+  cerrarModalFiltrosAccesos();
+}
+
+function limpiarFiltrosAccesos() {
+  Object.assign(accesosFiltros, accesosFiltrosDefaults);
+  accesosFiltros.q = $('#accSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosAccesos();
+  refrescarBadgeFiltrosAccesos();
+  cargarAccesos();
+}
+
+window.onFiltroAccesos          = onFiltroAccesos;
+window.cancelarFiltrosAccesos   = cancelarFiltrosAccesos;
+window.limpiarFiltrosAccesos    = limpiarFiltrosAccesos;
+window.cerrarModalFiltrosAccesos = cerrarModalFiltrosAccesos;
+
+// ---- Modal Consultar (Acceso) ----
+async function abrirConsultarAcceso(id) {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Consultar acceso <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionAcceso(id); }
+    if (ev.target.closest('[data-act="copiar-pass"]')) {
+      const pass = ev.target.closest('[data-act="copiar-pass"]').dataset.pass || '';
+      try { await navigator.clipboard.writeText(pass); toast('Contraseña copiada.'); }
+      catch { toast('No se pudo copiar.', { error: true }); }
+    }
+    if (ev.target.closest('[data-act="toggle-pass"]')) {
+      const btn = ev.target.closest('[data-act="toggle-pass"]');
+      const span = $('#accConsPassValor');
+      const icon = btn.querySelector('i');
+      if (!span) return;
+      const oculto = span.dataset.oculto === '1';
+      if (oculto) {
+        span.textContent = span.dataset.plano || '';
+        span.dataset.oculto = '0';
+        icon.className = 'fa-solid fa-eye-slash';
+      } else {
+        span.textContent = '••••••••';
+        span.dataset.oculto = '1';
+        icon.className = 'fa-solid fa-eye';
+      }
+    }
+  });
+
+  try {
+    const a = await apiGet(`api/accesos.php?id=${id}`);
+    const fila = (label, value, full = false, isCode = false) => {
+      const empty = value == null || value === '';
+      const inner = empty ? 'Sin dato'
+                  : isCode ? `<code>${esc(value)}</code>`
+                  : esc(value);
+      return `
+        <div class="data-row${full ? ' full' : ''}">
+          <span class="data-label">${esc(label)}</span>
+          <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+        </div>
+      `;
+    };
+    const passHtml = (() => {
+      if (!a.contrasena) {
+        return `
+          <div class="data-row full">
+            <span class="data-label">Contraseña</span>
+            <span class="data-value muted">Sin dato</span>
+          </div>
+        `;
+      }
+      const pass = String(a.contrasena).replace(/"/g, '&quot;');
+      return `
+        <div class="data-row full">
+          <span class="data-label">Contraseña</span>
+          <span class="data-value" style="white-space:normal;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><code id="accConsPassValor" data-oculto="1" data-plano="${esc(a.contrasena)}">••••••••</code><button class="btn-icon-sm" data-act="toggle-pass" title="Mostrar / ocultar" style="border:1px solid var(--border);border-radius:6px;padding:4px 8px"><i class="fa-solid fa-eye"></i></button><button class="btn-icon-sm" data-act="copiar-pass" data-pass="${pass}" title="Copiar" style="border:1px solid var(--border);border-radius:6px;padding:4px 8px"><i class="fa-solid fa-copy"></i></button></span>
+        </div>
+      `;
+    })();
+    const urlHtml = a.url
+      ? `<a href="${esc(a.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--primary)">${esc(a.url)}</a>`
+      : 'Sin dato';
+    $('#modalRoot .modal-body').innerHTML = `
+      <dl class="data-list">
+        ${fila('Empresa', a.empresa_nombre, true)}
+        ${fila('Nombre',  a.nombre, true)}
+        <div class="data-row full">
+          <span class="data-label">URL</span>
+          <span class="data-value${a.url ? '' : ' muted'}">${urlHtml}</span>
+        </div>
+        ${fila('Usuario', a.usuario, true)}
+        ${passHtml}
+        ${fila('Privado', a.privado ? 'Sí' : 'No')}
+        ${fila('Actualizado', fmtFecha(a.actualizado))}
+      </dl>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Modal Alta / Edición (Acceso) ----
+async function abrirAltaEdicionAcceso(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar acceso <span class="modal-subtitle">#${id}</span>` : 'Nuevo acceso'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const [a, empresas] = await Promise.all([
+      esEdicion ? apiGet(`api/accesos.php?id=${id}`) : Promise.resolve({}),
+      getEmpresasCatalogoAccesos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formAccesoHtml(a, empresas);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarAcceso(id, a);
+  });
+}
+
+function formAccesoHtml(a, empresas) {
+  const v = (k) => esc(a?.[k] ?? '');
+  const privadoChecked = a?.privado ? 'checked' : '';
+  const empresaActual  = a?.empresa_id != null ? String(a.empresa_id) : '';
+  const empresasOptions = (empresas || []).map((e) => {
+    const sel = String(e.id) === empresaActual ? 'selected' : '';
+    return `<option value="${esc(e.id)}" ${sel}>${esc(e.nombre)}</option>`;
+  }).join('');
+  return `
+    <div class="form-group">
+      <label>Empresa <span style="color:var(--muted);font-weight:normal;font-size:.85em">— opcional</span></label>
+      <select id="aEmpresa">
+        <option value="">— Sin empresa —</option>
+        ${empresasOptions}
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Nombre *</label>
+      <input type="text" id="aNombre" maxlength="200" value="${v('nombre')}" required>
+    </div>
+    <div class="form-group">
+      <label>URL</label>
+      <input type="text" id="aUrl" maxlength="500" placeholder="https://…" value="${v('url')}">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Usuario</label>
+        <input type="text" id="aUsuario" maxlength="200" autocomplete="off" value="${v('usuario')}">
+      </div>
+      <div class="form-group">
+        <label>Contraseña${a?.id ? ' <span style="color:var(--muted);font-weight:normal;font-size:.85em">(doble clic para ver)</span>' : ''}</label>
+        <input type="password" id="aContrasena" autocomplete="new-password" maxlength="200"
+               value="${v('contrasena')}"
+               title="${a?.id ? 'Doble clic para mostrar / ocultar' : ''}"
+               ondblclick="this.type = this.type === 'password' ? 'text' : 'password'">
+      </div>
+    </div>
+    <div class="form-group" style="align-items:flex-start">
+      <label class="toggle-switch" style="align-self:flex-start">
+        <input type="checkbox" id="aPrivado" ${privadoChecked}>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Privado <span style="color:var(--muted);font-weight:normal;font-size:.85em">— credencial de acceso restringido</span></span>
+      </label>
+    </div>
+    ${a?.id ? `
+      <div class="form-group">
+        <label>Actualizado</label>
+        <div style="font-family:monospace;color:var(--muted)">${esc(fmtFecha(a.actualizado) || '—')}</div>
+      </div>
+    ` : ''}
+    <div class="field-error" id="aError" style="display:none"></div>
+  `;
+}
+
+async function guardarAcceso(id, btn) {
+  const nombre = $('#aNombre').value.trim();
+  const err    = $('#aError');
+  err.style.display = 'none';
+  $('#aNombre').classList.remove('input-invalid');
+
+  if (!nombre) {
+    $('#aNombre').classList.add('input-invalid');
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+
+  const payload = {
+    empresa_id: $('#aEmpresa').value || null,
+    nombre,
+    url:        $('#aUrl').value.trim(),
+    usuario:    $('#aUsuario').value.trim(),
+    contrasena: $('#aContrasena').value,
+    privado:    $('#aPrivado').checked ? 1 : 0,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/accesos.php', 'POST', payload);
+      toast('Acceso creado.');
+    } else {
+      await apiSend(`api/accesos.php?id=${id}`, 'PUT', payload);
+      toast('Acceso actualizado.');
+    }
+    closeModal();
+    cargarAccesos();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarAcceso(id) {
+  const ok = await confirmar({
+    title: 'Eliminar acceso',
+    message: `Se eliminará el acceso #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/accesos.php?id=${id}`, 'DELETE');
+    toast('Acceso eliminado.');
+    cargarAccesos();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function copiarCampoAcceso(id, campo) {
+  try {
+    const a = await apiGet(`api/accesos.php?id=${id}`);
+    const val = String(a?.[campo] ?? '');
+    if (!val) {
+      toast(`Este acceso no tiene ${campo === 'contrasena' ? 'contraseña' : 'usuario'}.`, { error: true });
+      return;
+    }
+    await navigator.clipboard.writeText(val);
+    toast(campo === 'contrasena' ? 'Contraseña copiada.' : 'Usuario copiado.');
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+function abrirUrlAcceso(id) {
+  const row = accesosCacheRows.find((r) => Number(r.id) === Number(id));
+  if (!row || !row.url) {
+    toast('Este acceso no tiene URL.', { error: true });
+    return;
+  }
+  window.open(row.url, '_blank', 'noopener,noreferrer');
+}
+
+// ------------------------- Vista: Aplicaciones (ABM) -------------------------
+// Catalogo de aplicaciones externas que consumen datos de Databox via API key.
+// La tabla `aplicaciones` es compartida con apps legacy del grupo — el ABM
+// solo maneja los 4 campos existentes (id/nombre/apikey/usos/habilitada). La
+// API key se genera automaticamente al crear la aplicacion y no se edita ni rota desde este ABM.
+const aplicacionesFiltrosDefaults = {
+  q: '', codigo: '', nombre: '', estado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const aplicacionesFiltros = { ...aplicacionesFiltrosDefaults };
+let aplicacionesBuscadorTimer  = null;
+let aplicacionesFiltrosSnapshot = null;
+
+function aplicacionesEstadoBadge(h) {
+  if (h === '1') return `<span class="badge badge-success">Habilitada</span>`;
+  if (h === '0') return `<span class="badge badge-danger">Deshabilitada</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+// Muestra los ultimos 6 caracteres precedidos por 4 asteriscos. Suficiente para
+// que el usuario reconozca la key sin que quede legible en la tabla.
+function aplicacionesApiKeyMask(k) {
+  if (!k) return '—';
+  const s = String(k);
+  const tail = s.length > 6 ? s.slice(-6) : s;
+  return `••••${tail}`;
+}
+
+route('/aplicaciones', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div class="module-help">
+        <div class="module-help-icon">🧩</div>
+        <div class="module-help-text">
+          Las aplicaciones son sistemas externos que consumen datos de Databox
+          via API key. Cada aplicacion tiene una clave unica que se envia en el
+          header <code>X-Api-Key</code>. Podes habilitarlas o deshabilitarlas en
+          cualquier momento.
+        </div>
+      </div>
+
+      <div class="stats-bar" id="aplicStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Habilitadas</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Deshabilitadas</span><span class="stat-value red">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="aplicSearch"
+                   placeholder="🔍 Buscar nombre o API key…">
+            <button class="search-clear" id="aplicSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="aplicFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="aplicFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="aplicRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="aplicNuevoBtn">+ Nueva aplicacion</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>API key</th>
+              <th style="text-align:right">Usos</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="aplicTbody">
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="aplicCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="copiar-apikey" role="menuitem">
+        <i class="fa-solid fa-copy"></i><span>Copiar API key</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="toggle-habilitada" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Deshabilitar</span>
+      </button>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosAplicBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosAplicaciones()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAplicaciones()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fAplicCodigo" min="1" placeholder="ID …" oninput="onFiltroAplicaciones('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fAplicEstado" onchange="onFiltroAplicaciones('estado', this.value)">
+                <option value="">Todos</option>
+                <option value="1">Habilitadas</option>
+                <option value="0">Deshabilitadas</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Nombre</label>
+            <input type="text" id="fAplicNombre" oninput="onFiltroAplicaciones('nombre', this.value)">
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAplicLimite" min="1" max="1000" value="100" onchange="onFiltroAplicaciones('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAplicOrderBy" onchange="onFiltroAplicaciones('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="usos">Usos</option>
+                <option value="habilitada">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAplicDir" onchange="onFiltroAplicaciones('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAplicaciones()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAplicaciones()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAplicaciones()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#aplicNuevoBtn').addEventListener('click', () => abrirAltaEdicionAplicacion(null));
+  $('#aplicFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAplicaciones());
+  $('#aplicRefrescarBtn').addEventListener('click', () => cargarAplicaciones());
+
+  const inp = $('#aplicSearch');
+  const clr = $('#aplicSearchClear');
+  inp.value = aplicacionesFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    aplicacionesFiltros.q = inp.value.trim();
+    clearTimeout(aplicacionesBuscadorTimer);
+    aplicacionesBuscadorTimer = setTimeout(() => { cargarAplicaciones(); refrescarBadgeFiltrosAplicaciones(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    aplicacionesFiltros.q = '';
+    cargarAplicaciones();
+    refrescarBadgeFiltrosAplicaciones();
+  });
+
+  $('#aplicCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')         abrirConsultarAplicacion(data.id);
+    if (b.dataset.action === 'copiar-apikey')     copiarApiKeyAplicacion(data.id);
+    if (b.dataset.action === 'toggle-habilitada') toggleHabilitadaAplicacion(data.id);
+    if (b.dataset.action === 'editar')            abrirAltaEdicionAplicacion(data.id);
+    if (b.dataset.action === 'eliminar')          eliminarAplicacion(data.id);
+  });
+
+  $('#aplicTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      // Ajustar el label del toggle segun el estado actual.
+      const row = aplicacionesCache.find((x) => x.id === id);
+      const lbl = $('#aplicCtxMenu [data-action="toggle-habilitada"] [data-label]');
+      if (lbl && row) lbl.textContent = row.habilitada === '1' ? 'Deshabilitar' : 'Habilitar';
+      abrirCtxMenu($('#aplicCtxMenu'), r.right - 210, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAplicacion(Number(tr.dataset.id));
+  });
+  $('#aplicTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    const id  = Number(tr.dataset.id);
+    const row = aplicacionesCache.find((x) => x.id === id);
+    const lbl = $('#aplicCtxMenu [data-action="toggle-habilitada"] [data-label]');
+    if (lbl && row) lbl.textContent = row.habilitada === '1' ? 'Deshabilitar' : 'Habilitar';
+    abrirCtxMenu($('#aplicCtxMenu'), ev.clientX, ev.clientY, { id });
+  });
+
+  refrescarBadgeFiltrosAplicaciones();
+  await cargarAplicaciones();
+}, 'Aplicaciones');
+
+let aplicacionesCache = []; // ultima respuesta del listado, para toggle sin round-trip extra
+
+async function cargarAplicaciones() {
+  const tbody = $('#aplicTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(aplicacionesFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/aplicaciones.php?' + qs.toString());
+    aplicacionesCache = data.items || [];
+    pintarStatsAplicaciones(data.stats);
+    pintarTablaAplicaciones(aplicacionesCache);
+  } catch (e) {
+    aplicacionesCache = [];
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAplicaciones(s) {
+  const cards = $$('#aplicStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.habilitadas);
+  cards[2].textContent = fmtNum(s.deshabilitadas);
+}
+
+function pintarTablaAplicaciones(rows) {
+  const tbody = $('#aplicTbody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin aplicaciones.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((a) => `
+    <tr data-id="${a.id}" class="row-clickable">
+      <td class="td-id">#${esc(a.id)}</td>
+      <td class="td-nombre">${esc(a.nombre || '—')}</td>
+      <td><code title="${esc(a.apikey || '')}">${esc(aplicacionesApiKeyMask(a.apikey))}</code></td>
+      <td style="text-align:right">${fmtNum(Number(a.usos || 0))}</td>
+      <td>${aplicacionesEstadoBadge(a.habilitada)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${a.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de Filtros (Aplicaciones) ----
+function onFiltroAplicaciones(key, value) {
+  if (key === 'codigo' || key === 'nombre') {
+    aplicacionesFiltros[key] = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    aplicacionesFiltros.limite = n;
+  } else {
+    aplicacionesFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAplicaciones();
+  cargarAplicaciones();
+}
+
+function refrescarBadgeFiltrosAplicaciones() {
+  const btn   = $('#aplicFiltrosBtn');
+  const badge = $('#aplicFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(aplicacionesFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(aplicacionesFiltros[k]) !== String(aplicacionesFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosAplicaciones() {
+  const f = aplicacionesFiltros;
+  $('#fAplicCodigo').value  = f.codigo;
+  $('#fAplicNombre').value  = f.nombre;
+  $('#fAplicEstado').value  = f.estado;
+  $('#fAplicLimite').value  = f.limite;
+  $('#fAplicOrderBy').value = f.order_by;
+  $('#fAplicDir').value     = f.dir;
+}
+
+function abrirModalFiltrosAplicaciones() {
+  aplicacionesFiltrosSnapshot = { ...aplicacionesFiltros };
+  sincronizarControlesFiltrosAplicaciones();
+  $('#filtrosAplicBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosAplicaciones() {
+  $('#filtrosAplicBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosAplicaciones() {
+  if (aplicacionesFiltrosSnapshot) {
+    Object.assign(aplicacionesFiltros, aplicacionesFiltrosSnapshot);
+    refrescarBadgeFiltrosAplicaciones();
+    cargarAplicaciones();
+  }
+  cerrarModalFiltrosAplicaciones();
+}
+
+function limpiarFiltrosAplicaciones() {
+  Object.assign(aplicacionesFiltros, aplicacionesFiltrosDefaults);
+  aplicacionesFiltros.q = $('#aplicSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosAplicaciones();
+  refrescarBadgeFiltrosAplicaciones();
+  cargarAplicaciones();
+}
+
+window.onFiltroAplicaciones           = onFiltroAplicaciones;
+window.cancelarFiltrosAplicaciones    = cancelarFiltrosAplicaciones;
+window.limpiarFiltrosAplicaciones     = limpiarFiltrosAplicaciones;
+window.cerrarModalFiltrosAplicaciones = cerrarModalFiltrosAplicaciones;
+
+// ---- Modal Consultar (aplicacion) ----
+async function abrirConsultarAplicacion(id) {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Consultar aplicacion <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionAplicacion(id); }
+  });
+
+  try {
+    const a = await apiGet(`api/aplicaciones.php?id=${id}`);
+    const fila = (label, value, full = false, isCode = false) => {
+      const empty = value == null || value === '';
+      const inner = empty ? 'Sin dato'
+                  : isCode ? `<code>${esc(value)}</code>`
+                  : esc(value);
+      return `
+        <div class="data-row${full ? ' full' : ''}">
+          <span class="data-label">${esc(label)}</span>
+          <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+        </div>
+      `;
+    };
+    $('#modalRoot .modal-body').innerHTML = `
+      <dl class="data-list">
+        ${fila('Nombre',   a.nombre, true)}
+        ${fila('API key',  a.apikey, true, true)}
+        ${fila('Usos',     fmtNum(Number(a.usos || 0)))}
+        ${fila('Estado',   a.habilitada === '1' ? 'Habilitada' : 'Deshabilitada')}
+      </dl>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Modal Alta / Edición (aplicacion) ----
+async function abrirAltaEdicionAplicacion(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar aplicacion <span class="modal-subtitle">#${id}</span>` : 'Nueva aplicacion'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formAplicacionHtml({ habilitada: '1' }, false)}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const a = await apiGet(`api/aplicaciones.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formAplicacionHtml(a, true);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarAplicacion(id, a);
+  });
+}
+
+function formAplicacionHtml(a, esEdicion) {
+  const v = (k) => esc(a?.[k] ?? '');
+  const habilitada = (a?.habilitada ?? '1') === '1';
+  return `
+    <div class="form-group">
+      <label>Nombre *</label>
+      <input type="text" id="aNombre" value="${v('nombre')}" required maxlength="100"
+             placeholder="ej: Facturador externo, App mobile de campo">
+    </div>
+    ${esEdicion ? `
+      <div class="form-group">
+        <label class="label-with-help">
+          <span>API key</span>
+          <i class="fa-solid fa-circle-question label-help" tabindex="0"
+             title="La API key se genera automaticamente al crear la aplicacion y no se puede editar."></i>
+        </label>
+        <input type="text" value="${v('apikey')}" readonly
+               style="font-family:var(--font-mono,monospace);font-size:.85rem">
+      </div>
+    ` : ''}
+    <div class="form-group">
+      <label>Estado</label>
+      <select id="aHabilitada">
+        <option value="1" ${habilitada ? 'selected' : ''}>Habilitada</option>
+        <option value="0" ${habilitada ? '' : 'selected'}>Deshabilitada</option>
+      </select>
+    </div>
+    ${!esEdicion ? `
+      <div class="module-help" style="margin-top:8px">
+        <div class="module-help-icon">🔑</div>
+        <div class="module-help-text">
+          La API key se genera automaticamente al crear la aplicacion. Vas a
+          poder copiarla desde el diálogo siguiente — despues siempre queda
+          visible en el listado.
+        </div>
+      </div>
+    ` : ''}
+    <div class="field-error" id="aError" style="display:none"></div>
+  `;
+}
+
+async function guardarAplicacion(id, btn) {
+  const nombre = $('#aNombre').value.trim();
+  const habilitada = $('#aHabilitada').value === '1' ? '1' : '0';
+  const err = $('#aError');
+  err.style.display = 'none';
+  $('#aNombre').classList.remove('input-invalid');
+
+  if (!nombre) {
+    $('#aNombre').classList.add('input-invalid');
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+
+  const payload = { nombre, habilitada };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      const data = await apiSend('api/aplicaciones.php', 'POST', payload);
+      closeModal();
+      cargarAplicaciones();
+      mostrarApiKeyGenerada(data.apikey, 'Aplicacion creada. Esta es su API key:');
+    } else {
+      await apiSend(`api/aplicaciones.php?id=${id}`, 'PUT', payload);
+      toast('Aplicacion actualizada.');
+      closeModal();
+      cargarAplicaciones();
+    }
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+// Modal informativo que muestra una API key recien generada / rotada, con
+// boton para copiarla. La key ya vive en la tabla, este modal es solo un
+// atajo visual para copiarla apenas se creo/roto — no es "la unica vez" que
+// se ve (siempre esta en el listado y en Consultar).
+function mostrarApiKeyGenerada(apikey, titulo) {
+  openModal(`
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">🔑 API key</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom:12px">${esc(titulo)}</div>
+        <div style="display:flex;gap:8px;align-items:stretch">
+          <input type="text" id="apikeyOut" value="${esc(apikey)}" readonly
+                 style="flex:1;font-family:var(--font-mono,monospace);font-size:.85rem">
+          <button class="btn btn-primary" data-act="copiar">
+            <i class="fa-solid fa-copy"></i> Copiar
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+    if (ev.target.closest('[data-act="copiar"]')) {
+      if (!navigator.clipboard) { toast('El navegador no permite copiar.', { error: true }); return; }
+      navigator.clipboard.writeText(apikey).then(
+        () => toast('API key copiada.'),
+        () => toast('No se pudo copiar.', { error: true }),
+      );
+    }
+  });
+  setTimeout(() => { const i = $('#apikeyOut'); if (i) i.select(); }, 50);
+}
+
+async function copiarApiKeyAplicacion(id) {
+  const row = aplicacionesCache.find((x) => x.id === id);
+  const key = row?.apikey;
+  if (!key) { toast('Sin API key.', { error: true }); return; }
+  if (!navigator.clipboard) { toast('El navegador no permite copiar.', { error: true }); return; }
+  navigator.clipboard.writeText(key).then(
+    () => toast('API key copiada.'),
+    () => toast('No se pudo copiar.', { error: true }),
+  );
+}
+
+async function toggleHabilitadaAplicacion(id) {
+  const row = aplicacionesCache.find((x) => x.id === id);
+  if (!row) return;
+  const nuevo = row.habilitada === '1' ? '0' : '1';
+  try {
+    await apiSend(`api/aplicaciones.php?id=${id}`, 'PUT', { nombre: row.nombre, habilitada: nuevo });
+    toast(nuevo === '1' ? 'Aplicacion habilitada.' : 'Aplicacion deshabilitada.');
+    cargarAplicaciones();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function eliminarAplicacion(id) {
+  const row = aplicacionesCache.find((x) => x.id === id);
+  const nombre = row?.nombre ? ` "${row.nombre}"` : '';
+  const ok = await confirmar({
+    title: 'Eliminar aplicacion',
+    message: `Se eliminará la aplicacion${esc(nombre)} (#${id}). Los sistemas que estén usando su API key dejarán de tener acceso.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/aplicaciones.php?id=${id}`, 'DELETE');
+    toast('Aplicacion eliminada.');
+    cargarAplicaciones();
   } catch (e) {
     toast(e.message, { error: true });
   }
@@ -11412,7 +12622,7 @@ function drdoFechaVencimientoInfo(fecha) {
     return { html: `${dateLine}${badge}`, dias, vencido: false, proximo: true };
   }
   if (dias <= 30) {
-    const badge = `<span class="badge badge-warn">En ${dias} d${dias === 1 ? 'ía' : 'ías'}</span>`;
+    const badge = `<span class="badge badge-danger">En ${dias} d${dias === 1 ? 'ía' : 'ías'}</span>`;
     return { html: `${dateLine}${badge}`, dias, vencido: false, proximo: true };
   }
   return { html: dateLine, dias, vencido: false, proximo: false };
@@ -11556,8 +12766,10 @@ route('/datarocketdominios', async (mount) => {
               <select id="fDrdoOrden" onchange="onFiltroDrdo('orden', this.value)">
                 <option value="id">Código</option>
                 <option value="dominio">Dominio</option>
+                <option value="titular_dominio">Titular</option>
+                <option value="entidad_registrante">Registrante</option>
                 <option value="fecha_registro">Fecha registro</option>
-                <option value="fecha_siguiente_renovacion">Próx. renovación</option>
+                <option value="fecha_siguiente_renovacion">Vencimiento</option>
                 <option value="costo_renovacion">Costo</option>
               </select>
             </div>
@@ -11700,8 +12912,17 @@ function renderDrdo() {
 
   tbody.innerHTML = filas.map((e) => {
     const venc = drdoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
+    // Dominios por vencer o vencidos van con fondo tenue: rojo cuando los
+    // renueva Databox (nuestro problema), azul cuando los renueva el Cliente
+    // (visible para saber que se vence, pero no urgencia nuestra).
+    let rowStyle = '';
+    if (venc.vencido || venc.proximo) {
+      rowStyle = e.responsable === 'Cliente'
+        ? ' style="background:rgba(59,130,246,.12)"'
+        : ' style="background:rgba(230,42,42,.12)"';
+    }
     return `
-    <tr data-id="${e.id}" class="row-clickable">
+    <tr data-id="${e.id}" class="row-clickable"${rowStyle}>
       <td><code style="font-size:.82rem">${e.id}</code></td>
       <td style="font-weight:600">${esc(e.dominio)}</td>
       <td style="color:var(--muted)">${esc(e.titular_dominio || '—')}</td>

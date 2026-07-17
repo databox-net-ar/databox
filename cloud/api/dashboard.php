@@ -13,40 +13,48 @@ header('Content-Type: application/json; charset=utf-8');
 $hoy = new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires'));
 
 // Datarocket dominios: bloque "dominios por vencer en los proximos 30 dias".
-// Incluye tambien los ya vencidos (fecha_siguiente_renovacion < hoy). Se muestra
-// solo si el usuario tiene permiso de ver el modulo Dominios. Si no hay ninguno
-// por vencer ni vencido, `items` viene vacio y el UI renderiza "Todo bien".
+// Incluye tambien los ya vencidos (fecha_siguiente_renovacion < hoy). Solo
+// considera dominios cuyo responsable operativo es Databox — los de responsable
+// 'Cliente' se ignoran porque no los renueva Databox y no son un problema
+// nuestro. Se muestra solo si el usuario tiene permiso de ver el modulo
+// Dominios. Si no hay ninguno por vencer ni vencido, `items` viene vacio y el
+// UI renderiza "Todo bien".
 $datarocketDominios = null;
 if (hasPermission('datarocket.dominios.consultar')) {
     $pdo = db();
 
-    $total = (int)$pdo->query('SELECT COUNT(*) FROM datarocket_dominios')->fetchColumn();
+    $total = (int)$pdo->query(
+        "SELECT COUNT(*) FROM datarocket_dominios WHERE responsable = 'Databox'"
+    )->fetchColumn();
 
-    $porVencer = (int)$pdo->query('
+    $porVencer = (int)$pdo->query("
         SELECT COUNT(*) FROM datarocket_dominios
-         WHERE fecha_siguiente_renovacion IS NOT NULL
+         WHERE responsable = 'Databox'
+           AND fecha_siguiente_renovacion IS NOT NULL
            AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
            AND fecha_siguiente_renovacion >= CURDATE()
-    ')->fetchColumn();
+    ")->fetchColumn();
 
-    $vencidos = (int)$pdo->query('
+    $vencidos = (int)$pdo->query("
         SELECT COUNT(*) FROM datarocket_dominios
-         WHERE fecha_siguiente_renovacion IS NOT NULL
+         WHERE responsable = 'Databox'
+           AND fecha_siguiente_renovacion IS NOT NULL
            AND fecha_siguiente_renovacion < CURDATE()
-    ')->fetchColumn();
+    ")->fetchColumn();
 
     $items = [];
     if (($porVencer + $vencidos) > 0) {
-        $stmt = $pdo->query('
+        $stmt = $pdo->query("
             SELECT id, dominio, titular_dominio, responsable,
                    fecha_siguiente_renovacion, costo_renovacion, moneda,
                    DATEDIFF(fecha_siguiente_renovacion, CURDATE()) AS dias
               FROM datarocket_dominios
-             WHERE fecha_siguiente_renovacion IS NOT NULL
+             WHERE responsable = 'Databox'
+               AND fecha_siguiente_renovacion IS NOT NULL
                AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
              ORDER BY fecha_siguiente_renovacion ASC
              LIMIT 20
-        ');
+        ");
         $items = $stmt->fetchAll();
     }
 

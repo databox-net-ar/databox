@@ -18,6 +18,23 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ----------------------------
+-- Table structure for accesos
+-- ----------------------------
+DROP TABLE IF EXISTS `accesos`;
+CREATE TABLE `accesos`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `empresa_id` int UNSIGNED NULL DEFAULT NULL,
+  `nombre` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `usuario` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `contrasena` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `privado` tinyint(1) NOT NULL DEFAULT 0,
+  `actualizado` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_accesos_empresa_id`(`empresa_id`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 101 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for aplicaciones
 -- ----------------------------
 DROP TABLE IF EXISTS `aplicaciones`;
