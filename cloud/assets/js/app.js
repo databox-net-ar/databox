@@ -493,6 +493,7 @@ const PLATAFORMAS_GRUPOS = [
       { icono: '🌐', titulo: 'Cloudflare',    desc: 'Panel principal.',                   url: 'https://dash.cloudflare.com/' },
       { icono: '🖥️', titulo: 'LatinCloud',    desc: 'WHM cPanel.',                        url: 'https://ar151.xvserver.com:2087/cpsess3116822283/scripts4/listaccts' },
       { icono: '🖥️', titulo: 'DonWeb',        desc: 'Panel de hosting.',                  url: 'https://donweb.com/clientes/' },
+      { icono: '🖥️', titulo: 'Porteden',      desc: 'Panel de hosting.',                  url: 'https://my.porteden.com/' },
       { icono: '🎮', titulo: 'Play Console',  desc: 'Google Play — publicación Android.', url: 'https://play.google.com/console/u/0/developers/6570590227569156980/inbox' },
       { icono: '🐳', titulo: 'Portainer',     desc: 'Gestión de contenedores Docker.',    url: 'http://localhost:9000/#!/home' },
     ],
