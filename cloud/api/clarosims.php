@@ -12,7 +12,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const CSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, actualizado";
+const CSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -48,6 +48,7 @@ try {
 function handleList(PDO $pdo, array $q): void {
     $codigo = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
     $estado = trim((string)($q['estado'] ?? ''));
+    $enUso  = trim((string)($q['en_uso'] ?? ''));
     $search = trim((string)($q['q']      ?? ''));
 
     $orderBy = $q['order_by'] ?? 'id';
@@ -81,9 +82,19 @@ function handleList(PDO $pdo, array $q): void {
     if ($codigo !== null) { $where[] = 'id = :codigo';       $params[':codigo'] = $codigo; }
     if ($estado !== '')   { $where[] = 'estado = :estado';   $params[':estado'] = $estado; }
 
+    // en_uso admite: 'si' | 'no' | 'null' (sin definir) | '' (todos).
+    if ($enUso === 'null')          { $where[] = "(en_uso IS NULL OR en_uso = '')"; }
+    elseif (in_array($enUso, ['si', 'no'], true)) { $where[] = 'en_uso = :en_uso'; $params[':en_uso'] = $enUso; }
+
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s OR linea LIKE :s OR icc LIKE :s OR msisdn LIKE :s OR imei LIKE :s)';
-        $params[':s'] = "%{$search}%";
+        // PDO con ATTR_EMULATE_PREPARES=false no permite reusar el mismo
+        // placeholder para varias columnas — hay que bindear uno por columna.
+        $where[] = '(nombre LIKE :s_nombre OR alias LIKE :s_alias OR linea LIKE :s_linea OR icc LIKE :s_icc)';
+        $like = "%{$search}%";
+        $params[':s_nombre'] = $like;
+        $params[':s_alias']  = $like;
+        $params[':s_linea']  = $like;
+        $params[':s_icc']    = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
@@ -188,14 +199,33 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('SIM no encontrada', 404);
 
-    // Solo `nombre` es editable desde el ABM. El resto (alias, linea, icc,
-    // estado*, limite_datos, consumo_datos, imei, msisdn) lo sobreescribe el
-    // sync de openclaw, asi que aceptarlos aca solo generaria drift hasta la
-    // proxima corrida del sync.
-    $nombre = nullableStr($in['nombre'] ?? null, 255);
+    // Update parcial: solo se tocan las columnas presentes en el payload.
+    // Campos editables desde el ABM:
+    //   - `nombre`  -> modal Editar
+    //   - `en_uso`  -> menu contextual del listado ('si' | 'no' | null)
+    // El resto (alias, linea, icc, estado*, limite_datos, consumo_datos, imei,
+    // msisdn) lo sobreescribe el sync de openclaw y no se acepta aca.
+    $sets   = [];
+    $params = [':id' => $id];
 
-    $stmt = $pdo->prepare('UPDATE clarosims SET nombre = :nombre WHERE id = :id');
-    $stmt->execute([':nombre' => $nombre, ':id' => $id]);
+    if (array_key_exists('nombre', $in)) {
+        $sets[] = 'nombre = :nombre';
+        $params[':nombre'] = nullableStr($in['nombre'], 255);
+    }
+    if (array_key_exists('en_uso', $in)) {
+        $v = $in['en_uso'];
+        if ($v !== null && !in_array($v, ['si', 'no'], true)) {
+            jsonError("Valor invalido para 'en_uso' (esperado 'si', 'no' o null)", 422);
+        }
+        $sets[] = 'en_uso = :en_uso';
+        $params[':en_uso'] = $v;
+    }
+
+    if ($sets) {
+        $sql  = 'UPDATE clarosims SET ' . implode(', ', $sets) . ' WHERE id = :id';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+    }
 
     jsonOk(['id' => $id]);
 }

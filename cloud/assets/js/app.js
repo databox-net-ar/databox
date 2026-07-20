@@ -19500,7 +19500,7 @@ route('/movistar', async (mount) => {
 
 // ------------------------- Vista: Movistar > SIMs (ABM) -------------------------
 const msimFiltrosDefaults = {
-  q: '', codigo: '', nombre: '', linea: '', estado: '',
+  q: '', codigo: '', nombre: '', linea: '', estado: '', en_uso: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const msimFiltros = { ...msimFiltrosDefaults };
@@ -19522,6 +19522,17 @@ function msimFmtEstado(v) {
   };
   const cls = map[s] || 'badge-info';
   return `<span class="badge ${cls}">${esc(v)}</span>`;
+}
+
+// Circulo indicador para la columna "En uso" del listado de SIMs (Movistar y
+// Claro). Verde = 'si', rojo = 'no', gris = null. Se marca a mano desde el
+// menu contextual del listado; el sync con los portales no lo toca.
+function simFmtEnUso(v) {
+  const norm  = v === 'si' ? 'si' : v === 'no' ? 'no' : null;
+  const color = norm === 'si' ? '#22c55e' : norm === 'no' ? '#ef4444' : '#6b7280';
+  const title = norm === 'si' ? 'En uso' : norm === 'no' ? 'Sin uso' : 'Sin definir';
+  return `<span title="${title}" aria-label="${title}"
+                style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${color}"></span>`;
 }
 
 route('/movistarsims', async (mount) => {
@@ -19584,11 +19595,12 @@ route('/movistarsims', async (mount) => {
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
               ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
+              <th style="width:70px;text-align:center" title="En uso: verde = sí, rojo = no, gris = sin definir">En uso</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="msimTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -19597,6 +19609,13 @@ route('/movistarsims', async (mount) => {
     <div id="msimCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="marcar-en-uso" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#22c55e"></i><span>En uso</span>
+      </button>
+      <button type="button" data-action="marcar-sin-uso" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#ef4444"></i><span>Sin uso</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
@@ -19641,6 +19660,17 @@ route('/movistarsims', async (mount) => {
             <div class="form-group">
               <label>Línea</label>
               <input type="text" id="fMsimLinea" placeholder="Contiene…" oninput="onFiltroMsim('linea', this.value)" style="font-family:monospace">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>En uso</label>
+              <select id="fMsimEnUso" onchange="onFiltroMsim('en_uso', this.value)">
+                <option value="">Todas</option>
+                <option value="si">En uso</option>
+                <option value="no">Sin uso</option>
+                <option value="null">Sin definir</option>
+              </select>
             </div>
           </div>
           <div class="form-row form-row-3">
@@ -19715,22 +19745,35 @@ route('/movistarsims', async (mount) => {
 
   $('#msimCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
-    if (!b) return;
+    if (!b || b.disabled) return;
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarMsim(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionMsim(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarMsim(data.id);
+    if (b.dataset.action === 'consultar')      abrirConsultarMsim(data.id);
+    if (b.dataset.action === 'editar')         abrirAltaEdicionMsim(data.id);
+    if (b.dataset.action === 'eliminar')       eliminarMsim(data.id);
+    if (b.dataset.action === 'marcar-en-uso')  cambiarEnUsoMsim(data.id, 'si');
+    if (b.dataset.action === 'marcar-sin-uso') cambiarEnUsoMsim(data.id, 'no');
   });
+
+  // Refleja el `en_uso` actual de la fila deshabilitando la opcion que ya
+  // esta aplicada, para que el usuario vea de un vistazo cual es el estado.
+  const sincronizarCtxMenuMsim = (enUso) => {
+    const menu = $('#msimCtxMenu');
+    menu.querySelector('[data-action="marcar-en-uso"]').disabled  = (enUso === 'si');
+    menu.querySelector('[data-action="marcar-sin-uso"]').disabled = (enUso === 'no');
+  };
 
   $('#msimTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
+      const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
+      const enUso = tr?.dataset.enUso || '';
+      sincronizarCtxMenuMsim(enUso);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#msimCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      abrirCtxMenu($('#msimCtxMenu'), r.right - 190, r.bottom + 4, { id, enUso });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -19741,17 +19784,19 @@ route('/movistarsims', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#msimCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    const enUso = tr.dataset.enUso || '';
+    sincronizarCtxMenuMsim(enUso);
+    abrirCtxMenu($('#msimCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), enUso });
   });
 
   refrescarBadgeFiltrosMsim();
   await cargarMsim();
-}, 'SIMs');
+}, 'Movistar SIMs');
 
 async function cargarMsim() {
   const tbody = $('#msimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(msimFiltros).forEach(([k, v]) => {
@@ -19763,7 +19808,7 @@ async function cargarMsim() {
     pintarStatsMsim(data.stats);
     pintarTablaMsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -19783,11 +19828,11 @@ function pintarStatsMsim(s) {
 function pintarTablaMsim(rows) {
   const tbody = $('#msimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
-    <tr data-id="${r.id}" class="row-clickable">
+    <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
       <td>${esc(r.nombre || '—')}</td>
       <td>${esc(r.alias || '—')}</td>
@@ -19797,6 +19842,7 @@ function pintarTablaMsim(rows) {
       <td>${msimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
+      <td style="text-align:center">${simFmtEnUso(r.en_uso)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
@@ -19809,7 +19855,7 @@ function pintarTablaMsim(rows) {
 }
 
 function onFiltroMsim(key, value) {
-  if (['order_by', 'dir', 'estado'].includes(key)) {
+  if (['order_by', 'dir', 'estado', 'en_uso'].includes(key)) {
     msimFiltros[key] = value;
   } else if (key === 'codigo') {
     const v = String(value).trim();
@@ -19842,6 +19888,7 @@ function sincronizarControlesFiltrosMsim() {
   $('#fMsimCodigo').value  = f.codigo;
   $('#fMsimNombre').value  = f.nombre;
   $('#fMsimLinea').value   = f.linea;
+  $('#fMsimEnUso').value   = f.en_uso;
   $('#fMsimLimite').value  = f.limite;
   $('#fMsimOrderBy').value = f.order_by;
   $('#fMsimDir').value     = f.dir;
@@ -19960,6 +20007,7 @@ function pintarConsultarMsimGeneral(r) {
   const gprs  = r.estado_gprs ? msimFmtEstado(r.estado_gprs) : '—';
   const lte   = r.estado_lte  ? msimFmtEstado(r.estado_lte)  : '—';
   const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
+  const enUsoTxt = r.en_uso === 'si' ? 'Sí' : r.en_uso === 'no' ? 'No' : 'Sin definir';
   $('#modalRoot [data-panel="general"]').innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       ${card('Código',        `#${esc(r.id)}`)}
@@ -19974,7 +20022,8 @@ function pintarConsultarMsimGeneral(r) {
       ${card('Límite datos',  esc(r.limite_datos  || '—'))}
       ${card('Consumo datos', esc(r.consumo_datos || '—'))}
       ${card('IMEI',          esc(r.imei   || '—'))}
-      ${card('Última sync',   esc(sync), 'grid-column:1 / -1')}
+      ${card('En uso',        `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
+      ${card('Última sync',   esc(sync))}
     </div>
   `;
 }
@@ -20115,6 +20164,15 @@ async function eliminarMsim(id) {
   try {
     await apiSend(`api/movistarsims.php?id=${id}`, 'DELETE');
     toast('SIM eliminada.');
+    cargarMsim();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function cambiarEnUsoMsim(id, valor) {
+  try {
+    await apiSend(`api/movistarsims.php?id=${id}`, 'PUT', { en_uso: valor });
     cargarMsim();
   } catch (e) {
     toast(e.message, { error: true });
@@ -20522,7 +20580,7 @@ route('/anthropic', async (mount) => {
 
 // ------------------------- Vista: Claro > SIMs (ABM) -------------------------
 const csimFiltrosDefaults = {
-  q: '', codigo: '', estado: '',
+  q: '', codigo: '', estado: '', en_uso: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const csimFiltros = { ...csimFiltrosDefaults };
@@ -20607,11 +20665,12 @@ route('/clarosims', async (mount) => {
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
               ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
+              <th style="width:70px;text-align:center" title="En uso: verde = sí, rojo = no, gris = sin definir">En uso</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="csimTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -20620,6 +20679,13 @@ route('/clarosims', async (mount) => {
     <div id="csimCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="marcar-en-uso" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#22c55e"></i><span>En uso</span>
+      </button>
+      <button type="button" data-action="marcar-sin-uso" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#ef4444"></i><span>Sin uso</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
@@ -20646,6 +20712,17 @@ route('/clarosims', async (mount) => {
             <div class="form-group">
               <label>Estado</label>
               <input type="text" id="fCsimEstado" placeholder="Ej: Activada" oninput="onFiltroCsim('estado', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>En uso</label>
+              <select id="fCsimEnUso" onchange="onFiltroCsim('en_uso', this.value)">
+                <option value="">Todas</option>
+                <option value="si">En uso</option>
+                <option value="no">Sin uso</option>
+                <option value="null">Sin definir</option>
+              </select>
             </div>
           </div>
           <div class="form-row form-row-3">
@@ -20720,22 +20797,35 @@ route('/clarosims', async (mount) => {
 
   $('#csimCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
-    if (!b) return;
+    if (!b || b.disabled) return;
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarCsim(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionCsim(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarCsim(data.id);
+    if (b.dataset.action === 'consultar')      abrirConsultarCsim(data.id);
+    if (b.dataset.action === 'editar')         abrirAltaEdicionCsim(data.id);
+    if (b.dataset.action === 'eliminar')       eliminarCsim(data.id);
+    if (b.dataset.action === 'marcar-en-uso')  cambiarEnUsoCsim(data.id, 'si');
+    if (b.dataset.action === 'marcar-sin-uso') cambiarEnUsoCsim(data.id, 'no');
   });
+
+  // Refleja el `en_uso` actual de la fila deshabilitando la opcion que ya
+  // esta aplicada, para que el usuario vea de un vistazo cual es el estado.
+  const sincronizarCtxMenuCsim = (enUso) => {
+    const menu = $('#csimCtxMenu');
+    menu.querySelector('[data-action="marcar-en-uso"]').disabled  = (enUso === 'si');
+    menu.querySelector('[data-action="marcar-sin-uso"]').disabled = (enUso === 'no');
+  };
 
   $('#csimTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
+      const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
+      const enUso = tr?.dataset.enUso || '';
+      sincronizarCtxMenuCsim(enUso);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#csimCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      abrirCtxMenu($('#csimCtxMenu'), r.right - 190, r.bottom + 4, { id, enUso });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -20746,17 +20836,19 @@ route('/clarosims', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#csimCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    const enUso = tr.dataset.enUso || '';
+    sincronizarCtxMenuCsim(enUso);
+    abrirCtxMenu($('#csimCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), enUso });
   });
 
   refrescarBadgeFiltrosCsim();
   await cargarCsim();
-}, 'SIMs');
+}, 'Claro SIMs');
 
 async function cargarCsim() {
   const tbody = $('#csimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(csimFiltros).forEach(([k, v]) => {
@@ -20768,7 +20860,7 @@ async function cargarCsim() {
     pintarStatsCsim(data.stats);
     pintarTablaCsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -20787,11 +20879,11 @@ function pintarStatsCsim(s) {
 function pintarTablaCsim(rows) {
   const tbody = $('#csimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
-    <tr data-id="${r.id}" class="row-clickable">
+    <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
       <td>${esc(r.nombre || '—')}</td>
       <td>${esc(r.alias || '—')}</td>
@@ -20801,6 +20893,7 @@ function pintarTablaCsim(rows) {
       <td>${csimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
+      <td style="text-align:center">${simFmtEnUso(r.en_uso)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
@@ -20813,7 +20906,7 @@ function pintarTablaCsim(rows) {
 }
 
 function onFiltroCsim(key, value) {
-  if (['order_by', 'dir', 'estado'].includes(key)) {
+  if (['order_by', 'dir', 'estado', 'en_uso'].includes(key)) {
     csimFiltros[key] = value;
   } else if (key === 'codigo') {
     const v = String(value).trim();
@@ -20845,6 +20938,7 @@ function sincronizarControlesFiltrosCsim() {
   const f = csimFiltros;
   $('#fCsimCodigo').value  = f.codigo;
   $('#fCsimEstado').value  = f.estado;
+  $('#fCsimEnUso').value   = f.en_uso;
   $('#fCsimLimite').value  = f.limite;
   $('#fCsimOrderBy').value = f.order_by;
   $('#fCsimDir').value     = f.dir;
@@ -21051,6 +21145,7 @@ function pintarConsultarCsimGeneral(r) {
   const gprs  = r.estado_gprs ? csimFmtEstado(r.estado_gprs) : '—';
   const lte   = r.estado_lte  ? csimFmtEstado(r.estado_lte)  : '—';
   const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
+  const enUsoTxt = r.en_uso === 'si' ? 'Sí' : r.en_uso === 'no' ? 'No' : 'Sin definir';
   $('#modalRoot [data-panel="general"]').innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       ${card('Código',        `#${esc(r.id)}`)}
@@ -21065,7 +21160,8 @@ function pintarConsultarCsimGeneral(r) {
       ${card('Límite datos',  esc(r.limite_datos  || '—'))}
       ${card('Consumo datos', esc(r.consumo_datos || '—'))}
       ${card('IMEI',          esc(r.imei   || '—'))}
-      ${card('Última sync',   esc(sync), 'grid-column:1 / -1')}
+      ${card('En uso',        `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
+      ${card('Última sync',   esc(sync))}
     </div>
   `;
 }
@@ -21174,6 +21270,15 @@ async function eliminarCsim(id) {
   try {
     await apiSend(`api/clarosims.php?id=${id}`, 'DELETE');
     toast('SIM eliminada.');
+    cargarCsim();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function cambiarEnUsoCsim(id, valor) {
+  try {
+    await apiSend(`api/clarosims.php?id=${id}`, 'PUT', { en_uso: valor });
     cargarCsim();
   } catch (e) {
     toast(e.message, { error: true });
