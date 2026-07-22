@@ -626,11 +626,75 @@ route('/dashboard', async (mount) => {
       </div>
     </div>
 
+    ${renderDashDatasaleProspectosEsperando(data.datasale_prospectos_esperando)}
     ${renderDashDatarocketDominios(data.datarocket_dominios)}
     ${renderDashAwsCuentas(data.aws_cuentas)}
     ${renderDashEvolutionCanales(data.evolution_canales)}
   `;
 });
+
+// Bloque "Prospectos esperando" del dashboard. La API lo omite si el usuario no
+// tiene permiso `datasale.prospectos.consultar`; en ese caso no renderizamos
+// nada. Muestra los prospectos con `estado = 1` (esperando) ordenados por
+// ingreso ASC — los mas viejos arriba, que son los que llevan mas tiempo sin
+// atencion. Fila roja + reloj para llamar la atencion, "Todo bien" cuando no
+// hay ninguno.
+function renderDashDatasaleProspectosEsperando(dsp) {
+  if (!dsp) return '';
+  const esperando = Number(dsp.esperando) || 0;
+  const items     = dsp.items || [];
+
+  const filas = items.length
+    ? items.map((p) => {
+        const nombre = p.nombre || `Prospecto #${p.id}`;
+        const asuntoNombre = p.asunto
+          ? `<small><b>${esc(p.asunto)}</b></small><br>${esc(nombre)}`
+          : esc(nombre);
+        const organizacion = p.organizacion
+          ? `<br><small style="opacity:.8">${esc(p.organizacion)}</small>`
+          : '';
+        return `
+          <tr class="row-clickable" onclick="location.hash='#/prospectos'"
+              style="background:rgba(230,42,42,.12)">
+            <td class="td-id">#${esc(p.id)}</td>
+            <td>${esc(p.proyecto_nombre || '—')}</td>
+            <td style="line-height:1.35">${asuntoNombre}${organizacion}</td>
+            <td>${esc(p.asignado_nombre || '—')}</td>
+            <td style="font-family:monospace;white-space:nowrap"
+                title="${esc(p.ingreso || '')}">
+              <i class="fa-solid fa-clock" style="color:var(--danger)"></i>
+              ${esc(fmtHace(p.ingreso) || '—')}
+            </td>
+          </tr>
+        `;
+      }).join('')
+    : `<tr><td colspan="5" class="table-empty">Todo bien.</td></tr>`;
+
+  const badgeHeader = esperando > 0
+    ? `<span class="badge badge-danger" style="margin-left:6px">${esperando} esperando</span>`
+    : '';
+
+  return `
+    <div class="table-card" style="margin-top:16px">
+      <div class="dash-table-header">
+        <span>⏳ Prospectos esperando ${badgeHeader}</span>
+        <span class="dash-ver-mas" onclick="location.hash='#/prospectos'" style="cursor:pointer">Ver más</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Proyecto</th>
+            <th>Asunto / Nombre</th>
+            <th>Asignado</th>
+            <th>Esperando</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
+}
 
 // Bloque "Dominios por vencer" del dashboard. La API lo omite si el usuario no
 // tiene permiso `datarocket.dominios.consultar`; en ese caso no renderizamos
@@ -20042,7 +20106,7 @@ function pintarConsultarMsimEstado(r) {
       <div style="font-size:.82rem;color:var(--muted);margin-top:8px">ICC ${esc(r.icc || '—')}</div>
     </div>
     <div style="display:flex;gap:12px;justify-content:center;padding-bottom:10px">
-      <button class="btn btn-primary" data-lifecycle="ACTIVATED"   ${activa  ? 'disabled' : ''}>
+      <button class="btn btn-primary" data-lifecycle="ACTIVE"      ${activa  ? 'disabled' : ''}>
         <i class="fa-solid fa-play"></i> Activar
       </button>
       <button class="btn btn-danger" data-lifecycle="DEACTIVATED" ${!activa ? 'disabled' : ''}>
@@ -20061,7 +20125,7 @@ function pintarConsultarMsimEstado(r) {
 }
 
 async function cambiarEstadoMsim(id, target, btn) {
-  const label = target === 'ACTIVATED' ? 'Activar' : 'Desactivar';
+  const label = target === 'ACTIVE' ? 'Activar' : 'Desactivar';
   const ok = await confirmar({
     title: `${label} SIM`,
     message: `Se enviara el pedido a Kite Platform para ${label.toLowerCase()} esta SIM.`,

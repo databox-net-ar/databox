@@ -5,7 +5,7 @@
 //
 // Consume:
 //   POST api/movistarsims_lifecycle.php
-//   Body JSON: {"id": <movistarsims.id>, "target": "ACTIVATED"|"DEACTIVATED"}
+//   Body JSON: {"id": <movistarsims.id>, "target": "ACTIVE"|"DEACTIVATED"}
 //
 // Flujo:
 //   1. Chequea permiso `plataformas.movistar.sims.editar`.
@@ -27,6 +27,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/movistarsims_kite.php';
+require_once __DIR__ . '/lib/sucesos.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -44,19 +45,37 @@ try {
 
     if ($id <= 0)      jsonError('Falta id', 400);
     // Whitelist estricta: solo activar/desactivar por ahora. Si en el futuro
-    // se necesita RETIRED, TEST_READY, etc., agregarlos aca.
-    if (!in_array($target, ['ACTIVATED', 'DEACTIVATED'], true)) {
-        jsonError('target invalido (esperado ACTIVATED o DEACTIVATED)', 400);
+    // se necesita RETIRED, TEST, ACTIVATION_READY, etc., agregarlos aca.
+    // Valores segun spec de Kite (Inventory API modifySubscription).
+    if (!in_array($target, ['ACTIVE', 'DEACTIVATED'], true)) {
+        jsonError('target invalido (esperado ACTIVE o DEACTIVATED)', 400);
     }
 
     $pdo  = db();
-    $stmt = $pdo->prepare('SELECT icc FROM movistarsims WHERE id = :id');
+    $stmt = $pdo->prepare('SELECT icc, linea, nombre FROM movistarsims WHERE id = :id');
     $stmt->execute([':id' => $id]);
-    $icc = (string) $stmt->fetchColumn();
+    $sim = $stmt->fetch();
+    $icc = (string) ($sim['icc'] ?? '');
     if ($icc === '') jsonError('SIM no encontrada o sin ICC', 404);
 
-    $cfg  = kiteConfig();
-    $resp = kiteChangeLifeCycle($cfg, $icc, $target);
+    // Etiqueta legible para el detalle del suceso: prioriza nombre editable,
+    // luego linea (msisdn), y cae a mostrar solo el ICC si no hay nada mas.
+    $etiqueta = trim((string)($sim['nombre'] ?? '')) !== ''
+        ? (string)$sim['nombre']
+        : (trim((string)($sim['linea'] ?? '')) !== '' ? (string)$sim['linea'] : "ICC {$icc}");
+    $accion = $target === 'ACTIVE' ? 'Activacion' : 'Desactivacion';
+
+    try {
+        $cfg  = kiteConfig();
+        $resp = kiteChangeLifeCycle($cfg, $icc, $target);
+    } catch (Throwable $eKite) {
+        registrarSuceso($pdo, 'movistarsims', 'error',
+            "{$accion} SIM #{$id} \"{$etiqueta}\" (ICC {$icc}) fallo en Kite: " . $eKite->getMessage());
+        throw $eKite;
+    }
+
+    registrarSuceso($pdo, 'movistarsims', 'info',
+        "{$accion} SIM #{$id} \"{$etiqueta}\" (ICC {$icc}) enviada a Kite Platform.");
 
     jsonOk([
         'icc'    => $icc,

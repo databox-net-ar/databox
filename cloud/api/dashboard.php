@@ -12,6 +12,46 @@ header('Content-Type: application/json; charset=utf-8');
 
 $hoy = new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires'));
 
+// Datasale prospectos esperando: bloque "prospectos con estado esperando" (los
+// que todavia no fueron atendidos). Se muestra solo si el usuario tiene permiso
+// de ver el modulo Prospectos. Estado 1 = esperando (mismo convenio que el
+// endpoint de transicion en api/datasaleprospectos.php: 1=esperando,
+// 2=atendido, 3=despachado). Se ordenan por `ingreso` ASC — los mas viejos
+// primero, que son los que llevan mas tiempo sin atencion. Los nombres de
+// proyecto y asignado se resuelven con LEFT JOIN para evitar N+1.
+$datasaleProspectosEsperando = null;
+if (hasPermission('datasale.prospectos.consultar')) {
+    $pdo = db();
+
+    $total = (int)$pdo->query('SELECT COUNT(*) FROM datasaleprospectos')->fetchColumn();
+
+    $esperando = (int)$pdo->query(
+        'SELECT COUNT(*) FROM datasaleprospectos WHERE estado = 1'
+    )->fetchColumn();
+
+    $items = [];
+    if ($esperando > 0) {
+        $stmt = $pdo->query("
+            SELECT p.id, p.ingreso, p.asunto, p.nombre, p.organizacion,
+                   p.proyecto, pr.nombre AS proyecto_nombre,
+                   p.asignado, u.nombre  AS asignado_nombre
+              FROM datasaleprospectos p
+         LEFT JOIN proyectos pr ON pr.id = p.proyecto
+         LEFT JOIN usuarios  u  ON u.id  = p.asignado
+             WHERE p.estado = 1
+             ORDER BY p.ingreso ASC
+             LIMIT 20
+        ");
+        $items = $stmt->fetchAll();
+    }
+
+    $datasaleProspectosEsperando = [
+        'total'     => $total,
+        'esperando' => $esperando,
+        'items'     => $items,
+    ];
+}
+
 // Datarocket dominios: bloque "dominios por vencer en los proximos 30 dias".
 // Incluye tambien los ya vencidos (fecha_siguiente_renovacion < hoy). Solo
 // considera dominios cuyo responsable operativo es Databox — los de responsable
@@ -21,7 +61,7 @@ $hoy = new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires'));
 // UI renderiza "Todo bien".
 $datarocketDominios = null;
 if (hasPermission('datarocket.dominios.consultar')) {
-    $pdo = db();
+    $pdo = $pdo ?? db();
 
     $total = (int)$pdo->query(
         "SELECT COUNT(*) FROM datarocket_dominios WHERE responsable = 'Databox'"
@@ -146,9 +186,10 @@ $data = [
         'campanias_activas' => 7,
         'clientes'          => 38,
     ],
-    'datarocket_dominios' => $datarocketDominios,
-    'aws_cuentas'         => $awsCuentas,
-    'evolution_canales'   => $evolutionCanales,
+    'datasale_prospectos_esperando' => $datasaleProspectosEsperando,
+    'datarocket_dominios'           => $datarocketDominios,
+    'aws_cuentas'                   => $awsCuentas,
+    'evolution_canales'             => $evolutionCanales,
 ];
 
 echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE);

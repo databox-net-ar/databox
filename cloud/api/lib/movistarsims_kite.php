@@ -133,21 +133,20 @@ function kiteRequest(array $cfg, string $method, string $path, ?array $body): ar
 
 /**
  * Cambia el ciclo de vida de una SIM en Kite. `target` debe ser uno de los
- * valores enumerados por Kite (habitualmente en mayusculas): "ACTIVATED",
- * "DEACTIVATED", "ACTIVATION_READY", "RETIRED", "TEST_READY", etc.
+ * valores enumerados por Kite: "ACTIVE", "DEACTIVATED", "INACTIVE_NEW",
+ * "TEST", "ACTIVATION_PENDANT", "ACTIVATION_READY".
  *
- * NOTA: el path exacto varia segun el tenant de Kite. Se implementa el
- * layout mas comun: PUT /Provisioning/v13/r12/sim/{icc}/lifeCycleStatus
- * con body {"targetLifeCycleStatus": "..."}. Si el tenant de Alfatec usa
- * otra ruta (p.ej. /sim/{icc} sin el sufijo, o POST a /action), ajustar
- * aca — el resto del flujo queda igual.
+ * Endpoint (Inventory API - modifySubscription, seccion 5.1.2 del manual):
+ *   PUT /services/REST/GlobalM2M/Inventory/v13/r12/sim/icc:{ICC}
+ *   Body: {"lifeCycleStatus": "ACTIVE"|"DEACTIVATED"|...}
+ * Kite responde 204 No Content en exito.
  */
 function kiteChangeLifeCycle(array $cfg, string $icc, string $target): array {
     $icc = trim($icc);
     if ($icc === '') throw new RuntimeException('ICC vacio');
-    $path = "/services/REST/GlobalM2M/Provisioning/v13/r12/sim/"
-          . rawurlencode($icc) . "/lifeCycleStatus";
-    return kitePut($cfg, $path, ['targetLifeCycleStatus' => $target]);
+    $path = "/services/REST/GlobalM2M/Inventory/v13/r12/sim/"
+          . "icc:" . rawurlencode($icc);
+    return kitePut($cfg, $path, ['lifeCycleStatus' => $target]);
 }
 
 /**
