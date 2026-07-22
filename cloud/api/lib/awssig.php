@@ -5,7 +5,7 @@
  * A diferencia de lib/s3.php (que lee credenciales de constantes del entorno
  * y sabe solo firmar contra S3), esta lib recibe las credenciales por
  * parametro: se usa para hablar con cuentas AWS de terceros (registros de
- * la tabla `awscuentas`).
+ * la tabla `aws_cuentas`).
  *
  * Solo cubre el caso "JSON RPC 1.0": POST /, body JSON, X-Amz-Target.
  * Es el patron de las APIs de billing/invoicing/ce/etc.

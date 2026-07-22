@@ -26,7 +26,7 @@ try {
 
     $stmt = $pdo->query('
         SELECT id, nombre, numero, usuario, accesskey, secreto
-          FROM awscuentas
+          FROM aws_cuentas
          ORDER BY id
     ');
     $cuentas = $stmt->fetchAll();

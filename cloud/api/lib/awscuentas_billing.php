@@ -5,7 +5,7 @@
  * cloud/jobs/awscuentas_actualizar_facturas.php. Consulta a AWS el estado
  * de facturacion (BCM Recommended Actions + Invoicing), intenta reconciliar
  * la deuda contra las facturas emitidas via subset-sum, y cachea el
- * resultado en la fila de `awscuentas`.
+ * resultado en la fila de `aws_cuentas`.
  *
  * NO escribe en `sucesos`: cada caller decide como loguear el resultado
  * (el endpoint hoy escribe una linea de resumen; el job escribe una por
@@ -17,10 +17,10 @@ require_once __DIR__ . '/invoicing.php';
 
 /**
  * Consulta BCM + Invoicing para una cuenta AWS, arma la reconciliacion y
- * actualiza el cache en `awscuentas`. Asume que la cuenta ya fue validada
+ * actualiza el cache en `aws_cuentas`. Asume que la cuenta ya fue validada
  * (tiene numero, accesskey y secreto).
  *
- * @param array $cuenta Fila de awscuentas con id, nombre, numero, accesskey, secreto.
+ * @param array $cuenta Fila de aws_cuentas con id, nombre, numero, accesskey, secreto.
  * @return array{
  *   ok: bool,
  *   errores: array<string>,
@@ -89,7 +89,7 @@ function actualizarBillingCuenta(PDO $pdo, array $cuenta, int $months = 6): arra
         }
     }
 
-    // --- 4. Cachear en awscuentas (solo si BCM anduvo) ---
+    // --- 4. Cachear en aws_cuentas (solo si BCM anduvo) ---
     if ($out['payments']['ok']) {
         $totalesPorMoneda = [];
         foreach ($out['payments']['actions'] as $a) {
@@ -111,7 +111,7 @@ function actualizarBillingCuenta(PDO $pdo, array $cuenta, int $months = 6): arra
                 $facturasCantidad += count($m['invoice_ids']);
             }
         }
-        $upd = $pdo->prepare('UPDATE awscuentas SET
+        $upd = $pdo->prepare('UPDATE aws_cuentas SET
             facturas_cantidad    = :c,
             facturas_total       = :t,
             facturas_moneda      = :m,

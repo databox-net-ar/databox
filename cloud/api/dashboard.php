@@ -117,10 +117,10 @@ if (hasPermission('plataformas.aws.cuentas.consultar')) {
     $diaMes = (int)$hoy->format('j');
     $activo = $diaMes >= 5;
 
-    $total    = (int)$pdo->query('SELECT COUNT(*) FROM awscuentas')->fetchColumn();
+    $total    = (int)$pdo->query('SELECT COUNT(*) FROM aws_cuentas')->fetchColumn();
     $criticas = $activo
         ? (int)$pdo->query(
-            'SELECT COUNT(*) FROM awscuentas
+            'SELECT COUNT(*) FROM aws_cuentas
               WHERE facturas_cantidad >= 2 AND actualizada IS NOT NULL'
           )->fetchColumn()
         : 0;
@@ -129,7 +129,7 @@ if (hasPermission('plataformas.aws.cuentas.consultar')) {
     if ($activo && $criticas > 0) {
         $stmt = $pdo->query('
             SELECT id, nombre, numero, facturas_cantidad, facturas_total, facturas_moneda, actualizada
-              FROM awscuentas
+              FROM aws_cuentas
              WHERE facturas_cantidad >= 2 AND actualizada IS NOT NULL
              ORDER BY facturas_cantidad DESC, facturas_total DESC
              LIMIT 20

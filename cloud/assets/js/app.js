@@ -348,6 +348,8 @@ const ROUTE_PERMS = {
 
   '/aws':                      { prefix: 'plataformas.aws.' },
   '/awscuentas':               { perm:   'plataformas.aws.cuentas.consultar' },
+  '/awscanales':               { perm:   'plataformas.aws.canales.consultar' },
+  '/awsmensajes':              { perm:   'plataformas.aws.mensajes.consultar' },
 
   '/awsses':                   { prefix: 'plataformas.awsses.' },
   '/awssescanales':            { perm:   'plataformas.awsses.canales.consultar' },
@@ -3951,10 +3953,26 @@ route('/aws', async (mount) => {
     </div>
 
     <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/awsmensajes'">
+        <span class="tile-icon">✉️</span>
+        <span class="tile-title">Mensajes</span>
+        <span class="tile-desc">Cada envío individual de correo procesado por AWS, con destinatario, cuerpo, estado y tiempo de entrega.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/awscanales'">
+        <span class="tile-icon">📡</span>
+        <span class="tile-title">Canales</span>
+        <span class="tile-desc">Los canales SMTP de AWS: servidor, usuario, contraseña y correo remitente por canal.</span>
+      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/awscuentas'">
         <span class="tile-icon">🔐</span>
         <span class="tile-title">Cuentas</span>
         <span class="tile-desc">Cuentas de AWS: usuario, número, credenciales de acceso (access key + secreto) y contraseña de consola.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://console.aws.amazon.com/', '_blank', 'noopener')">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre la consola oficial de AWS en una pestaña nueva.</span>
       </button>
     </div>
   `;
@@ -4670,6 +4688,1243 @@ async function eliminarAwsCuenta(id) {
     await apiSend(`api/awscuentas.php?id=${id}`, 'DELETE');
     toast('Cuenta AWS eliminada.');
     cargarAwsCuentas();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: AWS > Mensajes (ABM) -------------------------
+const awsMsgFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', canal: '', plantilla: '',
+  estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const awsMsgFiltros = { ...awsMsgFiltrosDefaults };
+let awsMsgBuscadorTimer   = null;
+let awsMsgFiltrosSnapshot = null;
+
+const AWS_MSG_FORMATO_MAP = {
+  T: 'Texto plano',
+  H: 'HTML',
+  M: 'Markdown',
+};
+const AWS_MSG_PRIORIDAD_MAP = {
+  A: 'Alta',
+  N: 'Normal',
+  B: 'Baja',
+};
+
+function awsMsgEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const colorMap = {
+    P: 'badge-warn',
+    E: 'badge-success',
+    F: 'badge-danger',
+    C: 'badge-danger',
+    R: 'badge-info',
+  };
+  const labelMap = {
+    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
+  };
+  const cls = colorMap[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+}
+
+function awsMsgFmtDemora(seg) {
+  if (seg == null || seg === '' || isNaN(Number(seg))) return '—';
+  const n = Number(seg);
+  if (n < 60)    return `${n}s`;
+  if (n < 3600)  return `${Math.round(n / 60)}m`;
+  return `${(n / 3600).toFixed(1)}h`;
+}
+
+route('/awsmensajes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS" onclick="location.hash='#/aws'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">✉️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los mensajes AWS son cada correo individual que el motor procesa,
+            con su remitente, destinatario, asunto, cuerpo y el estado del envío
+            registrado por Amazon.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="awsMsgStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="awsMsgSearch"
+                   placeholder="🔍 Buscar destinatario, destino, asunto o tags…">
+            <button class="search-clear" id="awsMsgSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="awsMsgFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="awsMsgFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="awsMsgRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="awsMsgNuevoBtn">+ Nuevo mensaje</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Canal</th>
+              <th>Destinatario</th>
+              <th>Destino</th>
+              <th>Asunto</th>
+              <th>Estado</th>
+              <th>Enviado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="awsMsgTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="awsMsgCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosAwsMsgBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosAwsMsg()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAwsMsg()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fAwsMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroAwsMsg('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fAwsMsgEstado" onchange="onFiltroAwsMsg('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="P">Pendiente</option>
+                <option value="E">Enviado</option>
+                <option value="F">Fallado</option>
+                <option value="C">Cancelado</option>
+                <option value="R">Reintento</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fAwsMsgProyecto" min="1" oninput="onFiltroAwsMsg('proyecto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Canal (ID)</label>
+              <input type="number" id="fAwsMsgCanal" min="1" oninput="onFiltroAwsMsg('canal', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Plantilla (ID)</label>
+              <input type="number" id="fAwsMsgPlantilla" min="1" oninput="onFiltroAwsMsg('plantilla', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fAwsMsgDesde" onchange="onFiltroAwsMsg('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fAwsMsgHasta" onchange="onFiltroAwsMsg('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAwsMsgLimite" min="1" max="1000" value="100" onchange="onFiltroAwsMsg('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAwsMsgOrderBy" onchange="onFiltroAwsMsg('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="destinatario">Destinatario</option>
+                <option value="destino">Destino</option>
+                <option value="asunto">Asunto</option>
+                <option value="estado">Estado</option>
+                <option value="enviado">Enviado</option>
+                <option value="demora">Demora</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAwsMsgDir" onchange="onFiltroAwsMsg('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAwsMsg()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAwsMsg()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAwsMsg()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#awsMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionAwsMsg(null));
+  $('#awsMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsMsg());
+  $('#awsMsgRefrescarBtn').addEventListener('click', () => cargarAwsMsg());
+
+  const inp = $('#awsMsgSearch');
+  const clr = $('#awsMsgSearchClear');
+  inp.value = awsMsgFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    awsMsgFiltros.q = inp.value.trim();
+    clearTimeout(awsMsgBuscadorTimer);
+    awsMsgBuscadorTimer = setTimeout(() => { cargarAwsMsg(); refrescarBadgeFiltrosAwsMsg(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    awsMsgFiltros.q = '';
+    cargarAwsMsg();
+    refrescarBadgeFiltrosAwsMsg();
+  });
+
+  $('#awsMsgCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarAwsMsg(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionAwsMsg(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarAwsMsg(data.id);
+  });
+
+  $('#awsMsgTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#awsMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAwsMsg(Number(tr.dataset.id));
+  });
+  $('#awsMsgTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#awsMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosAwsMsg();
+  await cargarAwsMsg();
+}, 'Mensajes');
+
+async function cargarAwsMsg() {
+  const tbody = $('#awsMsgTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(awsMsgFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/awsmensajes.php?' + qs.toString());
+    pintarStatsAwsMsg(data.stats);
+    pintarTablaAwsMsg(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAwsMsg(s) {
+  const cards = $$('#awsMsgStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.enviados);
+  cards[2].textContent = fmtNum(s.con_error);
+}
+
+function pintarTablaAwsMsg(rows) {
+  const tbody = $('#awsMsgTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin mensajes.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((m) => `
+    <tr data-id="${m.id}" class="row-clickable">
+      <td class="td-id">#${esc(m.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
+      <td>${esc(m.canal_nombre || (m.canal != null ? '#' + m.canal : '—'))}</td>
+      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
+      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
+      <td>${esc(m.asunto || '—')}</td>
+      <td>${awsMsgEstadoBadge(m.estado)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroAwsMsg(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    awsMsgFiltros[key] = value;
+  } else if (['codigo', 'proyecto', 'canal', 'plantilla'].includes(key)) {
+    const v = String(value).trim();
+    awsMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    awsMsgFiltros.limite = n;
+  } else {
+    awsMsgFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAwsMsg();
+  cargarAwsMsg();
+}
+
+function refrescarBadgeFiltrosAwsMsg() {
+  const btn   = $('#awsMsgFiltrosBtn');
+  const badge = $('#awsMsgFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(awsMsgFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(awsMsgFiltros[k]) !== String(awsMsgFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosAwsMsg() {
+  const f = awsMsgFiltros;
+  $('#fAwsMsgCodigo').value    = f.codigo;
+  $('#fAwsMsgEstado').value    = f.estado;
+  $('#fAwsMsgProyecto').value  = f.proyecto;
+  $('#fAwsMsgCanal').value     = f.canal;
+  $('#fAwsMsgPlantilla').value = f.plantilla;
+  $('#fAwsMsgDesde').value     = f.desde;
+  $('#fAwsMsgHasta').value     = f.hasta;
+  $('#fAwsMsgLimite').value    = f.limite;
+  $('#fAwsMsgOrderBy').value   = f.order_by;
+  $('#fAwsMsgDir').value       = f.dir;
+}
+
+function abrirModalFiltrosAwsMsg() {
+  awsMsgFiltrosSnapshot = { ...awsMsgFiltros };
+  sincronizarControlesFiltrosAwsMsg();
+  $('#filtrosAwsMsgBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosAwsMsg() { $('#filtrosAwsMsgBackdrop').classList.remove('open'); }
+function cancelarFiltrosAwsMsg() {
+  if (awsMsgFiltrosSnapshot) {
+    Object.assign(awsMsgFiltros, awsMsgFiltrosSnapshot);
+    refrescarBadgeFiltrosAwsMsg();
+    cargarAwsMsg();
+  }
+  cerrarModalFiltrosAwsMsg();
+}
+function limpiarFiltrosAwsMsg() {
+  Object.assign(awsMsgFiltros, awsMsgFiltrosDefaults);
+  awsMsgFiltros.q = $('#awsMsgSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosAwsMsg();
+  refrescarBadgeFiltrosAwsMsg();
+  cargarAwsMsg();
+}
+window.onFiltroAwsMsg           = onFiltroAwsMsg;
+window.cancelarFiltrosAwsMsg    = cancelarFiltrosAwsMsg;
+window.limpiarFiltrosAwsMsg     = limpiarFiltrosAwsMsg;
+window.cerrarModalFiltrosAwsMsg = cerrarModalFiltrosAwsMsg;
+
+async function abrirConsultarAwsMsg(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1200px">
+      <div class="modal-header">
+        <div class="modal-title">Mensaje AWS <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionAwsMsg(id); }
+  });
+
+  try {
+    const m = await apiGet(`api/awsmensajes.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaAwsMsg(m);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaAwsMsg(m) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
+    ? (m.formato === 'H'
+        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
+        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
+    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">${esc(m.destinatario || '—')}</span>
+          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(m.destino || '')}</span>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${awsMsgEstadoBadge(m.estado)}</div>
+        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
+          <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
+          <div><span style="color:var(--muted)">Encolado:</span> ${esc(fmtFecha(m.encolado))}</div>
+          <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Cuerpo del mensaje')}
+    ${cuerpoHtml}
+
+    ${seccion('Remitente y destinatario')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Remitente',    m.remitente)}
+      ${card('Remite',       m.remite, false, true)}
+      ${card('Destinatario', m.destinatario)}
+      ${card('Destino',      m.destino, false, true)}
+    </dl>
+
+    ${seccion('Contexto de envío')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Proyecto',   m.proyecto)}
+      ${card('Canal',      m.canal)}
+      ${card('Plantilla',  m.plantilla)}
+      ${card('Prioridad',  AWS_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
+      ${card('Formato',    AWS_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+      ${card('Codificado', m.codificado)}
+    </dl>
+
+    ${seccion('Tiempos y resultado')}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Fecha',    fmtFecha(m.fecha))}
+      ${card('Encolado', fmtFecha(m.encolado))}
+      ${card('Enviado',  fmtFecha(m.enviado))}
+      ${card('Demora',   awsMsgFmtDemora(m.demora))}
+      ${card('Estado',   m.estado)}
+      ${card('Tags',     m.tags)}
+    </dl>
+
+    ${seccion('Adjunto, variables y errores')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Adjunto',    m.adjunto, true, true)}
+      ${card('Variables',  m.variables, true, true)}
+      ${card('Parámetros', m.parametros, true, true)}
+      ${card('Error',      m.error, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionAwsMsg(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formAwsMsgHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const m = await apiGet(`api/awsmensajes.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formAwsMsgHtml(m);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarAwsMsg(id, a);
+  });
+}
+
+function formAwsMsgHtml(m) {
+  const v   = (k) => esc(m?.[k] ?? '');
+  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = m?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="awsMsgFecha" value="${dt('fecha')}">
+      </div>
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="awsMsgPrioridad">
+          <option value=""  ${sel('prioridad','')}>—</option>
+          <option value="A" ${sel('prioridad','A')}>Alta</option>
+          <option value="N" ${sel('prioridad','N')}>Normal</option>
+          <option value="B" ${sel('prioridad','B')}>Baja</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="awsMsgEstado">
+          <option value=""  ${sel('estado','')}>—</option>
+          <option value="P" ${sel('estado','P')}>Pendiente</option>
+          <option value="E" ${sel('estado','E')}>Enviado</option>
+          <option value="F" ${sel('estado','F')}>Fallado</option>
+          <option value="C" ${sel('estado','C')}>Cancelado</option>
+          <option value="R" ${sel('estado','R')}>Reintento</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="awsMsgProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Canal (ID)</label>
+        <input type="number" id="awsMsgCanal" min="1" value="${v('canal')}">
+      </div>
+      <div class="form-group">
+        <label>Plantilla (ID)</label>
+        <input type="number" id="awsMsgPlantilla" min="1" value="${v('plantilla')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Remitente</label>
+        <input type="text" id="awsMsgRemitente" maxlength="255" value="${v('remitente')}">
+      </div>
+      <div class="form-group">
+        <label>Remite</label>
+        <input type="text" id="awsMsgRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Destinatario</label>
+        <input type="text" id="awsMsgDestinatario" maxlength="255" value="${v('destinatario')}">
+      </div>
+      <div class="form-group">
+        <label>Destino</label>
+        <input type="text" id="awsMsgDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Asunto</label>
+      <input type="text" id="awsMsgAsunto" maxlength="255" value="${v('asunto')}">
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Formato</label>
+        <select id="awsMsgFormato">
+          <option value=""  ${sel('formato','')}>—</option>
+          <option value="T" ${sel('formato','T')}>Texto plano</option>
+          <option value="H" ${sel('formato','H')}>HTML</option>
+          <option value="M" ${sel('formato','M')}>Markdown</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Codificado</label>
+        <input type="text" id="awsMsgCodificado" maxlength="1" value="${v('codificado')}">
+      </div>
+      <div class="form-group">
+        <label>Tags</label>
+        <input type="text" id="awsMsgTags" maxlength="255" value="${v('tags')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cuerpo</label>
+      <textarea id="awsMsgCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Variables</label>
+      <textarea id="awsMsgVariables" rows="3" style="font-family:monospace">${v('variables')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Parámetros</label>
+      <textarea id="awsMsgParametros" rows="3" style="font-family:monospace">${v('parametros')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Adjunto (URL/ruta)</label>
+      <input type="text" id="awsMsgAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
+    </div>
+    <div class="form-group">
+      <label>Error</label>
+      <textarea id="awsMsgErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Encolado</label>
+        <input type="datetime-local" id="awsMsgEncolado" value="${dt('encolado')}">
+      </div>
+      <div class="form-group">
+        <label>Enviado</label>
+        <input type="datetime-local" id="awsMsgEnviado" value="${dt('enviado')}">
+      </div>
+      <div class="form-group">
+        <label>Demora (seg.)</label>
+        <input type="number" id="awsMsgDemora" min="0" value="${v('demora')}">
+      </div>
+    </div>
+    <div class="field-error" id="awsMsgFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarAwsMsg(id, btn) {
+  const err = $('#awsMsgFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    fecha:        $('#awsMsgFecha').value || null,
+    prioridad:    $('#awsMsgPrioridad').value,
+    estado:       $('#awsMsgEstado').value,
+    proyecto:     $('#awsMsgProyecto').value,
+    canal:        $('#awsMsgCanal').value,
+    plantilla:    $('#awsMsgPlantilla').value,
+    remitente:    $('#awsMsgRemitente').value.trim(),
+    remite:       $('#awsMsgRemite').value.trim(),
+    destinatario: $('#awsMsgDestinatario').value.trim(),
+    destino:      $('#awsMsgDestino').value.trim(),
+    asunto:       $('#awsMsgAsunto').value.trim(),
+    formato:      $('#awsMsgFormato').value,
+    codificado:   $('#awsMsgCodificado').value.trim(),
+    tags:         $('#awsMsgTags').value.trim(),
+    cuerpo:       $('#awsMsgCuerpo').value,
+    variables:    $('#awsMsgVariables').value,
+    parametros:   $('#awsMsgParametros').value,
+    adjunto:      $('#awsMsgAdjunto').value.trim(),
+    error:        $('#awsMsgErrorTxt').value,
+    encolado:     $('#awsMsgEncolado').value || null,
+    enviado:      $('#awsMsgEnviado').value || null,
+    demora:       $('#awsMsgDemora').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/awsmensajes.php', 'POST', payload);
+      toast('Mensaje creado.');
+    } else {
+      await apiSend(`api/awsmensajes.php?id=${id}`, 'PUT', payload);
+      toast('Mensaje actualizado.');
+    }
+    closeModal();
+    cargarAwsMsg();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarAwsMsg(id) {
+  const ok = await confirmar({
+    title: 'Eliminar mensaje',
+    message: `Se eliminará el mensaje #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awsmensajes.php?id=${id}`, 'DELETE');
+    toast('Mensaje eliminado.');
+    cargarAwsMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: AWS > Canales (ABM) -------------------------
+const awsChFiltrosDefaults = {
+  q: '', codigo: '', habilitado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const awsChFiltros = { ...awsChFiltrosDefaults };
+let awsChBuscadorTimer   = null;
+let awsChFiltrosSnapshot = null;
+
+function awsChHabilitadoBadge(h) {
+  if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
+  if (h === '0') return `<span class="badge badge-danger">Deshabilitado</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+route('/awscanales', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS" onclick="location.hash='#/aws'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📡</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los canales AWS son cada configuración SMTP que el motor puede usar
+            para despachar correos, con su servidor, usuario, contraseña y correo
+            remitente asociado.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="awsChStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Habilitados</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="awsChSearch"
+                   placeholder="🔍 Buscar nombre, correo, servidor o usuario…">
+            <button class="search-clear" id="awsChSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="awsChFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="awsChFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="awsChRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="awsChNuevoBtn">+ Nuevo canal</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Correo</th>
+              <th>Servidor</th>
+              <th>Usuario</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="awsChTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="awsChCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosAwsChBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosAwsCh()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAwsCh()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fAwsChCodigo" min="1" placeholder="ID …" oninput="onFiltroAwsCh('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Habilitado</label>
+              <select id="fAwsChHabilitado" onchange="onFiltroAwsCh('habilitado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Habilitados</option>
+                <option value="0">Deshabilitados</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAwsChLimite" min="1" max="1000" value="100" onchange="onFiltroAwsCh('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAwsChOrderBy" onchange="onFiltroAwsCh('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="correo">Correo</option>
+                <option value="servidor">Servidor</option>
+                <option value="usuario">Usuario</option>
+                <option value="habilitado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAwsChDir" onchange="onFiltroAwsCh('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAwsCh()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAwsCh()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAwsCh()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#awsChNuevoBtn').addEventListener('click', () => abrirAltaEdicionAwsCh(null));
+  $('#awsChFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsCh());
+  $('#awsChRefrescarBtn').addEventListener('click', () => cargarAwsCh());
+
+  const inp = $('#awsChSearch');
+  const clr = $('#awsChSearchClear');
+  inp.value = awsChFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    awsChFiltros.q = inp.value.trim();
+    clearTimeout(awsChBuscadorTimer);
+    awsChBuscadorTimer = setTimeout(() => { cargarAwsCh(); refrescarBadgeFiltrosAwsCh(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    awsChFiltros.q = '';
+    cargarAwsCh();
+    refrescarBadgeFiltrosAwsCh();
+  });
+
+  $('#awsChCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarAwsCh(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionAwsCh(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarAwsCh(data.id);
+  });
+
+  $('#awsChTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#awsChCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAwsCh(Number(tr.dataset.id));
+  });
+  $('#awsChTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#awsChCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosAwsCh();
+  await cargarAwsCh();
+}, 'Canales');
+
+async function cargarAwsCh() {
+  const tbody = $('#awsChTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(awsChFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/awscanales.php?' + qs.toString());
+    pintarStatsAwsCh(data.stats);
+    pintarTablaAwsCh(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAwsCh(s) {
+  const cards = $$('#awsChStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.habilitados);
+}
+
+function pintarTablaAwsCh(rows) {
+  const tbody = $('#awsChTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin canales.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-id">#${esc(c.id)}</td>
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td>${esc(c.correo || '—')}</td>
+      <td style="font-family:monospace">${esc(c.servidor || '—')}</td>
+      <td style="font-family:monospace">${esc(c.usuario || '—')}</td>
+      <td>${awsChHabilitadoBadge(c.habilitado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroAwsCh(key, value) {
+  if (['habilitado', 'order_by', 'dir'].includes(key)) {
+    awsChFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    awsChFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    awsChFiltros.limite = n;
+  } else {
+    awsChFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAwsCh();
+  cargarAwsCh();
+}
+
+function refrescarBadgeFiltrosAwsCh() {
+  const btn   = $('#awsChFiltrosBtn');
+  const badge = $('#awsChFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(awsChFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(awsChFiltros[k]) !== String(awsChFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosAwsCh() {
+  const f = awsChFiltros;
+  $('#fAwsChCodigo').value     = f.codigo;
+  $('#fAwsChHabilitado').value = f.habilitado;
+  $('#fAwsChLimite').value     = f.limite;
+  $('#fAwsChOrderBy').value    = f.order_by;
+  $('#fAwsChDir').value        = f.dir;
+}
+
+function abrirModalFiltrosAwsCh() {
+  awsChFiltrosSnapshot = { ...awsChFiltros };
+  sincronizarControlesFiltrosAwsCh();
+  $('#filtrosAwsChBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosAwsCh() { $('#filtrosAwsChBackdrop').classList.remove('open'); }
+function cancelarFiltrosAwsCh() {
+  if (awsChFiltrosSnapshot) {
+    Object.assign(awsChFiltros, awsChFiltrosSnapshot);
+    refrescarBadgeFiltrosAwsCh();
+    cargarAwsCh();
+  }
+  cerrarModalFiltrosAwsCh();
+}
+function limpiarFiltrosAwsCh() {
+  Object.assign(awsChFiltros, awsChFiltrosDefaults);
+  awsChFiltros.q = $('#awsChSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosAwsCh();
+  refrescarBadgeFiltrosAwsCh();
+  cargarAwsCh();
+}
+window.onFiltroAwsCh           = onFiltroAwsCh;
+window.cancelarFiltrosAwsCh    = cancelarFiltrosAwsCh;
+window.limpiarFiltrosAwsCh     = limpiarFiltrosAwsCh;
+window.cerrarModalFiltrosAwsCh = cerrarModalFiltrosAwsCh;
+
+async function abrirConsultarAwsCh(id) {
+  openModal(`
+    <div class="modal" style="max-width:760px">
+      <div class="modal-header">
+        <div class="modal-title">Canal AWS <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionAwsCh(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/awscanales.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaAwsCh(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaAwsCh(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code>
+        </div>
+      </div>
+      <div>${awsChHabilitadoBadge(c.habilitado)}</div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',   c.nombre)}
+      ${card('Correo',   c.correo)}
+      ${card('Servidor', c.servidor, false, true)}
+      ${card('Usuario',  c.usuario, false, true)}
+      ${card('Contraseña', c.contrasena ? '••••••••' : null, false, true)}
+      ${card('Habilitado', c.habilitado === '1' ? 'Sí' : (c.habilitado === '0' ? 'No' : '—'))}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionAwsCh(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal" style="max-width:680px">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar canal <span class="modal-subtitle">#${id}</span>` : 'Nuevo canal'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formAwsChHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/awscanales.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formAwsChHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarAwsCh(id, a);
+  });
+}
+
+function formAwsChHtml(c) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="awsChNombre" maxlength="255" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Correo</label>
+        <input type="email" id="awsChCorreo" maxlength="255" value="${v('correo')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Servidor (SMTP host)</label>
+      <input type="text" id="awsChServidor" maxlength="255" value="${v('servidor')}" style="font-family:monospace"
+             placeholder="ej. email-smtp.us-east-1.amazonaws.com">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Usuario (SMTP)</label>
+        <input type="text" id="awsChUsuario" maxlength="255" value="${v('usuario')}" style="font-family:monospace"
+               autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Contraseña (SMTP)</label>
+        <input type="password" id="awsChContrasena" maxlength="255" value="${v('contrasena')}" style="font-family:monospace"
+               autocomplete="new-password">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Estado</label>
+      <select id="awsChHabilitado">
+        <option value=""  ${sel('habilitado','')}>—</option>
+        <option value="1" ${sel('habilitado','1')}>Habilitado</option>
+        <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
+      </select>
+    </div>
+    <div class="field-error" id="awsChFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarAwsCh(id, btn) {
+  const err = $('#awsChFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:     $('#awsChNombre').value.trim(),
+    correo:     $('#awsChCorreo').value.trim(),
+    servidor:   $('#awsChServidor').value.trim(),
+    usuario:    $('#awsChUsuario').value.trim(),
+    contrasena: $('#awsChContrasena').value,
+    habilitado: $('#awsChHabilitado').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/awscanales.php', 'POST', payload);
+      toast('Canal creado.');
+    } else {
+      await apiSend(`api/awscanales.php?id=${id}`, 'PUT', payload);
+      toast('Canal actualizado.');
+    }
+    closeModal();
+    cargarAwsCh();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarAwsCh(id) {
+  const ok = await confirmar({
+    title: 'Eliminar canal',
+    message: `Se eliminará el canal #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awscanales.php?id=${id}`, 'DELETE');
+    toast('Canal eliminado.');
+    cargarAwsCh();
   } catch (e) {
     toast(e.message, { error: true });
   }

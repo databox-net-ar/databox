@@ -1,6 +1,6 @@
 <?php
 // api/awscuentas.php
-// ABM de cuentas AWS. Lee/escribe sobre la tabla `awscuentas` definida en db/schema.sql.
+// ABM de cuentas AWS. Lee/escribe sobre la tabla `aws_cuentas` definida en db/schema.sql.
 //   GET    api/awscuentas.php          -> listado con filtros (query string)
 //   GET    api/awscuentas.php?id=N     -> registro individual
 //   POST   api/awscuentas.php          -> alta (JSON body)
@@ -107,16 +107,16 @@ function handleList(PDO $pdo, array $q): void {
     // stats.criticas cuenta *todas* las cuentas criticas (no aplica el WHERE del
     // listado): la tarjeta de arriba tiene que reflejar el estado global aunque
     // el usuario filtre la tabla — sino "0 criticos" seria enganoso.
-    $totalGlobal = (int)$pdo->query("SELECT COUNT(*) FROM awscuentas")->fetchColumn();
+    $totalGlobal = (int)$pdo->query("SELECT COUNT(*) FROM aws_cuentas")->fetchColumn();
     $criticasGlobal = (int)$pdo->query(
-        "SELECT COUNT(*) FROM awscuentas WHERE facturas_cantidad >= 2 AND actualizada IS NOT NULL"
+        "SELECT COUNT(*) FROM aws_cuentas WHERE facturas_cantidad >= 2 AND actualizada IS NOT NULL"
     )->fetchColumn();
     if ($diaDelMes < 5) $criticasGlobal = 0;
 
     $sql = "
         SELECT id, nombre, numero, usuario, contrasena, accesskey, secreto,
                facturas_cantidad, facturas_total, facturas_moneda, actualizada
-        FROM awscuentas
+        FROM aws_cuentas
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -151,7 +151,7 @@ function handleGetOne(PDO $pdo, int $id): void {
         SELECT id, nombre, numero, usuario, contrasena, accesskey, secreto,
                facturas_cantidad, facturas_total, facturas_moneda, actualizada,
                facturas_json
-        FROM awscuentas WHERE id = :id
+        FROM aws_cuentas WHERE id = :id
     ');
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
@@ -195,7 +195,7 @@ function sanitizePayload(array $in): array {
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
     $stmt = $pdo->prepare('
-        INSERT INTO awscuentas (nombre, numero, usuario, contrasena, accesskey, secreto)
+        INSERT INTO aws_cuentas (nombre, numero, usuario, contrasena, accesskey, secreto)
         VALUES (:nombre, :numero, :usuario, :contrasena, :accesskey, :secreto)
     ');
     $stmt->execute([
@@ -210,13 +210,13 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM awscuentas WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM aws_cuentas WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Cuenta AWS no encontrada', 404);
 
     $p = sanitizePayload($in);
     $stmt = $pdo->prepare('
-        UPDATE awscuentas
+        UPDATE aws_cuentas
            SET nombre     = :nombre,
                numero     = :numero,
                usuario    = :usuario,
@@ -238,7 +238,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM awscuentas WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM aws_cuentas WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Cuenta AWS no encontrada', 404);
     jsonOk(['id' => $id]);

@@ -41,7 +41,7 @@ $months = isset($_GET['months']) ? (int)$_GET['months'] : 6;
 if ($id <= 0) jsonError('Falta id de cuenta', 400);
 
 $pdo  = db();
-$stmt = $pdo->prepare('SELECT id, nombre, numero, accesskey, secreto FROM awscuentas WHERE id = :id');
+$stmt = $pdo->prepare('SELECT id, nombre, numero, accesskey, secreto FROM aws_cuentas WHERE id = :id');
 $stmt->execute([':id' => $id]);
 $cuenta = $stmt->fetch();
 
