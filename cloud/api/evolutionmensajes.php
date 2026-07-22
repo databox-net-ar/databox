@@ -1,6 +1,6 @@
 <?php
 // api/evolutionmensajes.php
-// ABM de mensajes Evolution API. Lee/escribe sobre la tabla `evolutionmensajes`
+// ABM de mensajes Evolution API. Lee/escribe sobre la tabla `evolution_mensajes`
 // definida en db/schema.sql.
 //   GET    api/evolutionmensajes.php          -> listado con filtros (query string)
 //   GET    api/evolutionmensajes.php?id=N     -> registro individual
@@ -93,12 +93,12 @@ function handleList(PDO $pdo, array $q): void {
             COUNT(*)                                                  AS total,
             SUM(CASE WHEN enviado IS NOT NULL THEN 1 ELSE 0 END)      AS enviados,
             SUM(CASE WHEN error IS NOT NULL AND error <> '' THEN 1 ELSE 0 END) AS con_error
-        FROM evolutionmensajes
+        FROM evolution_mensajes
     ")->fetch();
 
     $sql = "
         SELECT " . EVO_MSG_COLS . "
-        FROM evolutionmensajes
+        FROM evolution_mensajes
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -123,7 +123,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . EVO_MSG_COLS . " FROM evolutionmensajes WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . EVO_MSG_COLS . " FROM evolution_mensajes WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Mensaje no encontrado', 404);
@@ -219,7 +219,7 @@ function handleCreate(PDO $pdo, array $in): void {
     $p = encodePayloadIfNeeded($p);
 
     $sql = "
-        INSERT INTO evolutionmensajes
+        INSERT INTO evolution_mensajes
             (fecha, proyecto, canal, plantilla, remitente, remite, destinatario,
              destino, prioridad, asunto, cuerpo, variables, codificado, formato,
              adjunto, parametros, tags, estado, error, encolado, enviado, demora)
@@ -257,7 +257,7 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM evolutionmensajes WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM evolution_mensajes WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Mensaje no encontrado', 404);
 
@@ -265,7 +265,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $p = encodePayloadIfNeeded($p);
 
     $sql = "
-        UPDATE evolutionmensajes SET
+        UPDATE evolution_mensajes SET
             fecha        = :fecha,
             proyecto     = :proyecto,
             canal        = :canal,
@@ -320,7 +320,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM evolutionmensajes WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM evolution_mensajes WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Mensaje no encontrado', 404);
     jsonOk(['id' => $id]);

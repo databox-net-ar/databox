@@ -1,7 +1,7 @@
 <?php
 /**
  * cloud/jobs/evolutioncanales_actualizar_estados.php
- * Recorre todos los canales de la tabla `evolutioncanales` y refresca su
+ * Recorre todos los canales de la tabla `evolution_canales` y refresca su
  * estado consultando Evolution API (endpoint /instance/fetchInstances con
  * la apikey del canal). Para cada canal actualiza:
  *   - online       : '1' si connectionStatus == 'open', '0' en otro caso
@@ -38,7 +38,7 @@ try {
     // Evolution para un canal que el operador desactivo a proposito.
     $stmt = $pdo->query("
         SELECT id, nombre, uuid, token
-          FROM evolutioncanales
+          FROM evolution_canales
          WHERE habilitado = '1'
          ORDER BY id
     ");
@@ -178,7 +178,7 @@ function verificarCanalEvolution(PDO $pdo, array $c): array {
     $canalEstado = substr(json_encode($instancia, JSON_UNESCAPED_UNICODE), 0, 60000);
 
     $upd = $pdo->prepare('
-        UPDATE evolutioncanales
+        UPDATE evolution_canales
            SET online      = :online,
                celular     = COALESCE(:celular, celular),
                numero      = COALESCE(:numero,  numero),

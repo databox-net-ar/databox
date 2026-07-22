@@ -1,4 +1,4 @@
-﻿/* =====================================================================
+/* =====================================================================
    cloud / app.js
    SPA: hash routing + render del contenido. Ver STACK.md §4.
    ===================================================================== */
@@ -342,6 +342,7 @@ const ROUTE_PERMS = {
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
   '/datarocketdominios':       { perm:   'datarocket.dominios.consultar' },
   '/datarocketmensajes':       { perm:   'datarocket.mensajes.consultar' },
+  '/datarocketplantillas':     { perm:   'sistemas.datarocket.plantillas.consultar' },
 
   '/datasale':                 { prefix: 'datasale.' },
   '/prospectos':               { perm:   'datasale.prospectos.consultar' },
@@ -350,10 +351,6 @@ const ROUTE_PERMS = {
   '/awscuentas':               { perm:   'plataformas.aws.cuentas.consultar' },
   '/awscanales':               { perm:   'plataformas.aws.canales.consultar' },
   '/awsmensajes':              { perm:   'plataformas.aws.mensajes.consultar' },
-
-  '/awsses':                   { prefix: 'plataformas.awsses.' },
-  '/awssescanales':            { perm:   'plataformas.awsses.canales.consultar' },
-  '/awssesmensajes':           { perm:   'plataformas.awsses.mensajes.consultar' },
 
   '/evolution':                { prefix: 'plataformas.evolution.' },
   '/evolutioncanales':         { perm:   'plataformas.evolution.canales.consultar' },
@@ -449,8 +446,11 @@ async function render() {
     const hasActive = !!g.querySelector('.nav-item.active');
     if (hasActive) g.classList.add('open');
   });
-  // topbar
-  $('#topbarTitle').textContent = def.title;
+  // topbar. Usamos innerHTML para permitir separadores tipo icono en
+  // titulos de ABMs anidados (ej. "Evolution API › Mensajes"). Todos los
+  // titulos vienen de nuestro propio ROUTE_PERMS / route() -- nunca de
+  // entrada del usuario -- asi que no hay riesgo de XSS.
+  $('#topbarTitle').innerHTML = def.title;
   // cerrar sidebar en mobile
   $('#sidebar').classList.remove('open');
   $('#sidebarOverlay').classList.remove('active');
@@ -633,7 +633,7 @@ route('/dashboard', async (mount) => {
     ${renderDashAwsCuentas(data.aws_cuentas)}
     ${renderDashEvolutionCanales(data.evolution_canales)}
   `;
-});
+}, 'Dashboard');
 
 // Bloque "Prospectos esperando" del dashboard. La API lo omite si el usuario no
 // tiene permiso `datasale.prospectos.consultar`; en ese caso no renderizamos
@@ -3952,6 +3952,8 @@ route('/aws', async (mount) => {
       <div class="page-subtitle">Herramientas y recursos de la plataforma AWS.</div>
     </div>
 
+    <!-- orden fijo pedido por el negocio: Mensajes, Canales, Cuentas
+         (Plataforma queda siempre al final como acceso externo) -->
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/awsmensajes'">
         <span class="tile-icon">✉️</span>
@@ -3970,7 +3972,7 @@ route('/aws', async (mount) => {
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://console.aws.amazon.com/', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre la consola oficial de AWS en una pestaña nueva.</span>
       </button>
@@ -4182,7 +4184,7 @@ route('/awscuentas', async (mount) => {
 
   refrescarBadgeFiltrosAwsCuentas();
   await cargarAwsCuentas();
-}, 'AWS Cuentas');
+}, 'AWS &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Cuentas');
 
 async function cargarAwsCuentas() {
   const tbody = $('#awsCuentasTbody');
@@ -4957,7 +4959,7 @@ route('/awsmensajes', async (mount) => {
 
   refrescarBadgeFiltrosAwsMsg();
   await cargarAwsMsg();
-}, 'Mensajes');
+}, 'AWS &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Mensajes');
 
 async function cargarAwsMsg() {
   const tbody = $('#awsMsgTbody');
@@ -5625,7 +5627,7 @@ route('/awscanales', async (mount) => {
 
   refrescarBadgeFiltrosAwsCh();
   await cargarAwsCh();
-}, 'Canales');
+}, 'AWS &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Canales');
 
 async function cargarAwsCh() {
   const tbody = $('#awsChTbody');
@@ -5925,6 +5927,556 @@ async function eliminarAwsCh(id) {
     await apiSend(`api/awscanales.php?id=${id}`, 'DELETE');
     toast('Canal eliminado.');
     cargarAwsCh();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datarocket > Plantillas (ABM) -------------------------
+const drPlFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', medio: '', formato: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const drPlFiltros = { ...drPlFiltrosDefaults };
+let drPlBuscadorTimer   = null;
+let drPlFiltrosSnapshot = null;
+
+const DR_PL_MEDIO_MAP   = { C: 'Correo', S: 'SMS', W: 'WhatsApp', P: 'Push' };
+const DR_PL_FORMATO_MAP = { T: 'Texto plano', H: 'HTML', M: 'Markdown' };
+
+route('/datarocketplantillas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📄</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las plantillas Datarocket son las piezas reutilizables que el motor
+            toma como base para armar cada envío, con su remitente, asunto,
+            cuerpo, formato y adjunto asociados a un proyecto.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drPlStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con adjunto</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drPlSearch"
+                   placeholder="🔍 Buscar nombre, asunto, remitente, remite o UUID…">
+            <button class="search-clear" id="drPlSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drPlFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drPlFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drPlRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drPlNuevoBtn">+ Nueva plantilla</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Proyecto</th>
+              <th>Remitente</th>
+              <th>Asunto</th>
+              <th>Formato</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drPlTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="drPlCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDrPlBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrPl()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrPl()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrPlCodigo" min="1" placeholder="ID …" oninput="onFiltroDrPl('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <input type="number" id="fDrPlProyecto" min="1" placeholder="ID proyecto…" oninput="onFiltroDrPl('proyecto', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Medio</label>
+              <input type="text" id="fDrPlMedio" maxlength="1" style="font-family:monospace"
+                     placeholder="C/S/W/…" oninput="onFiltroDrPl('medio', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Formato</label>
+              <input type="text" id="fDrPlFormato" maxlength="1" style="font-family:monospace"
+                     placeholder="T/H/M" oninput="onFiltroDrPl('formato', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrPlLimite" min="1" max="1000" value="100" onchange="onFiltroDrPl('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrPlOrderBy" onchange="onFiltroDrPl('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="proyecto">Proyecto</option>
+                <option value="medio">Medio</option>
+                <option value="remitente">Remitente</option>
+                <option value="asunto">Asunto</option>
+                <option value="formato">Formato</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrPlDir" onchange="onFiltroDrPl('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrPl()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrPl()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrPl()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#drPlNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrPl(null));
+  $('#drPlFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrPl());
+  $('#drPlRefrescarBtn').addEventListener('click', () => cargarDrPl());
+
+  const inp = $('#drPlSearch');
+  const clr = $('#drPlSearchClear');
+  inp.value = drPlFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drPlFiltros.q = inp.value.trim();
+    clearTimeout(drPlBuscadorTimer);
+    drPlBuscadorTimer = setTimeout(() => { cargarDrPl(); refrescarBadgeFiltrosDrPl(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    drPlFiltros.q = '';
+    cargarDrPl();
+    refrescarBadgeFiltrosDrPl();
+  });
+
+  $('#drPlCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDrPl(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDrPl(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDrPl(data.id);
+  });
+
+  $('#drPlTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#drPlCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDrPl(Number(tr.dataset.id));
+  });
+  $('#drPlTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#drPlCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDrPl();
+  await cargarDrPl();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Plantillas');
+
+async function cargarDrPl() {
+  const tbody = $('#drPlTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(drPlFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/datarocketplantillas.php?' + qs.toString());
+    pintarStatsDrPl(data.stats);
+    pintarTablaDrPl(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDrPl(s) {
+  const cards = $$('#drPlStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.con_adjunto);
+}
+
+function pintarTablaDrPl(rows) {
+  const tbody = $('#drPlTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin plantillas.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((p) => `
+    <tr data-id="${p.id}" class="row-clickable">
+      <td class="td-id">#${esc(p.id)}</td>
+      <td class="td-nombre">${esc(p.nombre || '—')}</td>
+      <td>${p.proyecto == null || p.proyecto === '' ? '—' : `#${esc(p.proyecto)}`}</td>
+      <td>${esc(p.remitente || '—')}</td>
+      <td>${esc(p.asunto || '—')}</td>
+      <td>${esc(DR_PL_FORMATO_MAP[p.formato] || p.formato || '—')}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroDrPl(key, value) {
+  if (['medio', 'formato', 'order_by', 'dir'].includes(key)) {
+    drPlFiltros[key] = value;
+  } else if (['codigo', 'proyecto'].includes(key)) {
+    const v = String(value).trim();
+    drPlFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    drPlFiltros.limite = n;
+  } else {
+    drPlFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDrPl();
+  cargarDrPl();
+}
+
+function refrescarBadgeFiltrosDrPl() {
+  const btn   = $('#drPlFiltrosBtn');
+  const badge = $('#drPlFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(drPlFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(drPlFiltros[k]) !== String(drPlFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDrPl() {
+  const f = drPlFiltros;
+  $('#fDrPlCodigo').value   = f.codigo;
+  $('#fDrPlProyecto').value = f.proyecto;
+  $('#fDrPlMedio').value    = f.medio;
+  $('#fDrPlFormato').value  = f.formato;
+  $('#fDrPlLimite').value   = f.limite;
+  $('#fDrPlOrderBy').value  = f.order_by;
+  $('#fDrPlDir').value      = f.dir;
+}
+
+function abrirModalFiltrosDrPl() {
+  drPlFiltrosSnapshot = { ...drPlFiltros };
+  sincronizarControlesFiltrosDrPl();
+  $('#filtrosDrPlBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosDrPl() { $('#filtrosDrPlBackdrop').classList.remove('open'); }
+function cancelarFiltrosDrPl() {
+  if (drPlFiltrosSnapshot) {
+    Object.assign(drPlFiltros, drPlFiltrosSnapshot);
+    refrescarBadgeFiltrosDrPl();
+    cargarDrPl();
+  }
+  cerrarModalFiltrosDrPl();
+}
+function limpiarFiltrosDrPl() {
+  Object.assign(drPlFiltros, drPlFiltrosDefaults);
+  drPlFiltros.q = $('#drPlSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDrPl();
+  refrescarBadgeFiltrosDrPl();
+  cargarDrPl();
+}
+window.onFiltroDrPl           = onFiltroDrPl;
+window.cancelarFiltrosDrPl    = cancelarFiltrosDrPl;
+window.limpiarFiltrosDrPl     = limpiarFiltrosDrPl;
+window.cerrarModalFiltrosDrPl = cerrarModalFiltrosDrPl;
+
+async function abrirConsultarDrPl(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1000px">
+      <div class="modal-header">
+        <div class="modal-title">Plantilla Datarocket <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrPl(id); }
+  });
+
+  try {
+    const p = await apiGet(`api/datarocketplantillas.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrPl(p);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDrPl(p) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(p.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(p.id)} · UUID <code>${esc(p.uuid || '—')}</code>
+        </div>
+      </div>
+    </div>
+
+    ${seccion('Identidad')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',   p.nombre)}
+      ${card('Proyecto', p.proyecto == null || p.proyecto === '' ? null : `#${p.proyecto}`)}
+      ${card('Medio',    DR_PL_MEDIO_MAP[p.medio] || p.medio)}
+      ${card('Formato',  DR_PL_FORMATO_MAP[p.formato] || p.formato)}
+    </dl>
+
+    ${seccion('Remitente')}
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Remitente', p.remitente)}
+      ${card('Remite',    p.remite, false, true)}
+    </dl>
+
+    ${seccion('Contenido')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Asunto', p.asunto, true)}
+    </dl>
+    <div class="data-row full" style="flex-direction:column;align-items:flex-start;gap:6px">
+      <span class="data-label">Cuerpo</span>
+      <textarea readonly rows="10"
+                style="width:100%;font-family:monospace;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:10px">${esc(p.cuerpo || '')}</textarea>
+    </div>
+
+    ${seccion('Adjunto')}
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Adjunto', p.adjunto, true, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionDrPl(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar plantilla <span class="modal-subtitle">#${id}</span>` : 'Nueva plantilla'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formDrPlHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const p = await apiGet(`api/datarocketplantillas.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formDrPlHtml(p);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDrPl(id, a);
+  });
+}
+
+function formDrPlHtml(p) {
+  const v = (k) => esc(p?.[k] ?? '');
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="drPlNombre" maxlength="100" value="${v('nombre')}">
+      </div>
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="drPlProyecto" min="1" value="${v('proyecto')}">
+      </div>
+      <div class="form-group">
+        <label>Medio</label>
+        <input type="text" id="drPlMedio" maxlength="1" value="${v('medio')}"
+               style="font-family:monospace" placeholder="C/S/W/…">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Remitente</label>
+        <input type="text" id="drPlRemitente" maxlength="255" value="${v('remitente')}">
+      </div>
+      <div class="form-group">
+        <label>Remite (correo)</label>
+        <input type="text" id="drPlRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Asunto</label>
+      <input type="text" id="drPlAsunto" maxlength="255" value="${v('asunto')}">
+    </div>
+    <div class="form-group">
+      <label>Cuerpo</label>
+      <textarea id="drPlCuerpo" rows="12" style="font-family:monospace">${v('cuerpo')}</textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Formato</label>
+        <input type="text" id="drPlFormato" maxlength="1" value="${v('formato')}"
+               style="font-family:monospace" placeholder="T/H/M">
+      </div>
+      <div class="form-group">
+        <label>Adjunto (URL o path)</label>
+        <input type="text" id="drPlAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="field-error" id="drPlFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarDrPl(id, btn) {
+  const err = $('#drPlFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:    $('#drPlNombre').value.trim(),
+    proyecto:  $('#drPlProyecto').value,
+    medio:     $('#drPlMedio').value.trim(),
+    remitente: $('#drPlRemitente').value.trim(),
+    remite:    $('#drPlRemite').value.trim(),
+    asunto:    $('#drPlAsunto').value.trim(),
+    cuerpo:    $('#drPlCuerpo').value,
+    formato:   $('#drPlFormato').value.trim(),
+    adjunto:   $('#drPlAdjunto').value.trim(),
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/datarocketplantillas.php', 'POST', payload);
+      toast('Plantilla creada.');
+    } else {
+      await apiSend(`api/datarocketplantillas.php?id=${id}`, 'PUT', payload);
+      toast('Plantilla actualizada.');
+    }
+    closeModal();
+    cargarDrPl();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDrPl(id) {
+  const ok = await confirmar({
+    title: 'Eliminar plantilla',
+    message: `Se eliminará la plantilla #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datarocketplantillas.php?id=${id}`, 'DELETE');
+    toast('Plantilla eliminada.');
+    cargarDrPl();
   } catch (e) {
     toast(e.message, { error: true });
   }
@@ -7134,7 +7686,7 @@ route('/datacountcomprobantes', async (mount) => {
   // del modal de filtros ya estan listos cuando el usuario lo abre.
   dcCompCargarCatalogoEstados().then(dcCompPintarChipsEstado).catch(() => {});
   await cargarDcComp();
-}, 'Comprobantes');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Comprobantes');
 
 async function cargarDcComp() {
   const tbody = $('#dcCompTbody');
@@ -8057,7 +8609,7 @@ route('/datacountpagos', async (mount) => {
     dcPagoPintarChips('fDcPagoEstadoChips', 'datacount_pago_estado', dcPagoFiltros.estado, 'estado');
   }).catch(() => {});
   await cargarDcPago();
-}, 'Pagos');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Pagos');
 
 async function cargarDcPago() {
   const tbody = $('#dcPagoTbody');
@@ -8888,7 +9440,7 @@ route('/datacountfacturacion', async (mount) => {
     factCargarStatus();
     factCargarLog();
   }, FACT_REFRESH_MS);
-}, 'Facturación');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Facturación');
 
 // ------------------------- Contexto compartido: empresa activa -------------------------
 // Contexto de "empresa activa" para todos los módulos de Datacount (Plan de
@@ -9139,7 +9691,7 @@ route('/datacountcuentas', async (mount) => {
   });
 
   await cargarDcc();
-}, 'Plan de cuentas');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Plan de cuentas');
 
 async function cargarDcc() {
   const tbody = $('#dccTbody');
@@ -9783,7 +10335,7 @@ route('/datacountempresas', async (mount) => {
 
   dceActualizarBadgeFiltros();
   await cargarDce();
-}, 'Empresas');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Empresas');
 
 async function cargarDce() {
   const tbody = $('#dceTbody');
@@ -10326,7 +10878,7 @@ route('/datacountasientos', async (mount) => {
 
   dcaActualizarBadgeFiltroCuenta();
   await cargarDca();
-}, 'Asientos');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Asientos');
 
 function dcaActualizarBadgeFiltroCuenta() {
   const badge = $('#dcaFiltroCtaBadge');
@@ -11256,7 +11808,7 @@ route('/datacountrecurrentes', async (mount) => {
   dcrPoblarSelectsFiltros();
   dcrActualizarBadgeFiltros();
   await cargarDcr();
-}, 'Movimientos recurrentes');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Movimientos recurrentes');
 
 async function cargarDcr() {
   const tbody = $('#dcrTbody');
@@ -12114,7 +12666,7 @@ route('/datacountempleados', async (mount) => {
   dcmPoblarSelectsFiltros();
   dcmActualizarBadgeFiltros();
   await cargarDcm();
-}, 'Empleados');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Empleados');
 
 async function cargarDcm() {
   const tbody = $('#dcmTbody');
@@ -13024,7 +13576,7 @@ route('/datacountclientes', async (mount) => {
 
   dcclActualizarBadgeFiltros();
   await cargarDccl();
-}, 'Clientes');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Clientes');
 
 async function cargarDccl() {
   const tbody = $('#dcclTbody');
@@ -13588,7 +14140,7 @@ route('/datacountproveedores', async (mount) => {
 
   dcprActualizarBadgeFiltros();
   await cargarDcpr();
-}, 'Proveedores');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Proveedores');
 
 async function cargarDcpr() {
   const tbody = $('#dcprTbody');
@@ -13944,6 +14496,16 @@ route('/datarocket', async (mount) => {
     </div>
 
     <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketmensajes'">
+        <span class="tile-icon">✉️</span>
+        <span class="tile-title">Mensajes</span>
+        <span class="tile-desc">Envíos individuales con medio, canal, campaña, contacto, estado y resultado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketplantillas'">
+        <span class="tile-icon">📄</span>
+        <span class="tile-title">Plantillas</span>
+        <span class="tile-desc">Plantillas reutilizables para los envíos Datarocket: remitente, asunto, cuerpo, formato y adjunto por proyecto.</span>
+      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketcontactos'">
         <span class="tile-icon">👥</span>
         <span class="tile-title">Contactos</span>
@@ -13953,11 +14515,6 @@ route('/datarocket', async (mount) => {
         <span class="tile-icon">🌐</span>
         <span class="tile-title">Dominios</span>
         <span class="tile-desc">Catálogo de dominios DNS administrados por Databox con titular, responsable, fechas y costo de renovación.</span>
-      </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datarocketmensajes'">
-        <span class="tile-icon">✉️</span>
-        <span class="tile-title">Mensajes</span>
-        <span class="tile-desc">Envíos individuales con medio, canal, campaña, contacto, estado y resultado.</span>
       </button>
     </div>
   `;
@@ -14259,7 +14816,7 @@ route('/datarocketdominios', async (mount) => {
 
   drdoActualizarBadgeFiltros();
   await cargarDrdo();
-}, 'Datarocket › Dominios');
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Dominios');
 
 async function cargarDrdo() {
   const tbody = $('#drdoTbody');
@@ -15042,7 +15599,7 @@ route('/datarocketmensajes', async (mount) => {
 
   refrescarBadgeFiltrosDrMsg();
   await cargarDrMsg();
-}, 'Mensajes');
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Mensajes');
 
 async function cargarDrMsg() {
   const tbody = $('#drMsgTbody');
@@ -15813,7 +16370,7 @@ route('/datarocketcontactos', async (mount) => {
 
   refrescarBadgeFiltrosDrCt();
   await cargarDrCt();
-}, 'Contactos');
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Contactos');
 
 async function cargarDrCt() {
   const tbody = $('#drCtTbody');
@@ -16784,7 +17341,7 @@ route('/prospectos', async (mount) => {
 
   refrescarBadgeFiltrosDsPro();
   await cargarDsPro();
-}, 'Prospectos');
+}, 'Datasale &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Prospectos');
 
 async function cargarDsPro() {
   const tbody = $('#dsProTbody');
@@ -17448,1272 +18005,6 @@ async function marcarEstadoDsPro(id, estado) {
   }
 }
 
-// ------------------------- Vista: AWS SES (landing) -------------------------
-route('/awsses', async (mount) => {
-  mount.innerHTML = `
-    <div class="page-header">
-      <div class="page-title">AWS SES</div>
-      <div class="page-subtitle">Servicio de correo de Amazon: mensajes registrados, canales SMTP y consola de la plataforma.</div>
-    </div>
-
-    <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/awssesmensajes'">
-        <span class="tile-icon">✉️</span>
-        <span class="tile-title">Mensajes</span>
-        <span class="tile-desc">Cada envío individual de correo procesado por AWS SES, con destinatario, cuerpo, estado y tiempo de entrega.</span>
-      </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/awssescanales'">
-        <span class="tile-icon">📡</span>
-        <span class="tile-title">Canales</span>
-        <span class="tile-desc">Los canales SMTP de AWS SES: servidor, usuario, contraseña y correo remitente por canal.</span>
-      </button>
-      <button type="button" class="tile-card"
-              onclick="window.open('https://us-east-1.console.aws.amazon.com/ses/home?region=us-east-1#/account', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
-        <span class="tile-title">Plataforma</span>
-        <span class="tile-desc">Abre la consola oficial de AWS SES (region us-east-1) en una pestaña nueva.</span>
-      </button>
-    </div>
-  `;
-}, 'AWS SES');
-
-// ------------------------- Vista: AWS SES > Mensajes (ABM) -------------------------
-const sesMsgFiltrosDefaults = {
-  q: '', codigo: '', proyecto: '', canal: '', plantilla: '',
-  estado: '', desde: '', hasta: '',
-  order_by: 'id', dir: 'desc', limite: 100,
-};
-const sesMsgFiltros = { ...sesMsgFiltrosDefaults };
-let sesMsgBuscadorTimer   = null;
-let sesMsgFiltrosSnapshot = null;
-
-const SES_MSG_FORMATO_MAP = {
-  T: 'Texto plano',
-  H: 'HTML',
-  M: 'Markdown',
-};
-const SES_MSG_PRIORIDAD_MAP = {
-  A: 'Alta',
-  N: 'Normal',
-  B: 'Baja',
-};
-
-function sesMsgEstadoBadge(e) {
-  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  const colorMap = {
-    P: 'badge-warn',
-    E: 'badge-success',
-    F: 'badge-danger',
-    C: 'badge-danger',
-    R: 'badge-info',
-  };
-  const labelMap = {
-    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
-  };
-  const cls = colorMap[e] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
-}
-
-function sesMsgFmtDemora(seg) {
-  if (seg == null || seg === '' || isNaN(Number(seg))) return '—';
-  const n = Number(seg);
-  if (n < 60)    return `${n}s`;
-  if (n < 3600)  return `${Math.round(n / 60)}m`;
-  return `${(n / 3600).toFixed(1)}h`;
-}
-
-route('/awssesmensajes', async (mount) => {
-  mount.innerHTML = `
-    <div class="section">
-      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
-        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
-                title="Volver a AWS SES" onclick="location.hash='#/awsses'">
-          <i class="fa-solid fa-chevron-left"></i>
-        </button>
-        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
-          <div style="font-size:1.6rem;line-height:1">✉️</div>
-          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los mensajes AWS SES son cada correo individual que el motor SES procesa,
-            con su remitente, destinatario, asunto, cuerpo y el estado del envío
-            registrado por Amazon.
-          </div>
-        </div>
-      </div>
-
-      <div class="stats-bar" id="sesMsgStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
-      </div>
-
-      <div class="toolbar">
-        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
-          <div class="search-wrap">
-            <input type="search" class="search-input" id="sesMsgSearch"
-                   placeholder="🔍 Buscar destinatario, destino, asunto o tags…">
-            <button class="search-clear" id="sesMsgSearchClear" style="display:none">×</button>
-          </div>
-          <button class="btn btn-ghost btn-icon" id="sesMsgFiltrosBtn" title="Filtros">
-            <i class="fa-solid fa-filter"></i>
-            <span class="btn-icon-badge" id="sesMsgFiltrosBadge" style="display:none">0</span>
-          </button>
-          <button class="btn btn-ghost btn-icon" id="sesMsgRefrescarBtn" title="Refrescar">
-            <i class="fa-solid fa-rotate"></i>
-          </button>
-        </div>
-        <div class="toolbar-right">
-          <button class="btn btn-primary" id="sesMsgNuevoBtn">+ Nuevo mensaje</button>
-        </div>
-      </div>
-
-      <div class="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Fecha</th>
-              <th>Canal</th>
-              <th>Destinatario</th>
-              <th>Destino</th>
-              <th>Asunto</th>
-              <th>Estado</th>
-              <th>Enviado</th>
-              <th style="text-align:center">Acciones</th>
-            </tr>
-          </thead>
-          <tbody id="sesMsgTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div id="sesMsgCtxMenu" class="ctx-menu" role="menu">
-      <button type="button" data-action="consultar" role="menuitem">
-        <i class="fa-solid fa-eye"></i><span>Consultar</span>
-      </button>
-      <div class="ctx-menu-sep"></div>
-      <button type="button" data-action="editar" role="menuitem">
-        <i class="fa-solid fa-pen"></i><span>Editar</span>
-      </button>
-      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
-        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
-      </button>
-    </div>
-
-    <div class="modal-backdrop" id="filtrosSesMsgBackdrop"
-         onclick="if(event.target===this)cancelarFiltrosSesMsg()">
-      <div class="modal" style="max-width:620px">
-        <div class="modal-header">
-          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosSesMsg()" title="Cerrar">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>Código</label>
-              <input type="number" id="fSesMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroSesMsg('codigo', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Estado</label>
-              <select id="fSesMsgEstado" onchange="onFiltroSesMsg('estado', this.value)">
-                <option value="">— Todos —</option>
-                <option value="P">Pendiente</option>
-                <option value="E">Enviado</option>
-                <option value="F">Fallado</option>
-                <option value="C">Cancelado</option>
-                <option value="R">Reintento</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Proyecto (ID)</label>
-              <input type="number" id="fSesMsgProyecto" min="1" oninput="onFiltroSesMsg('proyecto', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Canal (ID)</label>
-              <input type="number" id="fSesMsgCanal" min="1" oninput="onFiltroSesMsg('canal', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Plantilla (ID)</label>
-              <input type="number" id="fSesMsgPlantilla" min="1" oninput="onFiltroSesMsg('plantilla', this.value)">
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Desde</label>
-              <input type="date" id="fSesMsgDesde" onchange="onFiltroSesMsg('desde', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Hasta</label>
-              <input type="date" id="fSesMsgHasta" onchange="onFiltroSesMsg('hasta', this.value)">
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Límite</label>
-              <input type="number" id="fSesMsgLimite" min="1" max="1000" value="100" onchange="onFiltroSesMsg('limite', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Ordenar por</label>
-              <select id="fSesMsgOrderBy" onchange="onFiltroSesMsg('order_by', this.value)">
-                <option value="id">Código</option>
-                <option value="fecha">Fecha</option>
-                <option value="destinatario">Destinatario</option>
-                <option value="destino">Destino</option>
-                <option value="asunto">Asunto</option>
-                <option value="estado">Estado</option>
-                <option value="enviado">Enviado</option>
-                <option value="demora">Demora</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Dirección</label>
-              <select id="fSesMsgDir" onchange="onFiltroSesMsg('dir', this.value)">
-                <option value="desc">Descendente</option>
-                <option value="asc">Ascendente</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosSesMsg()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosSesMsg()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosSesMsg()">Aplicar</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  $('#sesMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionSesMsg(null));
-  $('#sesMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosSesMsg());
-  $('#sesMsgRefrescarBtn').addEventListener('click', () => cargarSesMsg());
-
-  const inp = $('#sesMsgSearch');
-  const clr = $('#sesMsgSearchClear');
-  inp.value = sesMsgFiltros.q || '';
-  clr.style.display = inp.value ? '' : 'none';
-  inp.addEventListener('input', () => {
-    clr.style.display = inp.value ? '' : 'none';
-    sesMsgFiltros.q = inp.value.trim();
-    clearTimeout(sesMsgBuscadorTimer);
-    sesMsgBuscadorTimer = setTimeout(() => { cargarSesMsg(); refrescarBadgeFiltrosSesMsg(); }, 250);
-  });
-  clr.addEventListener('click', () => {
-    inp.value = '';
-    clr.style.display = 'none';
-    sesMsgFiltros.q = '';
-    cargarSesMsg();
-    refrescarBadgeFiltrosSesMsg();
-  });
-
-  $('#sesMsgCtxMenu').addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-action]');
-    if (!b) return;
-    const data = getCtxMenuData();
-    if (!data) return;
-    cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarSesMsg(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionSesMsg(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarSesMsg(data.id);
-  });
-
-  $('#sesMsgTbody').addEventListener('click', (ev) => {
-    const ham = ev.target.closest('[data-act="menu"]');
-    if (ham) {
-      ev.stopPropagation();
-      const id = Number(ham.dataset.id);
-      const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#sesMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
-      return;
-    }
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    abrirConsultarSesMsg(Number(tr.dataset.id));
-  });
-  $('#sesMsgTbody').addEventListener('contextmenu', (ev) => {
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    ev.preventDefault();
-    abrirCtxMenu($('#sesMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
-  });
-
-  refrescarBadgeFiltrosSesMsg();
-  await cargarSesMsg();
-}, 'Mensajes');
-
-async function cargarSesMsg() {
-  const tbody = $('#sesMsgTbody');
-  if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
-
-  const qs = new URLSearchParams();
-  Object.entries(sesMsgFiltros).forEach(([k, v]) => {
-    if (v !== '' && v != null) qs.set(k, v);
-  });
-  try {
-    const data = await apiGet('api/awssesmensajes.php?' + qs.toString());
-    pintarStatsSesMsg(data.stats);
-    pintarTablaSesMsg(data.items || []);
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
-  }
-}
-
-function pintarStatsSesMsg(s) {
-  const cards = $$('#sesMsgStats .stat-card .stat-value');
-  if (cards.length < 3) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.enviados);
-  cards[2].textContent = fmtNum(s.con_error);
-}
-
-function pintarTablaSesMsg(rows) {
-  const tbody = $('#sesMsgTbody');
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin mensajes.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map((m) => `
-    <tr data-id="${m.id}" class="row-clickable">
-      <td class="td-id">#${esc(m.id)}</td>
-      <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
-      <td>${esc(m.canal_nombre || (m.canal != null ? '#' + m.canal : '—'))}</td>
-      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
-      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
-      <td>${esc(m.asunto || '—')}</td>
-      <td>${sesMsgEstadoBadge(m.estado)}</td>
-      <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
-      <td style="text-align:center">
-        <div class="actions" style="justify-content:center">
-          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
-            <i class="fa-solid fa-bars"></i>
-          </button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
-}
-
-function onFiltroSesMsg(key, value) {
-  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
-    sesMsgFiltros[key] = value;
-  } else if (['codigo', 'proyecto', 'canal', 'plantilla'].includes(key)) {
-    const v = String(value).trim();
-    sesMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
-  } else if (key === 'limite') {
-    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
-    sesMsgFiltros.limite = n;
-  } else {
-    sesMsgFiltros[key] = value;
-  }
-  refrescarBadgeFiltrosSesMsg();
-  cargarSesMsg();
-}
-
-function refrescarBadgeFiltrosSesMsg() {
-  const btn   = $('#sesMsgFiltrosBtn');
-  const badge = $('#sesMsgFiltrosBadge');
-  if (!btn || !badge) return;
-  let count = 0;
-  for (const k of Object.keys(sesMsgFiltrosDefaults)) {
-    if (k === 'q') continue;
-    if (String(sesMsgFiltros[k]) !== String(sesMsgFiltrosDefaults[k])) count++;
-  }
-  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
-  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
-}
-
-function sincronizarControlesFiltrosSesMsg() {
-  const f = sesMsgFiltros;
-  $('#fSesMsgCodigo').value    = f.codigo;
-  $('#fSesMsgEstado').value    = f.estado;
-  $('#fSesMsgProyecto').value  = f.proyecto;
-  $('#fSesMsgCanal').value     = f.canal;
-  $('#fSesMsgPlantilla').value = f.plantilla;
-  $('#fSesMsgDesde').value     = f.desde;
-  $('#fSesMsgHasta').value     = f.hasta;
-  $('#fSesMsgLimite').value    = f.limite;
-  $('#fSesMsgOrderBy').value   = f.order_by;
-  $('#fSesMsgDir').value       = f.dir;
-}
-
-function abrirModalFiltrosSesMsg() {
-  sesMsgFiltrosSnapshot = { ...sesMsgFiltros };
-  sincronizarControlesFiltrosSesMsg();
-  $('#filtrosSesMsgBackdrop').classList.add('open');
-}
-function cerrarModalFiltrosSesMsg() { $('#filtrosSesMsgBackdrop').classList.remove('open'); }
-function cancelarFiltrosSesMsg() {
-  if (sesMsgFiltrosSnapshot) {
-    Object.assign(sesMsgFiltros, sesMsgFiltrosSnapshot);
-    refrescarBadgeFiltrosSesMsg();
-    cargarSesMsg();
-  }
-  cerrarModalFiltrosSesMsg();
-}
-function limpiarFiltrosSesMsg() {
-  Object.assign(sesMsgFiltros, sesMsgFiltrosDefaults);
-  sesMsgFiltros.q = $('#sesMsgSearch')?.value.trim() || '';
-  sincronizarControlesFiltrosSesMsg();
-  refrescarBadgeFiltrosSesMsg();
-  cargarSesMsg();
-}
-window.onFiltroSesMsg           = onFiltroSesMsg;
-window.cancelarFiltrosSesMsg    = cancelarFiltrosSesMsg;
-window.limpiarFiltrosSesMsg     = limpiarFiltrosSesMsg;
-window.cerrarModalFiltrosSesMsg = cerrarModalFiltrosSesMsg;
-
-async function abrirConsultarSesMsg(id) {
-  openModal(`
-    <div class="modal" style="width:80vw;max-width:1200px">
-      <div class="modal-header">
-        <div class="modal-title">Mensaje SES <span class="modal-subtitle">#${id}</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
-    </div>
-  `);
-  $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionSesMsg(id); }
-  });
-
-  try {
-    const m = await apiGet(`api/awssesmensajes.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaSesMsg(m);
-  } catch (e) {
-    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-  }
-}
-
-function renderConsultaSesMsg(m) {
-  const card = (label, value, full = false, isCode = false) => {
-    const empty = value == null || value === '';
-    const inner = empty ? 'Sin dato'
-                : isCode ? `<code>${esc(value)}</code>`
-                : esc(value);
-    return `
-      <div class="data-row${full ? ' full' : ''}">
-        <span class="data-label">${esc(label)}</span>
-        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
-      </div>`;
-  };
-
-  const seccion = (titulo) => `
-    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
-      ${esc(titulo)}
-    </div>`;
-
-  const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
-    ? (m.formato === 'H'
-        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
-        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
-    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
-
-  return `
-    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
-      <div>
-        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">${esc(m.destinatario || '—')}</span>
-          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(m.destino || '')}</span>
-        </div>
-        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
-        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
-      </div>
-      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-        <div>${sesMsgEstadoBadge(m.estado)}</div>
-        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
-          <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
-          <div><span style="color:var(--muted)">Encolado:</span> ${esc(fmtFecha(m.encolado))}</div>
-          <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
-        </div>
-      </div>
-    </div>
-
-    ${seccion('Cuerpo del mensaje')}
-    ${cuerpoHtml}
-
-    ${seccion('Remitente y destinatario')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Remitente',    m.remitente)}
-      ${card('Remite',       m.remite, false, true)}
-      ${card('Destinatario', m.destinatario)}
-      ${card('Destino',      m.destino, false, true)}
-    </dl>
-
-    ${seccion('Contexto de envío')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Proyecto',   m.proyecto)}
-      ${card('Canal',      m.canal)}
-      ${card('Plantilla',  m.plantilla)}
-      ${card('Prioridad',  SES_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
-      ${card('Formato',    SES_MSG_FORMATO_MAP[m.formato]     || m.formato)}
-      ${card('Codificado', m.codificado)}
-    </dl>
-
-    ${seccion('Tiempos y resultado')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Fecha',    fmtFecha(m.fecha))}
-      ${card('Encolado', fmtFecha(m.encolado))}
-      ${card('Enviado',  fmtFecha(m.enviado))}
-      ${card('Demora',   sesMsgFmtDemora(m.demora))}
-      ${card('Estado',   m.estado)}
-      ${card('Tags',     m.tags)}
-    </dl>
-
-    ${seccion('Adjunto, variables y errores')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Adjunto',    m.adjunto, true, true)}
-      ${card('Variables',  m.variables, true, true)}
-      ${card('Parámetros', m.parametros, true, true)}
-      ${card('Error',      m.error, true)}
-    </dl>
-  `;
-}
-
-async function abrirAltaEdicionSesMsg(id) {
-  const esEdicion = id != null;
-  openModal(`
-    <div class="modal modal-wide">
-      <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formSesMsgHtml({})}
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
-      </div>
-    </div>
-  `);
-
-  if (esEdicion) {
-    try {
-      const m = await apiGet(`api/awssesmensajes.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formSesMsgHtml(m);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
-  }
-
-  $('#modalRoot').addEventListener('click', async (ev) => {
-    const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarSesMsg(id, a);
-  });
-}
-
-function formSesMsgHtml(m) {
-  const v   = (k) => esc(m?.[k] ?? '');
-  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
-  const dt  = (k) => {
-    const raw = m?.[k];
-    if (!raw) return '';
-    return esc(String(raw).replace(' ', 'T').slice(0, 16));
-  };
-  return `
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Fecha</label>
-        <input type="datetime-local" id="sesFecha" value="${dt('fecha')}">
-      </div>
-      <div class="form-group">
-        <label>Prioridad</label>
-        <select id="sesPrioridad">
-          <option value=""  ${sel('prioridad','')}>—</option>
-          <option value="A" ${sel('prioridad','A')}>Alta</option>
-          <option value="N" ${sel('prioridad','N')}>Normal</option>
-          <option value="B" ${sel('prioridad','B')}>Baja</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="sesEstado">
-          <option value=""  ${sel('estado','')}>—</option>
-          <option value="P" ${sel('estado','P')}>Pendiente</option>
-          <option value="E" ${sel('estado','E')}>Enviado</option>
-          <option value="F" ${sel('estado','F')}>Fallado</option>
-          <option value="C" ${sel('estado','C')}>Cancelado</option>
-          <option value="R" ${sel('estado','R')}>Reintento</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="sesProyecto" min="1" value="${v('proyecto')}">
-      </div>
-      <div class="form-group">
-        <label>Canal (ID)</label>
-        <input type="number" id="sesCanal" min="1" value="${v('canal')}">
-      </div>
-      <div class="form-group">
-        <label>Plantilla (ID)</label>
-        <input type="number" id="sesPlantilla" min="1" value="${v('plantilla')}">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Remitente</label>
-        <input type="text" id="sesRemitente" maxlength="255" value="${v('remitente')}">
-      </div>
-      <div class="form-group">
-        <label>Remite</label>
-        <input type="text" id="sesRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Destinatario</label>
-        <input type="text" id="sesDestinatario" maxlength="255" value="${v('destinatario')}">
-      </div>
-      <div class="form-group">
-        <label>Destino</label>
-        <input type="text" id="sesDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Asunto</label>
-      <input type="text" id="sesAsunto" maxlength="255" value="${v('asunto')}">
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Formato</label>
-        <select id="sesFormato">
-          <option value=""  ${sel('formato','')}>—</option>
-          <option value="T" ${sel('formato','T')}>Texto plano</option>
-          <option value="H" ${sel('formato','H')}>HTML</option>
-          <option value="M" ${sel('formato','M')}>Markdown</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Codificado</label>
-        <input type="text" id="sesCodificado" maxlength="1" value="${v('codificado')}">
-      </div>
-      <div class="form-group">
-        <label>Tags</label>
-        <input type="text" id="sesTags" maxlength="255" value="${v('tags')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Cuerpo</label>
-      <textarea id="sesCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Variables</label>
-      <textarea id="sesVariables" rows="3" style="font-family:monospace">${v('variables')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Parámetros</label>
-      <textarea id="sesParametros" rows="3" style="font-family:monospace">${v('parametros')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Adjunto (URL/ruta)</label>
-      <input type="text" id="sesAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
-    </div>
-    <div class="form-group">
-      <label>Error</label>
-      <textarea id="sesErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Encolado</label>
-        <input type="datetime-local" id="sesEncolado" value="${dt('encolado')}">
-      </div>
-      <div class="form-group">
-        <label>Enviado</label>
-        <input type="datetime-local" id="sesEnviado" value="${dt('enviado')}">
-      </div>
-      <div class="form-group">
-        <label>Demora (seg.)</label>
-        <input type="number" id="sesDemora" min="0" value="${v('demora')}">
-      </div>
-    </div>
-    <div class="field-error" id="sesFormError" style="display:none"></div>
-  `;
-}
-
-async function guardarSesMsg(id, btn) {
-  const err = $('#sesFormError');
-  err.style.display = 'none';
-
-  const payload = {
-    fecha:        $('#sesFecha').value || null,
-    prioridad:    $('#sesPrioridad').value,
-    estado:       $('#sesEstado').value,
-    proyecto:     $('#sesProyecto').value,
-    canal:        $('#sesCanal').value,
-    plantilla:    $('#sesPlantilla').value,
-    remitente:    $('#sesRemitente').value.trim(),
-    remite:       $('#sesRemite').value.trim(),
-    destinatario: $('#sesDestinatario').value.trim(),
-    destino:      $('#sesDestino').value.trim(),
-    asunto:       $('#sesAsunto').value.trim(),
-    formato:      $('#sesFormato').value,
-    codificado:   $('#sesCodificado').value.trim(),
-    tags:         $('#sesTags').value.trim(),
-    cuerpo:       $('#sesCuerpo').value,
-    variables:    $('#sesVariables').value,
-    parametros:   $('#sesParametros').value,
-    adjunto:      $('#sesAdjunto').value.trim(),
-    error:        $('#sesErrorTxt').value,
-    encolado:     $('#sesEncolado').value || null,
-    enviado:      $('#sesEnviado').value || null,
-    demora:       $('#sesDemora').value,
-  };
-
-  btn.disabled = true;
-  try {
-    if (id == null) {
-      await apiSend('api/awssesmensajes.php', 'POST', payload);
-      toast('Mensaje creado.');
-    } else {
-      await apiSend(`api/awssesmensajes.php?id=${id}`, 'PUT', payload);
-      toast('Mensaje actualizado.');
-    }
-    closeModal();
-    cargarSesMsg();
-  } catch (e) {
-    err.textContent = e.message;
-    err.style.display = '';
-    btn.disabled = false;
-  }
-}
-
-async function eliminarSesMsg(id) {
-  const ok = await confirmar({
-    title: 'Eliminar mensaje',
-    message: `Se eliminará el mensaje #${id}. Esta acción no se puede deshacer.`,
-    confirmText: 'Eliminar',
-  });
-  if (!ok) return;
-  try {
-    await apiSend(`api/awssesmensajes.php?id=${id}`, 'DELETE');
-    toast('Mensaje eliminado.');
-    cargarSesMsg();
-  } catch (e) {
-    toast(e.message, { error: true });
-  }
-}
-
-// ------------------------- Vista: AWS SES > Canales (ABM) -------------------------
-const sesChFiltrosDefaults = {
-  q: '', codigo: '', habilitado: '',
-  order_by: 'id', dir: 'desc', limite: 100,
-};
-const sesChFiltros = { ...sesChFiltrosDefaults };
-let sesChBuscadorTimer   = null;
-let sesChFiltrosSnapshot = null;
-
-function sesChHabilitadoBadge(h) {
-  if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
-  if (h === '0') return `<span class="badge badge-danger">Deshabilitado</span>`;
-  return `<span class="badge badge-info">—</span>`;
-}
-
-route('/awssescanales', async (mount) => {
-  mount.innerHTML = `
-    <div class="section">
-      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
-        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
-                title="Volver a AWS SES" onclick="location.hash='#/awsses'">
-          <i class="fa-solid fa-chevron-left"></i>
-        </button>
-        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
-          <div style="font-size:1.6rem;line-height:1">📡</div>
-          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los canales AWS SES son cada configuración SMTP que el motor puede usar
-            para despachar correos, con su servidor, usuario, contraseña y correo
-            remitente asociado.
-          </div>
-        </div>
-      </div>
-
-      <div class="stats-bar" id="sesChStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Habilitados</span><span class="stat-value">—</span></div>
-      </div>
-
-      <div class="toolbar">
-        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
-          <div class="search-wrap">
-            <input type="search" class="search-input" id="sesChSearch"
-                   placeholder="🔍 Buscar nombre, correo, servidor o usuario…">
-            <button class="search-clear" id="sesChSearchClear" style="display:none">×</button>
-          </div>
-          <button class="btn btn-ghost btn-icon" id="sesChFiltrosBtn" title="Filtros">
-            <i class="fa-solid fa-filter"></i>
-            <span class="btn-icon-badge" id="sesChFiltrosBadge" style="display:none">0</span>
-          </button>
-          <button class="btn btn-ghost btn-icon" id="sesChRefrescarBtn" title="Refrescar">
-            <i class="fa-solid fa-rotate"></i>
-          </button>
-        </div>
-        <div class="toolbar-right">
-          <button class="btn btn-primary" id="sesChNuevoBtn">+ Nuevo canal</button>
-        </div>
-      </div>
-
-      <div class="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Nombre</th>
-              <th>Correo</th>
-              <th>Servidor</th>
-              <th>Usuario</th>
-              <th>Estado</th>
-              <th style="text-align:center">Acciones</th>
-            </tr>
-          </thead>
-          <tbody id="sesChTbody">
-            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div id="sesChCtxMenu" class="ctx-menu" role="menu">
-      <button type="button" data-action="consultar" role="menuitem">
-        <i class="fa-solid fa-eye"></i><span>Consultar</span>
-      </button>
-      <div class="ctx-menu-sep"></div>
-      <button type="button" data-action="editar" role="menuitem">
-        <i class="fa-solid fa-pen"></i><span>Editar</span>
-      </button>
-      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
-        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
-      </button>
-    </div>
-
-    <div class="modal-backdrop" id="filtrosSesChBackdrop"
-         onclick="if(event.target===this)cancelarFiltrosSesCh()">
-      <div class="modal" style="max-width:560px">
-        <div class="modal-header">
-          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosSesCh()" title="Cerrar">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>Código</label>
-              <input type="number" id="fSesChCodigo" min="1" placeholder="ID …" oninput="onFiltroSesCh('codigo', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Habilitado</label>
-              <select id="fSesChHabilitado" onchange="onFiltroSesCh('habilitado', this.value)">
-                <option value="">— Todos —</option>
-                <option value="1">Habilitados</option>
-                <option value="0">Deshabilitados</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Límite</label>
-              <input type="number" id="fSesChLimite" min="1" max="1000" value="100" onchange="onFiltroSesCh('limite', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Ordenar por</label>
-              <select id="fSesChOrderBy" onchange="onFiltroSesCh('order_by', this.value)">
-                <option value="id">Código</option>
-                <option value="nombre">Nombre</option>
-                <option value="correo">Correo</option>
-                <option value="servidor">Servidor</option>
-                <option value="usuario">Usuario</option>
-                <option value="habilitado">Estado</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Dirección</label>
-              <select id="fSesChDir" onchange="onFiltroSesCh('dir', this.value)">
-                <option value="desc">Descendente</option>
-                <option value="asc">Ascendente</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosSesCh()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosSesCh()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosSesCh()">Aplicar</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  $('#sesChNuevoBtn').addEventListener('click', () => abrirAltaEdicionSesCh(null));
-  $('#sesChFiltrosBtn').addEventListener('click', () => abrirModalFiltrosSesCh());
-  $('#sesChRefrescarBtn').addEventListener('click', () => cargarSesCh());
-
-  const inp = $('#sesChSearch');
-  const clr = $('#sesChSearchClear');
-  inp.value = sesChFiltros.q || '';
-  clr.style.display = inp.value ? '' : 'none';
-  inp.addEventListener('input', () => {
-    clr.style.display = inp.value ? '' : 'none';
-    sesChFiltros.q = inp.value.trim();
-    clearTimeout(sesChBuscadorTimer);
-    sesChBuscadorTimer = setTimeout(() => { cargarSesCh(); refrescarBadgeFiltrosSesCh(); }, 250);
-  });
-  clr.addEventListener('click', () => {
-    inp.value = '';
-    clr.style.display = 'none';
-    sesChFiltros.q = '';
-    cargarSesCh();
-    refrescarBadgeFiltrosSesCh();
-  });
-
-  $('#sesChCtxMenu').addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-action]');
-    if (!b) return;
-    const data = getCtxMenuData();
-    if (!data) return;
-    cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarSesCh(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionSesCh(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarSesCh(data.id);
-  });
-
-  $('#sesChTbody').addEventListener('click', (ev) => {
-    const ham = ev.target.closest('[data-act="menu"]');
-    if (ham) {
-      ev.stopPropagation();
-      const id = Number(ham.dataset.id);
-      const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#sesChCtxMenu'), r.right - 190, r.bottom + 4, { id });
-      return;
-    }
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    abrirConsultarSesCh(Number(tr.dataset.id));
-  });
-  $('#sesChTbody').addEventListener('contextmenu', (ev) => {
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    ev.preventDefault();
-    abrirCtxMenu($('#sesChCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
-  });
-
-  refrescarBadgeFiltrosSesCh();
-  await cargarSesCh();
-}, 'Canales');
-
-async function cargarSesCh() {
-  const tbody = $('#sesChTbody');
-  if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
-
-  const qs = new URLSearchParams();
-  Object.entries(sesChFiltros).forEach(([k, v]) => {
-    if (v !== '' && v != null) qs.set(k, v);
-  });
-  try {
-    const data = await apiGet('api/awssescanales.php?' + qs.toString());
-    pintarStatsSesCh(data.stats);
-    pintarTablaSesCh(data.items || []);
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
-  }
-}
-
-function pintarStatsSesCh(s) {
-  const cards = $$('#sesChStats .stat-card .stat-value');
-  if (cards.length < 2) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.habilitados);
-}
-
-function pintarTablaSesCh(rows) {
-  const tbody = $('#sesChTbody');
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin canales.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map((c) => `
-    <tr data-id="${c.id}" class="row-clickable">
-      <td class="td-id">#${esc(c.id)}</td>
-      <td class="td-nombre">${esc(c.nombre || '—')}</td>
-      <td>${esc(c.correo || '—')}</td>
-      <td style="font-family:monospace">${esc(c.servidor || '—')}</td>
-      <td style="font-family:monospace">${esc(c.usuario || '—')}</td>
-      <td>${sesChHabilitadoBadge(c.habilitado)}</td>
-      <td style="text-align:center">
-        <div class="actions" style="justify-content:center">
-          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
-            <i class="fa-solid fa-bars"></i>
-          </button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
-}
-
-function onFiltroSesCh(key, value) {
-  if (['habilitado', 'order_by', 'dir'].includes(key)) {
-    sesChFiltros[key] = value;
-  } else if (key === 'codigo') {
-    const v = String(value).trim();
-    sesChFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
-  } else if (key === 'limite') {
-    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
-    sesChFiltros.limite = n;
-  } else {
-    sesChFiltros[key] = value;
-  }
-  refrescarBadgeFiltrosSesCh();
-  cargarSesCh();
-}
-
-function refrescarBadgeFiltrosSesCh() {
-  const btn   = $('#sesChFiltrosBtn');
-  const badge = $('#sesChFiltrosBadge');
-  if (!btn || !badge) return;
-  let count = 0;
-  for (const k of Object.keys(sesChFiltrosDefaults)) {
-    if (k === 'q') continue;
-    if (String(sesChFiltros[k]) !== String(sesChFiltrosDefaults[k])) count++;
-  }
-  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
-  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
-}
-
-function sincronizarControlesFiltrosSesCh() {
-  const f = sesChFiltros;
-  $('#fSesChCodigo').value     = f.codigo;
-  $('#fSesChHabilitado').value = f.habilitado;
-  $('#fSesChLimite').value     = f.limite;
-  $('#fSesChOrderBy').value    = f.order_by;
-  $('#fSesChDir').value        = f.dir;
-}
-
-function abrirModalFiltrosSesCh() {
-  sesChFiltrosSnapshot = { ...sesChFiltros };
-  sincronizarControlesFiltrosSesCh();
-  $('#filtrosSesChBackdrop').classList.add('open');
-}
-function cerrarModalFiltrosSesCh() { $('#filtrosSesChBackdrop').classList.remove('open'); }
-function cancelarFiltrosSesCh() {
-  if (sesChFiltrosSnapshot) {
-    Object.assign(sesChFiltros, sesChFiltrosSnapshot);
-    refrescarBadgeFiltrosSesCh();
-    cargarSesCh();
-  }
-  cerrarModalFiltrosSesCh();
-}
-function limpiarFiltrosSesCh() {
-  Object.assign(sesChFiltros, sesChFiltrosDefaults);
-  sesChFiltros.q = $('#sesChSearch')?.value.trim() || '';
-  sincronizarControlesFiltrosSesCh();
-  refrescarBadgeFiltrosSesCh();
-  cargarSesCh();
-}
-window.onFiltroSesCh           = onFiltroSesCh;
-window.cancelarFiltrosSesCh    = cancelarFiltrosSesCh;
-window.limpiarFiltrosSesCh     = limpiarFiltrosSesCh;
-window.cerrarModalFiltrosSesCh = cerrarModalFiltrosSesCh;
-
-async function abrirConsultarSesCh(id) {
-  openModal(`
-    <div class="modal" style="max-width:760px">
-      <div class="modal-header">
-        <div class="modal-title">Canal SES <span class="modal-subtitle">#${id}</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
-    </div>
-  `);
-  $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionSesCh(id); }
-  });
-
-  try {
-    const c = await apiGet(`api/awssescanales.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaSesCh(c);
-  } catch (e) {
-    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-  }
-}
-
-function renderConsultaSesCh(c) {
-  const card = (label, value, full = false, isCode = false) => {
-    const empty = value == null || value === '';
-    const inner = empty ? 'Sin dato'
-                : isCode ? `<code>${esc(value)}</code>`
-                : esc(value);
-    return `
-      <div class="data-row${full ? ' full' : ''}">
-        <span class="data-label">${esc(label)}</span>
-        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
-      </div>`;
-  };
-
-  return `
-    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
-      <div>
-        <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
-        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
-          #${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code>
-        </div>
-      </div>
-      <div>${sesChHabilitadoBadge(c.habilitado)}</div>
-    </div>
-
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Nombre',   c.nombre)}
-      ${card('Correo',   c.correo)}
-      ${card('Servidor', c.servidor, false, true)}
-      ${card('Usuario',  c.usuario, false, true)}
-      ${card('Contraseña', c.contrasena ? '••••••••' : null, false, true)}
-      ${card('Habilitado', c.habilitado === '1' ? 'Sí' : (c.habilitado === '0' ? 'No' : '—'))}
-    </dl>
-  `;
-}
-
-async function abrirAltaEdicionSesCh(id) {
-  const esEdicion = id != null;
-  openModal(`
-    <div class="modal" style="max-width:680px">
-      <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar canal <span class="modal-subtitle">#${id}</span>` : 'Nuevo canal'}</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formSesChHtml({})}
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
-      </div>
-    </div>
-  `);
-
-  if (esEdicion) {
-    try {
-      const c = await apiGet(`api/awssescanales.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formSesChHtml(c);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
-  }
-
-  $('#modalRoot').addEventListener('click', async (ev) => {
-    const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarSesCh(id, a);
-  });
-}
-
-function formSesChHtml(c) {
-  const v   = (k) => esc(c?.[k] ?? '');
-  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
-  return `
-    <div class="form-row">
-      <div class="form-group">
-        <label>Nombre</label>
-        <input type="text" id="sesChNombre" maxlength="255" value="${v('nombre')}">
-      </div>
-      <div class="form-group">
-        <label>Correo</label>
-        <input type="email" id="sesChCorreo" maxlength="255" value="${v('correo')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Servidor (SMTP host)</label>
-      <input type="text" id="sesChServidor" maxlength="255" value="${v('servidor')}" style="font-family:monospace"
-             placeholder="ej. email-smtp.us-east-1.amazonaws.com">
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Usuario (SMTP)</label>
-        <input type="text" id="sesChUsuario" maxlength="255" value="${v('usuario')}" style="font-family:monospace"
-               autocomplete="off">
-      </div>
-      <div class="form-group">
-        <label>Contraseña (SMTP)</label>
-        <input type="password" id="sesChContrasena" maxlength="255" value="${v('contrasena')}" style="font-family:monospace"
-               autocomplete="new-password">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Estado</label>
-      <select id="sesChHabilitado">
-        <option value=""  ${sel('habilitado','')}>—</option>
-        <option value="1" ${sel('habilitado','1')}>Habilitado</option>
-        <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
-      </select>
-    </div>
-    <div class="field-error" id="sesChFormError" style="display:none"></div>
-  `;
-}
-
-async function guardarSesCh(id, btn) {
-  const err = $('#sesChFormError');
-  err.style.display = 'none';
-
-  const payload = {
-    nombre:     $('#sesChNombre').value.trim(),
-    correo:     $('#sesChCorreo').value.trim(),
-    servidor:   $('#sesChServidor').value.trim(),
-    usuario:    $('#sesChUsuario').value.trim(),
-    contrasena: $('#sesChContrasena').value,
-    habilitado: $('#sesChHabilitado').value,
-  };
-
-  btn.disabled = true;
-  try {
-    if (id == null) {
-      await apiSend('api/awssescanales.php', 'POST', payload);
-      toast('Canal creado.');
-    } else {
-      await apiSend(`api/awssescanales.php?id=${id}`, 'PUT', payload);
-      toast('Canal actualizado.');
-    }
-    closeModal();
-    cargarSesCh();
-  } catch (e) {
-    err.textContent = e.message;
-    err.style.display = '';
-    btn.disabled = false;
-  }
-}
-
-async function eliminarSesCh(id) {
-  const ok = await confirmar({
-    title: 'Eliminar canal',
-    message: `Se eliminará el canal #${id}. Esta acción no se puede deshacer.`,
-    confirmText: 'Eliminar',
-  });
-  if (!ok) return;
-  try {
-    await apiSend(`api/awssescanales.php?id=${id}`, 'DELETE');
-    toast('Canal eliminado.');
-    cargarSesCh();
-  } catch (e) {
-    toast(e.message, { error: true });
-  }
-}
-
 // ------------------------- Vista: Evolution API (landing) -------------------------
 route('/evolution', async (mount) => {
   mount.innerHTML = `
@@ -18728,19 +18019,19 @@ route('/evolution', async (mount) => {
         <span class="tile-title">Mensajes</span>
         <span class="tile-desc">Cada envío individual de WhatsApp procesado por Evolution API, con destinatario, cuerpo, estado y tiempo de entrega.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/evolutioncontactos'">
+        <span class="tile-icon"><i class="fa-solid fa-ban"></i></span>
+        <span class="tile-title">Vetados</span>
+        <span class="tile-desc">Destinos que Evolution API marcó como no entregables: fecha, número, estado y error de validación.</span>
+      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/evolutioncanales'">
         <span class="tile-icon">📡</span>
         <span class="tile-title">Canales</span>
         <span class="tile-desc">Los canales de Evolution API: número, token, prefijo, webhook y estado de conexión por canal.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/evolutioncontactos'">
-        <span class="tile-icon">👥</span>
-        <span class="tile-title">Contactos</span>
-        <span class="tile-desc">Registro de destinos verificados por Evolution API: fecha, número, estado y error de validación.</span>
-      </button>
       <button type="button" class="tile-card"
               onclick="window.open('http://evolution.york.databox.net.ar/manager', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre el manager de Evolution API en una pestaña nueva.</span>
       </button>
@@ -19011,7 +18302,7 @@ route('/evolutionmensajes', async (mount) => {
 
   refrescarBadgeFiltrosEvoMsg();
   await cargarEvoMsg();
-}, 'Mensajes');
+}, 'Evolution API &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Mensajes');
 
 async function cargarEvoMsg() {
   const tbody = $('#evoMsgTbody');
@@ -19710,7 +19001,7 @@ route('/evolutioncanales', async (mount) => {
 
   refrescarBadgeFiltrosEvoCh();
   await cargarEvoCh();
-}, 'Canales');
+}, 'Evolution API &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Canales');
 
 async function cargarEvoCh() {
   const tbody = $('#evoChTbody');
@@ -20175,7 +19466,7 @@ async function toggleHabilitadoEvoCh(id) {
   }
 }
 
-// ------------------------- Vista: Evolution API > Contactos (ABM) -------------------------
+// ------------------------- Vista: Evolution API > Vetados (ABM) -------------------------
 const evoCtFiltrosDefaults = {
   q: '', codigo: '', estado: '', desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
@@ -20209,11 +19500,11 @@ route('/evolutioncontactos', async (mount) => {
           <i class="fa-solid fa-chevron-left"></i>
         </button>
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
-          <div style="font-size:1.6rem;line-height:1">👥</div>
+          <div style="font-size:1.6rem;line-height:1"><i class="fa-solid fa-ban"></i></div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los contactos de Evolution API son los destinos que la plataforma verifica
-            antes de enviar. Cada registro guarda el número consultado, el estado del
-            chequeo y el error si la verificación falló.
+            Los vetados de Evolution API son los destinos que la plataforma marcó como
+            no entregables. Cada registro guarda el número, el estado del chequeo y el
+            error que hizo que la verificación fallara.
           </div>
         </div>
       </div>
@@ -20239,7 +19530,7 @@ route('/evolutioncontactos', async (mount) => {
           </button>
         </div>
         <div class="toolbar-right">
-          <button class="btn btn-primary" id="evoCtNuevoBtn">+ Nuevo contacto</button>
+          <button class="btn btn-primary" id="evoCtNuevoBtn">+ Nuevo vetado</button>
         </div>
       </div>
 
@@ -20391,7 +19682,7 @@ route('/evolutioncontactos', async (mount) => {
 
   refrescarBadgeFiltrosEvoCt();
   await cargarEvoCt();
-}, 'Contactos');
+}, 'Evolution API &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Vetados');
 
 async function cargarEvoCt() {
   const tbody = $('#evoCtTbody');
@@ -20421,7 +19712,7 @@ function pintarStatsEvoCt(s) {
 function pintarTablaEvoCt(rows) {
   const tbody = $('#evoCtTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin contactos.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin vetados.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
@@ -20512,7 +19803,7 @@ async function abrirConsultarEvoCt(id) {
   openModal(`
     <div class="modal" style="max-width:760px">
       <div class="modal-header">
-        <div class="modal-title">Contacto Evolution <span class="modal-subtitle">#${id}</span></div>
+        <div class="modal-title">Vetado Evolution <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
@@ -20579,7 +19870,7 @@ async function abrirAltaEdicionEvoCt(id) {
   openModal(`
     <div class="modal" style="max-width:680px">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar contacto <span class="modal-subtitle">#${id}</span>` : 'Nuevo contacto'}</div>
+        <div class="modal-title">${esEdicion ? `Editar vetado <span class="modal-subtitle">#${id}</span>` : 'Nuevo vetado'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
@@ -20658,10 +19949,10 @@ async function guardarEvoCt(id, btn) {
   try {
     if (id == null) {
       await apiSend('api/evolutioncontactos.php', 'POST', payload);
-      toast('Contacto creado.');
+      toast('Vetado creado.');
     } else {
       await apiSend(`api/evolutioncontactos.php?id=${id}`, 'PUT', payload);
-      toast('Contacto actualizado.');
+      toast('Vetado actualizado.');
     }
     closeModal();
     cargarEvoCt();
@@ -20674,14 +19965,14 @@ async function guardarEvoCt(id, btn) {
 
 async function eliminarEvoCt(id) {
   const ok = await confirmar({
-    title: 'Eliminar contacto',
-    message: `Se eliminará el contacto #${id}. Esta acción no se puede deshacer.`,
+    title: 'Eliminar vetado',
+    message: `Se eliminará el vetado #${id}. Esta acción no se puede deshacer.`,
     confirmText: 'Eliminar',
   });
   if (!ok) return;
   try {
     await apiSend(`api/evolutioncontactos.php?id=${id}`, 'DELETE');
-    toast('Contacto eliminado.');
+    toast('Vetado eliminado.');
     cargarEvoCt();
   } catch (e) {
     toast(e.message, { error: true });
@@ -20724,7 +20015,7 @@ route('/mercadopago', async (mount) => {
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://www.mercadopago.com.ar/developers', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre el portal de desarrolladores de Mercadopago en una pestaña nueva.</span>
       </button>
@@ -20748,7 +20039,7 @@ route('/dolarhoy', async (mount) => {
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://dolarhoy.com/', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre el sitio de Dolarhoy en una pestaña nueva.</span>
       </button>
@@ -20778,7 +20069,7 @@ route('/movistar', async (mount) => {
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://kiteplatform-movistar-ar.telefonica.com/', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre la consola de Kite Platform en una pestaña nueva.</span>
       </button>
@@ -21110,7 +20401,7 @@ route('/movistarsims', async (mount) => {
 
   refrescarBadgeFiltrosMsim();
   await cargarMsim();
-}, 'Movistar SIMs');
+}, 'Movistar &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; SIMs');
 
 async function cargarMsim() {
   const tbody = $('#msimTbody');
@@ -21520,7 +20811,7 @@ route('/claro', async (mount) => {
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://iotgestion.claro.com.ar', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre la consola de IoT Gestión de Claro en una pestaña nueva.</span>
       </button>
@@ -21786,7 +21077,7 @@ route('/openai', async (mount) => {
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://platform.openai.com', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre la consola de OpenAI en una pestaña nueva.</span>
       </button>
@@ -21876,7 +21167,7 @@ route('/openaiconsumos', async (mount) => {
     document.getElementById('openaiActualizado').innerHTML =
       `<span style="color:var(--danger)">${esc(e.message || 'Error cargando')}</span>`;
   }
-}, 'OpenAI · Consumos');
+}, 'OpenAI &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Consumos');
 
 // ------------------------- Vista: Anthropic (landing) -------------------------
 route('/anthropic', async (mount) => {
@@ -21889,7 +21180,7 @@ route('/anthropic', async (mount) => {
     <div class="tile-grid">
       <button type="button" class="tile-card"
               onclick="window.open('https://platform.claude.com', '_blank', 'noopener')">
-        <span class="tile-icon">🌐</span>
+        <span class="tile-icon">🔗</span>
         <span class="tile-title">Plataforma</span>
         <span class="tile-desc">Abre la consola de Anthropic en una pestaña nueva.</span>
       </button>
@@ -22162,7 +21453,7 @@ route('/clarosims', async (mount) => {
 
   refrescarBadgeFiltrosCsim();
   await cargarCsim();
-}, 'Claro SIMs');
+}, 'Claro &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; SIMs');
 
 async function cargarCsim() {
   const tbody = $('#csimTbody');
@@ -22817,7 +22108,7 @@ route('/dolarhoycotizaciones', async (mount) => {
 
   refrescarBadgeFiltrosDhCot();
   await cargarDhCot();
-}, 'Cotizaciones');
+}, 'Dolarhoy &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Cotizaciones');
 
 async function cargarDhCot() {
   const tbody = $('#dhCotTbody');
@@ -23355,7 +22646,7 @@ route('/mercadopagopagos', async (mount) => {
 
   refrescarBadgeFiltrosMpPag();
   await cargarMpPag();
-}, 'Pagos');
+}, 'Mercadopago &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Pagos');
 
 async function cargarMpPag() {
   const tbody = $('#mpPagTbody');
@@ -23967,7 +23258,7 @@ route('/mercadopagocuentas', async (mount) => {
 
   refrescarBadgeFiltrosMpCta();
   await cargarMpCta();
-}, 'Cuentas');
+}, 'Mercadopago &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Cuentas');
 
 async function cargarMpCta() {
   const tbody = $('#mpCtaTbody');
@@ -24578,7 +23869,7 @@ route('/mercadopagoregistros', async (mount) => {
 
   refrescarBadgeFiltrosMpReg();
   await cargarMpReg();
-}, 'Registros');
+}, 'Mercadopago &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Registros');
 
 async function cargarMpReg() {
   const tbody = $('#mpRegTbody');
@@ -25096,7 +24387,7 @@ route('/mercadopagosuscripciones', async (mount) => {
 
   refrescarBadgeFiltrosMpSub();
   await cargarMpSub();
-}, 'Suscripciones');
+}, 'Mercadopago &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Suscripciones');
 
 async function cargarMpSub() {
   const tbody = $('#mpSubTbody');
@@ -25798,7 +25089,7 @@ route('/mercadopagodebitos', async (mount) => {
 
   refrescarBadgeFiltrosMpDeb();
   await cargarMpDeb();
-}, 'Débitos');
+}, 'Mercadopago &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Débitos');
 
 async function cargarMpDeb() {
   const tbody = $('#mpDebTbody');

@@ -1,6 +1,6 @@
 <?php
 // api/datarocketmensajes.php
-// ABM de mensajes Datarocket. Lee/escribe sobre la tabla `datarocketmensajes`
+// ABM de mensajes Datarocket. Lee/escribe sobre la tabla `datarocket_mensajes`
 // definida en db/schema.sql.
 //   GET    api/datarocketmensajes.php          -> listado con filtros (query string)
 //   GET    api/datarocketmensajes.php?id=N     -> registro individual
@@ -101,12 +101,12 @@ function handleList(PDO $pdo, array $q): void {
             COUNT(*)                                                AS total,
             SUM(CASE WHEN enviado IS NOT NULL THEN 1 ELSE 0 END)    AS enviados,
             SUM(CASE WHEN error IS NOT NULL AND error <> '' THEN 1 ELSE 0 END) AS con_error
-        FROM datarocketmensajes
+        FROM datarocket_mensajes
     ")->fetch();
 
     $sql = "
         SELECT " . DR_MSG_COLS . "
-        FROM datarocketmensajes
+        FROM datarocket_mensajes
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -126,7 +126,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . DR_MSG_COLS . " FROM datarocketmensajes WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . DR_MSG_COLS . " FROM datarocket_mensajes WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Mensaje no encontrado', 404);
@@ -198,7 +198,7 @@ function handleCreate(PDO $pdo, array $in): void {
     }
 
     $sql = "
-        INSERT INTO datarocketmensajes
+        INSERT INTO datarocket_mensajes
             (uuid, fecha, campana, plantilla, suscripcion, contacto, proyecto,
              medio, servicio, canal, remitente, remite, destinatario, destino,
              prioridad, asunto, cuerpo, formato, media, estado, resultado, error,
@@ -241,14 +241,14 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM datarocketmensajes WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM datarocket_mensajes WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Mensaje no encontrado', 404);
 
     $p = sanitizePayload($in);
 
     $sql = "
-        UPDATE datarocketmensajes SET
+        UPDATE datarocket_mensajes SET
             fecha        = :fecha,
             campana      = :campana,
             plantilla    = :plantilla,
@@ -307,7 +307,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM datarocketmensajes WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM datarocket_mensajes WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Mensaje no encontrado', 404);
     jsonOk(['id' => $id]);

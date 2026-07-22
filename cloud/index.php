@@ -3,7 +3,7 @@
 // segun el hash de la URL (#/dashboard, #/...).
 $cssVer  = @filemtime(__DIR__ . '/assets/css/style.css') ?: time();
 $jsVer   = @filemtime(__DIR__ . '/assets/js/app.js')     ?: time();
-$version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
+$version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\xBB\xBF \t\n\r\0\x0B");
 ?>
 <!doctype html>
 <html lang="es">
@@ -99,10 +99,6 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0');
             <a href="#/aws" class="nav-item nav-sub-item" data-route="/aws"
                data-perm-prefix="plataformas.aws.">
               <span class="nav-icon">☁️</span> AWS
-            </a>
-            <a href="#/awsses" class="nav-item nav-sub-item" data-route="/awsses"
-               data-perm-prefix="plataformas.awsses.">
-              <span class="nav-icon">📧</span> AWS SES
             </a>
             <a href="#/evolution" class="nav-item nav-sub-item" data-route="/evolution"
                data-perm-prefix="plataformas.evolution.">

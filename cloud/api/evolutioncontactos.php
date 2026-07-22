@@ -1,7 +1,10 @@
 <?php
 // api/evolutioncontactos.php
-// ABM de contactos Evolution API. Lee/escribe sobre la tabla `evolutioncontactos`
-// definida en db/schema.sql.
+// ABM de vetados de Evolution API (destinos que la plataforma marca como no
+// entregables por error de validacion o rebote). Lee/escribe sobre la tabla
+// `evolution_vetados` definida en db/schema.sql.
+// El nombre historico "contactos" quedo en la URL / permisos para no romper
+// roles ya asignados; en la UI el modulo se muestra como "Vetados".
 //   GET    api/evolutioncontactos.php          -> listado con filtros (query string)
 //   GET    api/evolutioncontactos.php?id=N     -> registro individual
 //   POST   api/evolutioncontactos.php          -> alta (JSON body)
@@ -81,12 +84,12 @@ function handleList(PDO $pdo, array $q): void {
         SELECT
             COUNT(*)                                                          AS total,
             SUM(CASE WHEN error IS NOT NULL AND error <> '' THEN 1 ELSE 0 END) AS con_error
-        FROM evolutioncontactos
+        FROM evolution_vetados
     ")->fetch();
 
     $sql = "
         SELECT " . EVO_CT_COLS . "
-        FROM evolutioncontactos
+        FROM evolution_vetados
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -105,10 +108,10 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . EVO_CT_COLS . " FROM evolutioncontactos WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . EVO_CT_COLS . " FROM evolution_vetados WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
-    if (!$row) jsonError('Contacto no encontrado', 404);
+    if (!$row) jsonError('Vetado no encontrado', 404);
     jsonOk($row);
 }
 
@@ -150,7 +153,7 @@ function handleCreate(PDO $pdo, array $in): void {
     }
 
     $sql = "
-        INSERT INTO evolutioncontactos (fecha, destino, error, estado)
+        INSERT INTO evolution_vetados (fecha, destino, error, estado)
         VALUES (:fecha, :destino, :error, :estado)
     ";
     $stmt = $pdo->prepare($sql);
@@ -164,14 +167,14 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM evolutioncontactos WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM evolution_vetados WHERE id = :id');
     $exists->execute([':id' => $id]);
-    if (!$exists->fetch()) jsonError('Contacto no encontrado', 404);
+    if (!$exists->fetch()) jsonError('Vetado no encontrado', 404);
 
     $p = sanitizePayload($in);
 
     $sql = "
-        UPDATE evolutioncontactos SET
+        UPDATE evolution_vetados SET
             fecha   = :fecha,
             destino = :destino,
             error   = :error,
@@ -190,8 +193,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM evolutioncontactos WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM evolution_vetados WHERE id = :id');
     $stmt->execute([':id' => $id]);
-    if ($stmt->rowCount() === 0) jsonError('Contacto no encontrado', 404);
+    if ($stmt->rowCount() === 0) jsonError('Vetado no encontrado', 404);
     jsonOk(['id' => $id]);
 }

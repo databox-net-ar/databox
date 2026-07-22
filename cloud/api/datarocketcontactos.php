@@ -1,6 +1,6 @@
 <?php
 // api/datarocketcontactos.php
-// ABM de contactos Datarocket. Lee/escribe sobre la tabla `datarocketcontactos`
+// ABM de contactos Datarocket. Lee/escribe sobre la tabla `datarocket_contactos`
 // definida en db/schema.sql.
 //   GET    api/datarocketcontactos.php          -> listado con filtros (query string)
 //   GET    api/datarocketcontactos.php?id=N     -> registro individual
@@ -100,12 +100,12 @@ function handleList(PDO $pdo, array $q): void {
             COUNT(*)                                                                   AS total,
             SUM(CASE WHEN verificacion IS NOT NULL AND verificacion <> '' THEN 1 ELSE 0 END) AS verificados,
             SUM(CASE WHEN error IS NOT NULL AND error <> '' THEN 1 ELSE 0 END)         AS con_error
-        FROM datarocketcontactos
+        FROM datarocket_contactos
     ")->fetch();
 
     $sql = "
         SELECT " . DR_CT_COLS . "
-        FROM datarocketcontactos
+        FROM datarocket_contactos
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -125,7 +125,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . DR_CT_COLS . " FROM datarocketcontactos WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . DR_CT_COLS . " FROM datarocket_contactos WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Contacto no encontrado', 404);
@@ -206,7 +206,7 @@ function handleCreate(PDO $pdo, array $in): void {
     }
 
     $sql = "
-        INSERT INTO datarocketcontactos
+        INSERT INTO datarocket_contactos
             (uuid, origen, nombre, empresa, rubro, actividad, cargo, persona,
              genero, nacimiento, dni, domicilio, ciudad, ubicacion, localidad,
              provincia, pais, telefono, celular, whatsapp, correo, web, facebook,
@@ -260,14 +260,14 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM datarocketcontactos WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM datarocket_contactos WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Contacto no encontrado', 404);
 
     $p = sanitizePayload($in);
 
     $sql = "
-        UPDATE datarocketcontactos SET
+        UPDATE datarocket_contactos SET
             origen        = :origen,
             nombre        = :nombre,
             empresa       = :empresa,
@@ -344,7 +344,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM datarocketcontactos WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM datarocket_contactos WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Contacto no encontrado', 404);
     jsonOk(['id' => $id]);

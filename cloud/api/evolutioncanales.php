@@ -1,6 +1,6 @@
 <?php
 // api/evolutioncanales.php
-// ABM de canales Evolution API. Lee/escribe sobre la tabla `evolutioncanales`
+// ABM de canales Evolution API. Lee/escribe sobre la tabla `evolution_canales`
 // definida en db/schema.sql.
 //   GET    api/evolutioncanales.php          -> listado con filtros (query string)
 //   GET    api/evolutioncanales.php?id=N     -> registro individual
@@ -87,12 +87,12 @@ function handleList(PDO $pdo, array $q): void {
             COUNT(*)                                          AS total,
             SUM(CASE WHEN habilitado = '1' THEN 1 ELSE 0 END) AS habilitados,
             SUM(CASE WHEN online     = '1' THEN 1 ELSE 0 END) AS online
-        FROM evolutioncanales
+        FROM evolution_canales
     ")->fetch();
 
     $sql = "
         SELECT " . EVO_CH_COLS . "
-        FROM evolutioncanales
+        FROM evolution_canales
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -112,7 +112,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . EVO_CH_COLS . " FROM evolutioncanales WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . EVO_CH_COLS . " FROM evolution_canales WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Canal no encontrado', 404);
@@ -166,7 +166,7 @@ function handleCreate(PDO $pdo, array $in): void {
     if ($uuid === null) $uuid = bin2hex(random_bytes(16));
 
     $sql = "
-        INSERT INTO evolutioncanales
+        INSERT INTO evolution_canales
             (uuid, proyecto, nombre, prefijo, numero, celular, token, prompt,
              intervaloCorto, intervaloLargo, ultimo, alerta, limite, enviados,
              acumulados, webhook, online, habilitado, canalEstado, gruposEstado)
@@ -202,14 +202,14 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM evolutioncanales WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM evolution_canales WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Canal no encontrado', 404);
 
     $p = sanitizePayload($in);
 
     $sql = "
-        UPDATE evolutioncanales SET
+        UPDATE evolution_canales SET
             proyecto       = :proyecto,
             nombre         = :nombre,
             prefijo        = :prefijo,
@@ -258,7 +258,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM evolutioncanales WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM evolution_canales WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Canal no encontrado', 404);
     jsonOk(['id' => $id]);

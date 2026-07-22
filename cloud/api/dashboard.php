@@ -154,9 +154,9 @@ $evolutionCanales = null;
 if (hasPermission('plataformas.evolution.canales.consultar')) {
     $pdo = $pdo ?? db();
 
-    $total   = (int)$pdo->query('SELECT COUNT(*) FROM evolutioncanales')->fetchColumn();
+    $total   = (int)$pdo->query('SELECT COUNT(*) FROM evolution_canales')->fetchColumn();
     $offline = (int)$pdo->query(
-        "SELECT COUNT(*) FROM evolutioncanales
+        "SELECT COUNT(*) FROM evolution_canales
           WHERE habilitado = '1' AND online = '0'"
     )->fetchColumn();
 
@@ -164,7 +164,7 @@ if (hasPermission('plataformas.evolution.canales.consultar')) {
     if ($offline > 0) {
         $stmt = $pdo->query("
             SELECT id, nombre, prefijo, numero, celular, actualizado
-              FROM evolutioncanales
+              FROM evolution_canales
              WHERE habilitado = '1' AND online = '0'
              ORDER BY actualizado DESC, id DESC
              LIMIT 20
