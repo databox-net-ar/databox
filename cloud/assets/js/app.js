@@ -16514,6 +16514,7 @@ async function abrirConsultarDrCt(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrCt(id); }
+    drCtSwitchTab(ev);
   });
 
   try {
@@ -16522,6 +16523,15 @@ async function abrirConsultarDrCt(id) {
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
+}
+
+// Delegado de tabs para el modal de consulta de contacto Datarocket.
+function drCtSwitchTab(ev) {
+  const tabBtn = ev.target.closest('#modalRoot [data-tab]');
+  if (!tabBtn) return;
+  const target = tabBtn.dataset.tab;
+  $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+  $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
 }
 
 function renderConsultaDrCt(c) {
@@ -16536,11 +16546,6 @@ function renderConsultaDrCt(c) {
         <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
       </div>`;
   };
-
-  const seccion = (titulo) => `
-    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
-      ${esc(titulo)}
-    </div>`;
 
   const linkCard = (label, value) => {
     const empty = value == null || value === '';
@@ -16569,60 +16574,75 @@ function renderConsultaDrCt(c) {
       </div>
     </div>
 
-    ${seccion('Identidad')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Nombre',     c.nombre)}
-      ${card('Empresa',    c.empresa)}
-      ${card('Rubro',      c.rubro)}
-      ${card('Actividad',  c.actividad)}
-      ${card('Cargo',      c.cargo)}
-      ${card('Persona',    c.persona)}
-      ${card('Género',     DR_CT_GENERO_MAP[c.genero] || c.genero)}
-      ${card('Nacimiento', c.nacimiento)}
-      ${card('DNI',        c.dni, false, true)}
-      ${card('Origen',     c.origen)}
-    </dl>
+    <div class="modal-tabs">
+      <button type="button" class="modal-tab active" data-tab="identidad">Identidad</button>
+      <button type="button" class="modal-tab"        data-tab="contacto">Contacto</button>
+      <button type="button" class="modal-tab"        data-tab="webredes">Web y redes</button>
+      <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
+      <button type="button" class="modal-tab"        data-tab="comentarios">Comentarios y clasificación</button>
+      <button type="button" class="modal-tab"        data-tab="estado">Estado y verificación</button>
+    </div>
 
-    ${seccion('Ubicación')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Domicilio', c.domicilio, true)}
-      ${card('Ciudad',    c.ciudad)}
-      ${card('Localidad', c.localidad)}
-      ${card('Provincia', c.provincia)}
-      ${card('País',      c.pais)}
-      ${card('Ubicación', c.ubicacion, true, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="identidad">
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Nombre',     c.nombre)}
+        ${card('Empresa',    c.empresa)}
+        ${card('Rubro',      c.rubro)}
+        ${card('Actividad',  c.actividad)}
+        ${card('Cargo',      c.cargo)}
+        ${card('Persona',    c.persona)}
+        ${card('Género',     DR_CT_GENERO_MAP[c.genero] || c.genero)}
+        ${card('Nacimiento', c.nacimiento)}
+        ${card('DNI',        c.dni, false, true)}
+        ${card('Origen',     c.origen)}
+      </dl>
+    </div>
 
-    ${seccion('Contacto')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Teléfono', c.telefono, false, true)}
-      ${card('Celular',  c.celular,  false, true)}
-      ${card('WhatsApp', c.whatsapp, false, true)}
-      ${card('Correo',   c.correo,   false, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="contacto" hidden>
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Teléfono', c.telefono, false, true)}
+        ${card('Celular',  c.celular,  false, true)}
+        ${card('WhatsApp', c.whatsapp, false, true)}
+        ${card('Correo',   c.correo,   false, true)}
+      </dl>
+    </div>
 
-    ${seccion('Web y redes')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${linkCard('Web',       c.web)}
-      ${linkCard('Facebook',  c.facebook)}
-      ${linkCard('Instagram', c.instagram)}
-      ${linkCard('TikTok',    c.tiktok)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="webredes" hidden>
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${linkCard('Web',       c.web)}
+        ${linkCard('Facebook',  c.facebook)}
+        ${linkCard('Instagram', c.instagram)}
+        ${linkCard('TikTok',    c.tiktok)}
+      </dl>
+    </div>
 
-    ${seccion('Comentarios y clasificación')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Comentarios', c.comentarios, true)}
-      ${card('Tags',        c.tags,        true)}
-      ${card('Listas',      c.listas,      true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="ubicacion" hidden>
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Domicilio', c.domicilio, true)}
+        ${card('Ciudad',    c.ciudad)}
+        ${card('Localidad', c.localidad)}
+        ${card('Provincia', c.provincia)}
+        ${card('País',      c.pais)}
+        ${card('Ubicación', c.ubicacion, true, true)}
+      </dl>
+    </div>
 
-    ${seccion('Estado y verificación')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Suscripciones', c.suscripciones)}
-      ${card('Estado',        c.estado)}
-      ${card('Verificación',  c.verificacion)}
-      ${card('Error',         c.error, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="comentarios" hidden>
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Comentarios', c.comentarios, true)}
+        ${card('Tags',        c.tags,        true)}
+        ${card('Listas',      c.listas,      true)}
+      </dl>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="estado" hidden>
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Suscripciones', c.suscripciones)}
+        ${card('Estado',        c.estado)}
+        ${card('Verificación',  c.verificacion)}
+        ${card('Error',         c.error, true)}
+      </dl>
+    </div>
   `;
 }
 
