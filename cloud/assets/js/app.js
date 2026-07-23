@@ -838,11 +838,12 @@ function renderDashEvolutionCanales(evo) {
             <td class="td-nombre">${esc(c.nombre || '—')}</td>
             <td style="font-family:monospace">${esc(numero)}</td>
             <td style="font-family:monospace">${esc(c.celular || '—')}</td>
+            <td title="${esc(c.latido || '')}">${esc(fmtHace(c.latido) || '—')}</td>
             <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
           </tr>
         `;
       }).join('')
-    : `<tr><td colspan="5" class="table-empty">Todo bien.</td></tr>`;
+    : `<tr><td colspan="6" class="table-empty">Todo bien.</td></tr>`;
 
   return `
     <div class="table-card" style="margin-top:16px">
@@ -857,6 +858,7 @@ function renderDashEvolutionCanales(evo) {
             <th>Nombre</th>
             <th>Número</th>
             <th>Celular</th>
+            <th>Latido</th>
             <th>Actualizado</th>
           </tr>
         </thead>

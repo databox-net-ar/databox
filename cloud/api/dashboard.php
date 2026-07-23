@@ -163,7 +163,7 @@ if (hasPermission('plataformas.evolution.canales.consultar')) {
     $items = [];
     if ($offline > 0) {
         $stmt = $pdo->query("
-            SELECT id, nombre, prefijo, numero, celular, actualizado
+            SELECT id, nombre, prefijo, numero, celular, latido, actualizado
               FROM evolution_canales
              WHERE habilitado = '1' AND online = '0'
              ORDER BY actualizado DESC, id DESC
