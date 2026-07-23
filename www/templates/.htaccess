@@ -1,0 +1,9 @@
+# REMOVER EXTENSION
+
+RewriteEngine On
+
+# RewriteCond %{HTTP:X-Forwarded-Proto} =http
+# RewriteRule .* https://%{HTTP:Host}%{REQUEST_URI} [L,R=permanent]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^([^\.]+)$ $1.php [NC,L]

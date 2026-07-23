@@ -19,14 +19,16 @@ set -eo pipefail
 
 APP_DIR="/opt/app/databox"
 APP_PORT=8091
+WWW_PORT=8113
 DOMAIN="${DOMAIN:-cloud.databox.net.ar}"
+WWW_DOMAIN="${WWW_DOMAIN:-www.databox.net.ar}"
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-javieralvarez@databox.net.ar}"
 COMPOSE_FILE="docker-compose.prod.yml"
 
 echo ""
 echo "============================================================"
 echo "  Setup remoto databox (Amazon Linux 2023)"
-echo "  Dominio: ${DOMAIN}"
+echo "  Dominios: ${DOMAIN}, ${WWW_DOMAIN}"
 echo "  App dir: ${APP_DIR}"
 echo "============================================================"
 echo ""
@@ -79,7 +81,7 @@ echo "        OK"
 # Difiere del docker-compose.yml del repo:
 #   - Bind solo a 127.0.0.1 (Nginx hace el frente publico).
 #   - Sin extra_hosts host.docker.internal (en prod la BD es RDS, ver .env.production).
-# Mismo puerto que dev (8091), igual interno y externo.
+# Mismos puertos que dev (8091 cloud, 8092 www), igual interno y externo.
 echo "[ 5/8 ] Generando $COMPOSE_FILE..."
 cat > "$APP_DIR/$COMPOSE_FILE" << EOF
 # Generado por scripts/aprovisionar_server.sh - no editar a mano.
@@ -94,8 +96,10 @@ services:
       dockerfile: docker/Dockerfile
     ports:
       - "127.0.0.1:${APP_PORT}:${APP_PORT}"
+      - "127.0.0.1:${WWW_PORT}:${WWW_PORT}"
     volumes:
       - ./cloud:/var/www/html
+      - ./www:/var/www/www
       - ./robot:/var/www/robot
       - ./env.php:/var/www/env.php:ro
       - ./.env.production:/var/www/.env.production:ro
@@ -120,9 +124,10 @@ EOF
 echo "        OK"
 
 # ---- 6. Configurar Nginx ----
-# Dos server blocks en databox.conf:
+# Tres server blocks en databox.conf:
 #   1. ${DOMAIN} (cloud): proxy a 127.0.0.1:${APP_PORT} (Apache vhost cloud).
-#   2. default_server en :80: cualquier hostname que no matchee cloud devuelve
+#   2. ${WWW_DOMAIN} (www):  proxy a 127.0.0.1:${WWW_PORT} (Apache vhost www).
+#   3. default_server en :80: cualquier hostname que no matchee devuelve
 #      HTTP 404 con cuerpo vacio (respuesta 404 default de nginx).
 #
 # El default_server :443 (fallback HTTPS -> 404 reusando el cert de cloud) se
@@ -138,6 +143,21 @@ server {
     server_name ${DOMAIN};
     location / {
         proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        client_max_body_size 50M;
+        proxy_read_timeout 120s;
+    }
+}
+
+# --- www.databox.net.ar ---
+server {
+    listen 80;
+    server_name ${WWW_DOMAIN};
+    location / {
+        proxy_pass         http://127.0.0.1:${WWW_PORT};
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -184,14 +204,15 @@ if [ ! -x /opt/certbot/bin/certbot ]; then
 fi
 echo "        certbot $(/usr/bin/certbot --version 2>&1 | awk '{print $2}')"
 
-echo "        Emitiendo/renovando certificado para $DOMAIN..."
+echo "        Emitiendo/renovando certificado para $DOMAIN y $WWW_DOMAIN..."
 if ! sudo certbot --nginx \
         --non-interactive \
         --agree-tos \
         --email "$CERTBOT_EMAIL" \
         --redirect \
         --keep-until-expiring \
-        -d "$DOMAIN"; then
+        -d "$DOMAIN" \
+        -d "$WWW_DOMAIN"; then
     echo ""
     echo "        ERROR: certbot fallo. Ultimas lineas del log:"
     echo "        --------------------------------------------"
@@ -199,13 +220,14 @@ if ! sudo certbot --nginx \
     echo "        --------------------------------------------"
     echo ""
     echo "        Causas comunes:"
-    echo "          - El dominio $DOMAIN no apunta a la IP publica de este server."
+    echo "          - Alguno de los dominios ($DOMAIN, $WWW_DOMAIN) no apunta a la IP"
+    echo "            publica de este server."
     echo "          - El Security Group del EC2 no tiene abierto el puerto 80"
     echo "            (HTTP-01 challenge entra por 80, no por 443)."
     echo "          - Limite de rate de Let's Encrypt (5 fallos/hora por dominio)."
     exit 1
 fi
-echo "        OK -- certificado emitido/renovado para $DOMAIN."
+echo "        OK -- certificado emitido/renovado para $DOMAIN y $WWW_DOMAIN."
 
 if [ ! -f /etc/cron.d/certbot ]; then
     echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && /usr/bin/certbot renew -q" \
@@ -266,6 +288,7 @@ echo "============================================================"
 echo "  Setup remoto completo."
 echo ""
 echo "  App:        https://${DOMAIN}/   (proxy a 127.0.0.1:${APP_PORT})"
+echo "  Www:        https://${WWW_DOMAIN}/   (proxy a 127.0.0.1:${WWW_PORT})"
 echo "  Fallback:   hostname desconocido (:80 y :443) -> HTTP 404"
 echo "  Repo:       $APP_DIR"
 echo "  Compose:    docker compose -f $APP_DIR/$COMPOSE_FILE <cmd>"

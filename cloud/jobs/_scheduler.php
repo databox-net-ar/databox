@@ -89,7 +89,7 @@ foreach ($orphans as $o) {
 // -----------------------------------------------------------------------------
 
 $tareas = $pdo->query('
-    SELECT id, nombre, script, cron_expr, overlap, timeout_seg
+    SELECT id, nombre, tipo, script, url, cron_expr, overlap, timeout_seg
       FROM tareas
      WHERE activo = 1
 ')->fetchAll();
@@ -124,27 +124,36 @@ exit(0);
 function dispararTarea(PDO $pdo, array $t, string $disparo): int {
     $tareaId   = (int) $t['id'];
     $nombre    = (string) $t['nombre'];
-    $script    = (string) $t['script']; // ruta relativa a cloud/ (ej: "jobs/foo.php")
+    $tipo      = (string) ($t['tipo'] ?? 'php');
+    $script    = (string) ($t['script'] ?? ''); // ruta relativa a cloud/ (ej: "jobs/foo.php")
+    $url       = (string) ($t['url'] ?? '');
     $cronExpr  = (string) $t['cron_expr'];
     $timeoutS  = max(5, (int) $t['timeout_seg']);
-    $scriptAbs = realpath(SCHED_CLOUD_ROOT . '/' . ltrim($script, '/'));
+
+    // Segun el tipo de tarea, el "script a correr" es o bien el propio script
+    // configurado (tipo=php) o el wrapper de sistema _curl.php que hace la
+    // llamada HTTP con TAREA_URL en el env (tipo=url).
+    if ($tipo === 'url') {
+        if ($url === '') {
+            return dispararRegistrarError($pdo, $tareaId, $disparo, 'URL vacia');
+        }
+        $scriptRel = 'jobs/_curl.php';
+        $scriptAbs = realpath(SCHED_CLOUD_ROOT . '/' . $scriptRel);
+        $sourceLbl = 'URL: ' . $url;
+    } elseif ($tipo === 'php') {
+        if ($script === '') {
+            return dispararRegistrarError($pdo, $tareaId, $disparo, 'script vacio');
+        }
+        $scriptRel = $script;
+        $scriptAbs = realpath(SCHED_CLOUD_ROOT . '/' . ltrim($script, '/'));
+        $sourceLbl = 'Script: ' . $script;
+    } else {
+        return dispararRegistrarError($pdo, $tareaId, $disparo, 'tipo desconocido: ' . $tipo);
+    }
+
     if ($scriptAbs === false || !is_file($scriptAbs)) {
-        $err = 'script no encontrado: ' . $script;
-        $st = $pdo->prepare('
-            INSERT INTO tareas_ejecuciones
-                (tarea_id, inicio, fin, estado, exit_code, mensaje, disparo)
-            VALUES (:tid, NOW(), NOW(), "error", 127, :m, :d)
-        ');
-        $st->execute([':tid' => $tareaId, ':m' => $err, ':d' => $disparo]);
-        $eid = (int) $pdo->lastInsertId();
-        $up = $pdo->prepare('
-            UPDATE tareas SET ultimo_run = NOW(),
-                              ultimo_estado = "error",
-                              ultimo_error = :m
-             WHERE id = :id
-        ');
-        $up->execute([':m' => $err, ':id' => $tareaId]);
-        return $eid;
+        $err = ($tipo === 'url' ? 'wrapper _curl.php no encontrado' : 'script no encontrado: ' . $script);
+        return dispararRegistrarError($pdo, $tareaId, $disparo, $err);
     }
 
     // 1) Insertar la fila en 'corriendo'.
@@ -173,24 +182,46 @@ function dispararTarea(PDO $pdo, array $t, string $disparo): int {
     if (!is_dir(SCHED_LOG_DIR)) @mkdir(SCHED_LOG_DIR, 0755, true);
     $ts = date('Y-m-d H:i:s');
     $encab = "-- Ejecucion #{$ejecucionId} de \"{$nombre}\" ({$cronExpr}) --\n"
-           . "-- Script: {$script} --\n"
+           . "-- {$sourceLbl} --\n"
            . "-- Timeout: {$timeoutS}s  |  Disparo: {$disparo}  |  Inicio: {$ts} --\n\n";
     @file_put_contents($logPath, $encab);
 
     // 5) Ejecutar en background con timeout + stdbuf.
     //    EJECUCION_ID en el env es como el bootstrap del hijo sabe que fila cerrar.
+    //    Si tipo='url', ademas de EJECUCION_ID, inyectamos TAREA_URL y
+    //    TAREA_TIMEOUT (timeoutS - 5 para dejar margen al bootstrap).
     //    `timeout --signal=TERM --kill-after=10s Xs` manda SIGTERM al llegar a X,
     //    SIGKILL 10s despues si no murio.
     //    `stdbuf -oL -eL` fuerza line-buffering para que el streaming SSE muestre
     //    lineas apenas se emiten.
+    //    Si el cron_expr trae `sleep=N`, envolvemos en un subshell `(sleep N &&
+    //    exec ...)` para dispersar la ejecucion dentro del minuto (patron
+    //    clasico para runs sub-minuto). `exec` reemplaza el subshell con el
+    //    timeout para que el PID capturado siga siendo el del proceso vivo.
     //    `& echo $!` devuelve el PID del proceso hijo real (no del wrapper timeout).
-    $cmd = sprintf(
-        'EJECUCION_ID=%d timeout --signal=TERM --kill-after=10s %ds ' .
-        'stdbuf -oL -eL php %s >> %s 2>&1 & echo $!',
-        $ejecucionId, $timeoutS,
-        escapeshellarg($scriptAbs),
-        escapeshellarg($logPath)
-    );
+    $envExtra = '';
+    if ($tipo === 'url') {
+        $envExtra = 'TAREA_URL=' . escapeshellarg($url) . ' '
+                  . 'TAREA_TIMEOUT=' . max(5, $timeoutS - 5) . ' ';
+    }
+    $sleepSeg = cronSleepSeg($cronExpr);
+    if ($sleepSeg > 0) {
+        $cmd = sprintf(
+            '(sleep %d && %sEJECUCION_ID=%d exec timeout --signal=TERM --kill-after=10s %ds ' .
+            'stdbuf -oL -eL php %s) >> %s 2>&1 & echo $!',
+            $sleepSeg, $envExtra, $ejecucionId, $timeoutS,
+            escapeshellarg($scriptAbs),
+            escapeshellarg($logPath)
+        );
+    } else {
+        $cmd = sprintf(
+            '%sEJECUCION_ID=%d timeout --signal=TERM --kill-after=10s %ds ' .
+            'stdbuf -oL -eL php %s >> %s 2>&1 & echo $!',
+            $envExtra, $ejecucionId, $timeoutS,
+            escapeshellarg($scriptAbs),
+            escapeshellarg($logPath)
+        );
+    }
     $pid = (int) trim((string) @shell_exec($cmd));
     if ($pid > 0) {
         $upPid = $pdo->prepare('UPDATE tareas_ejecuciones SET pid = :p WHERE id = :id');
@@ -200,13 +231,37 @@ function dispararTarea(PDO $pdo, array $t, string $disparo): int {
     return $ejecucionId;
 }
 
+// dispararRegistrarError: helper para el caso "el target no es valido antes
+// siquiera de intentar ejecutar" (script vacio, wrapper faltante, URL vacia).
+// Deja una fila cerrada en 'error' en tareas_ejecuciones y refresca el
+// snapshot de la tarea.
+function dispararRegistrarError(PDO $pdo, int $tareaId, string $disparo, string $err): int {
+    $st = $pdo->prepare('
+        INSERT INTO tareas_ejecuciones
+            (tarea_id, inicio, fin, estado, exit_code, mensaje, disparo)
+        VALUES (:tid, NOW(), NOW(), "error", 127, :m, :d)
+    ');
+    $st->execute([':tid' => $tareaId, ':m' => $err, ':d' => $disparo]);
+    $eid = (int) $pdo->lastInsertId();
+    $up = $pdo->prepare('
+        UPDATE tareas SET ultimo_run = NOW(),
+                          ultimo_estado = "error",
+                          ultimo_error = :m
+         WHERE id = :id
+    ');
+    $up->execute([':m' => $err, ':id' => $tareaId]);
+    return $eid;
+}
+
 // -----------------------------------------------------------------------------
 // cronMatch: parser de expresiones cron de 5 campos.
 // Soporta: asterisco / N / asterisco-barra-N / N-M / N,M / combinaciones.
+// Ademas tolera un 6o token opcional `sleep=N` (0-59) que sirve para
+// dispersar la ejecucion dentro del minuto (ver cronSleepSeg).
 // -----------------------------------------------------------------------------
 
 function cronMatch(string $expr, DateTime $ahora): bool {
-    $partes = preg_split('/\s+/', trim($expr)) ?: [];
+    $partes = cronPartesHorario($expr);
     if (count($partes) !== 5) return false;
     $valores = [
         (int) $ahora->format('i'),  // minuto
@@ -259,4 +314,29 @@ function cronCampoMatch(string $campo, int $valor, int $min, int $max): bool {
     // step con valor base: 5/10 -> 5,15,25,...
     if ($valor < $n) return false;
     return (($valor - $n) % $paso) === 0;
+}
+
+// -----------------------------------------------------------------------------
+// cronPartesHorario / cronSleepSeg: separan el 6o token opcional `sleep=N`
+// del resto de la expresion cron. Se usa para dispersar la ejecucion dentro
+// del minuto (patron `* * * * * sleep 30; cmd` de la crontab clasica).
+// -----------------------------------------------------------------------------
+
+function cronPartesHorario(string $expr): array {
+    $partes = preg_split('/\s+/', trim($expr)) ?: [];
+    if (count($partes) === 6 && preg_match('/^sleep=\d+$/i', end($partes))) {
+        array_pop($partes);
+    }
+    return $partes;
+}
+
+function cronSleepSeg(string $expr): int {
+    $partes = preg_split('/\s+/', trim($expr)) ?: [];
+    $ultimo = end($partes);
+    if ($ultimo === false) return 0;
+    if (!preg_match('/^sleep=(\d+)$/i', (string) $ultimo, $m)) return 0;
+    $n = (int) $m[1];
+    if ($n < 0)  $n = 0;
+    if ($n > 59) $n = 59;
+    return $n;
 }

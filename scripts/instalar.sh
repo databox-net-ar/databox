@@ -6,9 +6,10 @@
 #   - Verifica que Docker este disponible.
 #   - Verifica que el puerto fijo 8091 este libre.
 #   - Recrea el contenedor de la app desde cero (down + up -d --build).
-#   - Aplica las migraciones de cloud/sql/migrations/*.sql contra el
-#     contenedor MySQL compartido `herramientas-mysql` (via docker exec).
 #   - Imprime la URL donde se sirve la app.
+#
+# Migraciones: NO se aplican desde aca. Se corren manualmente desde
+# la herramienta "Migrador DB" del panel (Administracion > Herramientas).
 #
 # Puertos: databox usa SIEMPRE el 8091, igual interno y externo, igual
 # en dev y en prod. No hay seleccion dinamica de puerto. Si 8091 esta
@@ -141,26 +142,6 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     sleep 1
 done
 
-# --- Aplicar migraciones ----------------------------------------------------
-# Las migraciones de cloud/sql/migrations/ se aplican contra el contenedor
-# compartido `herramientas-mysql` via docker exec. Estan escritas como
-# idempotentes (chequean information_schema antes de ALTER), asi que
-# reaplicarlas es no-op.
-migrations_dir="$REPO_ROOT/cloud/sql/migrations"
-if [ -d "$migrations_dir" ]; then
-    echo ""
-    echo -e "${RED}==> Aplicando migraciones de cloud/sql/migrations/ ...${NC}"
-    for m in "$migrations_dir"/*.sql; do
-        [ -f "$m" ] || continue
-        name=$(basename "$m")
-        echo "    $name"
-        if ! docker exec -i "$MYSQL_CONTAINER" mysql -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" < "$m"; then
-            echo -e "${RED}ERROR aplicando $name${NC}"
-            exit 1
-        fi
-    done
-fi
-
 # --- Resumen ----------------------------------------------------------------
 echo ""
 if $ok; then
@@ -172,6 +153,8 @@ fi
 echo ""
 echo -e "${GREEN}  Cloud   : http://localhost:$APP_PORT${NC}"
 echo "  MySQL   : $MYSQL_CONTAINER  (db: ${DB_NAME}, user: ${DB_USER})"
+echo ""
+echo "  Migraciones: aplicar desde el panel > Administracion > Herramientas > Migrador DB."
 echo ""
 echo "  Logs    : docker logs -f databox-apache"
 echo "  Down    : docker compose -p databox down"

@@ -57,7 +57,9 @@ function normalizarFila(array $r): array {
         'id'                 => (int) ($r['id'] ?? 0),
         'nombre'             => (string) ($r['nombre'] ?? ''),
         'descripcion'        => $r['descripcion'] !== null ? (string) $r['descripcion'] : null,
-        'script'             => (string) ($r['script'] ?? ''),
+        'tipo'               => (string) ($r['tipo']   ?? 'php'),
+        'script'             => $r['script'] !== null ? (string) $r['script'] : null,
+        'url'                => $r['url']    !== null ? (string) $r['url']    : null,
         'cron_expr'          => (string) ($r['cron_expr'] ?? ''),
         'activo'             => (int) ($r['activo'] ?? 0) === 1 ? 1 : 0,
         'overlap'            => (string) ($r['overlap'] ?? 'skip'),
@@ -75,7 +77,9 @@ function sanitizePayload(array $in): array {
     $nombre      = trim((string) ($in['nombre']      ?? ''));
     $descripcion = trim((string) ($in['descripcion'] ?? ''));
     if ($descripcion === '') $descripcion = null;
+    $tipo        = strtolower(trim((string) ($in['tipo'] ?? 'php')));
     $script      = trim((string) ($in['script']      ?? ''));
+    $url         = trim((string) ($in['url']         ?? ''));
     $cronExpr    = trim((string) ($in['cron_expr']   ?? ''));
     $overlap     = (string) ($in['overlap'] ?? 'skip');
     $activo      = (int) !empty($in['activo']) ? 1 : 0;
@@ -88,15 +92,39 @@ function sanitizePayload(array $in): array {
     if ($descripcion !== null && strlen($descripcion) > 255) {
         jsonError('La descripcion no puede superar los 255 caracteres.', 400);
     }
-    if ($script === '')          jsonError('El script es obligatorio.', 400);
-    if (strlen($script) > 255)   jsonError('La ruta al script no puede superar los 255 caracteres.', 400);
-    if (!preg_match('/^[A-Za-z0-9_\/.\-]+\.php$/', $script)) {
-        jsonError('El script debe ser una ruta relativa PHP valida.', 400);
+    if (!in_array($tipo, ['php', 'url'], true)) {
+        jsonError('El tipo debe ser "php" o "url".', 400);
+    }
+    if ($tipo === 'php') {
+        if ($script === '')        jsonError('El script es obligatorio.', 400);
+        if (strlen($script) > 255) jsonError('La ruta al script no puede superar los 255 caracteres.', 400);
+        if (!preg_match('/^[A-Za-z0-9_\/.\-]+\.php$/', $script)) {
+            jsonError('El script debe ser una ruta relativa PHP valida.', 400);
+        }
+        $url = null;
+    } else {
+        if ($url === '')           jsonError('La URL es obligatoria.', 400);
+        if (strlen($url) > 2048)   jsonError('La URL no puede superar los 2048 caracteres.', 400);
+        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            jsonError('La URL no es valida.', 400);
+        }
+        $script = null;
     }
     if ($cronExpr === '')        jsonError('La expresion cron es obligatoria.', 400);
     if (strlen($cronExpr) > 80)  jsonError('La expresion cron no puede superar los 80 caracteres.', 400);
     $partes = preg_split('/\s+/', $cronExpr) ?: [];
-    if (count($partes) !== 5)    jsonError('La expresion cron debe tener exactamente 5 campos.', 400);
+    // Aceptamos 5 campos estandar; opcionalmente un 6o token `sleep=N` (0-59)
+    // que dispersa la ejecucion dentro del minuto (ver _scheduler.php).
+    if (count($partes) === 6) {
+        $ultimo = array_pop($partes);
+        if (!preg_match('/^sleep=(\d+)$/i', (string) $ultimo, $m)) {
+            jsonError('El 6o token debe ser "sleep=N" con N entre 0 y 59.', 400);
+        }
+        if ((int) $m[1] > 59) {
+            jsonError('El sleep no puede superar los 59 segundos.', 400);
+        }
+    }
+    if (count($partes) !== 5)    jsonError('La expresion cron debe tener 5 campos (mas un "sleep=N" opcional).', 400);
     foreach ($partes as $p) {
         if (!preg_match('/^[\d*,\/\-]+$/', $p)) {
             jsonError('La expresion cron contiene caracteres invalidos.', 400);
@@ -111,7 +139,9 @@ function sanitizePayload(array $in): array {
     return [
         'nombre'         => $nombre,
         'descripcion'    => $descripcion,
+        'tipo'           => $tipo,
         'script'         => $script,
+        'url'            => $url,
         'cron_expr'      => $cronExpr,
         'activo'         => $activo,
         'overlap'        => $overlap,
@@ -161,12 +191,13 @@ function handleList(PDO $pdo, array $q): void {
         $params[':activo'] = (int) $activo;
     }
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s1 OR script LIKE :s2 OR descripcion LIKE :s3 OR cron_expr LIKE :s4)';
+        $where[] = '(nombre LIKE :s1 OR script LIKE :s2 OR descripcion LIKE :s3 OR cron_expr LIKE :s4 OR url LIKE :s5)';
         $like = "%{$search}%";
         $params[':s1'] = $like;
         $params[':s2'] = $like;
         $params[':s3'] = $like;
         $params[':s4'] = $like;
+        $params[':s5'] = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
@@ -179,7 +210,7 @@ function handleList(PDO $pdo, array $q): void {
     ];
 
     $sql = "
-        SELECT id, nombre, descripcion, script, cron_expr, activo, overlap,
+        SELECT id, nombre, descripcion, tipo, script, url, cron_expr, activo, overlap,
                timeout_seg, retencion_dias, ultimo_run, ultimo_estado,
                ultimo_error, fecha_creacion, fecha_modificacion
           FROM tareas
@@ -199,7 +230,7 @@ function handleList(PDO $pdo, array $q): void {
 
 function handleGetOne(PDO $pdo, int $id): void {
     $stmt = $pdo->prepare('
-        SELECT id, nombre, descripcion, script, cron_expr, activo, overlap,
+        SELECT id, nombre, descripcion, tipo, script, url, cron_expr, activo, overlap,
                timeout_seg, retencion_dias, ultimo_run, ultimo_estado,
                ultimo_error, fecha_creacion, fecha_modificacion
           FROM tareas WHERE id = :id
@@ -220,15 +251,17 @@ function handleCreate(PDO $pdo, array $in): void {
         jsonError('nombre_duplicado', 409);
     }
     $stmt = $pdo->prepare('
-        INSERT INTO tareas (nombre, descripcion, script, cron_expr, activo,
+        INSERT INTO tareas (nombre, descripcion, tipo, script, url, cron_expr, activo,
                             overlap, timeout_seg, retencion_dias)
-        VALUES (:nombre, :descripcion, :script, :cron_expr, :activo,
+        VALUES (:nombre, :descripcion, :tipo, :script, :url, :cron_expr, :activo,
                 :overlap, :timeout_seg, :retencion_dias)
     ');
     $stmt->execute([
         ':nombre'         => $p['nombre'],
         ':descripcion'    => $p['descripcion'],
+        ':tipo'           => $p['tipo'],
         ':script'         => $p['script'],
+        ':url'            => $p['url'],
         ':cron_expr'      => $p['cron_expr'],
         ':activo'         => $p['activo'],
         ':overlap'        => $p['overlap'],
@@ -249,7 +282,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     }
     $stmt = $pdo->prepare('
         UPDATE tareas
-           SET nombre = :nombre, descripcion = :descripcion, script = :script,
+           SET nombre = :nombre, descripcion = :descripcion,
+               tipo = :tipo, script = :script, url = :url,
                cron_expr = :cron_expr, activo = :activo, overlap = :overlap,
                timeout_seg = :timeout_seg, retencion_dias = :retencion_dias
          WHERE id = :id
@@ -257,7 +291,9 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $stmt->execute([
         ':nombre'         => $p['nombre'],
         ':descripcion'    => $p['descripcion'],
+        ':tipo'           => $p['tipo'],
         ':script'         => $p['script'],
+        ':url'            => $p['url'],
         ':cron_expr'      => $p['cron_expr'],
         ':activo'         => $p['activo'],
         ':overlap'        => $p['overlap'],

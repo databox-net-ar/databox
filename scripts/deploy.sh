@@ -111,12 +111,11 @@ echo ""
 
 # ---- 5. Migraciones SQL ----
 # Las migraciones viven en cloud/sql/migrations/ y son idempotentes.
-# Como el contenedor PHP no trae cliente mysql, se aplican manualmente
-# desde un host con acceso a RDS, por ejemplo:
-#   for f in cloud/sql/migrations/*.sql; do
-#       mysql -h <RDS_HOST> -u <USER> -p<PASS> databox < "$f"
-#   done
-echo "  Migraciones SQL: aplicar manualmente contra RDS (ver comentario en deploy.sh)."
+# NO se aplican desde este script: se corren manualmente desde la herramienta
+# "Migrador DB" del panel (https://cloud.databox.net.ar > Administracion >
+# Herramientas > Migrador DB), que registra cada corrida en la tabla
+# `migraciones` y muestra pendientes/aplicadas con hash.
+echo "  Migraciones SQL: aplicar desde Panel > Administracion > Herramientas > Migrador DB."
 echo ""
 
 echo "================================================"

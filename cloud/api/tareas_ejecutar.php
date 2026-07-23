@@ -35,7 +35,7 @@ try {
     $pdo = db();
 
     $st = $pdo->prepare('
-        SELECT id, nombre, script, cron_expr, overlap, timeout_seg
+        SELECT id, nombre, tipo, script, url, cron_expr, overlap, timeout_seg
           FROM tareas WHERE id = :id
     ');
     $st->execute([':id' => $tareaId]);
@@ -50,12 +50,24 @@ try {
 
     if (!is_dir(EJEC_LOG_DIR)) @mkdir(EJEC_LOG_DIR, 0755, true);
 
-    $scriptAbs = realpath(EJEC_CLOUD_ROOT . '/' . ltrim((string) $t['script'], '/'));
-    if ($scriptAbs === false || !is_file($scriptAbs)) {
-        jsonError('script_no_encontrado', 400);
-    }
-
+    $tipo = (string) ($t['tipo'] ?? 'php');
+    $url  = (string) ($t['url']  ?? '');
     $timeoutS = max(5, (int) $t['timeout_seg']);
+
+    if ($tipo === 'url') {
+        if ($url === '') jsonError('url_vacia', 400);
+        $scriptAbs = realpath(EJEC_CLOUD_ROOT . '/jobs/_curl.php');
+        if ($scriptAbs === false || !is_file($scriptAbs)) jsonError('wrapper_no_encontrado', 500);
+        $sourceLbl = 'URL: ' . $url;
+    } elseif ($tipo === 'php') {
+        $scriptRel = (string) ($t['script'] ?? '');
+        if ($scriptRel === '') jsonError('script_vacio', 400);
+        $scriptAbs = realpath(EJEC_CLOUD_ROOT . '/' . ltrim($scriptRel, '/'));
+        if ($scriptAbs === false || !is_file($scriptAbs)) jsonError('script_no_encontrado', 400);
+        $sourceLbl = 'Script: ' . $scriptRel;
+    } else {
+        jsonError('tipo_desconocido', 400);
+    }
 
     $ins = $pdo->prepare('
         INSERT INTO tareas_ejecuciones (tarea_id, inicio, estado, disparo)
@@ -77,14 +89,19 @@ try {
 
     $ts = date('Y-m-d H:i:s');
     $encab = "-- Ejecucion #{$ejecucionId} de \"{$t['nombre']}\" ({$t['cron_expr']}) --\n"
-           . "-- Script: {$t['script']} --\n"
+           . "-- {$sourceLbl} --\n"
            . "-- Timeout: {$timeoutS}s  |  Disparo: manual  |  Inicio: {$ts} --\n\n";
     @file_put_contents($logPath, $encab);
 
+    $envExtra = '';
+    if ($tipo === 'url') {
+        $envExtra = 'TAREA_URL=' . escapeshellarg($url) . ' '
+                  . 'TAREA_TIMEOUT=' . max(5, $timeoutS - 5) . ' ';
+    }
     $cmd = sprintf(
-        'EJECUCION_ID=%d timeout --signal=TERM --kill-after=10s %ds ' .
+        '%sEJECUCION_ID=%d timeout --signal=TERM --kill-after=10s %ds ' .
         'stdbuf -oL -eL php %s >> %s 2>&1 & echo $!',
-        $ejecucionId, $timeoutS,
+        $envExtra, $ejecucionId, $timeoutS,
         escapeshellarg($scriptAbs),
         escapeshellarg($logPath)
     );

@@ -27652,14 +27652,25 @@ function renderTareas(rows) {
     const est     = tareaBadgeEstado(t.ultimo_estado);
     const ultimo  = t.ultimo_run ? esc(fmtFecha(t.ultimo_run)) : '<span style="color:var(--muted)">—</span>';
     const activo  = t.activo ? 'checked' : '';
+    const esUrl   = (t.tipo === 'url');
+    const badge   = esUrl
+      ? '<span class="badge badge-info" style="font-size:.65rem;padding:1px 6px" title="Curl GET">URL</span>'
+      : '<span class="badge badge-success" style="font-size:.65rem;padding:1px 6px" title="Script PHP local">PHP</span>';
+    const target  = esUrl ? (t.url || '') : (t.script || '');
+    const targetHtml = target
+      ? `<div style="font-size:.72rem;color:var(--muted);font-family:monospace;overflow:hidden;text-overflow:ellipsis;max-width:340px;white-space:nowrap" title="${esc(target)}">${esc(target)}</div>`
+      : '';
     return `
       <tr class="row-clickable" data-id="${t.id}"
           onclick="abrirEjecuciones(${t.id})"
           oncontextmenu="event.preventDefault();abrirMenuContextoTareas(event, ${t.id})">
         <td class="td-id">${t.id}</td>
         <td>
-          <div style="font-weight:600">${nombre}</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            ${badge}<span style="font-weight:600">${nombre}</span>
+          </div>
           ${desc ? `<div style="font-size:.82rem;color:var(--muted)">${desc}</div>` : ''}
+          ${targetHtml}
         </td>
         <td style="font-family:monospace;font-size:.82rem">${cron}</td>
         <td>${est}</td>
@@ -27713,12 +27724,15 @@ function abrirNuevaTarea() {
   document.getElementById('formTareaId').value          = '';
   document.getElementById('formTareaNombre').value      = '';
   document.getElementById('formTareaDescripcion').value = '';
+  document.getElementById('formTareaTipo').value        = 'php';
+  document.getElementById('formTareaUrl').value         = '';
   document.getElementById('formTareaCron').value        = '* * * * *';
   document.getElementById('formTareaTimeout').value     = '300';
   document.getElementById('formTareaRetencion').value   = '7';
   document.getElementById('formTareaOverlap').value     = 'skip';
   document.getElementById('formTareaActivo').value      = '1';
   cargarScriptsDisponibles('');
+  formTareaTipoChange();
   document.getElementById('formTareaBackdrop').classList.add('open');
   setTimeout(() => document.getElementById('formTareaNombre').focus(), 50);
 }
@@ -27732,18 +27746,29 @@ function abrirEditarTarea(id) {
   document.getElementById('formTareaId').value          = t.id;
   document.getElementById('formTareaNombre').value      = t.nombre || '';
   document.getElementById('formTareaDescripcion').value = t.descripcion || '';
+  document.getElementById('formTareaTipo').value        = t.tipo || 'php';
+  document.getElementById('formTareaUrl').value         = t.url || '';
   document.getElementById('formTareaCron').value        = t.cron_expr || '* * * * *';
   document.getElementById('formTareaTimeout').value     = t.timeout_seg   || 300;
   document.getElementById('formTareaRetencion').value   = t.retencion_dias || 7;
   document.getElementById('formTareaOverlap').value     = t.overlap || 'skip';
   document.getElementById('formTareaActivo').value      = t.activo ? '1' : '0';
   cargarScriptsDisponibles(t.script || '');
+  formTareaTipoChange();
   document.getElementById('formTareaBackdrop').classList.add('open');
   setTimeout(() => document.getElementById('formTareaNombre').focus(), 50);
 }
 
+// Toggler entre "PHP" (desplegable de scripts) y "URL (curl GET)".
+// Muestra sólo el campo relevante segun el <select id="formTareaTipo">.
+function formTareaTipoChange() {
+  const tipo = document.getElementById('formTareaTipo').value;
+  document.getElementById('formTareaScriptWrap').style.display = tipo === 'php' ? '' : 'none';
+  document.getElementById('formTareaUrlWrap').style.display    = tipo === 'url' ? '' : 'none';
+}
+
 function limpiarErroresFormTarea() {
-  ['Nombre', 'Descripcion', 'Script', 'Cron', 'Timeout'].forEach((c) => {
+  ['Nombre', 'Descripcion', 'Script', 'Url', 'Cron', 'Timeout'].forEach((c) => {
     const input = document.getElementById('formTarea' + c);
     const err   = document.getElementById('formTarea' + c + 'Error');
     if (input) input.classList.remove('input-invalid');
@@ -27766,7 +27791,9 @@ async function guardarTarea() {
   const id          = idRaw ? parseInt(idRaw, 10) : 0;
   const nombre      = document.getElementById('formTareaNombre').value.trim();
   const descripcion = document.getElementById('formTareaDescripcion').value.trim();
+  const tipo        = document.getElementById('formTareaTipo').value === 'url' ? 'url' : 'php';
   const script      = document.getElementById('formTareaScript').value;
+  const url         = document.getElementById('formTareaUrl').value.trim();
   const cron_expr   = document.getElementById('formTareaCron').value.trim();
   const timeout_seg = parseInt(document.getElementById('formTareaTimeout').value, 10) || 300;
   const retencion_dias = parseInt(document.getElementById('formTareaRetencion').value, 10) || 7;
@@ -27775,11 +27802,28 @@ async function guardarTarea() {
 
   if (!nombre)    { mostrarErrorTarea('Nombre', 'El nombre es obligatorio.'); return; }
   if (nombre.length > 120) { mostrarErrorTarea('Nombre', 'Máximo 120 caracteres.'); return; }
-  if (!script)    { mostrarErrorTarea('Script', 'Elegí un script del desplegable.'); return; }
-  if (!cron_expr) { mostrarErrorTarea('Cron', 'La expresión cron es obligatoria.'); return; }
-  if (cron_expr.split(/\s+/).length !== 5) {
-    mostrarErrorTarea('Cron', 'Deben ser exactamente 5 campos, ej: */5 * * * *.');
+  if (tipo === 'php' && !script) { mostrarErrorTarea('Script', 'Elegí un script del desplegable.'); return; }
+  if (tipo === 'url' && !url) { mostrarErrorTarea('Url', 'La URL es obligatoria.'); return; }
+  if (tipo === 'url' && !/^https?:\/\//i.test(url)) {
+    mostrarErrorTarea('Url', 'La URL debe empezar con http:// o https://');
     return;
+  }
+  if (!cron_expr) { mostrarErrorTarea('Cron', 'La expresión cron es obligatoria.'); return; }
+  {
+    const partesCron = cron_expr.split(/\s+/);
+    let horarioLen = partesCron.length;
+    if (horarioLen === 6 && /^sleep=\d+$/i.test(partesCron[5])) {
+      const n = parseInt(partesCron[5].split('=')[1], 10);
+      if (isNaN(n) || n < 0 || n > 59) {
+        mostrarErrorTarea('Cron', 'El sleep debe ser un número entre 0 y 59 segundos.');
+        return;
+      }
+      horarioLen = 5;
+    }
+    if (horarioLen !== 5) {
+      mostrarErrorTarea('Cron', 'Deben ser 5 campos (opcionalmente + "sleep=N"), ej: */5 * * * *.');
+      return;
+    }
   }
   if (timeout_seg < 5 || timeout_seg > 86400) {
     mostrarErrorTarea('Timeout', 'Rango válido: 5 a 86400 segundos.');
@@ -27791,7 +27835,12 @@ async function guardarTarea() {
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
 
   try {
-    const payload = { nombre, descripcion, script, cron_expr, timeout_seg, retencion_dias, overlap, activo };
+    const payload = {
+      nombre, descripcion, tipo,
+      script: tipo === 'php'  ? script : null,
+      url:    tipo === 'url'  ? url    : null,
+      cron_expr, timeout_seg, retencion_dias, overlap, activo,
+    };
     if (id > 0) {
       await apiSend('api/tareas.php?id=' + id, 'PUT', payload);
       toast('Tarea actualizada.');
@@ -28157,7 +28206,7 @@ function cronPluralDia(n) {
 
 function abrirCronBuilder() {
   const cont = document.getElementById('cronBuilderCampos');
-  cont.innerHTML = CRON_CAMPOS.map((c) => `
+  const filasCron = CRON_CAMPOS.map((c) => `
     <div class="cron-builder-row" data-campo="${c.key}"
          style="display:grid;grid-template-columns:140px 130px 1fr 34px;gap:8px;align-items:center">
       <label style="font-size:.86rem">${c.label}
@@ -28181,6 +28230,33 @@ function abrirCronBuilder() {
       </button>
     </div>
   `).join('');
+  // Fila extra: retraso sub-minuto (`sleep N && cmd` en la crontab clasica).
+  // La linea separadora va DEBAJO (border-bottom) para aislar visualmente el
+  // bloque de configuracion del preview cron que viene despues.
+  const filaSleep = `
+    <div class="cron-builder-row" data-campo="sleep"
+         style="display:grid;grid-template-columns:140px 1fr;gap:8px;align-items:center;
+                border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:2px">
+      <label style="font-size:.86rem">Retrasar
+        <span style="color:var(--muted);font-size:.72rem;font-family:monospace">(0-59 seg)</span>
+      </label>
+      <div class="num-stepper" style="width:100%">
+        <input type="number" id="cronBuilderSleep" min="0" max="59" step="1" value="0"
+               style="font-family:monospace;padding:8px 12px;font-size:.88rem;color:var(--text)"
+               oninput="cronBuilderOnChange()"
+               title="Segundos a esperar antes de correr el script (para dispersar dentro del minuto)">
+        <div class="num-stepper-btns">
+          <button type="button" class="num-stepper-btn" tabindex="-1"
+                  onclick="numStep('cronBuilderSleep', 1)" title="Sumar 1 segundo"
+                  aria-label="Sumar 1 segundo">▲</button>
+          <button type="button" class="num-stepper-btn" tabindex="-1"
+                  onclick="numStep('cronBuilderSleep', -1)" title="Restar 1 segundo"
+                  aria-label="Restar 1 segundo">▼</button>
+        </div>
+      </div>
+    </div>
+  `;
+  cont.innerHTML = filasCron + filaSleep;
 
   const expr = document.getElementById('formTareaCron').value.trim() || '* * * * *';
   cronBuilderPoblar(expr);
@@ -28193,8 +28269,15 @@ function cerrarCronBuilder() {
 
 function cronBuilderPoblar(expr) {
   const partes = expr.split(/\s+/);
+  let sleepSeg = 0;
+  if (partes.length === 6 && /^sleep=\d+$/i.test(partes[5])) {
+    sleepSeg = Math.max(0, Math.min(59, parseInt(partes[5].split('=')[1], 10) || 0));
+    partes.pop();
+  }
   if (partes.length !== 5) return;
   CRON_CAMPOS.forEach((c, i) => cronBuilderPoblarCampo(c.key, partes[i]));
+  const inpSleep = document.getElementById('cronBuilderSleep');
+  if (inpSleep) inpSleep.value = String(sleepSeg);
   cronBuilderOnChange();
 }
 
@@ -28257,13 +28340,37 @@ function cronBuilderConstruirCampo(campo) {
 }
 
 function cronBuilderConstruir() {
-  return CRON_CAMPOS.map((c) => cronBuilderConstruirCampo(c.key)).join(' ');
+  const horario = CRON_CAMPOS.map((c) => cronBuilderConstruirCampo(c.key)).join(' ');
+  const inpSleep = document.getElementById('cronBuilderSleep');
+  let sleepSeg = inpSleep ? parseInt(inpSleep.value, 10) : 0;
+  if (isNaN(sleepSeg) || sleepSeg < 0) sleepSeg = 0;
+  if (sleepSeg > 59) sleepSeg = 59;
+  return sleepSeg > 0 ? `${horario} sleep=${sleepSeg}` : horario;
 }
 
 function cronBuilderOnChange() {
   const expr = cronBuilderConstruir();
   document.getElementById('cronBuilderPreview').textContent = expr;
   document.getElementById('cronBuilderDesc').textContent    = cronDescribir(expr);
+}
+
+// Helper generico para los botones ▲/▼ del .num-stepper. Respeta el min/max/step
+// declarados en el propio <input>, y dispara 'input'+'change' para que cualquier
+// handler declarativo (oninput=...) reaccione como si el usuario hubiera tipeado.
+function numStep(inpId, delta) {
+  const inp = document.getElementById(inpId);
+  if (!inp || inp.disabled || inp.readOnly) return;
+  const step = parseInt(inp.step, 10) || 1;
+  const hasMin = inp.min !== '' && inp.min != null;
+  const hasMax = inp.max !== '' && inp.max != null;
+  const min = hasMin ? parseInt(inp.min, 10) : -Infinity;
+  const max = hasMax ? parseInt(inp.max, 10) :  Infinity;
+  let v = parseInt(inp.value, 10);
+  if (isNaN(v)) v = hasMin ? min : 0;
+  v = Math.max(min, Math.min(max, v + delta * step));
+  inp.value = String(v);
+  inp.dispatchEvent(new Event('input',  { bubbles: true }));
+  inp.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 function cronBuilderAplicar() {
@@ -28424,6 +28531,11 @@ function cronPickerAplicar() {
 
 function cronDescribir(expr) {
   const partes = expr.split(/\s+/);
+  let sleepSeg = 0;
+  if (partes.length === 6 && /^sleep=\d+$/i.test(partes[5])) {
+    sleepSeg = parseInt(partes[5].split('=')[1], 10) || 0;
+    partes.pop();
+  }
   if (partes.length !== 5) return '(expresión inválida)';
   const [m, h, dom, mon, dow] = partes;
   const partesTexto = [];
@@ -28432,6 +28544,7 @@ function cronDescribir(expr) {
   if (mon !== '*') partesTexto.push('en ' + cronDescMon(mon));
   if (dow !== '*') partesTexto.push(cronDescDow(dow));
   else if (dom === '*' && mon === '*') partesTexto.push('todos los días');
+  if (sleepSeg > 0) partesTexto.push(`con ${sleepSeg}s de retraso`);
   const s = partesTexto.filter(Boolean).join(', ');
   return s.charAt(0).toUpperCase() + s.slice(1) + '.';
 }

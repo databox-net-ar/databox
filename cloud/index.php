@@ -1127,6 +1127,13 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
           <div class="field-error" id="formTareaDescripcionError" style="display:none"></div>
         </div>
         <div class="form-group">
+          <label for="formTareaTipo">Tipo de tarea</label>
+          <select id="formTareaTipo" onchange="formTareaTipoChange()">
+            <option value="php">PHP</option>
+            <option value="url">URL</option>
+          </select>
+        </div>
+        <div class="form-group" id="formTareaScriptWrap">
           <label for="formTareaScript">Script</label>
           <div style="display:flex;gap:6px;align-items:stretch">
             <select id="formTareaScript" style="flex:1">
@@ -1139,12 +1146,19 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
           </div>
           <div class="field-error" id="formTareaScriptError" style="display:none"></div>
         </div>
+        <div class="form-group" id="formTareaUrlWrap" style="display:none">
+          <label for="formTareaUrl">URL</label>
+          <input type="url" id="formTareaUrl" maxlength="2048"
+                 placeholder="https://ejemplo.com/hook" style="font-family:monospace">
+          <div class="field-error" id="formTareaUrlError" style="display:none"></div>
+        </div>
         <div class="form-row">
           <div class="form-group">
             <label for="formTareaCron">Expresión cron</label>
             <div style="display:flex;gap:6px;align-items:stretch">
-              <input type="text" id="formTareaCron" style="font-family:monospace;flex:1"
-                     maxlength="80" placeholder="*/5 * * * *">
+              <input type="text" id="formTareaCron" style="font-family:monospace;flex:1;cursor:pointer"
+                     maxlength="80" placeholder="*/5 * * * *" readonly
+                     title="Editar desde el constructor" onclick="abrirCronBuilder()">
               <button class="btn btn-ghost btn-icon" type="button" title="Abrir constructor"
                       onclick="abrirCronBuilder()">
                 <i class="fa-solid fa-sliders"></i>
@@ -1154,7 +1168,18 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
           </div>
           <div class="form-group">
             <label for="formTareaTimeout">Timeout (segundos)</label>
-            <input type="number" id="formTareaTimeout" min="5" max="86400" value="300">
+            <div class="num-stepper" style="width:100%">
+              <input type="number" id="formTareaTimeout" min="5" max="86400" step="1" value="300"
+                     style="font-family:monospace;padding:8px 12px;font-size:.88rem;color:var(--text)">
+              <div class="num-stepper-btns">
+                <button type="button" class="num-stepper-btn" tabindex="-1"
+                        onclick="numStep('formTareaTimeout', 1)"
+                        title="Sumar 1 segundo" aria-label="Sumar 1 segundo">▲</button>
+                <button type="button" class="num-stepper-btn" tabindex="-1"
+                        onclick="numStep('formTareaTimeout', -1)"
+                        title="Restar 1 segundo" aria-label="Restar 1 segundo">▼</button>
+              </div>
+            </div>
             <div class="field-error" id="formTareaTimeoutError" style="display:none"></div>
           </div>
         </div>
@@ -1168,7 +1193,18 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
           </div>
           <div class="form-group">
             <label for="formTareaRetencion">Retención (días)</label>
-            <input type="number" id="formTareaRetencion" min="1" max="3650" value="7">
+            <div class="num-stepper" style="width:100%">
+              <input type="number" id="formTareaRetencion" min="1" max="3650" step="1" value="7"
+                     style="font-family:monospace;padding:8px 12px;font-size:.88rem;color:var(--text)">
+              <div class="num-stepper-btns">
+                <button type="button" class="num-stepper-btn" tabindex="-1"
+                        onclick="numStep('formTareaRetencion', 1)"
+                        title="Sumar 1 día" aria-label="Sumar 1 día">▲</button>
+                <button type="button" class="num-stepper-btn" tabindex="-1"
+                        onclick="numStep('formTareaRetencion', -1)"
+                        title="Restar 1 día" aria-label="Restar 1 día">▼</button>
+              </div>
+            </div>
           </div>
           <div class="form-group">
             <label for="formTareaActivo">Estado</label>

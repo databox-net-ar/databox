@@ -27,8 +27,20 @@ RUN apt-get update \
  && echo "date.timezone = $TZ" > /usr/local/etc/php/conf.d/timezone.ini \
  && a2enmod rewrite \
  && sed -i 's/Listen 80/Listen 8091/' /etc/apache2/ports.conf \
+ && echo 'Listen 8113' >> /etc/apache2/ports.conf \
  && echo 'Listen 8094' >> /etc/apache2/ports.conf \
  && sed -i 's|<VirtualHost \*:80>|<VirtualHost *:8091>|' /etc/apache2/sites-available/000-default.conf \
+ && printf '<VirtualHost *:8113>\n\
+    ServerName www.databox.net.ar\n\
+    DocumentRoot /var/www/www\n\
+    <Directory /var/www/www>\n\
+        AllowOverride All\n\
+        Require all granted\n\
+    </Directory>\n\
+    ErrorLog ${APACHE_LOG_DIR}/www-error.log\n\
+    CustomLog ${APACHE_LOG_DIR}/www-access.log combined\n\
+</VirtualHost>\n' > /etc/apache2/sites-available/www.conf \
+ && a2ensite www \
  && printf '<VirtualHost *:8094>\n\
     ServerName robot.databox.net.ar\n\
     DocumentRoot /var/www/robot\n\
@@ -49,6 +61,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /var/www/html
 
-EXPOSE 8091 8094
+EXPOSE 8091 8113 8094
 
 CMD ["/usr/local/bin/entrypoint.sh"]
