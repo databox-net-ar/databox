@@ -86,10 +86,18 @@ function handleList(PDO $pdo, array $q): void {
     if ($hasta        !== '')   { $where[] = 'registrado <= :hasta';             $params[':hasta']        = $hasta . ' 23:59:59'; }
 
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s OR empresa LIKE :s OR correo LIKE :s
-                     OR telefono LIKE :s OR celular LIKE :s OR whatsapp LIKE :s
-                     OR dni LIKE :s OR uuid LIKE :s)';
-        $params[':s'] = "%{$search}%";
+        $where[] = '(nombre LIKE :s1 OR empresa LIKE :s2 OR correo LIKE :s3
+                     OR telefono LIKE :s4 OR celular LIKE :s5 OR whatsapp LIKE :s6
+                     OR dni LIKE :s7 OR uuid LIKE :s8)';
+        $like = "%{$search}%";
+        $params[':s1'] = $like;
+        $params[':s2'] = $like;
+        $params[':s3'] = $like;
+        $params[':s4'] = $like;
+        $params[':s5'] = $like;
+        $params[':s6'] = $like;
+        $params[':s7'] = $like;
+        $params[':s8'] = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';

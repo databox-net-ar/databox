@@ -5,6 +5,8 @@
  * estado consultando Evolution API (endpoint /instance/fetchInstances con
  * la apikey del canal). Para cada canal actualiza:
  *   - online       : '1' si connectionStatus == 'open', '0' en otro caso
+ *   - latido       : NOW() SOLO si online='1'; si esta offline o hubo error
+ *                    se conserva el valor previo (ultima vez que se supo vivo)
  *   - celular      : ownerJid sin el sufijo @s.whatsapp.net
  *   - numero       : ultimos 10 digitos del celular
  *   - canalEstado  : JSON crudo devuelto por Evolution (util para debug
@@ -177,9 +179,13 @@ function verificarCanalEvolution(PDO $pdo, array $c): array {
     // pero no queremos payloads gigantes en logs / respuestas del ABM).
     $canalEstado = substr(json_encode($instancia, JSON_UNESCAPED_UNICODE), 0, 60000);
 
+    // `latido` solo se pisa cuando el canal esta online: si Evolution nos dice
+    // que esta abierto guardamos NOW(); en caso contrario dejamos el valor
+    // previo intacto para que quede el ultimo instante en que se supo vivo.
     $upd = $pdo->prepare('
         UPDATE evolution_canales
            SET online      = :online,
+               latido      = CASE WHEN :online_flag = \'1\' THEN NOW() ELSE latido END,
                celular     = COALESCE(:celular, celular),
                numero      = COALESCE(:numero,  numero),
                canalEstado = :canalEstado,
@@ -188,6 +194,7 @@ function verificarCanalEvolution(PDO $pdo, array $c): array {
     ');
     $upd->execute([
         ':online'      => $online,
+        ':online_flag' => $online,
         ':celular'     => $celular,
         ':numero'      => $numero,
         ':canalEstado' => $canalEstado,

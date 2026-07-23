@@ -80,8 +80,12 @@ function handleList(PDO $pdo, array $q): void {
     if ($hasta   !== '')   { $where[] = 'iniciado <= :hasta'; $params[':hasta']   = $hasta . ' 23:59:59'; }
 
     if ($search !== '') {
-        $where[] = '(uuid LIKE :s OR concepto LIKE :s OR operacion LIKE :s OR retorno LIKE :s)';
-        $params[':s'] = "%{$search}%";
+        $where[] = '(uuid LIKE :s1 OR concepto LIKE :s2 OR operacion LIKE :s3 OR retorno LIKE :s4)';
+        $like = "%{$search}%";
+        $params[':s1'] = $like;
+        $params[':s2'] = $like;
+        $params[':s3'] = $like;
+        $params[':s4'] = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';

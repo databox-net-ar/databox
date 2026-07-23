@@ -14532,6 +14532,7 @@ let drdoItems            = [];
 let drdoBusqueda         = '';
 let drdoFiltroCodigo     = '';
 let drdoFiltroResponsable = '';
+let drdoFiltroEnUso      = '';
 let drdoFiltroLimite     = 100;
 let drdoFiltroOrden      = 'id';
 let drdoFiltroDir        = 'desc';
@@ -14657,21 +14658,22 @@ route('/datarocketdominios', async (mount) => {
 
       <div class="table-card">
         <table>
-          <thead>
+          <thead id="drdoThead">
             <tr>
-              <th style="width:80px">Código</th>
-              <th>Dominio</th>
-              <th>Titular</th>
-              <th style="width:160px">Registrante</th>
-              <th style="width:110px">Responsable</th>
-              <th style="width:150px">Próx. renov.</th>
-              <th style="width:130px">Costo</th>
-              <th style="width:120px">Actualizado</th>
+              ${thOrdenable('id',                         'Código',       'width:80px')}
+              ${thOrdenable('dominio',                    'Dominio')}
+              ${thOrdenable('titular_dominio',            'Titular')}
+              ${thOrdenable('entidad_registrante',        'Registrante',  'width:160px')}
+              ${thOrdenable('responsable',                'Responsable',  'width:110px')}
+              ${thOrdenable('fecha_siguiente_renovacion', 'Próx. renov.', 'width:150px')}
+              ${thOrdenable('costo_renovacion',           'Costo',        'width:130px')}
+              ${thOrdenable('actualizado',                'Actualizado',  'width:120px')}
+              ${thOrdenable('en_uso',                     'En uso',       'width:70px;text-align:center')}
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="drdoTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -14683,6 +14685,13 @@ route('/datarocketdominios', async (mount) => {
       </button>
       <button type="button" data-action="actualizar" role="menuitem">
         <i class="fa-solid fa-cloud-arrow-down"></i><span>Actualizar WHOIS</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="marcar-en-uso" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#22c55e"></i><span>En uso</span>
+      </button>
+      <button type="button" data-action="marcar-sin-uso" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#ef4444"></i><span>Sin uso</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
@@ -14712,6 +14721,15 @@ route('/datarocketdominios', async (mount) => {
             <label>Responsable</label>
             <div id="fDrdoResponsableChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
           </div>
+          <div class="form-group">
+            <label>En uso</label>
+            <select id="fDrdoEnUso" onchange="onFiltroDrdo('en_uso', this.value)">
+              <option value="">Todos</option>
+              <option value="si">En uso</option>
+              <option value="no">Sin uso</option>
+              <option value="null">Sin definir</option>
+            </select>
+          </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Límite</label>
@@ -14725,9 +14743,12 @@ route('/datarocketdominios', async (mount) => {
                 <option value="dominio">Dominio</option>
                 <option value="titular_dominio">Titular</option>
                 <option value="entidad_registrante">Registrante</option>
+                <option value="responsable">Responsable</option>
                 <option value="fecha_registro">Fecha registro</option>
                 <option value="fecha_siguiente_renovacion">Vencimiento</option>
                 <option value="costo_renovacion">Costo</option>
+                <option value="actualizado">Actualizado</option>
+                <option value="en_uso">En uso</option>
               </select>
             </div>
             <div class="form-group">
@@ -14766,6 +14787,22 @@ route('/datarocketdominios', async (mount) => {
   $('#drdoRefrescarBtn').addEventListener('click', cargarDrdo);
   $('#drdoNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrdo(null));
 
+  // Click en el header para ordenar. Toggle de dir si es la misma columna,
+  // 'asc' al arrancar cuando cambia la columna. Espeja el modal de filtros.
+  $('#drdoThead').addEventListener('click', (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (drdoFiltroOrden === col) {
+      drdoFiltroDir = drdoFiltroDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      drdoFiltroOrden = col;
+      drdoFiltroDir   = 'asc';
+    }
+    drdoActualizarBadgeFiltros();
+    cargarDrdo();
+  });
+
   const chipsCont = $('#fDrdoResponsableChips');
   chipsCont.innerHTML = `
     <button type="button" class="filter-chip" data-resp="">Todos</button>
@@ -14784,23 +14821,36 @@ route('/datarocketdominios', async (mount) => {
 
   $('#drdoCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
-    if (!b) return;
+    if (!b || b.disabled) return;
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar')  abrirConsultaDrdo(data.id);
-    if (b.dataset.action === 'actualizar') actualizarDrdoDesdeWhois(data.id);
-    if (b.dataset.action === 'editar')     abrirAltaEdicionDrdo(data.id);
-    if (b.dataset.action === 'eliminar')   eliminarDrdo(data.id);
+    if (b.dataset.action === 'consultar')      abrirConsultaDrdo(data.id);
+    if (b.dataset.action === 'actualizar')     actualizarDrdoDesdeWhois(data.id);
+    if (b.dataset.action === 'editar')         abrirAltaEdicionDrdo(data.id);
+    if (b.dataset.action === 'eliminar')       eliminarDrdo(data.id);
+    if (b.dataset.action === 'marcar-en-uso')  cambiarEnUsoDrdo(data.id, 'si');
+    if (b.dataset.action === 'marcar-sin-uso') cambiarEnUsoDrdo(data.id, 'no');
   });
+
+  // Refleja el `en_uso` actual del dominio deshabilitando la opcion que ya
+  // esta aplicada, para que el usuario vea de un vistazo cual es el estado.
+  const sincronizarCtxMenuDrdo = (enUso) => {
+    const menu = $('#drdoCtxMenu');
+    menu.querySelector('[data-action="marcar-en-uso"]').disabled  = (enUso === 'si');
+    menu.querySelector('[data-action="marcar-sin-uso"]').disabled = (enUso === 'no');
+  };
 
   $('#drdoTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
+      const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
+      const enUso = tr?.dataset.enUso || '';
+      sincronizarCtxMenuDrdo(enUso);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#drdoCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      abrirCtxMenu($('#drdoCtxMenu'), r.right - 200, r.bottom + 4, { id, enUso });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -14811,7 +14861,9 @@ route('/datarocketdominios', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#drdoCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    const enUso = tr.dataset.enUso || '';
+    sincronizarCtxMenuDrdo(enUso);
+    abrirCtxMenu($('#drdoCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), enUso });
   });
 
   drdoActualizarBadgeFiltros();
@@ -14821,11 +14873,12 @@ route('/datarocketdominios', async (mount) => {
 async function cargarDrdo() {
   const tbody = $('#drdoTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (drdoBusqueda)          qs.set('q', drdoBusqueda);
   if (drdoFiltroResponsable) qs.set('responsable', drdoFiltroResponsable);
+  if (drdoFiltroEnUso)       qs.set('en_uso', drdoFiltroEnUso);
   if (drdoFiltroLimite)      qs.set('limite', drdoFiltroLimite);
   if (drdoFiltroOrden)       qs.set('orden', drdoFiltroOrden);
   if (drdoFiltroDir)         qs.set('dir', drdoFiltroDir);
@@ -14836,7 +14889,7 @@ async function cargarDrdo() {
     pintarStatsDrdo(data.stats || {});
     renderDrdo();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -14851,8 +14904,9 @@ function pintarStatsDrdo(s) {
 function renderDrdo() {
   const tbody = $('#drdoTbody');
   if (!tbody) return;
+  actualizarSortIndicadores($('#drdoThead'), { order_by: drdoFiltroOrden, dir: drdoFiltroDir });
   if (!drdoItems.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin dominios registrados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin dominios registrados.</td></tr>`;
     return;
   }
 
@@ -14863,7 +14917,7 @@ function renderDrdo() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -14879,7 +14933,7 @@ function renderDrdo() {
         : ' style="background:rgba(230,42,42,.12)"';
     }
     return `
-    <tr data-id="${e.id}" class="row-clickable"${rowStyle}>
+    <tr data-id="${e.id}" data-en-uso="${esc(e.en_uso || '')}" class="row-clickable"${rowStyle}>
       <td><code style="font-size:.82rem">${e.id}</code></td>
       <td style="font-weight:600">${esc(e.dominio)}</td>
       <td style="color:var(--muted)">${esc(e.titular_dominio || '—')}</td>
@@ -14888,6 +14942,7 @@ function renderDrdo() {
       <td>${venc.html}</td>
       <td style="font-family:monospace;font-size:.85rem">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</td>
       <td style="font-size:.85rem">${drdoFmtHace(e.actualizado)}</td>
+      <td style="text-align:center">${simFmtEnUso(e.en_uso)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
@@ -14904,11 +14959,13 @@ function abrirModalFiltrosDrdo() {
   drdoFiltrosSnapshot = {
     codigo:      drdoFiltroCodigo,
     responsable: drdoFiltroResponsable,
+    en_uso:      drdoFiltroEnUso,
     limite:      drdoFiltroLimite,
     orden:       drdoFiltroOrden,
     dir:         drdoFiltroDir,
   };
   $('#fDrdoCodigo').value = drdoFiltroCodigo || '';
+  $('#fDrdoEnUso').value  = drdoFiltroEnUso  || '';
   $('#fDrdoLimite').value = drdoFiltroLimite || 100;
   $('#fDrdoOrden').value  = drdoFiltroOrden  || 'id';
   $('#fDrdoDir').value    = drdoFiltroDir    || 'desc';
@@ -14924,6 +14981,7 @@ function cancelarFiltrosDrdo() {
   if (drdoFiltrosSnapshot) {
     drdoFiltroCodigo      = drdoFiltrosSnapshot.codigo;
     drdoFiltroResponsable = drdoFiltrosSnapshot.responsable;
+    drdoFiltroEnUso       = drdoFiltrosSnapshot.en_uso;
     drdoFiltroLimite      = drdoFiltrosSnapshot.limite;
     drdoFiltroOrden       = drdoFiltrosSnapshot.orden;
     drdoFiltroDir         = drdoFiltrosSnapshot.dir;
@@ -14936,10 +14994,12 @@ function cancelarFiltrosDrdo() {
 function limpiarFiltrosDrdo() {
   drdoFiltroCodigo      = '';
   drdoFiltroResponsable = '';
+  drdoFiltroEnUso       = '';
   drdoFiltroLimite      = 100;
   drdoFiltroOrden       = 'id';
   drdoFiltroDir         = 'desc';
   $('#fDrdoCodigo').value = '';
+  $('#fDrdoEnUso').value  = '';
   $('#fDrdoLimite').value = 100;
   $('#fDrdoOrden').value  = 'id';
   $('#fDrdoDir').value    = 'desc';
@@ -14950,6 +15010,7 @@ function limpiarFiltrosDrdo() {
 
 function onFiltroDrdo(campo, valor) {
   if (campo === 'codigo') drdoFiltroCodigo = (valor || '').trim();
+  if (campo === 'en_uso') drdoFiltroEnUso  = valor || '';
   if (campo === 'limite') drdoFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
   if (campo === 'orden')  drdoFiltroOrden  = valor || 'id';
   if (campo === 'dir')    drdoFiltroDir    = valor || 'desc';
@@ -14968,6 +15029,7 @@ function drdoActualizarBadgeFiltros() {
   let n = 0;
   if (drdoFiltroCodigo)                 n++;
   if (drdoFiltroResponsable)            n++;
+  if (drdoFiltroEnUso)                  n++;
   if (Number(drdoFiltroLimite) !== 100) n++;
   if (drdoFiltroOrden !== 'id')         n++;
   if (drdoFiltroDir   !== 'desc')       n++;
@@ -15150,6 +15212,7 @@ function abrirConsultaDrdo(id) {
           ${card('Última renovación',   esc(drdoFmtFecha(e.fecha_ultima_renovacion)))}
           ${card('Próxima renovación',  venc.html)}
           ${card('Costo renovación',    `<span style="font-family:monospace">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</span>`)}
+          ${card('En uso',              `${simFmtEnUso(e.en_uso)} <span style="margin-left:8px">${e.en_uso === 'si' ? 'Sí' : e.en_uso === 'no' ? 'No' : 'Sin definir'}</span>`)}
           ${card('Actualizado WHOIS',   drdoFmtHace(e.actualizado))}
           ${card('Alta',                esc(drdoFmtFecha(e.fecha_creacion)))}
         </div>
@@ -15278,6 +15341,15 @@ async function actualizarDrdoDesdeWhois(id) {
     setEstado('badge-danger', 'Error');
     append('✖ Error de red: ' + (err.message || err));
     toast('Error de red: ' + (err.message || err), { error: true });
+  }
+}
+
+async function cambiarEnUsoDrdo(id, valor) {
+  try {
+    await apiSend(`${DRDO_API}?id=${id}`, 'PUT', { en_uso: valor });
+    await cargarDrdo();
+  } catch (e) {
+    toast(e.message, { error: true });
   }
 }
 
@@ -18803,6 +18875,13 @@ function evoChHabilitadoBadge(h) {
   return `<span class="badge badge-info">—</span>`;
 }
 
+function evoChHabilitadoDot(h) {
+  const color = h === '1' ? '#22c55e' : h === '0' ? '#ef4444' : '#6b7280';
+  const title = h === '1' ? 'Habilitado' : h === '0' ? 'Deshabilitado' : 'Sin definir';
+  return `<span title="${title}" aria-label="${title}"
+                style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${color}"></span>`;
+}
+
 function evoChOnlineBadge(o) {
   if (o === '1') return `<span class="badge badge-success">Online</span>`;
   if (o === '0') return `<span class="badge badge-danger">Offline</span>`;
@@ -18864,14 +18943,15 @@ route('/evolutioncanales', async (mount) => {
               <th>Número</th>
               <th>Celular</th>
               <th>Enviados</th>
-              <th>Habilitado</th>
               <th>Online</th>
+              <th>Latido</th>
               <th>Actualizado</th>
+              <th style="text-align:center">Habilitado</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="evoChTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -19026,7 +19106,7 @@ route('/evolutioncanales', async (mount) => {
 async function cargarEvoCh() {
   const tbody = $('#evoChTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(evoChFiltros).forEach(([k, v]) => {
@@ -19038,7 +19118,7 @@ async function cargarEvoCh() {
     pintarStatsEvoCh(data.stats);
     pintarTablaEvoCh(evoChCache);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -19053,7 +19133,7 @@ function pintarStatsEvoCh(s) {
 function pintarTablaEvoCh(rows) {
   const tbody = $('#evoChTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin canales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin canales.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
@@ -19063,9 +19143,10 @@ function pintarTablaEvoCh(rows) {
       <td style="font-family:monospace">${esc((c.prefijo ? '+' + c.prefijo + ' ' : '') + (c.numero || '—'))}</td>
       <td style="font-family:monospace">${esc(c.celular || '—')}</td>
       <td style="font-family:monospace">${esc(fmtNum(c.enviados ?? 0))}</td>
-      <td>${evoChHabilitadoBadge(c.habilitado)}</td>
       <td>${evoChOnlineBadge(c.online)}</td>
+      <td title="${esc(c.latido || '')}">${esc(fmtHace(c.latido) || '—')}</td>
       <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
+      <td style="text-align:center">${evoChHabilitadoDot(c.habilitado)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">

@@ -29,10 +29,11 @@ header('Content-Type: application/json; charset=utf-8');
 const DRDO_RESPONSABLES = ['Databox', 'Cliente'];
 const DRDO_MONEDAS      = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
 const DRDO_ORDENES      = ['id', 'dominio', 'titular_dominio', 'entidad_registrante',
-                           'fecha_registro', 'fecha_siguiente_renovacion', 'costo_renovacion'];
+                           'responsable', 'fecha_registro', 'fecha_siguiente_renovacion',
+                           'costo_renovacion', 'en_uso', 'actualizado'];
 const DRDO_COLS         = 'id, dominio, titular_dominio, entidad_registrante, responsable, '
                         . 'fecha_registro, fecha_ultima_renovacion, fecha_siguiente_renovacion, '
-                        . 'costo_renovacion, moneda, actualizado, fecha_creacion';
+                        . 'costo_renovacion, moneda, en_uso, actualizado, fecha_creacion';
 
 try {
     requirePermCrud('datarocket.dominios');
@@ -75,6 +76,7 @@ function normalizarFilaDominio(array $r): array {
         'fecha_siguiente_renovacion'  => $r['fecha_siguiente_renovacion']  ?: null,
         'costo_renovacion'            => $r['costo_renovacion'] !== null ? (float)$r['costo_renovacion'] : null,
         'moneda'                      => (string)($r['moneda'] ?? 'ARS'),
+        'en_uso'                      => $r['en_uso'] !== null && $r['en_uso'] !== '' ? (string)$r['en_uso'] : null,
         'actualizado'                 => $r['actualizado']    ?? null,
         'fecha_creacion'              => $r['fecha_creacion'] ?? null,
     ];
@@ -147,6 +149,7 @@ function sanitizePayloadDominio(array $in, bool $esAlta): array {
 function handleListDominios(PDO $pdo, array $q): void {
     $search      = trim((string)($q['q'] ?? ''));
     $responsable = trim((string)($q['responsable'] ?? ''));
+    $enUso       = trim((string)($q['en_uso'] ?? ''));
     $limite      = max(1, min(1000, (int)($q['limite'] ?? 100)));
     $orden       = in_array(($q['orden'] ?? ''), DRDO_ORDENES, true) ? $q['orden'] : 'id';
     $dir         = strtolower((string)($q['dir'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
@@ -163,6 +166,13 @@ function handleListDominios(PDO $pdo, array $q): void {
     if ($responsable !== '' && in_array($responsable, DRDO_RESPONSABLES, true)) {
         $where[] = 'responsable = :responsable';
         $params[':responsable'] = $responsable;
+    }
+    // en_uso admite: 'si' | 'no' | 'null' (sin definir) | '' (todos).
+    if ($enUso === 'null') {
+        $where[] = "(en_uso IS NULL OR en_uso = '')";
+    } elseif (in_array($enUso, ['si', 'no'], true)) {
+        $where[] = 'en_uso = :en_uso';
+        $params[':en_uso'] = $enUso;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
@@ -283,6 +293,14 @@ function handleUpdateDominio(PDO $pdo, int $id, array $body): void {
     if (array_key_exists('moneda', $body) && $p['moneda'] !== '') {
         $sets[] = 'moneda = :moneda';
         $params[':moneda'] = $p['moneda'];
+    }
+    if (array_key_exists('en_uso', $body)) {
+        $v = $body['en_uso'];
+        if ($v !== null && !in_array($v, ['si', 'no'], true)) {
+            jsonError("Valor invalido para 'en_uso' (esperado 'si', 'no' o null).", 422);
+        }
+        $sets[] = 'en_uso = :en_uso';
+        $params[':en_uso'] = $v;
     }
 
     if (empty($sets)) jsonError('No hay campos para actualizar.', 400);

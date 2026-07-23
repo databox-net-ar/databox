@@ -14,7 +14,7 @@ require_once __DIR__ . '/lib/auth_check.php';
 
 const EVO_CH_COLS = "id, uuid, proyecto, nombre, prefijo, numero, celular, token,
                      prompt, intervaloCorto, intervaloLargo, ultimo, alerta, limite,
-                     enviados, acumulados, webhook, online, habilitado,
+                     enviados, acumulados, webhook, online, latido, habilitado,
                      canalEstado, gruposEstado, actualizado";
 
 header('Content-Type: application/json; charset=utf-8');
@@ -75,9 +75,15 @@ function handleList(PDO $pdo, array $q): void {
     if ($online     !== '')   { $where[] = 'online = :online';           $params[':online']     = $online; }
 
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s OR numero LIKE :s OR celular LIKE :s
-                     OR prefijo LIKE :s OR token LIKE :s OR uuid LIKE :s)';
-        $params[':s'] = "%{$search}%";
+        $where[] = '(nombre LIKE :s1 OR numero LIKE :s2 OR celular LIKE :s3
+                     OR prefijo LIKE :s4 OR token LIKE :s5 OR uuid LIKE :s6)';
+        $like = "%{$search}%";
+        $params[':s1'] = $like;
+        $params[':s2'] = $like;
+        $params[':s3'] = $like;
+        $params[':s4'] = $like;
+        $params[':s5'] = $like;
+        $params[':s6'] = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
