@@ -28,8 +28,12 @@ services:
       - ./robot/crontab:/etc/cron.d/databox
       # Crontab del "Programador de tareas" del panel cloud (scheduler
       # minutal + cleanup + rotacion). Estatico — las tareas concretas
-      # viven en la tabla `tareas`. El entrypoint le ajusta permisos.
-      - ./cloud/jobs/crontab:/etc/cron.d/databox-cloud
+      # viven en la tabla `tareas`. Se monta en una ruta neutra y el
+      # entrypoint lo COPIA a /etc/cron.d/databox-cloud como root:root 644
+      # — Docker no permite chown sobre un bind mount desde adentro del
+      # contenedor, entonces si lo montaramos directo en /etc/cron.d/ cron
+      # lo rechaza tarde o temprano por ownership no-root (uid del host).
+      - ./cloud/jobs/crontab:/opt/databox/crontab_cloud_source:ro
       # Certificados mTLS para API Kite (Movistar). Carpeta gitignored;
       # cada host mantiene su propio movistar.pfx. Ver KITE_CERT_PATH/KITE_KEY_PATH en .env.
       - ./certs:/var/www/certs

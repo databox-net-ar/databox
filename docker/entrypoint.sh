@@ -23,10 +23,22 @@ fi
 # Crontab del "Programador de tareas" del panel cloud.
 # Este archivo es estatico (versionado en cloud/jobs/crontab); las tareas
 # concretas viven en la tabla `tareas` y las dispara el scheduler minutal.
-# cron requiere owner root y no world-writable — le ponemos root:root 644.
-if [ -f /etc/cron.d/databox-cloud ]; then
-  chown root:root /etc/cron.d/databox-cloud 2>/dev/null || true
-  chmod 644 /etc/cron.d/databox-cloud 2>/dev/null || true
+#
+# Docker no permite chown sobre un bind mount desde adentro del contenedor,
+# asi que NO podemos montar el archivo directo en /etc/cron.d/: aunque el
+# entrypoint intente chown root:root, el archivo queda con el uid del host
+# (tipicamente 1000). Cron lo tolera un rato pero termina dejando de
+# tomarlo (incidente prod 2026-07-23: scheduler dejo de disparar despues
+# de ~2 horas de arrancar el contenedor).
+#
+# Solucion: el bind mount monta el archivo en /opt/databox/crontab_cloud_source
+# (ver docker-compose.yml) y aca lo copiamos a /etc/cron.d/ como root:root 644.
+# La copia es un archivo REAL del contenedor, no un bind mount, asi que el
+# chown funciona y cron lo acepta indefinidamente.
+if [ -f /opt/databox/crontab_cloud_source ]; then
+  cp /opt/databox/crontab_cloud_source /etc/cron.d/databox-cloud
+  chown root:root /etc/cron.d/databox-cloud
+  chmod 644 /etc/cron.d/databox-cloud
 fi
 
 # Asegurar el log dir de las ejecuciones (por si el volumen se recreo).

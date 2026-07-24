@@ -111,8 +111,11 @@ services:
       # Crontab del "Programador de tareas" del panel cloud (scheduler minutal
       # + cleanup + rotacion). Archivo estatico versionado en el repo — las
       # tareas concretas viven en la tabla \`tareas\` y se administran desde
-      # el back office.
-      - ./cloud/jobs/crontab:/etc/cron.d/databox-cloud
+      # el back office. Se monta en una ruta neutra y el entrypoint lo COPIA
+      # a /etc/cron.d/databox-cloud como root:root 644 — Docker no permite
+      # chown sobre un bind mount desde adentro del contenedor, y cron termina
+      # rechazando archivos con ownership no-root (incidente prod 2026-07-23).
+      - ./cloud/jobs/crontab:/opt/databox/crontab_cloud_source:ro
       # Certificados mTLS para API Kite (Movistar). Carpeta gitignored pero
       # subida por aprovisionar.sh / deploy.sh desde ./certs local (deben estar
       # el .pfx + los PEM ya extraidos con openssl -legacy, ver STACK / .env).
