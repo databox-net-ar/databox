@@ -13,8 +13,8 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
 const EVO_MSG_COLS = "id, fecha, proyecto, canal, plantilla, remitente, remite,
-                      destinatario, destino, prioridad, asunto, cuerpo, variables,
-                      codificado, formato, adjunto, parametros, tags, estado, error,
+                      destinatario, destino, prioridad, asunto, cuerpo,
+                      formato, adjunto, parametros, tags, estado, error,
                       encolado, enviado, demora";
 
 header('Content-Type: application/json; charset=utf-8');
@@ -113,11 +113,6 @@ function handleList(PDO $pdo, array $q): void {
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
 
-    foreach ($rows as &$r) {
-        $r = decodePayloadRow($r);
-    }
-    unset($r);
-
     jsonOk([
         'stats' => [
             'total'     => (int)($stats['total']     ?? 0),
@@ -133,22 +128,7 @@ function handleGetOne(PDO $pdo, int $id): void {
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Mensaje no encontrado', 404);
-    jsonOk(decodePayloadRow($row));
-}
-
-// Cuando `codificado`='1', asunto/cuerpo/variables se guardan en base64 para no
-// tener que escapar el HTML/comillas del cuerpo. Los devolvemos decodificados
-// para que el consumidor los reciba en texto plano. Si una fila trae base64
-// mal formado dejamos el valor original — no queremos que un registro roto
-// tumbe todo el listado.
-function decodePayloadRow(array $row): array {
-    if (($row['codificado'] ?? null) !== '1') return $row;
-    foreach (['asunto', 'cuerpo', 'variables'] as $campo) {
-        if (!isset($row[$campo]) || $row[$campo] === '') continue;
-        $decoded = base64_decode((string)$row[$campo], true);
-        if ($decoded !== false) $row[$campo] = $decoded;
-    }
-    return $row;
+    jsonOk($row);
 }
 
 // ----------------------------------------------------------------------------
@@ -190,8 +170,6 @@ function sanitizePayload(array $in): array {
         'prioridad'    => nullableStr($in['prioridad']         ?? null, 1),
         'asunto'       => nullableStr($in['asunto']            ?? null, 255),
         'cuerpo'       => nullableStr($in['cuerpo']            ?? null),
-        'variables'    => nullableStr($in['variables']         ?? null),
-        'codificado'   => nullableStr($in['codificado']        ?? null, 1),
         'formato'      => nullableStr($in['formato']           ?? null, 1),
         'adjunto'      => nullableStr($in['adjunto']           ?? null, 500),
         'parametros'   => nullableStr($in['parametros']        ?? null),
@@ -204,34 +182,21 @@ function sanitizePayload(array $in): array {
     ];
 }
 
-// Simétrico de decodePayloadRow: si el payload trae codificado='1', el cliente
-// nos manda texto plano (posiblemente HTML en `cuerpo`) y lo guardamos en base64.
-function encodePayloadIfNeeded(array $p): array {
-    if (($p['codificado'] ?? null) !== '1') return $p;
-    foreach (['asunto', 'cuerpo', 'variables'] as $campo) {
-        if ($p[$campo] !== null && $p[$campo] !== '') {
-            $p[$campo] = base64_encode((string)$p[$campo]);
-        }
-    }
-    return $p;
-}
-
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
     if ($p['fecha'] === null) {
         $p['fecha'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                       ->format('Y-m-d H:i:s');
     }
-    $p = encodePayloadIfNeeded($p);
 
     $sql = "
         INSERT INTO evolution_mensajes
             (fecha, proyecto, canal, plantilla, remitente, remite, destinatario,
-             destino, prioridad, asunto, cuerpo, variables, codificado, formato,
+             destino, prioridad, asunto, cuerpo, formato,
              adjunto, parametros, tags, estado, error, encolado, enviado, demora)
         VALUES
             (:fecha, :proyecto, :canal, :plantilla, :remitente, :remite, :destinatario,
-             :destino, :prioridad, :asunto, :cuerpo, :variables, :codificado, :formato,
+             :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :parametros, :tags, :estado, :error, :encolado, :enviado, :demora)
     ";
     $stmt = $pdo->prepare($sql);
@@ -247,8 +212,6 @@ function handleCreate(PDO $pdo, array $in): void {
         ':prioridad'    => $p['prioridad'],
         ':asunto'       => $p['asunto'],
         ':cuerpo'       => $p['cuerpo'],
-        ':variables'    => $p['variables'],
-        ':codificado'   => $p['codificado'],
         ':formato'      => $p['formato'],
         ':adjunto'      => $p['adjunto'],
         ':parametros'   => $p['parametros'],
@@ -268,7 +231,6 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (!$exists->fetch()) jsonError('Mensaje no encontrado', 404);
 
     $p = sanitizePayload($in);
-    $p = encodePayloadIfNeeded($p);
 
     $sql = "
         UPDATE evolution_mensajes SET
@@ -283,8 +245,6 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             prioridad    = :prioridad,
             asunto       = :asunto,
             cuerpo       = :cuerpo,
-            variables    = :variables,
-            codificado   = :codificado,
             formato      = :formato,
             adjunto      = :adjunto,
             parametros   = :parametros,
@@ -309,8 +269,6 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
         ':prioridad'    => $p['prioridad'],
         ':asunto'       => $p['asunto'],
         ':cuerpo'       => $p['cuerpo'],
-        ':variables'    => $p['variables'],
-        ':codificado'   => $p['codificado'],
         ':formato'      => $p['formato'],
         ':adjunto'      => $p['adjunto'],
         ':parametros'   => $p['parametros'],

@@ -18536,6 +18536,13 @@ async function abrirConsultarEvoMsg(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionEvoMsg(id); }
+
+    const tabBtn = ev.target.closest('[data-tab]');
+    if (tabBtn) {
+      const target = tabBtn.dataset.tab;
+      $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+      $$('#modalRoot .modal-tabpanel').forEach((p) => p.hidden = p.dataset.panel !== target);
+    }
   });
 
   try {
@@ -18590,44 +18597,58 @@ function renderConsultaEvoMsg(m) {
       </div>
     </div>
 
-    ${seccion('Cuerpo del mensaje')}
-    ${cuerpoHtml}
+    <div class="modal-tabs">
+      <button type="button" class="modal-tab active" data-tab="general">General</button>
+      <button type="button" class="modal-tab"        data-tab="cuerpo">Cuerpo</button>
+      <button type="button" class="modal-tab"        data-tab="detalles">Detalles</button>
+    </div>
 
-    ${seccion('Remitente y destinatario')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Remitente',    m.remitente)}
-      ${card('Remite',       m.remite, false, true)}
-      ${card('Destinatario', m.destinatario)}
-      ${card('Destino',      m.destino, false, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="general">
+      ${seccion('Remitente y destinatario')}
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Remitente',    m.remitente)}
+        ${card('Remite',       m.remite, false, true)}
+        ${card('Destinatario', m.destinatario)}
+        ${card('Destino',      m.destino, false, true)}
+      </dl>
+    </div>
 
-    ${seccion('Contexto de envío')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Proyecto',   m.proyecto)}
-      ${card('Canal',      m.canal)}
-      ${card('Plantilla',  m.plantilla)}
-      ${card('Prioridad',  EVO_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
-      ${card('Formato',    EVO_MSG_FORMATO_MAP[m.formato]     || m.formato)}
-      ${card('Codificado', m.codificado)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="cuerpo" hidden>
+      ${seccion('Cuerpo del mensaje')}
+      ${cuerpoHtml}
 
-    ${seccion('Tiempos y resultado')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Fecha',    fmtFecha(m.fecha))}
-      ${card('Encolado', fmtFecha(m.encolado))}
-      ${card('Enviado',  fmtFecha(m.enviado))}
-      ${card('Demora',   evoMsgFmtDemora(m.demora))}
-      ${card('Estado',   m.estado)}
-      ${card('Tags',     m.tags)}
-    </dl>
+      ${seccion('Adjunto')}
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Adjunto', m.adjunto, true, true)}
+      </dl>
+    </div>
 
-    ${seccion('Adjunto, variables y errores')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Adjunto',    m.adjunto, true, true)}
-      ${card('Variables',  m.variables, true, true)}
-      ${card('Parámetros', m.parametros, true, true)}
-      ${card('Error',      m.error, true)}
-    </dl>
+    <div class="modal-tabpanel" data-panel="detalles" hidden>
+      ${seccion('Contexto de envío')}
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Proyecto',   m.proyecto)}
+        ${card('Canal',      m.canal)}
+        ${card('Plantilla',  m.plantilla)}
+        ${card('Prioridad',  EVO_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
+        ${card('Formato',    EVO_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+      </dl>
+
+      ${seccion('Tiempos y resultado')}
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Fecha',    fmtFecha(m.fecha))}
+        ${card('Encolado', fmtFecha(m.encolado))}
+        ${card('Enviado',  fmtFecha(m.enviado))}
+        ${card('Demora',   evoMsgFmtDemora(m.demora))}
+        ${card('Estado',   m.estado)}
+        ${card('Tags',     m.tags)}
+      </dl>
+
+      ${seccion('Parámetros y errores')}
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Parámetros', m.parametros, true, true)}
+        ${card('Error',      m.error, true)}
+      </dl>
+    </div>
   `;
 }
 
@@ -18741,7 +18762,7 @@ function formEvoMsgHtml(m) {
       <label>Asunto</label>
       <input type="text" id="evoAsunto" maxlength="255" value="${v('asunto')}">
     </div>
-    <div class="form-row form-row-3">
+    <div class="form-row">
       <div class="form-group">
         <label>Formato</label>
         <select id="evoFormato">
@@ -18752,10 +18773,6 @@ function formEvoMsgHtml(m) {
         </select>
       </div>
       <div class="form-group">
-        <label>Codificado</label>
-        <input type="text" id="evoCodificado" maxlength="1" value="${v('codificado')}">
-      </div>
-      <div class="form-group">
         <label>Tags</label>
         <input type="text" id="evoTags" maxlength="255" value="${v('tags')}">
       </div>
@@ -18763,10 +18780,6 @@ function formEvoMsgHtml(m) {
     <div class="form-group">
       <label>Cuerpo</label>
       <textarea id="evoCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Variables</label>
-      <textarea id="evoVariables" rows="3" style="font-family:monospace">${v('variables')}</textarea>
     </div>
     <div class="form-group">
       <label>Parámetros</label>
@@ -18815,10 +18828,8 @@ async function guardarEvoMsg(id, btn) {
     destino:      $('#evoDestino').value.trim(),
     asunto:       $('#evoAsunto').value.trim(),
     formato:      $('#evoFormato').value,
-    codificado:   $('#evoCodificado').value.trim(),
     tags:         $('#evoTags').value.trim(),
     cuerpo:       $('#evoCuerpo').value,
-    variables:    $('#evoVariables').value,
     parametros:   $('#evoParametros').value,
     adjunto:      $('#evoAdjunto').value.trim(),
     error:        $('#evoErrorTxt').value,
