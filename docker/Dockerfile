@@ -29,6 +29,7 @@ RUN apt-get update \
  && sed -i 's/Listen 80/Listen 8091/' /etc/apache2/ports.conf \
  && echo 'Listen 8113' >> /etc/apache2/ports.conf \
  && echo 'Listen 8094' >> /etc/apache2/ports.conf \
+ && echo 'Listen 8114' >> /etc/apache2/ports.conf \
  && sed -i 's|<VirtualHost \*:80>|<VirtualHost *:8091>|' /etc/apache2/sites-available/000-default.conf \
  && printf '<VirtualHost *:8113>\n\
     ServerName www.databox.net.ar\n\
@@ -52,6 +53,19 @@ RUN apt-get update \
     CustomLog ${APACHE_LOG_DIR}/robot-access.log combined\n\
 </VirtualHost>\n' > /etc/apache2/sites-available/robot.conf \
  && a2ensite robot \
+ && printf '<VirtualHost *:8114>\n\
+    ServerName api.databox.net.ar\n\
+    DocumentRoot /var/www/api\n\
+    <Directory /var/www/api>\n\
+        Options -Indexes\n\
+        AllowOverride All\n\
+        Require all granted\n\
+        CGIPassAuth On\n\
+    </Directory>\n\
+    ErrorLog ${APACHE_LOG_DIR}/api-error.log\n\
+    CustomLog ${APACHE_LOG_DIR}/api-access.log combined\n\
+</VirtualHost>\n' > /etc/apache2/sites-available/api.conf \
+ && a2ensite api \
  && mkdir -p /var/log/databox/cloud/ejecuciones \
  && chown -R www-data:www-data /var/log/databox \
  && chmod -R 755 /var/log/databox
@@ -61,6 +75,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /var/www/html
 
-EXPOSE 8091 8113 8094
+EXPOSE 8091 8113 8094 8114
 
 CMD ["/usr/local/bin/entrypoint.sh"]

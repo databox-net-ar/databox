@@ -34,7 +34,7 @@ echo "============================================================"
 echo ""
 
 # ---- 1. Validar artefactos locales ----
-for f in .env.production env.php docker/Dockerfile cloud scripts/aprovisionar_server.sh; do
+for f in .env.production env.php docker/Dockerfile cloud api scripts/aprovisionar_server.sh; do
     if [ ! -e "$BASE_LOCAL/$f" ]; then
         echo "ERROR: falta $BASE_LOCAL/$f"
         exit 1
@@ -63,7 +63,7 @@ echo ""
 # sensible que la app necesita en /var/www/certs (bind-monteado por el
 # docker-compose.prod.yml). Si falta localmente, se avisa y se sigue: el
 # resto del aprovisionamiento no depende de estos certs.
-echo "  Subiendo cloud/, docker/, db/, scripts/, env.php, .env.production, certs/..."
+echo "  Subiendo cloud/, api/, docker/, db/, scripts/, env.php, .env.production, certs/..."
 cd "$BASE_LOCAL"
 
 INCLUDE_DB=""
@@ -87,8 +87,11 @@ tar \
     --exclude='./cloud/.git' \
     --exclude='./cloud/node_modules' \
     --exclude='./cloud/vendor' \
+    --exclude='./api/.git' \
+    --exclude='./api/node_modules' \
+    --exclude='./api/vendor' \
     --exclude='*.log' \
-    -czf - cloud docker $INCLUDE_DB scripts env.php .env.production $INCLUDE_CERTS | \
+    -czf - cloud api docker $INCLUDE_DB scripts env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar -xzf - -C '$BASE_REMOTE/'"
@@ -112,8 +115,11 @@ echo ""
 # es porque el Security Group del EC2 no tiene abierto el puerto 443.
 echo "  Verificando conectividad desde local..."
 
-http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://${DOMAIN}/" || echo "000")
-https_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://${DOMAIN}/" || echo "000")
+# El `|| echo "000"` iba duplicando el "000" que ya imprime `%{http_code}` al
+# fallar la conexion (daba "000000"). Se usa un subshell aislado que se traga
+# el exit code de curl y colapsa cualquier salida no numerica en "000".
+http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://${DOMAIN}/" 2>/dev/null); [ -z "$http_code" ] && http_code="000"
+https_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://${DOMAIN}/" 2>/dev/null); [ -z "$https_code" ] && https_code="000"
 
 echo "    http://${DOMAIN}/  -> ${http_code}"
 echo "    https://${DOMAIN}/ -> ${https_code}"

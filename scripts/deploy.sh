@@ -39,7 +39,7 @@ echo "  version.txt actualizado en cloud/"
 echo ""
 
 # ---- 2. Verificar artefactos requeridos ----
-for f in .env.production env.php docker/Dockerfile cloud; do
+for f in .env.production env.php docker/Dockerfile cloud api; do
     if [ ! -e "$BASE_LOCAL/$f" ]; then
         echo "ERROR: falta $BASE_LOCAL/$f"
         exit 1
@@ -58,7 +58,7 @@ done
 # (bind-monteado por el docker-compose.prod.yml). Si falta localmente, se
 # avisa y se sigue: el deploy funciona sin certs (solo el modulo de SIMs
 # Movistar queda fuera de linea).
-echo "  Subiendo cloud/, docker/, db/, env.php, .env.production, certs/..."
+echo "  Subiendo cloud/, api/, robot/, docker/, db/, env.php, .env.production, certs/..."
 cd "$BASE_LOCAL"
 
 # db/ se incluye porque CLAUDE.md lo declara como schema de referencia.
@@ -84,8 +84,11 @@ tar \
     --exclude='./cloud/.git' \
     --exclude='./cloud/node_modules' \
     --exclude='./cloud/vendor' \
+    --exclude='./api/.git' \
+    --exclude='./api/node_modules' \
+    --exclude='./api/vendor' \
     --exclude='*.log' \
-    -czf - cloud robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
+    -czf - cloud api robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar -xzf - -C '$BASE_REMOTE/'"
