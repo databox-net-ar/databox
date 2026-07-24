@@ -140,55 +140,79 @@ function nullableInt(mixed $v): ?int {
     return (int)$v;
 }
 
+// Acepta "2026-07-24T20:15", "2026-07-24 20:15" o "2026-07-24 20:15:00" y
+// devuelve el formato MySQL "Y-m-d H:i:s". Formato invalido -> null (el
+// default del handleEnqueue se hace cargo).
+function nullableDateTime(mixed $v): ?string {
+    $s = nullableStr($v);
+    if ($s === null) return null;
+    $s = str_replace('T', ' ', $s);
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $s)) $s .= ':00';
+    if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $s)) return null;
+    return $s;
+}
+
 function handleEnqueue(array $in): void {
-    $canal   = nullableInt($in['canal']   ?? null);
-    $destino = nullableStr($in['destino'] ?? null, 255);
-    if ($canal === null || $canal <= 0) jsonError('Falta canal (int > 0)', 400);
+    // Aceptamos tanto `canal_id` (nuevo, alineado con la columna) como el alias
+    // corto `canal` para no romper clientes viejos durante la transicion. Idem
+    // proyecto_id / plantilla_id.
+    $canal   = nullableInt($in['canal_id'] ?? $in['canal'] ?? null);
+    $destino = nullableStr($in['destino']  ?? null, 255);
+    if ($canal === null || $canal <= 0) jsonError('Falta canal_id (int > 0)', 400);
     if ($destino === null)              jsonError('Falta destino (string no vacio)', 400);
 
     // El mensaje necesita al menos una fuente de contenido: una plantilla
     // pre-definida o un cuerpo inline. Sin alguna de las dos el sender no
     // tendria que enviar.
-    $plantilla = nullableInt($in['plantilla'] ?? null);
-    $cuerpo    = nullableStr($in['cuerpo']    ?? null);
+    $plantilla = nullableInt($in['plantilla_id'] ?? $in['plantilla'] ?? null);
+    $cuerpo    = nullableStr($in['cuerpo']       ?? null);
     if ($plantilla === null && $cuerpo === null) {
-        jsonError('Se requiere plantilla o cuerpo', 400);
+        jsonError('Se requiere plantilla_id o cuerpo', 400);
     }
 
     $p = [
-        'proyecto'     => nullableInt($in['proyecto']     ?? null),
-        'canal'        => $canal,
-        'plantilla'    => $plantilla,
+        'proyecto_id'  => nullableInt($in['proyecto_id'] ?? $in['proyecto'] ?? null),
+        'canal_id'     => $canal,
+        'plantilla_id' => $plantilla,
         'remitente'    => nullableStr($in['remitente']    ?? null, 255),
         'remite'       => nullableStr($in['remite']       ?? null, 255),
         'destinatario' => nullableStr($in['destinatario'] ?? null, 255),
         'destino'      => $destino,
-        'prioridad'    => nullableStr($in['prioridad']    ?? null, 1),
+        'prioridad'    => nullableInt($in['prioridad']    ?? null),
         'asunto'       => nullableStr($in['asunto']       ?? null, 255),
         'cuerpo'       => $cuerpo,
-        'formato'      => nullableStr($in['formato']      ?? null, 1),
+        'formato'      => nullableStr($in['formato']      ?? null, 20),
         'adjunto'      => nullableStr($in['adjunto']      ?? null, 500),
         'tags'         => nullableStr($in['tags']         ?? null, 255),
+        'programado'   => nullableDateTime($in['programado'] ?? null),
     ];
 
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
              ->format('Y-m-d H:i:s');
 
+    // Defaults en profundidad (mismos que aplica cloud/api/evolutionmensajes.php):
+    //   formato    -> 'texto'
+    //   prioridad  -> 3 (media)
+    //   programado -> NOW (enviar apenas el worker lo tome)
+    if ($p['formato']    === null) $p['formato']    = 'texto';
+    if ($p['prioridad']  === null) $p['prioridad']  = 3;
+    if ($p['programado'] === null) $p['programado'] = $ahora;
+
     $sql = "INSERT INTO evolution_mensajes
-                (fecha, proyecto, canal, plantilla, remitente, remite, destinatario,
+                (fecha, proyecto_id, canal_id, plantilla_id, remitente, remite, destinatario,
                  destino, prioridad, asunto, cuerpo, formato,
-                 adjunto, tags, estado, encolado)
+                 adjunto, tags, estado, encolado, programado)
             VALUES
-                (:fecha, :proyecto, :canal, :plantilla, :remitente, :remite, :destinatario,
+                (:fecha, :proyecto_id, :canal_id, :plantilla_id, :remitente, :remite, :destinatario,
                  :destino, :prioridad, :asunto, :cuerpo, :formato,
-                 :adjunto, :tags, 'P', :encolado)";
+                 :adjunto, :tags, 'pendiente', :encolado, :programado)";
     $pdo = db();
     $st  = $pdo->prepare($sql);
     $st->execute([
         ':fecha'        => $ahora,
-        ':proyecto'     => $p['proyecto'],
-        ':canal'        => $p['canal'],
-        ':plantilla'    => $p['plantilla'],
+        ':proyecto_id'  => $p['proyecto_id'],
+        ':canal_id'     => $p['canal_id'],
+        ':plantilla_id' => $p['plantilla_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
@@ -200,12 +224,14 @@ function handleEnqueue(array $in): void {
         ':adjunto'      => $p['adjunto'],
         ':tags'         => $p['tags'],
         ':encolado'     => $ahora,
+        ':programado'   => $p['programado'],
     ]);
 
     jsonOk([
-        'id'       => (int)$pdo->lastInsertId(),
-        'estado'   => 'P',
-        'encolado' => $ahora,
+        'id'         => (int)$pdo->lastInsertId(),
+        'estado'     => 'pendiente',
+        'encolado'   => $ahora,
+        'programado' => $p['programado'],
     ], 201);
 }
 
@@ -213,18 +239,21 @@ function handleEnqueue(array $in): void {
 // GET /v4/evolution/mensajes?id=N  -> consultar estado
 // ---------------------------------------------------------------------------
 
+// Etiquetas de estado alineadas con la tabla `estados` (evolution_mensaje_estado).
+// Solo se usan para el campo `estado_label` de conveniencia — la fuente de
+// verdad del valor sigue siendo `evolution_mensajes.estado` (varchar 20).
 const EVO_MSG_ESTADO_LABEL = [
-    'P' => 'Pendiente',
-    'E' => 'Enviado',
-    'F' => 'Fallado',
-    'C' => 'Cancelado',
-    'R' => 'Reintento',
+    'pendiente' => 'Pendiente',
+    'enviando'  => 'Enviando',
+    'enviado'   => 'Enviado',
+    'anulado'   => 'Anulado',
+    'error'     => 'Error',
 ];
 
 function handleStatus(int $id): void {
     $pdo = db();
     $st  = $pdo->prepare(
-        "SELECT id, canal, destino, estado, error, encolado, enviado, demora
+        "SELECT id, canal_id, destino, estado, error, encolado, enviado, demora
          FROM evolution_mensajes WHERE id = :id LIMIT 1"
     );
     $st->execute([':id' => $id]);
@@ -232,7 +261,7 @@ function handleStatus(int $id): void {
     if (!$row) jsonError('Mensaje no encontrado', 404);
 
     $row['id']           = (int)$row['id'];
-    $row['canal']        = $row['canal'] !== null ? (int)$row['canal'] : null;
+    $row['canal_id']     = $row['canal_id'] !== null ? (int)$row['canal_id'] : null;
     $row['demora']       = $row['demora'] !== null ? (int)$row['demora'] : null;
     $row['estado_label'] = EVO_MSG_ESTADO_LABEL[$row['estado']] ?? $row['estado'];
 

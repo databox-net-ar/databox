@@ -4699,7 +4699,7 @@ async function eliminarAwsCuenta(id) {
 
 // ------------------------- Vista: AWS > Mensajes (ABM) -------------------------
 const awsMsgFiltrosDefaults = {
-  q: '', codigo: '', proyecto: '', canal: '', plantilla: '',
+  q: '', codigo: '', proyecto_id: '', canal_id: '', plantilla_id: '',
   estado: '', desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -4708,30 +4708,42 @@ let awsMsgBuscadorTimer   = null;
 let awsMsgFiltrosSnapshot = null;
 
 const AWS_MSG_FORMATO_MAP = {
-  T: 'Texto plano',
-  H: 'HTML',
-  M: 'Markdown',
+  texto: 'Texto',
+  html:  'HTML',
 };
+// 5 = se envia primero, 1 = ultima. Hardcodeado en el front por decision
+// explicita (no leer de la tabla `estados`).
 const AWS_MSG_PRIORIDAD_MAP = {
-  A: 'Alta',
-  N: 'Normal',
-  B: 'Baja',
+  1: 'Muy baja',
+  2: 'Baja',
+  3: 'Media',
+  4: 'Alta',
+  5: 'Muy alta',
+};
+
+// Etiquetas humanas del estado (capitalizadas). Compartidas entre el badge
+// de la lista/hero y la tarjeta Estado del modal Consultar. Hardcodeadas —
+// no se leen de la tabla `estados`.
+const AWS_MSG_ESTADO_LABEL = {
+  pendiente: 'Pendiente',
+  enviando:  'Enviando',
+  enviado:   'Enviado',
+  anulado:   'Anulado',
+  error:     'Error',
+};
+const AWS_MSG_ESTADO_COLOR = {
+  pendiente: 'badge-warn',
+  enviando:  'badge-info',
+  enviado:   'badge-success',
+  anulado:   'badge-danger',
+  error:     'badge-danger',
 };
 
 function awsMsgEstadoBadge(e) {
   if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  const colorMap = {
-    pendiente: 'badge-warn',
-    enviado:   'badge-success',
-    anulado:   'badge-danger',
-    error:     'badge-danger',
-  };
-  const labelMap = {
-    pendiente: 'Pendiente', enviado: 'Enviado', anulado: 'Anulado', error: 'Error',
-  };
   const key = String(e).toLowerCase();
-  const cls = colorMap[key] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(labelMap[key] || e)}</span>`;
+  const cls = AWS_MSG_ESTADO_COLOR[key] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(AWS_MSG_ESTADO_LABEL[key] || e)}</span>`;
 }
 
 function awsMsgFmtDemora(seg) {
@@ -4742,15 +4754,15 @@ function awsMsgFmtDemora(seg) {
   return `${(n / 3600).toFixed(1)}h`;
 }
 
-// "Nombre (#42)" | "#42" | "Nombre" | null. El modal Consultar recibe los
-// nombres precomputados via LEFT JOIN (proyectos / aws_canales /
+// "Nombre" cuando hay nombre resuelto; "#42" como fallback si solo llega el
+// id; null si no hay ninguno. El modal Consultar recibe los nombres
+// precomputados via LEFT JOIN (proyectos / aws_canales /
 // datarocket_plantillas) — ver AWS_MSG_JOINS en cloud/api/awsmensajes.php.
 function awsMsgFmtRef(nombre, id) {
   const nom = nombre == null ? '' : String(nombre).trim();
   const idn = id == null || id === '' ? '' : String(id);
-  if (nom && idn) return `${nom} (#${idn})`;
-  if (nom)        return nom;
-  if (idn)        return `#${idn}`;
+  if (nom) return nom;
+  if (idn) return `#${idn}`;
   return null;
 }
 
@@ -4824,6 +4836,12 @@ route('/awsmensajes', async (mount) => {
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
+      <button type="button" data-action="enviar" role="menuitem">
+        <i class="fa-solid fa-paper-plane"></i><span>Enviar ahora</span>
+      </button>
+      <button type="button" data-action="clonar" role="menuitem">
+        <i class="fa-solid fa-clone"></i><span>Clonar</span>
+      </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
@@ -4851,6 +4869,7 @@ route('/awsmensajes', async (mount) => {
               <select id="fAwsMsgEstado" onchange="onFiltroAwsMsg('estado', this.value)">
                 <option value="">— Todos —</option>
                 <option value="pendiente">Pendiente</option>
+                <option value="enviando">Enviando</option>
                 <option value="enviado">Enviado</option>
                 <option value="anulado">Anulado</option>
                 <option value="error">Error</option>
@@ -4860,15 +4879,15 @@ route('/awsmensajes', async (mount) => {
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Proyecto (ID)</label>
-              <input type="number" id="fAwsMsgProyecto" min="1" oninput="onFiltroAwsMsg('proyecto', this.value)">
+              <input type="number" id="fAwsMsgProyecto" min="1" oninput="onFiltroAwsMsg('proyecto_id', this.value)">
             </div>
             <div class="form-group">
               <label>Canal (ID)</label>
-              <input type="number" id="fAwsMsgCanal" min="1" oninput="onFiltroAwsMsg('canal', this.value)">
+              <input type="number" id="fAwsMsgCanal" min="1" oninput="onFiltroAwsMsg('canal_id', this.value)">
             </div>
             <div class="form-group">
               <label>Plantilla (ID)</label>
-              <input type="number" id="fAwsMsgPlantilla" min="1" oninput="onFiltroAwsMsg('plantilla', this.value)">
+              <input type="number" id="fAwsMsgPlantilla" min="1" oninput="onFiltroAwsMsg('plantilla_id', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -4946,6 +4965,8 @@ route('/awsmensajes', async (mount) => {
     if (!data) return;
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarAwsMsg(data.id);
+    if (b.dataset.action === 'enviar')    enviarAhoraAwsMsg(data.id);
+    if (b.dataset.action === 'clonar')    abrirAltaEdicionAwsMsg(null, { clonarDeId: data.id });
     if (b.dataset.action === 'editar')    abrirAltaEdicionAwsMsg(data.id);
     if (b.dataset.action === 'eliminar')  eliminarAwsMsg(data.id);
   });
@@ -5010,7 +5031,7 @@ function pintarTablaAwsMsg(rows) {
     <tr data-id="${m.id}" class="row-clickable">
       <td class="td-id">#${esc(m.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
-      <td>${esc(m.canal_nombre || (m.canal != null ? '#' + m.canal : '—'))}</td>
+      <td>${esc(m.canal_nombre || (m.canal_id != null ? '#' + m.canal_id : '—'))}</td>
       <td class="td-nombre">${esc(m.destinatario || '—')}</td>
       <td style="font-family:monospace">${esc(m.destino || '—')}</td>
       <td>${esc(m.asunto || '—')}</td>
@@ -5030,7 +5051,7 @@ function pintarTablaAwsMsg(rows) {
 function onFiltroAwsMsg(key, value) {
   if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     awsMsgFiltros[key] = value;
-  } else if (['codigo', 'proyecto', 'canal', 'plantilla'].includes(key)) {
+  } else if (['codigo', 'proyecto_id', 'canal_id', 'plantilla_id'].includes(key)) {
     const v = String(value).trim();
     awsMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
@@ -5060,9 +5081,9 @@ function sincronizarControlesFiltrosAwsMsg() {
   const f = awsMsgFiltros;
   $('#fAwsMsgCodigo').value    = f.codigo;
   $('#fAwsMsgEstado').value    = f.estado;
-  $('#fAwsMsgProyecto').value  = f.proyecto;
-  $('#fAwsMsgCanal').value     = f.canal;
-  $('#fAwsMsgPlantilla').value = f.plantilla;
+  $('#fAwsMsgProyecto').value  = f.proyecto_id;
+  $('#fAwsMsgCanal').value     = f.canal_id;
+  $('#fAwsMsgPlantilla').value = f.plantilla_id;
   $('#fAwsMsgDesde').value     = f.desde;
   $('#fAwsMsgHasta').value     = f.hasta;
   $('#fAwsMsgLimite').value    = f.limite;
@@ -5140,7 +5161,7 @@ function renderConsultaAwsMsg(m) {
     </div>`;
 
   const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
-    ? (m.formato === 'H'
+    ? (String(m.formato).toLowerCase() === 'html'
         ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
         : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
     : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
@@ -5204,9 +5225,9 @@ function renderConsultaAwsMsg(m) {
     <div class="modal-tabpanel" data-awsmsg-tab="detalles" hidden>
       ${seccion('Contexto de envío')}
       <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-        ${card('Proyecto',   awsMsgFmtRef(m.proyecto_nombre,  m.proyecto))}
-        ${card('Plantilla',  awsMsgFmtRef(m.plantilla_nombre, m.plantilla))}
-        ${card('Canal',      awsMsgFmtRef(m.canal_nombre,     m.canal))}
+        ${card('Proyecto',   awsMsgFmtRef(m.proyecto_nombre,  m.proyecto_id))}
+        ${card('Plantilla',  awsMsgFmtRef(m.plantilla_nombre, m.plantilla_id))}
+        ${card('Canal',      awsMsgFmtRef(m.canal_nombre,     m.canal_id))}
         ${card('Prioridad',  AWS_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
         ${card('Formato',    AWS_MSG_FORMATO_MAP[m.formato]     || m.formato)}
         ${card('Tags',       m.tags)}
@@ -5219,7 +5240,7 @@ function renderConsultaAwsMsg(m) {
         ${card('Programado', fmtFecha(m.programado))}
         ${card('Enviado',    fmtFecha(m.enviado))}
         ${card('Demora',     awsMsgFmtDemora(m.demora))}
-        ${card('Estado',     m.estado)}
+        ${card('Estado',     AWS_MSG_ESTADO_LABEL[String(m.estado || '').toLowerCase()] || m.estado)}
       </dl>
 
       <dl class="data-list" style="grid-template-columns:1fr">
@@ -5239,89 +5260,193 @@ function awsMsgCambiarTab(tab) {
 }
 window.awsMsgCambiarTab = awsMsgCambiarTab;
 
-async function abrirAltaEdicionAwsMsg(id) {
-  const esEdicion = id != null;
+async function abrirAltaEdicionAwsMsg(id, opciones = {}) {
+  // opciones.clonarDeId: si esta seteado, el modal opera en modo "nuevo"
+  // (id=null, POST al guardar) pero precarga los datos del mensaje fuente.
+  // Se descartan las columnas system-managed al copiar (id/fecha/estado/
+  // encolado/enviado/demora/error) — el servidor las regenera al crear.
+  const clonarDeId = opciones.clonarDeId ?? null;
+  const esEdicion  = id != null;
+  const esClonar   = clonarDeId != null;
+  const cargarId   = esEdicion ? id : clonarDeId;
+
+  const tituloModal = esEdicion
+    ? `Editar mensaje <span class="modal-subtitle">#${id}</span>`
+    : esClonar
+      ? `Nuevo mensaje <span class="modal-subtitle">(clonado de #${clonarDeId})</span>`
+      : 'Nuevo mensaje';
+  const textoBoton = esEdicion ? 'Guardar' : 'Crear';
+
   openModal(`
     <div class="modal modal-wide">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
+        <div class="modal-title">${tituloModal}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formAwsMsgHtml({})}
-      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+        <button class="btn btn-primary" data-act="guardar">${textoBoton}</button>
       </div>
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const m = await apiGet(`api/awsmensajes.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formAwsMsgHtml(m);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  try {
+    // Prefetch en paralelo: mensaje fuente (editar o clonar), proyectos
+    // filtrados por tipo='I' y canales. Plantillas se piden despues si hay
+    // proyecto preseleccionado.
+    const mPromise         = cargarId != null ? apiGet(`api/awsmensajes.php?id=${cargarId}`) : Promise.resolve({});
+    const proyectosPromise = apiGet('api/proyectos.php?tipo=I');
+    const canalesPromise   = apiGet('api/awscanales.php?limite=1000');
+    const [m, proyectosResp, canalesResp] = await Promise.all([mPromise, proyectosPromise, canalesPromise]);
+
+    // Al clonar, descartar campos system-managed. `programado` se resetea
+    // tambien porque un valor pasado no tiene sentido para un envio nuevo;
+    // el default de "Nuevo" (ahora) lo cubre abajo.
+    if (esClonar) {
+      delete m.id;
+      delete m.fecha;
+      delete m.estado;
+      delete m.encolado;
+      delete m.enviado;
+      delete m.demora;
+      delete m.error;
+      delete m.programado;
     }
+
+    const proyectos = proyectosResp.items || [];
+    const canales   = canalesResp.items   || [];
+
+    // Defaults para "Nuevo" (incluye clonar). Canal databox se elige por
+    // nombre desde la lista de canales cargados — asi el id no queda
+    // hardcodeado en el front. Si no aparece un canal llamado "databox",
+    // el select queda vacio (fallback grafico).
+    if (!esEdicion) {
+      m.prioridad  = m.prioridad  ?? '3';
+      m.formato    = m.formato    ?? 'html';
+      m.programado = m.programado ?? awsMsgAhoraLocal();
+      if (m.canal_id == null || m.canal_id === '') {
+        const canalDatabox = canales.find((c) => String(c.nombre || '').toLowerCase() === 'databox');
+        if (canalDatabox) m.canal_id = canalDatabox.id;
+      }
+    }
+
+    const plantillasResp = m.proyecto_id
+      ? await apiGet('api/datarocketplantillas.php?limite=1000&proyecto_id=' + encodeURIComponent(m.proyecto_id))
+      : { items: [] };
+    const plantillas = plantillasResp.items || [];
+
+    $('#modalRoot .modal-body').innerHTML = formAwsMsgHtml(m, { proyectos, canales, plantillas });
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarAwsMsg(id, a);
+    // Al clonar guardamos como POST (id=null). Editar mantiene el id del
+    // registro que se esta editando.
+    if (a.dataset.act === 'guardar') await guardarAwsMsg(esEdicion ? id : null, a);
   });
+
+  // Cascada proyecto -> plantilla: recarga las opciones del segundo select
+  // cada vez que cambia el primero.
+  $('#modalRoot').addEventListener('change', async (ev) => {
+    if (ev.target?.id === 'awsMsgProyecto') {
+      await recargarPlantillasAwsMsg(ev.target.value);
+    }
+  });
+
+  // Al empezar a completar un campo previamente marcado como invalido,
+  // remover el borde rojo. Cubre inputs/textareas (`input`) y selects
+  // (`change`, porque los `<select>` no disparan `input`).
+  const limpiarInvalido = (ev) => ev.target?.classList?.remove('input-invalid');
+  $('#modalRoot').addEventListener('input',  limpiarInvalido);
+  $('#modalRoot').addEventListener('change', limpiarInvalido);
 }
 
-function formAwsMsgHtml(m) {
+// Devuelve "YYYY-MM-DDTHH:mm" en zona local del navegador — formato que
+// entiende <input type="datetime-local">.
+function awsMsgAhoraLocal() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function recargarPlantillasAwsMsg(proyectoId) {
+  const select = $('#awsMsgPlantilla');
+  if (!select) return;
+  select.disabled  = true;
+  select.innerHTML = `<option value="">Cargando…</option>`;
+  try {
+    const items = proyectoId
+      ? ((await apiGet('api/datarocketplantillas.php?limite=1000&proyecto_id=' + encodeURIComponent(proyectoId))).items || [])
+      : [];
+    select.innerHTML = awsMsgOptionsPlantilla(items, '');
+  } catch (e) {
+    select.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
+  } finally {
+    select.disabled = false;
+  }
+}
+
+// Helpers de <option> reusados por formAwsMsgHtml y por recargarPlantillasAwsMsg.
+// El placeholder es solo "—" para alinear con el select de Formato.
+function awsMsgOptionsProyecto(items, seleccionadoId) {
+  const s = seleccionadoId == null ? '' : String(seleccionadoId);
+  const opts = items.map((p) =>
+    `<option value="${esc(p.id)}"${String(p.id) === s ? ' selected' : ''}>${esc(p.nombre || ('#' + p.id))}</option>`);
+  return `<option value="">—</option>` + opts.join('');
+}
+
+function awsMsgOptionsPlantilla(items, seleccionadoId) {
+  const s = seleccionadoId == null ? '' : String(seleccionadoId);
+  const opts = items.map((p) =>
+    `<option value="${esc(p.id)}"${String(p.id) === s ? ' selected' : ''}>${esc(p.nombre || ('#' + p.id))}</option>`);
+  return `<option value="">—</option>` + opts.join('');
+}
+
+function awsMsgOptionsCanal(items, seleccionadoId) {
+  const s = seleccionadoId == null ? '' : String(seleccionadoId);
+  const opts = items.map((c) =>
+    `<option value="${esc(c.id)}"${String(c.id) === s ? ' selected' : ''}>${esc(c.nombre || ('#' + c.id))}</option>`);
+  return `<option value="">—</option>` + opts.join('');
+}
+
+function formAwsMsgHtml(m, opciones = { proyectos: [], canales: [], plantillas: [] }) {
   const v   = (k) => esc(m?.[k] ?? '');
-  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
+  // Casteo a string en ambos lados: el API devuelve `prioridad` como number
+  // (tinyint sin STRINGIFY_FETCHES), asi que comparar `3 === '3'` con `===`
+  // fallaba y el <option> nunca quedaba `selected`. Afectaba al clonar sobre
+  // todo, donde el usuario espera ver la misma prioridad que el original.
+  const sel = (k, val) => String(m?.[k] ?? '') === String(val) ? 'selected' : '';
   const dt  = (k) => {
     const raw = m?.[k];
     if (!raw) return '';
+    // El default `awsMsgAhoraLocal()` ya viene con "T" y sin segundos; no
+    // aplicamos slice al valor porque `datetime-local` acepta esos formatos.
     return esc(String(raw).replace(' ', 'T').slice(0, 16));
   };
   return `
     <div class="form-row form-row-3">
       <div class="form-group">
-        <label>Fecha</label>
-        <input type="datetime-local" id="awsMsgFecha" value="${dt('fecha')}">
-      </div>
-      <div class="form-group">
-        <label>Prioridad</label>
-        <select id="awsMsgPrioridad">
-          <option value=""  ${sel('prioridad','')}>—</option>
-          <option value="A" ${sel('prioridad','A')}>Alta</option>
-          <option value="N" ${sel('prioridad','N')}>Normal</option>
-          <option value="B" ${sel('prioridad','B')}>Baja</option>
+        <label>Proyecto</label>
+        <select id="awsMsgProyecto">
+          ${awsMsgOptionsProyecto(opciones.proyectos, m?.proyecto_id)}
         </select>
       </div>
       <div class="form-group">
-        <label>Estado</label>
-        <select id="awsMsgEstado">
-          <option value=""          ${sel('estado','')}>—</option>
-          <option value="pendiente" ${sel('estado','pendiente')}>Pendiente</option>
-          <option value="enviado"   ${sel('estado','enviado')}>Enviado</option>
-          <option value="anulado"   ${sel('estado','anulado')}>Anulado</option>
-          <option value="error"     ${sel('estado','error')}>Error</option>
+        <label>Plantilla</label>
+        <select id="awsMsgPlantilla">
+          ${awsMsgOptionsPlantilla(opciones.plantillas, m?.plantilla_id)}
         </select>
       </div>
-    </div>
-    <div class="form-row form-row-3">
       <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="awsMsgProyecto" min="1" value="${v('proyecto')}">
-      </div>
-      <div class="form-group">
-        <label>Canal (ID)</label>
-        <input type="number" id="awsMsgCanal" min="1" value="${v('canal')}">
-      </div>
-      <div class="form-group">
-        <label>Plantilla (ID)</label>
-        <input type="number" id="awsMsgPlantilla" min="1" value="${v('plantilla')}">
+        <label>Canal</label>
+        <select id="awsMsgCanal">
+          ${awsMsgOptionsCanal(opciones.canales, m?.canal_id)}
+        </select>
       </div>
     </div>
     <div class="form-row">
@@ -5348,20 +5473,13 @@ function formAwsMsgHtml(m) {
       <label>Asunto</label>
       <input type="text" id="awsMsgAsunto" maxlength="255" value="${v('asunto')}">
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Formato</label>
-        <select id="awsMsgFormato">
-          <option value=""  ${sel('formato','')}>—</option>
-          <option value="T" ${sel('formato','T')}>Texto plano</option>
-          <option value="H" ${sel('formato','H')}>HTML</option>
-          <option value="M" ${sel('formato','M')}>Markdown</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Tags</label>
-        <input type="text" id="awsMsgTags" maxlength="255" value="${v('tags')}">
-      </div>
+    <div class="form-group">
+      <label>Formato</label>
+      <select id="awsMsgFormato">
+        <option value=""      ${sel('formato','')}>—</option>
+        <option value="texto" ${sel('formato','texto')}>Texto</option>
+        <option value="html"  ${sel('formato','html')}>HTML</option>
+      </select>
     </div>
     <div class="form-group">
       <label>Cuerpo</label>
@@ -5371,58 +5489,97 @@ function formAwsMsgHtml(m) {
       <label>Adjunto (URL/ruta)</label>
       <input type="text" id="awsMsgAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
     </div>
-    <div class="form-group">
-      <label>Error</label>
-      <textarea id="awsMsgErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
-    </div>
-    <div class="form-row form-row-4">
+    <div class="form-row">
       <div class="form-group">
-        <label>Encolado</label>
-        <input type="datetime-local" id="awsMsgEncolado" value="${dt('encolado')}">
+        <label>Prioridad</label>
+        <select id="awsMsgPrioridad">
+          <option value=""  ${sel('prioridad','')}>—</option>
+          <option value="5" ${sel('prioridad','5')}>Muy alta</option>
+          <option value="4" ${sel('prioridad','4')}>Alta</option>
+          <option value="3" ${sel('prioridad','3')}>Media</option>
+          <option value="2" ${sel('prioridad','2')}>Baja</option>
+          <option value="1" ${sel('prioridad','1')}>Muy baja</option>
+        </select>
       </div>
       <div class="form-group">
         <label>Programado</label>
         <input type="datetime-local" id="awsMsgProgramado" value="${dt('programado')}">
-      </div>
-      <div class="form-group">
-        <label>Enviado</label>
-        <input type="datetime-local" id="awsMsgEnviado" value="${dt('enviado')}">
-      </div>
-      <div class="form-group">
-        <label>Demora (seg.)</label>
-        <input type="number" id="awsMsgDemora" min="0" value="${v('demora')}">
       </div>
     </div>
     <div class="field-error" id="awsMsgFormError" style="display:none"></div>
   `;
 }
 
+// Mapeo entre las claves del payload y los inputs del form. Se usa para
+// marcar en rojo los campos que fallan la validacion de obligatorios y para
+// limpiar esa marca cuando el usuario empieza a completarlos.
+const AWS_MSG_INPUT_IDS = {
+  proyecto_id:  '#awsMsgProyecto',
+  plantilla_id: '#awsMsgPlantilla',
+  canal_id:     '#awsMsgCanal',
+  remitente:    '#awsMsgRemitente',
+  remite:       '#awsMsgRemite',
+  destinatario: '#awsMsgDestinatario',
+  destino:      '#awsMsgDestino',
+  asunto:       '#awsMsgAsunto',
+  formato:      '#awsMsgFormato',
+  cuerpo:       '#awsMsgCuerpo',
+  adjunto:      '#awsMsgAdjunto',
+  prioridad:    '#awsMsgPrioridad',
+  programado:   '#awsMsgProgramado',
+};
+
 async function guardarAwsMsg(id, btn) {
   const err = $('#awsMsgFormError');
   err.style.display = 'none';
 
+  // Limpiar marcas de invalido de intentos previos antes de re-validar.
+  Object.values(AWS_MSG_INPUT_IDS).forEach((sel) => {
+    const el = $(sel);
+    if (el) el.classList.remove('input-invalid');
+  });
+
   const payload = {
-    fecha:        $('#awsMsgFecha').value || null,
-    prioridad:    $('#awsMsgPrioridad').value,
-    estado:       $('#awsMsgEstado').value,
-    proyecto:     $('#awsMsgProyecto').value,
-    canal:        $('#awsMsgCanal').value,
-    plantilla:    $('#awsMsgPlantilla').value,
+    proyecto_id:  $('#awsMsgProyecto').value,
+    plantilla_id: $('#awsMsgPlantilla').value,
+    canal_id:     $('#awsMsgCanal').value,
     remitente:    $('#awsMsgRemitente').value.trim(),
     remite:       $('#awsMsgRemite').value.trim(),
     destinatario: $('#awsMsgDestinatario').value.trim(),
     destino:      $('#awsMsgDestino').value.trim(),
     asunto:       $('#awsMsgAsunto').value.trim(),
     formato:      $('#awsMsgFormato').value,
-    tags:         $('#awsMsgTags').value.trim(),
     cuerpo:       $('#awsMsgCuerpo').value,
     adjunto:      $('#awsMsgAdjunto').value.trim(),
-    error:        $('#awsMsgErrorTxt').value,
-    encolado:     $('#awsMsgEncolado').value || null,
+    prioridad:    $('#awsMsgPrioridad').value,
     programado:   $('#awsMsgProgramado').value || null,
-    enviado:      $('#awsMsgEnviado').value || null,
-    demora:       $('#awsMsgDemora').value,
   };
+
+  // Solo al crear: chequear obligatorios antes de mandar. Mismo criterio
+  // que AWS_MSG_REQUERIDOS_CREATE en cloud/api/awsmensajes.php.
+  if (id == null) {
+    const requeridos = [
+      ['proyecto_id', 'Proyecto'],
+      ['canal_id',    'Canal'],
+      ['remite',      'Remite'],
+      ['destino',     'Destino'],
+      ['asunto',      'Asunto'],
+      ['cuerpo',      'Cuerpo'],
+    ];
+    const faltantes = requeridos.filter(([k]) => !payload[k] || String(payload[k]).trim() === '');
+    if (faltantes.length) {
+      // Marcar cada input faltante con borde rojo (.input-invalid en
+      // style.css). El listener en abrirAltaEdicionAwsMsg quita la marca
+      // cuando el usuario empieza a completar cada campo.
+      faltantes.forEach(([k]) => {
+        const el = $(AWS_MSG_INPUT_IDS[k]);
+        if (el) el.classList.add('input-invalid');
+      });
+      err.textContent   = 'Faltan campos obligatorios: ' + faltantes.map(([, label]) => label).join(', ');
+      err.style.display = '';
+      return;
+    }
+  }
 
   btn.disabled = true;
   try {
@@ -5455,6 +5612,19 @@ async function eliminarAwsMsg(id) {
     cargarAwsMsg();
   } catch (e) {
     toast(e.message, { error: true });
+  }
+}
+
+// Dispara el envio manual contra el endpoint POST awsmensajes_enviar.php
+// (misma logica que usa el cron: cloud/api/lib/mensajes_enviar.php).
+async function enviarAhoraAwsMsg(id) {
+  try {
+    const r = await apiSend(`api/awsmensajes_enviar.php?id=${id}`, 'POST');
+    toast(`Enviado a ${r.destino || '(sin destino)'}.`);
+    cargarAwsMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+    cargarAwsMsg();   // el estado quedo en 'error' — refrescamos para verlo
   }
 }
 
@@ -18191,7 +18361,7 @@ route('/evolution', async (mount) => {
 
 // ------------------------- Vista: Evolution API > Mensajes (ABM) -------------------------
 const evoMsgFiltrosDefaults = {
-  q: '', codigo: '', proyecto: '', canal: '', plantilla: '',
+  q: '', codigo: '', proyecto_id: '', canal_id: '', plantilla_id: '',
   estado: '', desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -18199,31 +18369,50 @@ const evoMsgFiltros = { ...evoMsgFiltrosDefaults };
 let evoMsgBuscadorTimer   = null;
 let evoMsgFiltrosSnapshot = null;
 
+// Alineado con las filas seedeadas en `estados` (campo=evolution_mensaje_formato)
+// y con el switch de `evolutionMensajeEnviar` en cloud/jobs/datarocket_mensajes_enviar.php.
+// Ver migration 20260724_2300.
 const EVO_MSG_FORMATO_MAP = {
-  T: 'Texto plano',
-  H: 'HTML',
-  M: 'Markdown',
+  texto:     'Texto',
+  imagen:    'Imagen',
+  video:     'Video',
+  audio:     'Audio',
+  ubicacion: 'Ubicación',
 };
+// Alineado con las filas seedeadas en `estados` (campo=evolution_mensaje_prioridad).
+// La columna evolution_mensajes.prioridad es tinyint(1..5): 5 = mayor prioridad
+// de envio, 1 = menor. Ver migration 20260724_1300.
 const EVO_MSG_PRIORIDAD_MAP = {
-  A: 'Alta',
-  N: 'Normal',
-  B: 'Baja',
+  1: 'Muy baja',
+  2: 'Baja',
+  3: 'Media',
+  4: 'Alta',
+  5: 'Muy Alta',
+};
+
+// Alineado con las filas seedeadas en `estados` (campo=evolution_mensaje_estado).
+// La columna evolution_mensajes.estado es varchar(20). Ver migrations 20260724_1300
+// (declara pendiente/enviado/anulado/error) y 20260724_2100 (agrega enviando,
+// estado transitorio que setea el sender worker al tomar el mensaje).
+const EVO_MSG_ESTADO_LABEL_MAP = {
+  pendiente: 'Pendiente',
+  enviando:  'Enviando',
+  enviado:   'Enviado',
+  anulado:   'Anulado',
+  error:     'Error',
+};
+const EVO_MSG_ESTADO_COLOR_MAP = {
+  pendiente: 'badge-warn',
+  enviando:  'badge-info',
+  enviado:   'badge-success',
+  anulado:   'badge-danger',
+  error:     'badge-danger',
 };
 
 function evoMsgEstadoBadge(e) {
   if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  const colorMap = {
-    P: 'badge-warn',
-    E: 'badge-success',
-    F: 'badge-danger',
-    C: 'badge-danger',
-    R: 'badge-info',
-  };
-  const labelMap = {
-    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
-  };
-  const cls = colorMap[e] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+  const cls = EVO_MSG_ESTADO_COLOR_MAP[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(EVO_MSG_ESTADO_LABEL_MAP[e] || e)}</span>`;
 }
 
 function evoMsgFmtDemora(seg) {
@@ -18303,6 +18492,9 @@ route('/evolutionmensajes', async (mount) => {
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
+      <button type="button" data-action="enviar" role="menuitem">
+        <i class="fa-solid fa-paper-plane"></i><span>Enviar ahora</span>
+      </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
@@ -18329,26 +18521,26 @@ route('/evolutionmensajes', async (mount) => {
               <label>Estado</label>
               <select id="fEvoMsgEstado" onchange="onFiltroEvoMsg('estado', this.value)">
                 <option value="">— Todos —</option>
-                <option value="P">Pendiente</option>
-                <option value="E">Enviado</option>
-                <option value="F">Fallado</option>
-                <option value="C">Cancelado</option>
-                <option value="R">Reintento</option>
+                <option value="pendiente">Pendiente</option>
+                <option value="enviando">Enviando</option>
+                <option value="enviado">Enviado</option>
+                <option value="anulado">Anulado</option>
+                <option value="error">Error</option>
               </select>
             </div>
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Proyecto (ID)</label>
-              <input type="number" id="fEvoMsgProyecto" min="1" oninput="onFiltroEvoMsg('proyecto', this.value)">
+              <input type="number" id="fEvoMsgProyecto" min="1" oninput="onFiltroEvoMsg('proyecto_id', this.value)">
             </div>
             <div class="form-group">
               <label>Canal (ID)</label>
-              <input type="number" id="fEvoMsgCanal" min="1" oninput="onFiltroEvoMsg('canal', this.value)">
+              <input type="number" id="fEvoMsgCanal" min="1" oninput="onFiltroEvoMsg('canal_id', this.value)">
             </div>
             <div class="form-group">
               <label>Plantilla (ID)</label>
-              <input type="number" id="fEvoMsgPlantilla" min="1" oninput="onFiltroEvoMsg('plantilla', this.value)">
+              <input type="number" id="fEvoMsgPlantilla" min="1" oninput="onFiltroEvoMsg('plantilla_id', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -18426,6 +18618,7 @@ route('/evolutionmensajes', async (mount) => {
     if (!data) return;
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarEvoMsg(data.id);
+    if (b.dataset.action === 'enviar')    enviarAhoraEvoMsg(data.id);
     if (b.dataset.action === 'editar')    abrirAltaEdicionEvoMsg(data.id);
     if (b.dataset.action === 'eliminar')  eliminarEvoMsg(data.id);
   });
@@ -18509,7 +18702,7 @@ function pintarTablaEvoMsg(rows) {
 function onFiltroEvoMsg(key, value) {
   if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     evoMsgFiltros[key] = value;
-  } else if (['codigo', 'proyecto', 'canal', 'plantilla'].includes(key)) {
+  } else if (['codigo', 'proyecto_id', 'canal_id', 'plantilla_id'].includes(key)) {
     const v = String(value).trim();
     evoMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
@@ -18539,9 +18732,9 @@ function sincronizarControlesFiltrosEvoMsg() {
   const f = evoMsgFiltros;
   $('#fEvoMsgCodigo').value    = f.codigo;
   $('#fEvoMsgEstado').value    = f.estado;
-  $('#fEvoMsgProyecto').value  = f.proyecto;
-  $('#fEvoMsgCanal').value     = f.canal;
-  $('#fEvoMsgPlantilla').value = f.plantilla;
+  $('#fEvoMsgProyecto').value  = f.proyecto_id;
+  $('#fEvoMsgCanal').value     = f.canal_id;
+  $('#fEvoMsgPlantilla').value = f.plantilla_id;
   $('#fEvoMsgDesde').value     = f.desde;
   $('#fEvoMsgHasta').value     = f.hasta;
   $('#fEvoMsgLimite').value    = f.limite;
@@ -18625,10 +18818,11 @@ function renderConsultaEvoMsg(m) {
       ${esc(titulo)}
     </div>`;
 
+  // Evolution ya no maneja HTML como formato — los 5 formatos actuales
+  // (texto/imagen/video/audio/ubicacion) van todos en el cuerpo como texto
+  // plano. Los medios ademas usan la URL de `adjunto`.
   const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
-    ? (m.formato === 'H'
-        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
-        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
+    ? `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`
     : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
 
   return `
@@ -18667,6 +18861,10 @@ function renderConsultaEvoMsg(m) {
     </div>
 
     <div class="modal-tabpanel" data-panel="cuerpo" hidden>
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Asunto', m.asunto, true)}
+      </dl>
+
       ${seccion('Cuerpo del mensaje')}
       ${cuerpoHtml}
 
@@ -18678,9 +18876,9 @@ function renderConsultaEvoMsg(m) {
     <div class="modal-tabpanel" data-panel="detalles" hidden>
       ${seccion('Contexto de envío')}
       <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-        ${card('Proyecto',   m.proyecto_nombre  ?? m.proyecto)}
-        ${card('Canal',      m.canal_nombre     ?? m.canal)}
-        ${card('Plantilla',  m.plantilla_nombre ?? m.plantilla)}
+        ${card('Proyecto',   m.proyecto_nombre  ?? m.proyecto_id)}
+        ${card('Plantilla',  m.plantilla_nombre ?? m.plantilla_id)}
+        ${card('Canal',      m.canal_nombre     ?? m.canal_id)}
         ${card('Prioridad',  EVO_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
         ${card('Formato',    EVO_MSG_FORMATO_MAP[m.formato]     || m.formato)}
         ${card('Tags',       m.tags)}
@@ -18693,7 +18891,7 @@ function renderConsultaEvoMsg(m) {
         ${card('Programado', fmtFecha(m.programado))}
         ${card('Enviado',    fmtFecha(m.enviado))}
         ${card('Demora',     evoMsgFmtDemora(m.demora))}
-        ${card('Estado',     m.estado)}
+        ${card('Estado',     EVO_MSG_ESTADO_LABEL_MAP[m.estado] || m.estado)}
       </dl>
 
       <dl class="data-list" style="grid-template-columns:1fr">
@@ -18718,7 +18916,7 @@ async function ensureEvoMsgLookups() {
 function evoMsgPlantillaOptionsHtml(plantillas, proyectoId, selected) {
   const list = (proyectoId === '' || proyectoId == null)
     ? []
-    : (plantillas ?? []).filter(x => String(x.proyecto) === String(proyectoId));
+    : (plantillas ?? []).filter(x => String(x.proyecto_id) === String(proyectoId));
   const cur = selected == null ? '' : String(selected);
   const known = new Set(list.map(x => String(x.id)));
   let extra = '';
@@ -18779,9 +18977,27 @@ async function abrirAltaEdicionEvoMsg(id) {
   });
 }
 
-function formEvoMsgHtml(m, lookups) {
+function formEvoMsgHtml(rawM, lookups) {
+  const esEdicionEarly = rawM?.id != null;
+  // En Alta preseleccionamos defaults en 3 campos para que el usuario los vea
+  // antes de guardar. El servidor tambien los aplica si vienen null (defensa
+  // en profundidad). Los `...rawM` al final permiten que si alguien abre Alta
+  // con datos pre-llenos (poco comun), esos ganen sobre los defaults.
+  const nowLocal = () => {
+    const d = new Date(), pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+  };
+  const m = esEdicionEarly ? rawM : {
+    formato:    'texto',
+    prioridad:  '3',
+    programado: nowLocal(),
+    ...rawM,
+  };
   const v   = (k) => esc(m?.[k] ?? '');
-  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
+  // Coercion a string en ambos lados: la columna `prioridad` es tinyint y PDO
+  // puede devolverla como int o como string segun driver, y las <option value>
+  // son siempre strings.
+  const sel = (k, val) => String(m?.[k] ?? '') === String(val) ? 'selected' : '';
   const dt  = (k) => {
     const raw = m?.[k];
     if (!raw) return '';
@@ -18803,50 +19019,25 @@ function formEvoMsgHtml(m, lookups) {
     }).join('');
     return `<option value="">—</option>${extra}${rows}`;
   };
-  // En Alta ocultamos estado / encolado / enviado / demora / error: los aplica
-  // el servidor con defaults (estado='pendiente', encolado=NOW(), resto NULL).
+  // Alta expone solo 13 campos (proyecto/plantilla/canal, remitente/remite,
+  // destinatario/destino, asunto, formato, cuerpo, adjunto, prioridad,
+  // programado). El resto (fecha, tags, estado, encolado, enviado, demora,
+  // error) los aplica el servidor con defaults o el sender worker; en Edicion
+  // aparecen al final como bloque de auditoria.
   const esEdicion = m?.id != null;
-  const filaCabeceraCols = esEdicion ? 'form-row form-row-3' : 'form-row';
   return `
-    <div class="${filaCabeceraCols}">
-      <div class="form-group">
-        <label>Fecha</label>
-        <input type="datetime-local" id="evoFecha" value="${dt('fecha')}">
-      </div>
-      <div class="form-group">
-        <label>Prioridad</label>
-        <select id="evoPrioridad">
-          <option value=""  ${sel('prioridad','')}>—</option>
-          <option value="A" ${sel('prioridad','A')}>Alta</option>
-          <option value="N" ${sel('prioridad','N')}>Normal</option>
-          <option value="B" ${sel('prioridad','B')}>Baja</option>
-        </select>
-      </div>
-      ${esEdicion ? `
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="evoEstado">
-          <option value=""  ${sel('estado','')}>—</option>
-          <option value="P" ${sel('estado','P')}>Pendiente</option>
-          <option value="E" ${sel('estado','E')}>Enviado</option>
-          <option value="F" ${sel('estado','F')}>Fallado</option>
-          <option value="C" ${sel('estado','C')}>Cancelado</option>
-          <option value="R" ${sel('estado','R')}>Reintento</option>
-        </select>
-      </div>` : ''}
-    </div>
     <div class="form-row form-row-3">
       <div class="form-group">
-        <label>Proyecto</label>
-        <select id="evoProyecto">${opts(lookups?.proyectos, 'proyecto')}</select>
+        <label>Proyecto <span style="color:var(--danger)">*</span></label>
+        <select id="evoProyecto">${opts(lookups?.proyectos, 'proyecto_id')}</select>
       </div>
       <div class="form-group">
         <label>Plantilla</label>
-        <select id="evoPlantilla">${evoMsgPlantillaOptionsHtml(lookups?.plantillas, m?.proyecto ?? '', m?.plantilla)}</select>
+        <select id="evoPlantilla">${evoMsgPlantillaOptionsHtml(lookups?.plantillas, m?.proyecto_id ?? '', m?.plantilla_id)}</select>
       </div>
       <div class="form-group">
-        <label>Canal</label>
-        <select id="evoCanal">${opts(lookups?.canales, 'canal')}</select>
+        <label>Canal <span style="color:var(--danger)">*</span></label>
+        <select id="evoCanal">${opts(lookups?.canales, 'canal_id')}</select>
       </div>
     </div>
     <div class="form-row">
@@ -18855,7 +19046,7 @@ function formEvoMsgHtml(m, lookups) {
         <input type="text" id="evoRemitente" maxlength="255" value="${v('remitente')}">
       </div>
       <div class="form-group">
-        <label>Remite</label>
+        <label>Remite <span style="color:var(--danger)">*</span></label>
         <input type="text" id="evoRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
       </div>
     </div>
@@ -18865,7 +19056,7 @@ function formEvoMsgHtml(m, lookups) {
         <input type="text" id="evoDestinatario" maxlength="255" value="${v('destinatario')}">
       </div>
       <div class="form-group">
-        <label>Destino</label>
+        <label>Destino <span style="color:var(--danger)">*</span></label>
         <input type="text" id="evoDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace">
       </div>
     </div>
@@ -18873,35 +19064,48 @@ function formEvoMsgHtml(m, lookups) {
       <label>Asunto</label>
       <input type="text" id="evoAsunto" maxlength="255" value="${v('asunto')}">
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Formato</label>
-        <select id="evoFormato">
-          <option value=""  ${sel('formato','')}>—</option>
-          <option value="T" ${sel('formato','T')}>Texto plano</option>
-          <option value="H" ${sel('formato','H')}>HTML</option>
-          <option value="M" ${sel('formato','M')}>Markdown</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Tags</label>
-        <input type="text" id="evoTags" maxlength="255" value="${v('tags')}">
-      </div>
+    <div class="form-group">
+      <label>Formato</label>
+      <select id="evoFormato">
+        <option value=""          ${sel('formato','')}>—</option>
+        <option value="texto"     ${sel('formato','texto')}>Texto</option>
+        <option value="imagen"    ${sel('formato','imagen')}>Imagen</option>
+        <option value="video"     ${sel('formato','video')}>Video</option>
+        <option value="audio"     ${sel('formato','audio')}>Audio</option>
+        <option value="ubicacion" ${sel('formato','ubicacion')}>Ubicación</option>
+      </select>
     </div>
     <div class="form-group">
-      <label>Cuerpo</label>
+      <label>Cuerpo <span style="color:var(--danger)">*</span></label>
       <textarea id="evoCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
     </div>
     <div class="form-group">
       <label>Adjunto (URL/ruta)</label>
       <input type="text" id="evoAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
     </div>
-    ${esEdicion ? `
-    <div class="form-group">
-      <label>Error</label>
-      <textarea id="evoErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="evoPrioridad">
+          <option value=""  ${sel('prioridad','')}>—</option>
+          <option value="1" ${sel('prioridad','1')}>Muy baja</option>
+          <option value="2" ${sel('prioridad','2')}>Baja</option>
+          <option value="3" ${sel('prioridad','3')}>Media</option>
+          <option value="4" ${sel('prioridad','4')}>Alta</option>
+          <option value="5" ${sel('prioridad','5')}>Muy Alta</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Programado</label>
+        <input type="datetime-local" id="evoProgramado" value="${dt('programado')}">
+      </div>
     </div>
+    ${esEdicion ? `
     <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="datetime-local" id="evoFecha" value="${dt('fecha')}">
+      </div>
       <div class="form-group">
         <label>Encolado</label>
         <input type="datetime-local" id="evoEncolado" value="${dt('encolado')}">
@@ -18910,10 +19114,31 @@ function formEvoMsgHtml(m, lookups) {
         <label>Enviado</label>
         <input type="datetime-local" id="evoEnviado" value="${dt('enviado')}">
       </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="evoEstado">
+          <option value=""          ${sel('estado','')}>—</option>
+          <option value="pendiente" ${sel('estado','pendiente')}>Pendiente</option>
+          <option value="enviando"  ${sel('estado','enviando')}>Enviando</option>
+          <option value="enviado"   ${sel('estado','enviado')}>Enviado</option>
+          <option value="anulado"   ${sel('estado','anulado')}>Anulado</option>
+          <option value="error"     ${sel('estado','error')}>Error</option>
+        </select>
+      </div>
       <div class="form-group">
         <label>Demora (seg.)</label>
         <input type="number" id="evoDemora" min="0" value="${v('demora')}">
       </div>
+      <div class="form-group">
+        <label>Tags</label>
+        <input type="text" id="evoTags" maxlength="255" value="${v('tags')}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Error</label>
+      <textarea id="evoErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
     </div>` : ''}
     <div class="field-error" id="evoFormError" style="display:none"></div>
   `;
@@ -18923,26 +19148,49 @@ async function guardarEvoMsg(id, btn) {
   const err = $('#evoFormError');
   err.style.display = 'none';
 
+  // --- Validacion de campos obligatorios ------------------------------------
+  const requeridos = [
+    { id: 'evoProyecto', label: 'Proyecto' },
+    { id: 'evoCanal',    label: 'Canal'    },
+    { id: 'evoRemite',   label: 'Remite'   },
+    { id: 'evoDestino',  label: 'Destino'  },
+    { id: 'evoCuerpo',   label: 'Cuerpo'   },
+  ];
+  requeridos.forEach(f => $('#' + f.id).classList.remove('input-invalid'));
+  const faltantes = requeridos.filter(f => !String($('#' + f.id).value).trim());
+  if (faltantes.length) {
+    faltantes.forEach(f => $('#' + f.id).classList.add('input-invalid'));
+    err.textContent = 'Faltan campos obligatorios: ' + faltantes.map(f => f.label).join(', ') + '.';
+    err.style.display = '';
+    $('#' + faltantes[0].id).focus();
+    return;
+  }
+
+  // Base: los 13 campos que expone Alta (proyecto/plantilla/canal, remitente/
+  // remite, destinatario/destino, asunto, formato, cuerpo, adjunto, prioridad,
+  // programado). `fecha` y `tags` se movieron a Edicion; en Alta los aplica
+  // el servidor (fecha = NOW(), tags = NULL).
   const payload = {
-    fecha:        $('#evoFecha').value || null,
-    prioridad:    $('#evoPrioridad').value,
-    proyecto:     $('#evoProyecto').value,
-    canal:        $('#evoCanal').value,
-    plantilla:    $('#evoPlantilla').value,
+    proyecto_id:  $('#evoProyecto').value,
+    plantilla_id: $('#evoPlantilla').value,
+    canal_id:     $('#evoCanal').value,
     remitente:    $('#evoRemitente').value.trim(),
     remite:       $('#evoRemite').value.trim(),
     destinatario: $('#evoDestinatario').value.trim(),
     destino:      $('#evoDestino').value.trim(),
     asunto:       $('#evoAsunto').value.trim(),
     formato:      $('#evoFormato').value,
-    tags:         $('#evoTags').value.trim(),
     cuerpo:       $('#evoCuerpo').value,
     adjunto:      $('#evoAdjunto').value.trim(),
+    prioridad:    $('#evoPrioridad').value,
+    programado:   $('#evoProgramado').value || null,
   };
 
-  // En Alta estos 5 campos no se piden — el servidor aplica defaults
-  // (estado='pendiente', encolado=NOW(), resto NULL).
+  // En Alta el resto de campos NO se piden — el servidor aplica defaults
+  // (fecha = NOW(), estado = 'pendiente', encolado = NOW(), resto NULL).
   if (id != null) {
+    payload.fecha    = $('#evoFecha').value || null;
+    payload.tags     = $('#evoTags').value.trim();
     payload.estado   = $('#evoEstado').value;
     payload.error    = $('#evoErrorTxt').value;
     payload.encolado = $('#evoEncolado').value || null;
@@ -18981,6 +19229,19 @@ async function eliminarEvoMsg(id) {
     cargarEvoMsg();
   } catch (e) {
     toast(e.message, { error: true });
+  }
+}
+
+// Dispara el envio manual contra el endpoint POST evolutionmensajes_enviar.php
+// (misma logica que usa el cron: cloud/api/lib/mensajes_enviar.php).
+async function enviarAhoraEvoMsg(id) {
+  try {
+    const r = await apiSend(`api/evolutionmensajes_enviar.php?id=${id}`, 'POST');
+    toast(`Enviado a ${r.destino || '(sin destino)'}.`);
+    cargarEvoMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+    cargarEvoMsg();   // el estado quedo en 'error' — refrescamos para verlo
   }
 }
 

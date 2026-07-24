@@ -12,7 +12,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const EVO_MSG_COLS = "id, fecha, proyecto, canal, plantilla, remitente, remite,
+const EVO_MSG_COLS = "id, fecha, proyecto_id, canal_id, plantilla_id, remitente, remite,
                       destinatario, destino, prioridad, asunto, cuerpo,
                       formato, adjunto, tags, estado, error,
                       encolado, programado, enviado, demora";
@@ -51,10 +51,16 @@ try {
 // ----------------------------------------------------------------------------
 
 function handleList(PDO $pdo, array $q): void {
+    // Los filtros aceptan tanto `proyecto_id` (nombre nuevo, alineado con la
+    // columna) como el alias corto `proyecto` — asi los bookmarks / integraciones
+    // viejas siguen funcionando durante la transicion.
     $codigo    = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
-    $proyecto  = isset($q['proyecto']) && $q['proyecto'] !== '' ? (int)$q['proyecto'] : null;
-    $canal     = isset($q['canal'])    && $q['canal']    !== '' ? (int)$q['canal']    : null;
-    $plantilla = isset($q['plantilla']) && $q['plantilla'] !== '' ? (int)$q['plantilla'] : null;
+    $proyecto  = isset($q['proyecto_id'])  && $q['proyecto_id']  !== '' ? (int)$q['proyecto_id']
+                : (isset($q['proyecto'])  && $q['proyecto']  !== '' ? (int)$q['proyecto']  : null);
+    $canal     = isset($q['canal_id'])     && $q['canal_id']     !== '' ? (int)$q['canal_id']
+                : (isset($q['canal'])     && $q['canal']     !== '' ? (int)$q['canal']     : null);
+    $plantilla = isset($q['plantilla_id']) && $q['plantilla_id'] !== '' ? (int)$q['plantilla_id']
+                : (isset($q['plantilla']) && $q['plantilla'] !== '' ? (int)$q['plantilla'] : null);
     $estado    = trim((string)($q['estado']    ?? ''));
     $desde     = trim((string)($q['desde']     ?? ''));
     $hasta     = trim((string)($q['hasta']     ?? ''));
@@ -66,7 +72,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'fecha', 'proyecto', 'canal', 'plantilla',
+    $allowedOrder = ['id', 'fecha', 'proyecto_id', 'canal_id', 'plantilla_id',
                      'destinatario', 'destino', 'asunto', 'estado', 'enviado', 'demora'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
@@ -74,11 +80,11 @@ function handleList(PDO $pdo, array $q): void {
     $where  = [];
     $params = [];
 
-    if ($codigo    !== null) { $where[] = 'id = :codigo';               $params[':codigo']    = $codigo; }
-    if ($proyecto  !== null) { $where[] = 'proyecto = :proyecto';       $params[':proyecto']  = $proyecto; }
-    if ($canal     !== null) { $where[] = 'canal = :canal';             $params[':canal']     = $canal; }
-    if ($plantilla !== null) { $where[] = 'plantilla = :plantilla';     $params[':plantilla'] = $plantilla; }
-    if ($estado    !== '')   { $where[] = 'estado = :estado';           $params[':estado']    = $estado; }
+    if ($codigo    !== null) { $where[] = 'id = :codigo';                       $params[':codigo']    = $codigo; }
+    if ($proyecto  !== null) { $where[] = 'proyecto_id = :proyecto';            $params[':proyecto']  = $proyecto; }
+    if ($canal     !== null) { $where[] = 'canal_id = :canal';                  $params[':canal']     = $canal; }
+    if ($plantilla !== null) { $where[] = 'plantilla_id = :plantilla';          $params[':plantilla'] = $plantilla; }
+    if ($estado    !== '')   { $where[] = 'estado = :estado';                   $params[':estado']    = $estado; }
     if ($desde     !== '')   { $where[] = 'fecha >= :desde';            $params[':desde']     = $desde . ' 00:00:00'; }
     if ($hasta     !== '')   { $where[] = 'fecha <= :hasta';            $params[':hasta']     = $hasta . ' 23:59:59'; }
 
@@ -141,9 +147,9 @@ function handleGetOne(PDO $pdo, int $id): void {
                ec.nombre AS canal_nombre,
                dp.nombre AS plantilla_nombre
         FROM evolution_mensajes em
-        LEFT JOIN proyectos             pr ON pr.id = em.proyecto
-        LEFT JOIN evolution_canales     ec ON ec.id = em.canal
-        LEFT JOIN datarocket_plantillas dp ON dp.id = em.plantilla
+        LEFT JOIN proyectos             pr ON pr.id = em.proyecto_id
+        LEFT JOIN evolution_canales     ec ON ec.id = em.canal_id
+        LEFT JOIN datarocket_plantillas dp ON dp.id = em.plantilla_id
         WHERE em.id = :id
     ");
     $stmt->execute([':id' => $id]);
@@ -162,9 +168,11 @@ function handleLookups(PDO $pdo): void {
         SELECT id, nombre FROM proyectos
         WHERE tipo = 'I' ORDER BY nombre
     ")->fetchAll();
-    // Plantillas incluyen `proyecto` para que el frontend pueda cascadear el
-    // select: al elegir un proyecto, filtramos las plantillas de ese proyecto.
-    $plantillas = $pdo->query('SELECT id, nombre, proyecto FROM datarocket_plantillas ORDER BY nombre')->fetchAll();
+    // Plantillas incluyen `proyecto_id` para que el frontend pueda cascadear
+    // el select: al elegir un proyecto, filtramos las plantillas de ese
+    // proyecto. La columna se llama `proyecto_id` desde la migration
+    // 20260724_1500 (antes era `proyecto`).
+    $plantillas = $pdo->query('SELECT id, nombre, proyecto_id FROM datarocket_plantillas ORDER BY nombre')->fetchAll();
     $canales    = $pdo->query('SELECT id, nombre FROM evolution_canales ORDER BY nombre')->fetchAll();
 
     $mapNombre = fn($r) => ['id' => (int)$r['id'], 'nombre' => (string)($r['nombre'] ?? '')];
@@ -172,9 +180,9 @@ function handleLookups(PDO $pdo): void {
         'proyectos'  => array_map($mapNombre, $proyectos),
         'plantillas' => array_map(
             fn($r) => [
-                'id'       => (int)$r['id'],
-                'nombre'   => (string)($r['nombre'] ?? ''),
-                'proyecto' => $r['proyecto'] !== null ? (int)$r['proyecto'] : null,
+                'id'          => (int)$r['id'],
+                'nombre'      => (string)($r['nombre'] ?? ''),
+                'proyecto_id' => $r['proyecto_id'] !== null ? (int)$r['proyecto_id'] : null,
             ],
             $plantillas
         ),
@@ -209,22 +217,25 @@ function nullableDateTime(mixed $v): ?string {
 }
 
 function sanitizePayload(array $in): array {
+    // Aceptamos el alias corto (`proyecto`, `canal`, `plantilla`) ademas del
+    // nombre canonico *_id — safety net para clientes viejos durante la
+    // transicion. `?? null` cae al valor nuevo si no vino el alias.
     return [
         'fecha'        => nullableDateTime($in['fecha']        ?? null),
-        'proyecto'     => nullableInt($in['proyecto']          ?? null),
-        'canal'        => nullableInt($in['canal']             ?? null),
-        'plantilla'    => nullableInt($in['plantilla']         ?? null),
+        'proyecto_id'  => nullableInt($in['proyecto_id']       ?? $in['proyecto']  ?? null),
+        'canal_id'     => nullableInt($in['canal_id']          ?? $in['canal']     ?? null),
+        'plantilla_id' => nullableInt($in['plantilla_id']      ?? $in['plantilla'] ?? null),
         'remitente'    => nullableStr($in['remitente']         ?? null, 255),
         'remite'       => nullableStr($in['remite']            ?? null, 255),
         'destinatario' => nullableStr($in['destinatario']      ?? null, 255),
         'destino'      => nullableStr($in['destino']           ?? null, 255),
-        'prioridad'    => nullableStr($in['prioridad']         ?? null, 1),
+        'prioridad'    => nullableInt($in['prioridad']         ?? null),
         'asunto'       => nullableStr($in['asunto']            ?? null, 255),
         'cuerpo'       => nullableStr($in['cuerpo']            ?? null),
-        'formato'      => nullableStr($in['formato']           ?? null, 1),
+        'formato'      => nullableStr($in['formato']           ?? null, 20),
         'adjunto'      => nullableStr($in['adjunto']           ?? null, 500),
         'tags'         => nullableStr($in['tags']              ?? null, 255),
-        'estado'       => nullableStr($in['estado']            ?? null, 1),
+        'estado'       => nullableStr($in['estado']            ?? null, 20),
         'error'        => nullableStr($in['error']             ?? null, 1000),
         'encolado'     => nullableDateTime($in['encolado']     ?? null),
         'programado'   => nullableDateTime($in['programado']   ?? null),
@@ -233,30 +244,52 @@ function sanitizePayload(array $in): array {
     ];
 }
 
+// Chequea los 5 campos obligatorios (proyecto_id, canal_id, remite, destino,
+// cuerpo). Se aplica tanto en Alta como en Edicion — no queremos que una
+// edicion pueda dejar un mensaje sin FK, sin remitente/destino tecnicos ni
+// sin contenido; se cortaria el sender worker.
+function validarObligatorios(array $p): void {
+    $faltantes = [];
+    if ($p['proyecto_id'] === null) $faltantes[] = 'Proyecto';
+    if ($p['canal_id']    === null) $faltantes[] = 'Canal';
+    if ($p['remite']      === null) $faltantes[] = 'Remite';
+    if ($p['destino']     === null) $faltantes[] = 'Destino';
+    if ($p['cuerpo']      === null) $faltantes[] = 'Cuerpo';
+    if ($faltantes) {
+        jsonError('Faltan campos obligatorios: ' . implode(', ', $faltantes) . '.', 400);
+    }
+}
+
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
+    validarObligatorios($p);
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                  ->format('Y-m-d H:i:s');
-    if ($p['fecha']    === null) $p['fecha']    = $ahora;
-    if ($p['encolado'] === null) $p['encolado'] = $ahora;
-    if ($p['estado']   === null) $p['estado']   = 'pendiente';
+    // Defaults en profundidad: el frontend precarga estos valores en Alta pero
+    // los aplicamos igual aca por si un cliente externo POSTea sin ellos.
+    if ($p['fecha']       === null) $p['fecha']       = $ahora;
+    if ($p['encolado']    === null) $p['encolado']    = $ahora;
+    if ($p['programado']  === null) $p['programado']  = $ahora;
+    if ($p['estado']      === null) $p['estado']      = 'pendiente';
+    if ($p['formato']     === null) $p['formato']     = 'texto';
+    if ($p['prioridad']   === null) $p['prioridad']   = 3;   // media
 
     $sql = "
         INSERT INTO evolution_mensajes
-            (fecha, proyecto, canal, plantilla, remitente, remite, destinatario,
+            (fecha, proyecto_id, canal_id, plantilla_id, remitente, remite, destinatario,
              destino, prioridad, asunto, cuerpo, formato,
              adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
-            (:fecha, :proyecto, :canal, :plantilla, :remitente, :remite, :destinatario,
+            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :remitente, :remite, :destinatario,
              :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
         ':fecha'        => $p['fecha'],
-        ':proyecto'     => $p['proyecto'],
-        ':canal'        => $p['canal'],
-        ':plantilla'    => $p['plantilla'],
+        ':proyecto_id'  => $p['proyecto_id'],
+        ':canal_id'     => $p['canal_id'],
+        ':plantilla_id' => $p['plantilla_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
@@ -283,13 +316,14 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (!$exists->fetch()) jsonError('Mensaje no encontrado', 404);
 
     $p = sanitizePayload($in);
+    validarObligatorios($p);
 
     $sql = "
         UPDATE evolution_mensajes SET
             fecha        = :fecha,
-            proyecto     = :proyecto,
-            canal        = :canal,
-            plantilla    = :plantilla,
+            proyecto_id  = :proyecto_id,
+            canal_id     = :canal_id,
+            plantilla_id = :plantilla_id,
             remitente    = :remitente,
             remite       = :remite,
             destinatario = :destinatario,
@@ -311,9 +345,9 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
         ':fecha'        => $p['fecha'],
-        ':proyecto'     => $p['proyecto'],
-        ':canal'        => $p['canal'],
-        ':plantilla'    => $p['plantilla'],
+        ':proyecto_id'  => $p['proyecto_id'],
+        ':canal_id'     => $p['canal_id'],
+        ':plantilla_id' => $p['plantilla_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
