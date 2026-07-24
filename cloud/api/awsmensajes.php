@@ -12,19 +12,22 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const AWS_MSG_COLS = "id, fecha, proyecto, canal, plantilla, remitente, remite,
-                      destinatario, destino, prioridad, asunto, cuerpo, variables,
-                      codificado, formato, adjunto, parametros, tags, estado, error,
-                      encolado, enviado, demora";
+// SET de columnas de `aws_mensajes` (alias `m.`) + nombres traidos por LEFT
+// JOIN a proyectos / aws_canales / datarocket_plantillas. Reusado por listado
+// y consulta individual — el modal Consultar los muestra en la pestana
+// Detalles.
+const AWS_MSG_COLS = "m.id, m.fecha, m.proyecto, m.canal, m.plantilla,
+                      m.remitente, m.remite, m.destinatario, m.destino,
+                      m.prioridad, m.asunto, m.cuerpo, m.formato,
+                      m.adjunto, m.tags, m.estado, m.error,
+                      m.encolado, m.programado, m.enviado, m.demora,
+                      p.nombre AS proyecto_nombre,
+                      c.nombre AS canal_nombre,
+                      t.nombre AS plantilla_nombre";
 
-// Para el listado: mismo SET de columnas pero prefijadas con `m.` (alias),
-// mas el `nombre` del canal traido por LEFT JOIN a `aws_canales`.
-const AWS_MSG_COLS_LIST = "m.id, m.fecha, m.proyecto, m.canal, m.plantilla,
-                           m.remitente, m.remite, m.destinatario, m.destino,
-                           m.prioridad, m.asunto, m.cuerpo, m.variables,
-                           m.codificado, m.formato, m.adjunto, m.parametros,
-                           m.tags, m.estado, m.error, m.encolado, m.enviado,
-                           m.demora, c.nombre AS canal_nombre";
+const AWS_MSG_JOINS = "LEFT JOIN proyectos             p ON p.id = m.proyecto
+                       LEFT JOIN aws_canales           c ON c.id = m.canal
+                       LEFT JOIN datarocket_plantillas t ON t.id = m.plantilla";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -112,9 +115,9 @@ function handleList(PDO $pdo, array $q): void {
     ")->fetch();
 
     $sql = "
-        SELECT " . AWS_MSG_COLS_LIST . "
+        SELECT " . AWS_MSG_COLS . "
         FROM aws_mensajes m
-        LEFT JOIN aws_canales c ON c.id = m.canal
+        " . AWS_MSG_JOINS . "
         {$sqlWhere}
         ORDER BY m.{$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -122,11 +125,6 @@ function handleList(PDO $pdo, array $q): void {
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
-
-    foreach ($rows as &$r) {
-        $r = decodePayloadRow($r);
-    }
-    unset($r);
 
     jsonOk([
         'stats' => [
@@ -139,26 +137,17 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . AWS_MSG_COLS . " FROM aws_mensajes WHERE id = :id");
+    $sql = "
+        SELECT " . AWS_MSG_COLS . "
+        FROM aws_mensajes m
+        " . AWS_MSG_JOINS . "
+        WHERE m.id = :id
+    ";
+    $stmt = $pdo->prepare($sql);
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Mensaje no encontrado', 404);
-    jsonOk(decodePayloadRow($row));
-}
-
-// Cuando `codificado`='1', asunto/cuerpo/variables se guardan en base64 para no
-// tener que escapar el HTML/comillas del cuerpo. Los devolvemos decodificados
-// para que el consumidor los reciba en texto plano. Si una fila trae base64
-// mal formado dejamos el valor original — no queremos que un registro roto
-// tumbe todo el listado.
-function decodePayloadRow(array $row): array {
-    if (($row['codificado'] ?? null) !== '1') return $row;
-    foreach (['asunto', 'cuerpo', 'variables'] as $campo) {
-        if (!isset($row[$campo]) || $row[$campo] === '') continue;
-        $decoded = base64_decode((string)$row[$campo], true);
-        if ($decoded !== false) $row[$campo] = $decoded;
-    }
-    return $row;
+    jsonOk($row);
 }
 
 // ----------------------------------------------------------------------------
@@ -200,30 +189,16 @@ function sanitizePayload(array $in): array {
         'prioridad'    => nullableStr($in['prioridad']         ?? null, 1),
         'asunto'       => nullableStr($in['asunto']            ?? null, 255),
         'cuerpo'       => nullableStr($in['cuerpo']            ?? null),
-        'variables'    => nullableStr($in['variables']         ?? null),
-        'codificado'   => nullableStr($in['codificado']        ?? null, 1),
         'formato'      => nullableStr($in['formato']           ?? null, 1),
         'adjunto'      => nullableStr($in['adjunto']           ?? null, 500),
-        'parametros'   => nullableStr($in['parametros']        ?? null),
         'tags'         => nullableStr($in['tags']              ?? null, 255),
-        'estado'       => nullableStr($in['estado']            ?? null, 1),
+        'estado'       => nullableStr($in['estado']            ?? null, 20),
         'error'        => nullableStr($in['error']             ?? null, 1000),
         'encolado'     => nullableDateTime($in['encolado']     ?? null),
+        'programado'   => nullableDateTime($in['programado']   ?? null),
         'enviado'      => nullableDateTime($in['enviado']      ?? null),
         'demora'       => nullableInt($in['demora']            ?? null),
     ];
-}
-
-// Simétrico de decodePayloadRow: si el payload trae codificado='1', el cliente
-// nos manda texto plano (posiblemente HTML en `cuerpo`) y lo guardamos en base64.
-function encodePayloadIfNeeded(array $p): array {
-    if (($p['codificado'] ?? null) !== '1') return $p;
-    foreach (['asunto', 'cuerpo', 'variables'] as $campo) {
-        if ($p[$campo] !== null && $p[$campo] !== '') {
-            $p[$campo] = base64_encode((string)$p[$campo]);
-        }
-    }
-    return $p;
 }
 
 function handleCreate(PDO $pdo, array $in): void {
@@ -232,17 +207,16 @@ function handleCreate(PDO $pdo, array $in): void {
         $p['fecha'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                       ->format('Y-m-d H:i:s');
     }
-    $p = encodePayloadIfNeeded($p);
 
     $sql = "
         INSERT INTO aws_mensajes
             (fecha, proyecto, canal, plantilla, remitente, remite, destinatario,
-             destino, prioridad, asunto, cuerpo, variables, codificado, formato,
-             adjunto, parametros, tags, estado, error, encolado, enviado, demora)
+             destino, prioridad, asunto, cuerpo, formato,
+             adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
             (:fecha, :proyecto, :canal, :plantilla, :remitente, :remite, :destinatario,
-             :destino, :prioridad, :asunto, :cuerpo, :variables, :codificado, :formato,
-             :adjunto, :parametros, :tags, :estado, :error, :encolado, :enviado, :demora)
+             :destino, :prioridad, :asunto, :cuerpo, :formato,
+             :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
@@ -257,15 +231,13 @@ function handleCreate(PDO $pdo, array $in): void {
         ':prioridad'    => $p['prioridad'],
         ':asunto'       => $p['asunto'],
         ':cuerpo'       => $p['cuerpo'],
-        ':variables'    => $p['variables'],
-        ':codificado'   => $p['codificado'],
         ':formato'      => $p['formato'],
         ':adjunto'      => $p['adjunto'],
-        ':parametros'   => $p['parametros'],
         ':tags'         => $p['tags'],
         ':estado'       => $p['estado'],
         ':error'        => $p['error'],
         ':encolado'     => $p['encolado'],
+        ':programado'   => $p['programado'],
         ':enviado'      => $p['enviado'],
         ':demora'       => $p['demora'],
     ]);
@@ -278,7 +250,6 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (!$exists->fetch()) jsonError('Mensaje no encontrado', 404);
 
     $p = sanitizePayload($in);
-    $p = encodePayloadIfNeeded($p);
 
     $sql = "
         UPDATE aws_mensajes SET
@@ -293,15 +264,13 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             prioridad    = :prioridad,
             asunto       = :asunto,
             cuerpo       = :cuerpo,
-            variables    = :variables,
-            codificado   = :codificado,
             formato      = :formato,
             adjunto      = :adjunto,
-            parametros   = :parametros,
             tags         = :tags,
             estado       = :estado,
             error        = :error,
             encolado     = :encolado,
+            programado   = :programado,
             enviado      = :enviado,
             demora       = :demora
         WHERE id = :id
@@ -319,15 +288,13 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
         ':prioridad'    => $p['prioridad'],
         ':asunto'       => $p['asunto'],
         ':cuerpo'       => $p['cuerpo'],
-        ':variables'    => $p['variables'],
-        ':codificado'   => $p['codificado'],
         ':formato'      => $p['formato'],
         ':adjunto'      => $p['adjunto'],
-        ':parametros'   => $p['parametros'],
         ':tags'         => $p['tags'],
         ':estado'       => $p['estado'],
         ':error'        => $p['error'],
         ':encolado'     => $p['encolado'],
+        ':programado'   => $p['programado'],
         ':enviado'      => $p['enviado'],
         ':demora'       => $p['demora'],
         ':id'           => $id,

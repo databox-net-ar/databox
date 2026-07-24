@@ -4721,17 +4721,17 @@ const AWS_MSG_PRIORIDAD_MAP = {
 function awsMsgEstadoBadge(e) {
   if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
   const colorMap = {
-    P: 'badge-warn',
-    E: 'badge-success',
-    F: 'badge-danger',
-    C: 'badge-danger',
-    R: 'badge-info',
+    pendiente: 'badge-warn',
+    enviado:   'badge-success',
+    anulado:   'badge-danger',
+    error:     'badge-danger',
   };
   const labelMap = {
-    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
+    pendiente: 'Pendiente', enviado: 'Enviado', anulado: 'Anulado', error: 'Error',
   };
-  const cls = colorMap[e] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
+  const key = String(e).toLowerCase();
+  const cls = colorMap[key] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(labelMap[key] || e)}</span>`;
 }
 
 function awsMsgFmtDemora(seg) {
@@ -4740,6 +4740,18 @@ function awsMsgFmtDemora(seg) {
   if (n < 60)    return `${n}s`;
   if (n < 3600)  return `${Math.round(n / 60)}m`;
   return `${(n / 3600).toFixed(1)}h`;
+}
+
+// "Nombre (#42)" | "#42" | "Nombre" | null. El modal Consultar recibe los
+// nombres precomputados via LEFT JOIN (proyectos / aws_canales /
+// datarocket_plantillas) — ver AWS_MSG_JOINS en cloud/api/awsmensajes.php.
+function awsMsgFmtRef(nombre, id) {
+  const nom = nombre == null ? '' : String(nombre).trim();
+  const idn = id == null || id === '' ? '' : String(id);
+  if (nom && idn) return `${nom} (#${idn})`;
+  if (nom)        return nom;
+  if (idn)        return `#${idn}`;
+  return null;
 }
 
 route('/awsmensajes', async (mount) => {
@@ -4838,11 +4850,10 @@ route('/awsmensajes', async (mount) => {
               <label>Estado</label>
               <select id="fAwsMsgEstado" onchange="onFiltroAwsMsg('estado', this.value)">
                 <option value="">— Todos —</option>
-                <option value="P">Pendiente</option>
-                <option value="E">Enviado</option>
-                <option value="F">Fallado</option>
-                <option value="C">Cancelado</option>
-                <option value="R">Reintento</option>
+                <option value="pendiente">Pendiente</option>
+                <option value="enviado">Enviado</option>
+                <option value="anulado">Anulado</option>
+                <option value="error">Error</option>
               </select>
             </div>
           </div>
@@ -5094,14 +5105,12 @@ async function abrirConsultarAwsMsg(id) {
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
       </div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionAwsMsg(id); }
+    if (ev.target.closest('[data-act="close"]')) closeModal();
   });
 
   try {
@@ -5151,51 +5160,84 @@ function renderConsultaAwsMsg(m) {
         <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
           <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
           <div><span style="color:var(--muted)">Encolado:</span> ${esc(fmtFecha(m.encolado))}</div>
+          <div><span style="color:var(--muted)">Programado:</span> ${esc(fmtFecha(m.programado))}</div>
           <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
         </div>
       </div>
     </div>
 
-    ${seccion('Cuerpo del mensaje')}
-    ${cuerpoHtml}
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-awsmsg-tab="general" onclick="awsMsgCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-awsmsg-tab="cuerpo" onclick="awsMsgCambiarTab('cuerpo')">
+        <i class="fa-solid fa-envelope-open-text"></i> Cuerpo
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-awsmsg-tab="detalles" onclick="awsMsgCambiarTab('detalles')">
+        <i class="fa-solid fa-list"></i> Detalles
+      </button>
+    </div>
 
-    ${seccion('Remitente y destinatario')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Remitente',    m.remitente)}
-      ${card('Remite',       m.remite, false, true)}
-      ${card('Destinatario', m.destinatario)}
-      ${card('Destino',      m.destino, false, true)}
-    </dl>
+    <div class="modal-tabpanel" data-awsmsg-tab="general">
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Remitente',    m.remitente)}
+        ${card('Remite',       m.remite, false, true)}
+        ${card('Destinatario', m.destinatario)}
+        ${card('Destino',      m.destino, false, true)}
+      </dl>
+    </div>
 
-    ${seccion('Contexto de envío')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Proyecto',   m.proyecto)}
-      ${card('Canal',      m.canal)}
-      ${card('Plantilla',  m.plantilla)}
-      ${card('Prioridad',  AWS_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
-      ${card('Formato',    AWS_MSG_FORMATO_MAP[m.formato]     || m.formato)}
-      ${card('Codificado', m.codificado)}
-    </dl>
+    <div class="modal-tabpanel" data-awsmsg-tab="cuerpo" hidden>
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Asunto', m.asunto, true)}
+      </dl>
+      ${seccion('Cuerpo del mensaje')}
+      ${cuerpoHtml}
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Adjunto', m.adjunto, true, true)}
+      </dl>
+    </div>
 
-    ${seccion('Tiempos y resultado')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Fecha',    fmtFecha(m.fecha))}
-      ${card('Encolado', fmtFecha(m.encolado))}
-      ${card('Enviado',  fmtFecha(m.enviado))}
-      ${card('Demora',   awsMsgFmtDemora(m.demora))}
-      ${card('Estado',   m.estado)}
-      ${card('Tags',     m.tags)}
-    </dl>
+    <div class="modal-tabpanel" data-awsmsg-tab="detalles" hidden>
+      ${seccion('Contexto de envío')}
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Proyecto',   awsMsgFmtRef(m.proyecto_nombre,  m.proyecto))}
+        ${card('Plantilla',  awsMsgFmtRef(m.plantilla_nombre, m.plantilla))}
+        ${card('Canal',      awsMsgFmtRef(m.canal_nombre,     m.canal))}
+        ${card('Prioridad',  AWS_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
+        ${card('Formato',    AWS_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+        ${card('Tags',       m.tags)}
+      </dl>
 
-    ${seccion('Adjunto, variables y errores')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Adjunto',    m.adjunto, true, true)}
-      ${card('Variables',  m.variables, true, true)}
-      ${card('Parámetros', m.parametros, true, true)}
-      ${card('Error',      m.error, true)}
-    </dl>
+      ${seccion('Tiempos y resultado')}
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Fecha',      fmtFecha(m.fecha))}
+        ${card('Encolado',   fmtFecha(m.encolado))}
+        ${card('Programado', fmtFecha(m.programado))}
+        ${card('Enviado',    fmtFecha(m.enviado))}
+        ${card('Demora',     awsMsgFmtDemora(m.demora))}
+        ${card('Estado',     m.estado)}
+      </dl>
+
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Error', m.error, true)}
+      </dl>
+    </div>
   `;
 }
+
+function awsMsgCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-awsmsg-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.awsmsgTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-awsmsg-tab]').forEach((p) => {
+    p.hidden = p.dataset.awsmsgTab !== tab;
+  });
+}
+window.awsMsgCambiarTab = awsMsgCambiarTab;
 
 async function abrirAltaEdicionAwsMsg(id) {
   const esEdicion = id != null;
@@ -5260,12 +5302,11 @@ function formAwsMsgHtml(m) {
       <div class="form-group">
         <label>Estado</label>
         <select id="awsMsgEstado">
-          <option value=""  ${sel('estado','')}>—</option>
-          <option value="P" ${sel('estado','P')}>Pendiente</option>
-          <option value="E" ${sel('estado','E')}>Enviado</option>
-          <option value="F" ${sel('estado','F')}>Fallado</option>
-          <option value="C" ${sel('estado','C')}>Cancelado</option>
-          <option value="R" ${sel('estado','R')}>Reintento</option>
+          <option value=""          ${sel('estado','')}>—</option>
+          <option value="pendiente" ${sel('estado','pendiente')}>Pendiente</option>
+          <option value="enviado"   ${sel('estado','enviado')}>Enviado</option>
+          <option value="anulado"   ${sel('estado','anulado')}>Anulado</option>
+          <option value="error"     ${sel('estado','error')}>Error</option>
         </select>
       </div>
     </div>
@@ -5307,7 +5348,7 @@ function formAwsMsgHtml(m) {
       <label>Asunto</label>
       <input type="text" id="awsMsgAsunto" maxlength="255" value="${v('asunto')}">
     </div>
-    <div class="form-row form-row-3">
+    <div class="form-row">
       <div class="form-group">
         <label>Formato</label>
         <select id="awsMsgFormato">
@@ -5316,10 +5357,6 @@ function formAwsMsgHtml(m) {
           <option value="H" ${sel('formato','H')}>HTML</option>
           <option value="M" ${sel('formato','M')}>Markdown</option>
         </select>
-      </div>
-      <div class="form-group">
-        <label>Codificado</label>
-        <input type="text" id="awsMsgCodificado" maxlength="1" value="${v('codificado')}">
       </div>
       <div class="form-group">
         <label>Tags</label>
@@ -5331,14 +5368,6 @@ function formAwsMsgHtml(m) {
       <textarea id="awsMsgCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
     </div>
     <div class="form-group">
-      <label>Variables</label>
-      <textarea id="awsMsgVariables" rows="3" style="font-family:monospace">${v('variables')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Parámetros</label>
-      <textarea id="awsMsgParametros" rows="3" style="font-family:monospace">${v('parametros')}</textarea>
-    </div>
-    <div class="form-group">
       <label>Adjunto (URL/ruta)</label>
       <input type="text" id="awsMsgAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
     </div>
@@ -5346,10 +5375,14 @@ function formAwsMsgHtml(m) {
       <label>Error</label>
       <textarea id="awsMsgErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
     </div>
-    <div class="form-row form-row-3">
+    <div class="form-row form-row-4">
       <div class="form-group">
         <label>Encolado</label>
         <input type="datetime-local" id="awsMsgEncolado" value="${dt('encolado')}">
+      </div>
+      <div class="form-group">
+        <label>Programado</label>
+        <input type="datetime-local" id="awsMsgProgramado" value="${dt('programado')}">
       </div>
       <div class="form-group">
         <label>Enviado</label>
@@ -5381,14 +5414,12 @@ async function guardarAwsMsg(id, btn) {
     destino:      $('#awsMsgDestino').value.trim(),
     asunto:       $('#awsMsgAsunto').value.trim(),
     formato:      $('#awsMsgFormato').value,
-    codificado:   $('#awsMsgCodificado').value.trim(),
     tags:         $('#awsMsgTags').value.trim(),
     cuerpo:       $('#awsMsgCuerpo').value,
-    variables:    $('#awsMsgVariables').value,
-    parametros:   $('#awsMsgParametros').value,
     adjunto:      $('#awsMsgAdjunto').value.trim(),
     error:        $('#awsMsgErrorTxt').value,
     encolado:     $('#awsMsgEncolado').value || null,
+    programado:   $('#awsMsgProgramado').value || null,
     enviado:      $('#awsMsgEnviado').value || null,
     demora:       $('#awsMsgDemora').value,
   };
@@ -5802,6 +5833,9 @@ function renderConsultaAwsCh(c) {
       ${card('Servidor', c.servidor, false, true)}
       ${card('Usuario',  c.usuario, false, true)}
       ${card('Contraseña', c.contrasena ? '••••••••' : null, false, true)}
+      ${card('Access Key', c.accesskey, false, true)}
+      ${card('Secreto',    c.secreto ? '••••••••' : null, false, true)}
+      ${card('Región',     c.region, false, true)}
       ${card('Habilitado', c.habilitado === '1' ? 'Sí' : (c.habilitado === '0' ? 'No' : '—'))}
     </dl>
   `;
@@ -5875,13 +5909,32 @@ function formAwsChHtml(c) {
                autocomplete="new-password">
       </div>
     </div>
-    <div class="form-group">
-      <label>Estado</label>
-      <select id="awsChHabilitado">
-        <option value=""  ${sel('habilitado','')}>—</option>
-        <option value="1" ${sel('habilitado','1')}>Habilitado</option>
-        <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
-      </select>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Access Key (SES v2 API)</label>
+        <input type="text" id="awsChAccesskey" maxlength="255" value="${v('accesskey')}" style="font-family:monospace"
+               autocomplete="off" placeholder="AKIA...">
+      </div>
+      <div class="form-group">
+        <label>Secreto (SES v2 API)</label>
+        <input type="password" id="awsChSecreto" maxlength="255" value="${v('secreto')}" style="font-family:monospace"
+               autocomplete="new-password">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Región</label>
+        <input type="text" id="awsChRegion" maxlength="30" value="${v('region')}" style="font-family:monospace"
+               placeholder="us-east-1">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="awsChHabilitado">
+          <option value=""  ${sel('habilitado','')}>—</option>
+          <option value="1" ${sel('habilitado','1')}>Habilitado</option>
+          <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
+        </select>
+      </div>
     </div>
     <div class="field-error" id="awsChFormError" style="display:none"></div>
   `;
@@ -5897,6 +5950,9 @@ async function guardarAwsCh(id, btn) {
     servidor:   $('#awsChServidor').value.trim(),
     usuario:    $('#awsChUsuario').value.trim(),
     contrasena: $('#awsChContrasena').value,
+    accesskey:  $('#awsChAccesskey').value.trim(),
+    secreto:    $('#awsChSecreto').value,
+    region:     $('#awsChRegion').value.trim(),
     habilitado: $('#awsChHabilitado').value,
   };
 
@@ -5936,7 +5992,7 @@ async function eliminarAwsCh(id) {
 
 // ------------------------- Vista: Datarocket > Plantillas (ABM) -------------------------
 const drPlFiltrosDefaults = {
-  q: '', codigo: '', proyecto: '', medio: '', formato: '',
+  q: '', codigo: '', proyecto_id: '', medio: '', formato: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const drPlFiltros = { ...drPlFiltrosDefaults };
@@ -6037,7 +6093,7 @@ route('/datarocketplantillas', async (mount) => {
             </div>
             <div class="form-group">
               <label>Proyecto</label>
-              <input type="number" id="fDrPlProyecto" min="1" placeholder="ID proyecto…" oninput="onFiltroDrPl('proyecto', this.value)">
+              <input type="number" id="fDrPlProyecto" min="1" placeholder="ID proyecto…" oninput="onFiltroDrPl('proyecto_id', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -6062,7 +6118,7 @@ route('/datarocketplantillas', async (mount) => {
               <select id="fDrPlOrderBy" onchange="onFiltroDrPl('order_by', this.value)">
                 <option value="id">Código</option>
                 <option value="nombre">Nombre</option>
-                <option value="proyecto">Proyecto</option>
+                <option value="proyecto_id">Proyecto</option>
                 <option value="medio">Medio</option>
                 <option value="remitente">Remitente</option>
                 <option value="asunto">Asunto</option>
@@ -6179,7 +6235,7 @@ function pintarTablaDrPl(rows) {
     <tr data-id="${p.id}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
       <td class="td-nombre">${esc(p.nombre || '—')}</td>
-      <td>${p.proyecto == null || p.proyecto === '' ? '—' : `#${esc(p.proyecto)}`}</td>
+      <td>${p.proyecto_id == null || p.proyecto_id === '' ? '—' : `#${esc(p.proyecto_id)}`}</td>
       <td>${esc(p.remitente || '—')}</td>
       <td>${esc(p.asunto || '—')}</td>
       <td>${esc(DR_PL_FORMATO_MAP[p.formato] || p.formato || '—')}</td>
@@ -6197,7 +6253,7 @@ function pintarTablaDrPl(rows) {
 function onFiltroDrPl(key, value) {
   if (['medio', 'formato', 'order_by', 'dir'].includes(key)) {
     drPlFiltros[key] = value;
-  } else if (['codigo', 'proyecto'].includes(key)) {
+  } else if (['codigo', 'proyecto_id'].includes(key)) {
     const v = String(value).trim();
     drPlFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
@@ -6226,7 +6282,7 @@ function refrescarBadgeFiltrosDrPl() {
 function sincronizarControlesFiltrosDrPl() {
   const f = drPlFiltros;
   $('#fDrPlCodigo').value   = f.codigo;
-  $('#fDrPlProyecto').value = f.proyecto;
+  $('#fDrPlProyecto').value = f.proyecto_id;
   $('#fDrPlMedio').value    = f.medio;
   $('#fDrPlFormato').value  = f.formato;
   $('#fDrPlLimite').value   = f.limite;
@@ -6310,7 +6366,7 @@ function renderConsultaDrPl(p) {
       <div>
         <div style="font-size:1.15rem;font-weight:700">${esc(p.nombre || '—')}</div>
         <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
-          #${esc(p.id)} · UUID <code>${esc(p.uuid || '—')}</code>
+          #${esc(p.id)} · Slug <code>${esc(p.slug || '—')}</code>
         </div>
       </div>
     </div>
@@ -6318,7 +6374,7 @@ function renderConsultaDrPl(p) {
     ${seccion('Identidad')}
     <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
       ${card('Nombre',   p.nombre)}
-      ${card('Proyecto', p.proyecto == null || p.proyecto === '' ? null : `#${p.proyecto}`)}
+      ${card('Proyecto', p.proyecto_id == null || p.proyecto_id === '' ? null : `#${p.proyecto_id}`)}
       ${card('Medio',    DR_PL_MEDIO_MAP[p.medio] || p.medio)}
       ${card('Formato',  DR_PL_FORMATO_MAP[p.formato] || p.formato)}
     </dl>
@@ -6393,7 +6449,7 @@ function formDrPlHtml(p) {
       </div>
       <div class="form-group">
         <label>Proyecto (ID)</label>
-        <input type="number" id="drPlProyecto" min="1" value="${v('proyecto')}">
+        <input type="number" id="drPlProyecto" min="1" value="${v('proyecto_id')}">
       </div>
       <div class="form-group">
         <label>Medio</label>
@@ -6439,15 +6495,15 @@ async function guardarDrPl(id, btn) {
   err.style.display = 'none';
 
   const payload = {
-    nombre:    $('#drPlNombre').value.trim(),
-    proyecto:  $('#drPlProyecto').value,
-    medio:     $('#drPlMedio').value.trim(),
-    remitente: $('#drPlRemitente').value.trim(),
-    remite:    $('#drPlRemite').value.trim(),
-    asunto:    $('#drPlAsunto').value.trim(),
-    cuerpo:    $('#drPlCuerpo').value,
-    formato:   $('#drPlFormato').value.trim(),
-    adjunto:   $('#drPlAdjunto').value.trim(),
+    nombre:      $('#drPlNombre').value.trim(),
+    proyecto_id: $('#drPlProyecto').value,
+    medio:       $('#drPlMedio').value.trim(),
+    remitente:   $('#drPlRemitente').value.trim(),
+    remite:      $('#drPlRemite').value.trim(),
+    asunto:      $('#drPlAsunto').value.trim(),
+    cuerpo:      $('#drPlCuerpo').value,
+    formato:     $('#drPlFormato').value.trim(),
+    adjunto:     $('#drPlAdjunto').value.trim(),
   };
 
   btn.disabled = true;
@@ -18528,14 +18584,12 @@ async function abrirConsultarEvoMsg(id) {
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
       </div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionEvoMsg(id); }
+    if (ev.target.closest('[data-act="close"]')) closeModal();
 
     const tabBtn = ev.target.closest('[data-tab]');
     if (tabBtn) {
@@ -18604,7 +18658,6 @@ function renderConsultaEvoMsg(m) {
     </div>
 
     <div class="modal-tabpanel" data-panel="general">
-      ${seccion('Remitente y destinatario')}
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
         ${card('Remitente',    m.remitente)}
         ${card('Remite',       m.remite, false, true)}
@@ -18617,7 +18670,6 @@ function renderConsultaEvoMsg(m) {
       ${seccion('Cuerpo del mensaje')}
       ${cuerpoHtml}
 
-      ${seccion('Adjunto')}
       <dl class="data-list" style="grid-template-columns:1fr">
         ${card('Adjunto', m.adjunto, true, true)}
       </dl>
@@ -18626,30 +18678,62 @@ function renderConsultaEvoMsg(m) {
     <div class="modal-tabpanel" data-panel="detalles" hidden>
       ${seccion('Contexto de envío')}
       <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-        ${card('Proyecto',   m.proyecto)}
-        ${card('Canal',      m.canal)}
-        ${card('Plantilla',  m.plantilla)}
+        ${card('Proyecto',   m.proyecto_nombre  ?? m.proyecto)}
+        ${card('Canal',      m.canal_nombre     ?? m.canal)}
+        ${card('Plantilla',  m.plantilla_nombre ?? m.plantilla)}
         ${card('Prioridad',  EVO_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
         ${card('Formato',    EVO_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+        ${card('Tags',       m.tags)}
       </dl>
 
       ${seccion('Tiempos y resultado')}
       <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-        ${card('Fecha',    fmtFecha(m.fecha))}
-        ${card('Encolado', fmtFecha(m.encolado))}
-        ${card('Enviado',  fmtFecha(m.enviado))}
-        ${card('Demora',   evoMsgFmtDemora(m.demora))}
-        ${card('Estado',   m.estado)}
-        ${card('Tags',     m.tags)}
+        ${card('Fecha',      fmtFecha(m.fecha))}
+        ${card('Encolado',   fmtFecha(m.encolado))}
+        ${card('Programado', fmtFecha(m.programado))}
+        ${card('Enviado',    fmtFecha(m.enviado))}
+        ${card('Demora',     evoMsgFmtDemora(m.demora))}
+        ${card('Estado',     m.estado)}
       </dl>
 
-      ${seccion('Parámetros y errores')}
       <dl class="data-list" style="grid-template-columns:1fr">
-        ${card('Parámetros', m.parametros, true, true)}
-        ${card('Error',      m.error, true)}
+        ${card('Error', m.error, true)}
       </dl>
     </div>
   `;
+}
+
+let evoMsgLookupsCache = null;
+async function ensureEvoMsgLookups() {
+  if (evoMsgLookupsCache) return evoMsgLookupsCache;
+  evoMsgLookupsCache = await apiGet('api/evolutionmensajes.php?lookups=1');
+  return evoMsgLookupsCache;
+}
+
+// <option>s del select Plantilla filtradas al proyecto elegido. Si no hay
+// proyecto seleccionado, el select queda vacio (solo "—"): fuerza a elegir
+// proyecto primero. Si `selected` esta seteada pero no aparece en el subset
+// del proyecto actual (dato cruzado o inconsistente), la agregamos como
+// opcion extra para no perder el dato al editar.
+function evoMsgPlantillaOptionsHtml(plantillas, proyectoId, selected) {
+  const list = (proyectoId === '' || proyectoId == null)
+    ? []
+    : (plantillas ?? []).filter(x => String(x.proyecto) === String(proyectoId));
+  const cur = selected == null ? '' : String(selected);
+  const known = new Set(list.map(x => String(x.id)));
+  let extra = '';
+  if (cur !== '' && !known.has(cur)) {
+    const full = (plantillas ?? []).find(x => String(x.id) === cur);
+    const label = full
+      ? `${esc(full.nombre || ('#' + full.id))} (de otro proyecto)`
+      : `#${esc(cur)} (fuera del catálogo)`;
+    extra = `<option value="${esc(cur)}" selected>${label}</option>`;
+  }
+  const rows = list.map(x => {
+    const s = cur === String(x.id) ? 'selected' : '';
+    return `<option value="${x.id}" ${s}>${esc(x.nombre || ('#' + x.id))}</option>`;
+  }).join('');
+  return `<option value="">—</option>${extra}${rows}`;
 }
 
 async function abrirAltaEdicionEvoMsg(id) {
@@ -18660,11 +18744,7 @@ async function abrirAltaEdicionEvoMsg(id) {
         <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formEvoMsgHtml({})}
-      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
         <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
@@ -18672,13 +18752,23 @@ async function abrirAltaEdicionEvoMsg(id) {
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const m = await apiGet(`api/evolutionmensajes.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formEvoMsgHtml(m);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  try {
+    const [m, lookups] = await Promise.all([
+      esEdicion ? apiGet(`api/evolutionmensajes.php?id=${id}`) : Promise.resolve({}),
+      ensureEvoMsgLookups(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formEvoMsgHtml(m, lookups);
+
+    // Cascada Proyecto -> Plantilla: al cambiar proyecto, refiltrar plantillas.
+    const $proy = $('#evoProyecto');
+    const $pl   = $('#evoPlantilla');
+    if ($proy && $pl) {
+      $proy.addEventListener('change', () => {
+        $pl.innerHTML = evoMsgPlantillaOptionsHtml(lookups?.plantillas, $proy.value, '');
+      });
     }
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
@@ -18689,7 +18779,7 @@ async function abrirAltaEdicionEvoMsg(id) {
   });
 }
 
-function formEvoMsgHtml(m) {
+function formEvoMsgHtml(m, lookups) {
   const v   = (k) => esc(m?.[k] ?? '');
   const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
   const dt  = (k) => {
@@ -18697,8 +18787,28 @@ function formEvoMsgHtml(m) {
     if (!raw) return '';
     return esc(String(raw).replace(' ', 'T').slice(0, 16));
   };
+  // Poblador de <option>s para los selects de FK (proyecto/plantilla/canal):
+  // marca como seleccionado el id actual, y si el valor guardado no aparece en
+  // el catalogo (registro huerfano) lo agrega igual como opcion adicional para
+  // no perder el dato al editar.
+  const opts = (items, campo) => {
+    const cur = m?.[campo] ?? '';
+    const known = new Set((items ?? []).map(x => String(x.id)));
+    const extra = (cur !== '' && !known.has(String(cur)))
+      ? `<option value="${esc(cur)}" selected>#${esc(cur)} (fuera del catálogo)</option>`
+      : '';
+    const rows = (items ?? []).map(x => {
+      const s = String(cur) === String(x.id) ? 'selected' : '';
+      return `<option value="${x.id}" ${s}>${esc(x.nombre || ('#' + x.id))}</option>`;
+    }).join('');
+    return `<option value="">—</option>${extra}${rows}`;
+  };
+  // En Alta ocultamos estado / encolado / enviado / demora / error: los aplica
+  // el servidor con defaults (estado='pendiente', encolado=NOW(), resto NULL).
+  const esEdicion = m?.id != null;
+  const filaCabeceraCols = esEdicion ? 'form-row form-row-3' : 'form-row';
   return `
-    <div class="form-row form-row-3">
+    <div class="${filaCabeceraCols}">
       <div class="form-group">
         <label>Fecha</label>
         <input type="datetime-local" id="evoFecha" value="${dt('fecha')}">
@@ -18712,6 +18822,7 @@ function formEvoMsgHtml(m) {
           <option value="B" ${sel('prioridad','B')}>Baja</option>
         </select>
       </div>
+      ${esEdicion ? `
       <div class="form-group">
         <label>Estado</label>
         <select id="evoEstado">
@@ -18722,20 +18833,20 @@ function formEvoMsgHtml(m) {
           <option value="C" ${sel('estado','C')}>Cancelado</option>
           <option value="R" ${sel('estado','R')}>Reintento</option>
         </select>
-      </div>
+      </div>` : ''}
     </div>
     <div class="form-row form-row-3">
       <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="evoProyecto" min="1" value="${v('proyecto')}">
+        <label>Proyecto</label>
+        <select id="evoProyecto">${opts(lookups?.proyectos, 'proyecto')}</select>
       </div>
       <div class="form-group">
-        <label>Canal (ID)</label>
-        <input type="number" id="evoCanal" min="1" value="${v('canal')}">
+        <label>Plantilla</label>
+        <select id="evoPlantilla">${evoMsgPlantillaOptionsHtml(lookups?.plantillas, m?.proyecto ?? '', m?.plantilla)}</select>
       </div>
       <div class="form-group">
-        <label>Plantilla (ID)</label>
-        <input type="number" id="evoPlantilla" min="1" value="${v('plantilla')}">
+        <label>Canal</label>
+        <select id="evoCanal">${opts(lookups?.canales, 'canal')}</select>
       </div>
     </div>
     <div class="form-row">
@@ -18782,13 +18893,10 @@ function formEvoMsgHtml(m) {
       <textarea id="evoCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
     </div>
     <div class="form-group">
-      <label>Parámetros</label>
-      <textarea id="evoParametros" rows="3" style="font-family:monospace">${v('parametros')}</textarea>
-    </div>
-    <div class="form-group">
       <label>Adjunto (URL/ruta)</label>
       <input type="text" id="evoAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
     </div>
+    ${esEdicion ? `
     <div class="form-group">
       <label>Error</label>
       <textarea id="evoErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
@@ -18806,7 +18914,7 @@ function formEvoMsgHtml(m) {
         <label>Demora (seg.)</label>
         <input type="number" id="evoDemora" min="0" value="${v('demora')}">
       </div>
-    </div>
+    </div>` : ''}
     <div class="field-error" id="evoFormError" style="display:none"></div>
   `;
 }
@@ -18818,7 +18926,6 @@ async function guardarEvoMsg(id, btn) {
   const payload = {
     fecha:        $('#evoFecha').value || null,
     prioridad:    $('#evoPrioridad').value,
-    estado:       $('#evoEstado').value,
     proyecto:     $('#evoProyecto').value,
     canal:        $('#evoCanal').value,
     plantilla:    $('#evoPlantilla').value,
@@ -18830,13 +18937,18 @@ async function guardarEvoMsg(id, btn) {
     formato:      $('#evoFormato').value,
     tags:         $('#evoTags').value.trim(),
     cuerpo:       $('#evoCuerpo').value,
-    parametros:   $('#evoParametros').value,
     adjunto:      $('#evoAdjunto').value.trim(),
-    error:        $('#evoErrorTxt').value,
-    encolado:     $('#evoEncolado').value || null,
-    enviado:      $('#evoEnviado').value || null,
-    demora:       $('#evoDemora').value,
   };
+
+  // En Alta estos 5 campos no se piden — el servidor aplica defaults
+  // (estado='pendiente', encolado=NOW(), resto NULL).
+  if (id != null) {
+    payload.estado   = $('#evoEstado').value;
+    payload.error    = $('#evoErrorTxt').value;
+    payload.encolado = $('#evoEncolado').value || null;
+    payload.enviado  = $('#evoEnviado').value || null;
+    payload.demora   = $('#evoDemora').value;
+  }
 
   btn.disabled = true;
   try {

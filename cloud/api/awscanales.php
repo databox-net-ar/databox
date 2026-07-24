@@ -12,7 +12,8 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const AWS_CH_COLS = "id, uuid, nombre, correo, servidor, usuario, contrasena, habilitado";
+const AWS_CH_COLS = "id, uuid, nombre, correo, servidor, usuario, contrasena,
+                     accesskey, secreto, region, habilitado";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -131,6 +132,9 @@ function sanitizePayload(array $in): array {
         'servidor'   => nullableStr($in['servidor']   ?? null, 255),
         'usuario'    => nullableStr($in['usuario']    ?? null, 255),
         'contrasena' => nullableStr($in['contrasena'] ?? null, 255),
+        'accesskey'  => nullableStr($in['accesskey']  ?? null, 255),
+        'secreto'    => nullableStr($in['secreto']    ?? null, 255),
+        'region'     => nullableStr($in['region']     ?? null, 30),
         'habilitado' => nullableStr($in['habilitado'] ?? null, 1),
     ];
 }
@@ -141,9 +145,11 @@ function handleCreate(PDO $pdo, array $in): void {
 
     $sql = "
         INSERT INTO aws_canales
-            (uuid, nombre, correo, servidor, usuario, contrasena, habilitado)
+            (uuid, nombre, correo, servidor, usuario, contrasena,
+             accesskey, secreto, region, habilitado)
         VALUES
-            (:uuid, :nombre, :correo, :servidor, :usuario, :contrasena, :habilitado)
+            (:uuid, :nombre, :correo, :servidor, :usuario, :contrasena,
+             :accesskey, :secreto, :region, :habilitado)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
@@ -153,6 +159,9 @@ function handleCreate(PDO $pdo, array $in): void {
         ':servidor'   => $p['servidor'],
         ':usuario'    => $p['usuario'],
         ':contrasena' => $p['contrasena'],
+        ':accesskey'  => $p['accesskey'],
+        ':secreto'    => $p['secreto'],
+        ':region'     => $p['region'],
         ':habilitado' => $p['habilitado'],
     ]);
     jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
@@ -172,6 +181,9 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             servidor   = :servidor,
             usuario    = :usuario,
             contrasena = :contrasena,
+            accesskey  = :accesskey,
+            secreto    = :secreto,
+            region     = :region,
             habilitado = :habilitado
         WHERE id = :id
     ";
@@ -182,6 +194,9 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
         ':servidor'   => $p['servidor'],
         ':usuario'    => $p['usuario'],
         ':contrasena' => $p['contrasena'],
+        ':accesskey'  => $p['accesskey'],
+        ':secreto'    => $p['secreto'],
+        ':region'     => $p['region'],
         ':habilitado' => $p['habilitado'],
         ':id'         => $id,
     ]);

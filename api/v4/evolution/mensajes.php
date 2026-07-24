@@ -168,7 +168,6 @@ function handleEnqueue(array $in): void {
         'cuerpo'       => $cuerpo,
         'formato'      => nullableStr($in['formato']      ?? null, 1),
         'adjunto'      => nullableStr($in['adjunto']      ?? null, 500),
-        'parametros'   => nullableStr($in['parametros']   ?? null),
         'tags'         => nullableStr($in['tags']         ?? null, 255),
     ];
 
@@ -178,11 +177,11 @@ function handleEnqueue(array $in): void {
     $sql = "INSERT INTO evolution_mensajes
                 (fecha, proyecto, canal, plantilla, remitente, remite, destinatario,
                  destino, prioridad, asunto, cuerpo, formato,
-                 adjunto, parametros, tags, estado, encolado)
+                 adjunto, tags, estado, encolado)
             VALUES
                 (:fecha, :proyecto, :canal, :plantilla, :remitente, :remite, :destinatario,
                  :destino, :prioridad, :asunto, :cuerpo, :formato,
-                 :adjunto, :parametros, :tags, 'P', :encolado)";
+                 :adjunto, :tags, 'P', :encolado)";
     $pdo = db();
     $st  = $pdo->prepare($sql);
     $st->execute([
@@ -199,7 +198,6 @@ function handleEnqueue(array $in): void {
         ':cuerpo'       => $p['cuerpo'],
         ':formato'      => $p['formato'],
         ':adjunto'      => $p['adjunto'],
-        ':parametros'   => $p['parametros'],
         ':tags'         => $p['tags'],
         ':encolado'     => $ahora,
     ]);

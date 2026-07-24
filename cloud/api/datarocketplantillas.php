@@ -12,7 +12,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const DR_PL_COLS = "id, uuid, nombre, proyecto, medio, remitente, remite,
+const DR_PL_COLS = "id, slug, nombre, proyecto_id, medio, remitente, remite,
                     asunto, cuerpo, formato, adjunto";
 
 header('Content-Type: application/json; charset=utf-8');
@@ -47,11 +47,11 @@ try {
 // ----------------------------------------------------------------------------
 
 function handleList(PDO $pdo, array $q): void {
-    $codigo   = isset($q['codigo'])   && $q['codigo']   !== '' ? (int)$q['codigo']   : null;
-    $proyecto = isset($q['proyecto']) && $q['proyecto'] !== '' ? (int)$q['proyecto'] : null;
-    $medio    = trim((string)($q['medio']   ?? ''));
-    $formato  = trim((string)($q['formato'] ?? ''));
-    $search   = trim((string)($q['q']       ?? ''));
+    $codigo     = isset($q['codigo'])      && $q['codigo']      !== '' ? (int)$q['codigo']      : null;
+    $proyectoId = isset($q['proyecto_id']) && $q['proyecto_id'] !== '' ? (int)$q['proyecto_id'] : null;
+    $medio      = trim((string)($q['medio']   ?? ''));
+    $formato    = trim((string)($q['formato'] ?? ''));
+    $search     = trim((string)($q['q']       ?? ''));
 
     $orderBy = $q['order_by'] ?? 'id';
     $dir     = strtolower((string)($q['dir'] ?? 'desc'));
@@ -59,7 +59,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'nombre', 'proyecto', 'medio', 'remitente',
+    $allowedOrder = ['id', 'nombre', 'proyecto_id', 'medio', 'remitente',
                      'asunto', 'formato'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
@@ -67,14 +67,14 @@ function handleList(PDO $pdo, array $q): void {
     $where  = [];
     $params = [];
 
-    if ($codigo   !== null) { $where[] = 'id = :codigo';         $params[':codigo']   = $codigo; }
-    if ($proyecto !== null) { $where[] = 'proyecto = :proyecto'; $params[':proyecto'] = $proyecto; }
-    if ($medio    !== '')   { $where[] = 'medio = :medio';       $params[':medio']    = $medio; }
-    if ($formato  !== '')   { $where[] = 'formato = :formato';   $params[':formato']  = $formato; }
+    if ($codigo     !== null) { $where[] = 'id = :codigo';                 $params[':codigo']      = $codigo; }
+    if ($proyectoId !== null) { $where[] = 'proyecto_id = :proyecto_id';   $params[':proyecto_id'] = $proyectoId; }
+    if ($medio      !== '')   { $where[] = 'medio = :medio';               $params[':medio']       = $medio; }
+    if ($formato    !== '')   { $where[] = 'formato = :formato';           $params[':formato']     = $formato; }
 
     if ($search !== '') {
         $where[] = '(nombre LIKE :s1 OR asunto LIKE :s2 OR remitente LIKE :s3
-                     OR remite LIKE :s4 OR uuid LIKE :s5)';
+                     OR remite LIKE :s4 OR slug LIKE :s5)';
         $like = "%{$search}%";
         $params[':s1'] = $like;
         $params[':s2'] = $like;
@@ -139,44 +139,44 @@ function nullableInt(mixed $v): ?int {
 
 function sanitizePayload(array $in): array {
     return [
-        'nombre'    => nullableStr($in['nombre']    ?? null, 100),
-        'proyecto'  => nullableInt($in['proyecto']  ?? null),
-        'medio'     => nullableStr($in['medio']     ?? null, 1),
-        'remitente' => nullableStr($in['remitente'] ?? null, 255),
-        'remite'    => nullableStr($in['remite']    ?? null, 255),
-        'asunto'    => nullableStr($in['asunto']    ?? null, 255),
+        'nombre'      => nullableStr($in['nombre']      ?? null, 100),
+        'proyecto_id' => nullableInt($in['proyecto_id'] ?? null),
+        'medio'       => nullableStr($in['medio']       ?? null, 1),
+        'remitente'   => nullableStr($in['remitente']   ?? null, 255),
+        'remite'      => nullableStr($in['remite']      ?? null, 255),
+        'asunto'      => nullableStr($in['asunto']      ?? null, 255),
         // `cuerpo` es mediumtext: no cortamos por longitud.
-        'cuerpo'    => nullableStr($in['cuerpo']    ?? null),
-        'formato'   => nullableStr($in['formato']   ?? null, 1),
-        'adjunto'   => nullableStr($in['adjunto']   ?? null, 500),
+        'cuerpo'      => nullableStr($in['cuerpo']      ?? null),
+        'formato'     => nullableStr($in['formato']     ?? null, 1),
+        'adjunto'     => nullableStr($in['adjunto']     ?? null, 500),
     ];
 }
 
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
-    // uuid de la tabla vieja es varchar(10) — mantenemos ese ancho.
-    $p['uuid'] = nullableStr($in['uuid'] ?? null, 10) ?? substr(bin2hex(random_bytes(5)), 0, 10);
+    // `slug` es varchar(10) (heredado del `uuid` de la tabla vieja).
+    $p['slug'] = nullableStr($in['slug'] ?? null, 10) ?? substr(bin2hex(random_bytes(5)), 0, 10);
 
     $sql = "
         INSERT INTO datarocket_plantillas
-            (uuid, nombre, proyecto, medio, remitente, remite,
+            (slug, nombre, proyecto_id, medio, remitente, remite,
              asunto, cuerpo, formato, adjunto)
         VALUES
-            (:uuid, :nombre, :proyecto, :medio, :remitente, :remite,
+            (:slug, :nombre, :proyecto_id, :medio, :remitente, :remite,
              :asunto, :cuerpo, :formato, :adjunto)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
-        ':uuid'      => $p['uuid'],
-        ':nombre'    => $p['nombre'],
-        ':proyecto'  => $p['proyecto'],
-        ':medio'     => $p['medio'],
-        ':remitente' => $p['remitente'],
-        ':remite'    => $p['remite'],
-        ':asunto'    => $p['asunto'],
-        ':cuerpo'    => $p['cuerpo'],
-        ':formato'   => $p['formato'],
-        ':adjunto'   => $p['adjunto'],
+        ':slug'        => $p['slug'],
+        ':nombre'      => $p['nombre'],
+        ':proyecto_id' => $p['proyecto_id'],
+        ':medio'       => $p['medio'],
+        ':remitente'   => $p['remitente'],
+        ':remite'      => $p['remite'],
+        ':asunto'      => $p['asunto'],
+        ':cuerpo'      => $p['cuerpo'],
+        ':formato'     => $p['formato'],
+        ':adjunto'     => $p['adjunto'],
     ]);
     jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
 }
@@ -190,29 +190,29 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 
     $sql = "
         UPDATE datarocket_plantillas SET
-            nombre    = :nombre,
-            proyecto  = :proyecto,
-            medio     = :medio,
-            remitente = :remitente,
-            remite    = :remite,
-            asunto    = :asunto,
-            cuerpo    = :cuerpo,
-            formato   = :formato,
-            adjunto   = :adjunto
+            nombre      = :nombre,
+            proyecto_id = :proyecto_id,
+            medio       = :medio,
+            remitente   = :remitente,
+            remite      = :remite,
+            asunto      = :asunto,
+            cuerpo      = :cuerpo,
+            formato     = :formato,
+            adjunto     = :adjunto
         WHERE id = :id
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
-        ':nombre'    => $p['nombre'],
-        ':proyecto'  => $p['proyecto'],
-        ':medio'     => $p['medio'],
-        ':remitente' => $p['remitente'],
-        ':remite'    => $p['remite'],
-        ':asunto'    => $p['asunto'],
-        ':cuerpo'    => $p['cuerpo'],
-        ':formato'   => $p['formato'],
-        ':adjunto'   => $p['adjunto'],
-        ':id'        => $id,
+        ':nombre'      => $p['nombre'],
+        ':proyecto_id' => $p['proyecto_id'],
+        ':medio'       => $p['medio'],
+        ':remitente'   => $p['remitente'],
+        ':remite'      => $p['remite'],
+        ':asunto'      => $p['asunto'],
+        ':cuerpo'      => $p['cuerpo'],
+        ':formato'     => $p['formato'],
+        ':adjunto'     => $p['adjunto'],
+        ':id'          => $id,
     ]);
     jsonOk(['id' => $id]);
 }

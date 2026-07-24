@@ -14,8 +14,8 @@ require_once __DIR__ . '/lib/auth_check.php';
 
 const EVO_MSG_COLS = "id, fecha, proyecto, canal, plantilla, remitente, remite,
                       destinatario, destino, prioridad, asunto, cuerpo,
-                      formato, adjunto, parametros, tags, estado, error,
-                      encolado, enviado, demora";
+                      formato, adjunto, tags, estado, error,
+                      encolado, programado, enviado, demora";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -25,7 +25,9 @@ try {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
-    if ($method === 'GET' && $id > 0) {
+    if ($method === 'GET' && isset($_GET['lookups'])) {
+        handleLookups($pdo);
+    } elseif ($method === 'GET' && $id > 0) {
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
         handleList($pdo, $_GET);
@@ -124,11 +126,60 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . EVO_MSG_COLS . " FROM evolution_mensajes WHERE id = :id");
+    // JOINs a las 3 tablas maestras para exponer los nombres humanos que el
+    // modal Consultar muestra en las tarjetas Proyecto / Canal / Plantilla.
+    // LEFT JOIN: si la FK apunta a un id inexistente devolvemos NULL en el
+    // *_nombre y el frontend cae al "Sin dato" habitual.
+    $cols = preg_replace('/\s+/', ' ', EVO_MSG_COLS);
+    $qualified = implode(', ', array_map(
+        fn($c) => 'em.' . trim($c),
+        explode(',', $cols)
+    ));
+    $stmt = $pdo->prepare("
+        SELECT {$qualified},
+               pr.nombre AS proyecto_nombre,
+               ec.nombre AS canal_nombre,
+               dp.nombre AS plantilla_nombre
+        FROM evolution_mensajes em
+        LEFT JOIN proyectos             pr ON pr.id = em.proyecto
+        LEFT JOIN evolution_canales     ec ON ec.id = em.canal
+        LEFT JOIN datarocket_plantillas dp ON dp.id = em.plantilla
+        WHERE em.id = :id
+    ");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Mensaje no encontrado', 404);
     jsonOk($row);
+}
+
+// ----------------------------------------------------------------------------
+// Lookups: alimenta los selects del form (Proyecto / Plantilla / Canal).
+// ----------------------------------------------------------------------------
+
+function handleLookups(PDO $pdo): void {
+    // Proyectos: solo los "internos" (tipo='I') — decision de producto.
+    $proyectos = $pdo->query("
+        SELECT id, nombre FROM proyectos
+        WHERE tipo = 'I' ORDER BY nombre
+    ")->fetchAll();
+    // Plantillas incluyen `proyecto` para que el frontend pueda cascadear el
+    // select: al elegir un proyecto, filtramos las plantillas de ese proyecto.
+    $plantillas = $pdo->query('SELECT id, nombre, proyecto FROM datarocket_plantillas ORDER BY nombre')->fetchAll();
+    $canales    = $pdo->query('SELECT id, nombre FROM evolution_canales ORDER BY nombre')->fetchAll();
+
+    $mapNombre = fn($r) => ['id' => (int)$r['id'], 'nombre' => (string)($r['nombre'] ?? '')];
+    jsonOk([
+        'proyectos'  => array_map($mapNombre, $proyectos),
+        'plantillas' => array_map(
+            fn($r) => [
+                'id'       => (int)$r['id'],
+                'nombre'   => (string)($r['nombre'] ?? ''),
+                'proyecto' => $r['proyecto'] !== null ? (int)$r['proyecto'] : null,
+            ],
+            $plantillas
+        ),
+        'canales'    => array_map($mapNombre, $canales),
+    ]);
 }
 
 // ----------------------------------------------------------------------------
@@ -172,11 +223,11 @@ function sanitizePayload(array $in): array {
         'cuerpo'       => nullableStr($in['cuerpo']            ?? null),
         'formato'      => nullableStr($in['formato']           ?? null, 1),
         'adjunto'      => nullableStr($in['adjunto']           ?? null, 500),
-        'parametros'   => nullableStr($in['parametros']        ?? null),
         'tags'         => nullableStr($in['tags']              ?? null, 255),
         'estado'       => nullableStr($in['estado']            ?? null, 1),
         'error'        => nullableStr($in['error']             ?? null, 1000),
         'encolado'     => nullableDateTime($in['encolado']     ?? null),
+        'programado'   => nullableDateTime($in['programado']   ?? null),
         'enviado'      => nullableDateTime($in['enviado']      ?? null),
         'demora'       => nullableInt($in['demora']            ?? null),
     ];
@@ -184,20 +235,21 @@ function sanitizePayload(array $in): array {
 
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
-    if ($p['fecha'] === null) {
-        $p['fecha'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
-                      ->format('Y-m-d H:i:s');
-    }
+    $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+                 ->format('Y-m-d H:i:s');
+    if ($p['fecha']    === null) $p['fecha']    = $ahora;
+    if ($p['encolado'] === null) $p['encolado'] = $ahora;
+    if ($p['estado']   === null) $p['estado']   = 'pendiente';
 
     $sql = "
         INSERT INTO evolution_mensajes
             (fecha, proyecto, canal, plantilla, remitente, remite, destinatario,
              destino, prioridad, asunto, cuerpo, formato,
-             adjunto, parametros, tags, estado, error, encolado, enviado, demora)
+             adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
             (:fecha, :proyecto, :canal, :plantilla, :remitente, :remite, :destinatario,
              :destino, :prioridad, :asunto, :cuerpo, :formato,
-             :adjunto, :parametros, :tags, :estado, :error, :encolado, :enviado, :demora)
+             :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
@@ -214,11 +266,11 @@ function handleCreate(PDO $pdo, array $in): void {
         ':cuerpo'       => $p['cuerpo'],
         ':formato'      => $p['formato'],
         ':adjunto'      => $p['adjunto'],
-        ':parametros'   => $p['parametros'],
         ':tags'         => $p['tags'],
         ':estado'       => $p['estado'],
         ':error'        => $p['error'],
         ':encolado'     => $p['encolado'],
+        ':programado'   => $p['programado'],
         ':enviado'      => $p['enviado'],
         ':demora'       => $p['demora'],
     ]);
@@ -247,11 +299,11 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             cuerpo       = :cuerpo,
             formato      = :formato,
             adjunto      = :adjunto,
-            parametros   = :parametros,
             tags         = :tags,
             estado       = :estado,
             error        = :error,
             encolado     = :encolado,
+            programado   = :programado,
             enviado      = :enviado,
             demora       = :demora
         WHERE id = :id
@@ -271,11 +323,11 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
         ':cuerpo'       => $p['cuerpo'],
         ':formato'      => $p['formato'],
         ':adjunto'      => $p['adjunto'],
-        ':parametros'   => $p['parametros'],
         ':tags'         => $p['tags'],
         ':estado'       => $p['estado'],
         ':error'        => $p['error'],
         ':encolado'     => $p['encolado'],
+        ':programado'   => $p['programado'],
         ':enviado'      => $p['enviado'],
         ':demora'       => $p['demora'],
         ':id'           => $id,
