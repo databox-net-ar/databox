@@ -27897,7 +27897,9 @@ async function toggleActivoTarea(id, activo) {
     await apiSend('api/tareas.php?id=' + id, 'PUT', {
       nombre:         t.nombre,
       descripcion:    t.descripcion,
+      tipo:           t.tipo || 'php',
       script:         t.script,
+      url:            t.url,
       cron_expr:      t.cron_expr,
       timeout_seg:    t.timeout_seg,
       retencion_dias: t.retencion_dias,
