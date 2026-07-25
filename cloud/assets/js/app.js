@@ -347,10 +347,17 @@ const ROUTE_PERMS = {
   '/datasale':                 { prefix: 'datasale.' },
   '/prospectos':               { perm:   'datasale.prospectos.consultar' },
 
+  '/datainfra':                { prefix: 'datainfra.' },
+  '/datainfraservidores':      { perm:   'datainfra.servidores.consultar' },
+  '/datainfrabasesdatos':      { perm:   'datainfra.bases_datos.consultar' },
+  '/datainfraendpoints':       { perm:   'datainfra.endpoints.consultar' },
+
   '/aws':                      { prefix: 'plataformas.aws.' },
   '/awscuentas':               { perm:   'plataformas.aws.cuentas.consultar' },
   '/awscanales':               { perm:   'plataformas.aws.canales.consultar' },
   '/awsmensajes':              { perm:   'plataformas.aws.mensajes.consultar' },
+  '/awsservidores':            { perm:   'plataformas.aws.servidores.consultar' },
+  '/awsbases':                 { perm:   'plataformas.aws.bases_datos.consultar' },
 
   '/evolution':                { prefix: 'plataformas.evolution.' },
   '/evolutioncanales':         { perm:   'plataformas.evolution.canales.consultar' },
@@ -3954,8 +3961,9 @@ route('/aws', async (mount) => {
       <div class="page-subtitle">Herramientas y recursos de la plataforma AWS.</div>
     </div>
 
-    <!-- orden fijo pedido por el negocio: Mensajes, Canales, Cuentas
-         (Plataforma queda siempre al final como acceso externo) -->
+    <!-- orden fijo pedido por el negocio: Mensajes, Canales, Servidores,
+         Bases de Datos, Cuentas (Plataforma queda siempre al final como
+         acceso externo). -->
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/awsmensajes'">
         <span class="tile-icon">✉️</span>
@@ -3966,6 +3974,16 @@ route('/aws', async (mount) => {
         <span class="tile-icon">📡</span>
         <span class="tile-title">Canales</span>
         <span class="tile-desc">Los canales SMTP de AWS: servidor, usuario, contraseña y correo remitente por canal.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/awsservidores'">
+        <span class="tile-icon">🖥️</span>
+        <span class="tile-title">Servidores</span>
+        <span class="tile-desc">Servidores AWS (EC2 y similares): host, IP, región, tipo de instancia y credenciales SSH.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/awsbases'">
+        <span class="tile-icon">🗄️</span>
+        <span class="tile-title">Bases de Datos</span>
+        <span class="tile-desc">Bases de datos AWS (RDS/Aurora y otros motores): host, puerto, motor y credenciales de conexión.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/awscuentas'">
         <span class="tile-icon">🔐</span>
@@ -4697,6 +4715,1195 @@ async function eliminarAwsCuenta(id) {
   }
 }
 
+// ------------------------- Vista: AWS > Servidores (ABM) -------------------------
+// ABM del catalogo `aws_servidores`. Sigue el patron abm_design usado en
+// awscuentas: tarjeta de ayuda + stats-bar + toolbar (buscador + filtros +
+// refrescar) + tabla con menu contextual (Consultar/Editar/Eliminar), y
+// modales Consultar y Alta/Edicion. cuenta_id resuelve `nombre` via LEFT
+// JOIN con aws_cuentas en el server.
+const awsSrvFiltrosDefaults = {
+  q: '', codigo: '', nombre: '', host: '', region: '', cuenta_id: '', estado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const awsSrvFiltros = { ...awsSrvFiltrosDefaults };
+let awsSrvBuscadorTimer  = null;
+let awsSrvFiltrosSnapshot = null;
+let awsSrvCuentasCache    = null; // opciones para el select de cuenta_id
+
+async function awsSrvEnsureCuentas() {
+  if (awsSrvCuentasCache) return awsSrvCuentasCache;
+  try {
+    const r = await apiGet('api/awscuentas.php?limite=1000&order_by=nombre&dir=asc');
+    awsSrvCuentasCache = r.items || [];
+  } catch { awsSrvCuentasCache = []; }
+  return awsSrvCuentasCache;
+}
+
+route('/awsservidores', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS" onclick="location.hash='#/aws'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">🖥️</div>
+          <div class="module-help-text">
+            Los servidores AWS son las instancias EC2 y equipos administrados en la
+            plataforma AWS, con su host/DNS, IP para ping, región, tipo de instancia
+            y credenciales SSH para conectarse.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="awsSrvStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="awsSrvSearch"
+                   placeholder="🔍 Buscar nombre, host, IP o región…">
+            <button class="search-clear" id="awsSrvSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="awsSrvFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="awsSrvFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="awsSrvRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="awsSrvNuevoBtn">+ Nuevo servidor</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:70px">Código</th>
+              <th>Nombre</th>
+              <th>Host / IP</th>
+              <th style="width:110px">Región</th>
+              <th style="width:110px">Tipo</th>
+              <th>Cuenta</th>
+              <th style="width:90px;text-align:center">Estado</th>
+              <th style="width:150px">Actualizado</th>
+              <th style="width:70px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="awsSrvTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="awsSrvCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosAwsSrvBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosAwsSrv()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAwsSrv()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fAwsSrvCodigo" min="1" placeholder="ID …" oninput="onFiltroAwsSrv('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fAwsSrvNombre" oninput="onFiltroAwsSrv('nombre', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Host / IP</label>
+              <input type="text" id="fAwsSrvHost" oninput="onFiltroAwsSrv('host', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Región</label>
+              <input type="text" id="fAwsSrvRegion" oninput="onFiltroAwsSrv('region', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Cuenta AWS</label>
+              <select id="fAwsSrvCuenta" onchange="onFiltroAwsSrv('cuenta_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fAwsSrvEstado" onchange="onFiltroAwsSrv('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Activo</option>
+                <option value="0">Inactivo</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAwsSrvLimite" min="1" max="1000" value="100" onchange="onFiltroAwsSrv('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAwsSrvOrderBy" onchange="onFiltroAwsSrv('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="host">Host</option>
+                <option value="region">Región</option>
+                <option value="tipo_instancia">Tipo</option>
+                <option value="actualizado">Actualizado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAwsSrvDir" onchange="onFiltroAwsSrv('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAwsSrv()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAwsSrv()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAwsSrv()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#awsSrvNuevoBtn').addEventListener('click', () => abrirAltaEdicionAwsSrv(null));
+  $('#awsSrvFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsSrv());
+  $('#awsSrvRefrescarBtn').addEventListener('click', () => cargarAwsSrv());
+
+  const inp = $('#awsSrvSearch');
+  const clr = $('#awsSrvSearchClear');
+  inp.value = awsSrvFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    awsSrvFiltros.q = inp.value.trim();
+    clearTimeout(awsSrvBuscadorTimer);
+    awsSrvBuscadorTimer = setTimeout(() => { cargarAwsSrv(); refrescarBadgeFiltrosAwsSrv(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    awsSrvFiltros.q = '';
+    cargarAwsSrv();
+    refrescarBadgeFiltrosAwsSrv();
+  });
+
+  $('#awsSrvCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarAwsSrv(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionAwsSrv(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarAwsSrv(data.id);
+  });
+
+  $('#awsSrvTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#awsSrvCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAwsSrv(Number(tr.dataset.id));
+  });
+  $('#awsSrvTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#awsSrvCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosAwsSrv();
+  await cargarAwsSrv();
+}, 'AWS &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Servidores');
+
+async function cargarAwsSrv() {
+  const tbody = $('#awsSrvTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  const qs = new URLSearchParams();
+  Object.entries(awsSrvFiltros).forEach(([k, v]) => { if (v !== '' && v != null) qs.set(k, v); });
+  try {
+    const data = await apiGet('api/awsservidores.php?' + qs.toString());
+    pintarStatsAwsSrv(data.stats);
+    pintarTablaAwsSrv(data.items);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAwsSrv(s) {
+  const cards = $$('#awsSrvStats .stat-card .stat-value');
+  if (!cards.length) return;
+  cards[0].textContent = fmtNum(s.total);
+  if (cards[1]) cards[1].textContent = fmtNum(s.activos);
+}
+
+function pintarTablaAwsSrv(rows) {
+  const tbody = $('#awsSrvTbody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin servidores AWS.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => {
+    const hostIp = [
+      r.host ? `<div><code>${esc(r.host)}</code></div>` : '',
+      r.ip   ? `<div style="font-size:.78rem;color:var(--muted)"><code>${esc(r.ip)}</code></div>` : '',
+    ].filter(Boolean).join('') || '<span style="color:var(--muted)">—</span>';
+    const cuentaTxt = r.cuenta_nombre
+      ? esc(r.cuenta_nombre)
+      : (r.cuenta_id ? `<code>#${esc(r.cuenta_id)}</code>` : '<span style="color:var(--muted)">—</span>');
+    const estadoBadge = r.estado === '0'
+      ? '<span class="badge badge-danger">Inactivo</span>'
+      : '<span class="badge badge-success">Activo</span>';
+    const actualizadoTxt = r.actualizado
+      ? `<span title="${esc(fmtFecha(r.actualizado))}">${esc(fmtHace(r.actualizado))}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    return `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td><code>${esc(r.id)}</code></td>
+      <td class="td-nombre">${esc(r.nombre || '—')}</td>
+      <td>${hostIp}</td>
+      <td>${r.region ? `<code>${esc(r.region)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${r.tipo_instancia ? `<code>${esc(r.tipo_instancia)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${cuentaTxt}</td>
+      <td style="text-align:center">${estadoBadge}</td>
+      <td style="white-space:nowrap">${actualizadoTxt}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+// ---- Modal de Filtros (AWS Servidores) ----
+async function onFiltroAwsSrv(key, value) {
+  if (key === 'codigo' || key === 'nombre' || key === 'host' || key === 'region') {
+    awsSrvFiltros[key] = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    awsSrvFiltros.limite = n;
+  } else {
+    awsSrvFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAwsSrv();
+  cargarAwsSrv();
+}
+
+function refrescarBadgeFiltrosAwsSrv() {
+  const btn   = $('#awsSrvFiltrosBtn');
+  const badge = $('#awsSrvFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(awsSrvFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(awsSrvFiltros[k]) !== String(awsSrvFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+async function sincronizarControlesFiltrosAwsSrv() {
+  const f = awsSrvFiltros;
+  $('#fAwsSrvCodigo').value  = f.codigo;
+  $('#fAwsSrvNombre').value  = f.nombre;
+  $('#fAwsSrvHost').value    = f.host;
+  $('#fAwsSrvRegion').value  = f.region;
+  $('#fAwsSrvEstado').value  = f.estado;
+  $('#fAwsSrvLimite').value  = f.limite;
+  $('#fAwsSrvOrderBy').value = f.order_by;
+  $('#fAwsSrvDir').value     = f.dir;
+  const sel = $('#fAwsSrvCuenta');
+  if (sel) {
+    const cuentas = await awsSrvEnsureCuentas();
+    sel.innerHTML = '<option value="">— Todas —</option>' +
+      cuentas.map((c) => `<option value="${c.id}">${esc(c.nombre || '#' + c.id)}</option>`).join('');
+    sel.value = f.cuenta_id || '';
+  }
+}
+
+async function abrirModalFiltrosAwsSrv() {
+  awsSrvFiltrosSnapshot = { ...awsSrvFiltros };
+  await sincronizarControlesFiltrosAwsSrv();
+  $('#filtrosAwsSrvBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosAwsSrv() { $('#filtrosAwsSrvBackdrop').classList.remove('open'); }
+
+function cancelarFiltrosAwsSrv() {
+  if (awsSrvFiltrosSnapshot) {
+    Object.assign(awsSrvFiltros, awsSrvFiltrosSnapshot);
+    refrescarBadgeFiltrosAwsSrv();
+    cargarAwsSrv();
+  }
+  cerrarModalFiltrosAwsSrv();
+}
+
+async function limpiarFiltrosAwsSrv() {
+  Object.assign(awsSrvFiltros, awsSrvFiltrosDefaults);
+  awsSrvFiltros.q = $('#awsSrvSearch')?.value.trim() || '';
+  await sincronizarControlesFiltrosAwsSrv();
+  refrescarBadgeFiltrosAwsSrv();
+  cargarAwsSrv();
+}
+
+window.onFiltroAwsSrv           = onFiltroAwsSrv;
+window.cancelarFiltrosAwsSrv    = cancelarFiltrosAwsSrv;
+window.limpiarFiltrosAwsSrv     = limpiarFiltrosAwsSrv;
+window.cerrarModalFiltrosAwsSrv = cerrarModalFiltrosAwsSrv;
+
+// ---- Modal Consultar (servidor AWS) ----
+async function abrirConsultarAwsSrv(id) {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Consultar servidor AWS <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionAwsSrv(id); }
+  });
+
+  try {
+    const r = await apiGet(`api/awsservidores.php?id=${id}`);
+    const fila = (label, value, full = false, isCode = false) => {
+      const empty = value == null || value === '';
+      const inner = empty ? 'Sin dato' : (isCode ? `<code>${esc(value)}</code>` : esc(value));
+      return `
+        <div class="data-row${full ? ' full' : ''}">
+          <span class="data-label">${esc(label)}</span>
+          <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+        </div>
+      `;
+    };
+    const cuentaTxt = r.cuenta_nombre || (r.cuenta_id ? `#${r.cuenta_id}` : '');
+    const estadoTxt = r.estado === '0' ? 'Inactivo' : 'Activo';
+    $('#modalRoot .modal-body').innerHTML = `
+      <dl class="data-list">
+        ${fila('Nombre',         r.nombre)}
+        ${fila('Estado',         estadoTxt)}
+        ${fila('Host / DNS',     r.host, false, true)}
+        ${fila('IP',             r.ip,   false, true)}
+        ${fila('Región',         r.region, false, true)}
+        ${fila('Tipo instancia', r.tipo_instancia, false, true)}
+        ${fila('Usuario SSH',    r.usuario_ssh,    false, true)}
+        ${fila('Contraseña SSH', r.contrasena_ssh, false, true)}
+        ${fila('Cuenta AWS',     cuentaTxt)}
+        ${fila('Actualizado',    r.actualizado ? fmtFecha(r.actualizado) : '')}
+        ${fila('Notas',          r.notas, true)}
+      </dl>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Modal Alta / Edición (servidor AWS) ----
+async function abrirAltaEdicionAwsSrv(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar servidor AWS <span class="modal-subtitle">#${id}</span>` : 'Nuevo servidor AWS'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const [r, cuentas] = await Promise.all([
+      esEdicion ? apiGet(`api/awsservidores.php?id=${id}`) : Promise.resolve({}),
+      awsSrvEnsureCuentas(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formAwsSrvHtml(r, cuentas);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarAwsSrv(id, a);
+  });
+}
+
+function formAwsSrvHtml(r, cuentas) {
+  const v = (k) => esc(r?.[k] ?? '');
+  const cuentaSel = r?.cuenta_id != null ? String(r.cuenta_id) : '';
+  const estadoSel = r?.estado === '0' ? '0' : '1';
+  const cuentaOpts = ['<option value="">— Sin asignar —</option>']
+    .concat((cuentas || []).map((c) =>
+      `<option value="${c.id}"${String(c.id) === cuentaSel ? ' selected' : ''}>${esc(c.nombre || '#' + c.id)}</option>`))
+    .join('');
+  return `
+    <div class="form-group">
+      <label>Nombre *</label>
+      <input type="text" id="awsSrvNombre" value="${v('nombre')}" required>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Host / DNS</label>
+        <input type="text" id="awsSrvHost" value="${v('host')}" style="font-family:monospace" placeholder="ec2-1-2-3-4.compute.amazonaws.com">
+      </div>
+      <div class="form-group">
+        <label>IP</label>
+        <input type="text" id="awsSrvIp" value="${v('ip')}" style="font-family:monospace" placeholder="1.2.3.4">
+      </div>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Región</label>
+        <input type="text" id="awsSrvRegion" value="${v('region')}" style="font-family:monospace" placeholder="us-east-1">
+      </div>
+      <div class="form-group">
+        <label>Tipo de instancia</label>
+        <input type="text" id="awsSrvTipo" value="${v('tipo_instancia')}" style="font-family:monospace" placeholder="t3.small">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="awsSrvEstado">
+          <option value="1"${estadoSel === '1' ? ' selected' : ''}>Activo</option>
+          <option value="0"${estadoSel === '0' ? ' selected' : ''}>Inactivo</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Usuario SSH</label>
+        <input type="text" id="awsSrvUsuario" value="${v('usuario_ssh')}" style="font-family:monospace" placeholder="ubuntu / ec2-user">
+      </div>
+      <div class="form-group">
+        <label>Contraseña SSH</label>
+        <input type="text" id="awsSrvContrasena" value="${v('contrasena_ssh')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cuenta AWS</label>
+      <select id="awsSrvCuenta">${cuentaOpts}</select>
+    </div>
+    <div class="form-group">
+      <label>Notas</label>
+      <textarea id="awsSrvNotas" rows="3">${v('notas')}</textarea>
+    </div>
+    <div class="field-error" id="awsSrvError" style="display:none"></div>
+  `;
+}
+
+async function guardarAwsSrv(id, btn) {
+  const nombre = $('#awsSrvNombre').value.trim();
+  const err    = $('#awsSrvError');
+  err.style.display = 'none';
+  $('#awsSrvNombre').classList.remove('input-invalid');
+
+  if (!nombre) {
+    $('#awsSrvNombre').classList.add('input-invalid');
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+
+  const payload = {
+    nombre,
+    host:           $('#awsSrvHost').value.trim(),
+    ip:             $('#awsSrvIp').value.trim(),
+    region:         $('#awsSrvRegion').value.trim(),
+    tipo_instancia: $('#awsSrvTipo').value.trim(),
+    usuario_ssh:    $('#awsSrvUsuario').value.trim(),
+    contrasena_ssh: $('#awsSrvContrasena').value.trim(),
+    cuenta_id:      $('#awsSrvCuenta').value || null,
+    estado:         $('#awsSrvEstado').value,
+    notas:          $('#awsSrvNotas').value.trim(),
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/awsservidores.php', 'POST', payload);
+      toast('Servidor AWS creado.');
+    } else {
+      await apiSend(`api/awsservidores.php?id=${id}`, 'PUT', payload);
+      toast('Servidor AWS actualizado.');
+    }
+    closeModal();
+    cargarAwsSrv();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarAwsSrv(id) {
+  const ok = await confirmar({
+    title: 'Eliminar servidor AWS',
+    message: `Se eliminará el servidor AWS #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awsservidores.php?id=${id}`, 'DELETE');
+    toast('Servidor AWS eliminado.');
+    cargarAwsSrv();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: AWS > Bases de Datos (ABM) -------------------------
+// ABM del catalogo `aws_bases`. Mismo patron abm_design que awsservidores.
+// cuenta_id resuelve nombre via LEFT JOIN con aws_cuentas en el server.
+const AWS_BASE_MOTORES = [
+  { v: 'mysql',    label: 'MySQL'    },
+  { v: 'mariadb',  label: 'MariaDB'  },
+  { v: 'postgres', label: 'PostgreSQL' },
+  { v: 'aurora',   label: 'Aurora'   },
+  { v: 'sqlserver', label: 'SQL Server' },
+  { v: 'oracle',   label: 'Oracle'   },
+  { v: 'otro',     label: 'Otro'     },
+];
+const awsBaseFiltrosDefaults = {
+  q: '', codigo: '', nombre: '', motor: '', host: '', base: '', cuenta_id: '', estado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const awsBaseFiltros = { ...awsBaseFiltrosDefaults };
+let awsBaseBuscadorTimer   = null;
+let awsBaseFiltrosSnapshot = null;
+
+route('/awsbases', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS" onclick="location.hash='#/aws'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="flex:1;margin-bottom:0">
+          <div class="module-help-icon">🗄️</div>
+          <div class="module-help-text">
+            Las bases de datos AWS son los motores administrados en la plataforma
+            (RDS, Aurora y similares), con su host, puerto, motor, base y
+            credenciales para conectarse.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="awsBaseStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="awsBaseSearch"
+                   placeholder="🔍 Buscar nombre, host, base o motor…">
+            <button class="search-clear" id="awsBaseSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="awsBaseFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="awsBaseFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="awsBaseRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="awsBaseNuevoBtn">+ Nueva base</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:70px">Código</th>
+              <th>Nombre</th>
+              <th style="width:110px">Motor</th>
+              <th>Host</th>
+              <th style="width:80px">Puerto</th>
+              <th>Base</th>
+              <th>Cuenta</th>
+              <th style="width:90px;text-align:center">Estado</th>
+              <th style="width:150px">Actualizado</th>
+              <th style="width:70px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="awsBaseTbody">
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="awsBaseCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosAwsBaseBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosAwsBase()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAwsBase()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fAwsBaseCodigo" min="1" placeholder="ID …" oninput="onFiltroAwsBase('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fAwsBaseNombre" oninput="onFiltroAwsBase('nombre', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Motor</label>
+              <select id="fAwsBaseMotor" onchange="onFiltroAwsBase('motor', this.value)">
+                <option value="">— Todos —</option>
+                ${AWS_BASE_MOTORES.map((m) => `<option value="${m.v}">${esc(m.label)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Host</label>
+              <input type="text" id="fAwsBaseHost" oninput="onFiltroAwsBase('host', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Base</label>
+              <input type="text" id="fAwsBaseBase" oninput="onFiltroAwsBase('base', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Cuenta AWS</label>
+              <select id="fAwsBaseCuenta" onchange="onFiltroAwsBase('cuenta_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <select id="fAwsBaseEstado" onchange="onFiltroAwsBase('estado', this.value)">
+              <option value="">— Todos —</option>
+              <option value="1">Activo</option>
+              <option value="0">Inactivo</option>
+            </select>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAwsBaseLimite" min="1" max="1000" value="100" onchange="onFiltroAwsBase('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAwsBaseOrderBy" onchange="onFiltroAwsBase('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="motor">Motor</option>
+                <option value="host">Host</option>
+                <option value="base">Base</option>
+                <option value="actualizado">Actualizado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAwsBaseDir" onchange="onFiltroAwsBase('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAwsBase()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAwsBase()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAwsBase()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#awsBaseNuevoBtn').addEventListener('click', () => abrirAltaEdicionAwsBase(null));
+  $('#awsBaseFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsBase());
+  $('#awsBaseRefrescarBtn').addEventListener('click', () => cargarAwsBase());
+
+  const inp = $('#awsBaseSearch');
+  const clr = $('#awsBaseSearchClear');
+  inp.value = awsBaseFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    awsBaseFiltros.q = inp.value.trim();
+    clearTimeout(awsBaseBuscadorTimer);
+    awsBaseBuscadorTimer = setTimeout(() => { cargarAwsBase(); refrescarBadgeFiltrosAwsBase(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    awsBaseFiltros.q = '';
+    cargarAwsBase();
+    refrescarBadgeFiltrosAwsBase();
+  });
+
+  $('#awsBaseCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarAwsBase(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionAwsBase(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarAwsBase(data.id);
+  });
+
+  $('#awsBaseTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#awsBaseCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAwsBase(Number(tr.dataset.id));
+  });
+  $('#awsBaseTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#awsBaseCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosAwsBase();
+  await cargarAwsBase();
+}, 'AWS &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Bases de Datos');
+
+async function cargarAwsBase() {
+  const tbody = $('#awsBaseTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  const qs = new URLSearchParams();
+  Object.entries(awsBaseFiltros).forEach(([k, v]) => { if (v !== '' && v != null) qs.set(k, v); });
+  try {
+    const data = await apiGet('api/awsbases.php?' + qs.toString());
+    pintarStatsAwsBase(data.stats);
+    pintarTablaAwsBase(data.items);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAwsBase(s) {
+  const cards = $$('#awsBaseStats .stat-card .stat-value');
+  if (!cards.length) return;
+  cards[0].textContent = fmtNum(s.total);
+  if (cards[1]) cards[1].textContent = fmtNum(s.activos);
+}
+
+function awsBaseMotorLabel(v) {
+  const found = AWS_BASE_MOTORES.find((m) => m.v === v);
+  return found ? found.label : (v || '');
+}
+
+function pintarTablaAwsBase(rows) {
+  const tbody = $('#awsBaseTbody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin bases AWS.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => {
+    const motorTxt = r.motor
+      ? `<span class="badge badge-info">${esc(awsBaseMotorLabel(r.motor))}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    const cuentaTxt = r.cuenta_nombre
+      ? esc(r.cuenta_nombre)
+      : (r.cuenta_id ? `<code>#${esc(r.cuenta_id)}</code>` : '<span style="color:var(--muted)">—</span>');
+    const estadoBadge = r.estado === '0'
+      ? '<span class="badge badge-danger">Inactivo</span>'
+      : '<span class="badge badge-success">Activo</span>';
+    const actualizadoTxt = r.actualizado
+      ? `<span title="${esc(fmtFecha(r.actualizado))}">${esc(fmtHace(r.actualizado))}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    return `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td><code>${esc(r.id)}</code></td>
+      <td class="td-nombre">${esc(r.nombre || '—')}</td>
+      <td>${motorTxt}</td>
+      <td>${r.host ? `<code>${esc(r.host)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${r.puerto != null && r.puerto !== '' ? `<code>${esc(r.puerto)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${r.base ? `<code>${esc(r.base)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${cuentaTxt}</td>
+      <td style="text-align:center">${estadoBadge}</td>
+      <td style="white-space:nowrap">${actualizadoTxt}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+// ---- Modal de Filtros (AWS Bases) ----
+async function onFiltroAwsBase(key, value) {
+  if (key === 'codigo' || key === 'nombre' || key === 'host' || key === 'base') {
+    awsBaseFiltros[key] = String(value).trim();
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    awsBaseFiltros.limite = n;
+  } else {
+    awsBaseFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAwsBase();
+  cargarAwsBase();
+}
+
+function refrescarBadgeFiltrosAwsBase() {
+  const btn   = $('#awsBaseFiltrosBtn');
+  const badge = $('#awsBaseFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(awsBaseFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(awsBaseFiltros[k]) !== String(awsBaseFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+async function sincronizarControlesFiltrosAwsBase() {
+  const f = awsBaseFiltros;
+  $('#fAwsBaseCodigo').value  = f.codigo;
+  $('#fAwsBaseNombre').value  = f.nombre;
+  $('#fAwsBaseMotor').value   = f.motor;
+  $('#fAwsBaseHost').value    = f.host;
+  $('#fAwsBaseBase').value    = f.base;
+  $('#fAwsBaseEstado').value  = f.estado;
+  $('#fAwsBaseLimite').value  = f.limite;
+  $('#fAwsBaseOrderBy').value = f.order_by;
+  $('#fAwsBaseDir').value     = f.dir;
+  const sel = $('#fAwsBaseCuenta');
+  if (sel) {
+    const cuentas = await awsSrvEnsureCuentas();
+    sel.innerHTML = '<option value="">— Todas —</option>' +
+      cuentas.map((c) => `<option value="${c.id}">${esc(c.nombre || '#' + c.id)}</option>`).join('');
+    sel.value = f.cuenta_id || '';
+  }
+}
+
+async function abrirModalFiltrosAwsBase() {
+  awsBaseFiltrosSnapshot = { ...awsBaseFiltros };
+  await sincronizarControlesFiltrosAwsBase();
+  $('#filtrosAwsBaseBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosAwsBase() { $('#filtrosAwsBaseBackdrop').classList.remove('open'); }
+
+function cancelarFiltrosAwsBase() {
+  if (awsBaseFiltrosSnapshot) {
+    Object.assign(awsBaseFiltros, awsBaseFiltrosSnapshot);
+    refrescarBadgeFiltrosAwsBase();
+    cargarAwsBase();
+  }
+  cerrarModalFiltrosAwsBase();
+}
+
+async function limpiarFiltrosAwsBase() {
+  Object.assign(awsBaseFiltros, awsBaseFiltrosDefaults);
+  awsBaseFiltros.q = $('#awsBaseSearch')?.value.trim() || '';
+  await sincronizarControlesFiltrosAwsBase();
+  refrescarBadgeFiltrosAwsBase();
+  cargarAwsBase();
+}
+
+window.onFiltroAwsBase           = onFiltroAwsBase;
+window.cancelarFiltrosAwsBase    = cancelarFiltrosAwsBase;
+window.limpiarFiltrosAwsBase     = limpiarFiltrosAwsBase;
+window.cerrarModalFiltrosAwsBase = cerrarModalFiltrosAwsBase;
+
+// ---- Modal Consultar (base AWS) ----
+async function abrirConsultarAwsBase(id) {
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">Consultar base AWS <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionAwsBase(id); }
+  });
+
+  try {
+    const r = await apiGet(`api/awsbases.php?id=${id}`);
+    const fila = (label, value, full = false, isCode = false) => {
+      const empty = value == null || value === '';
+      const inner = empty ? 'Sin dato' : (isCode ? `<code>${esc(value)}</code>` : esc(value));
+      return `
+        <div class="data-row${full ? ' full' : ''}">
+          <span class="data-label">${esc(label)}</span>
+          <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+        </div>
+      `;
+    };
+    const cuentaTxt = r.cuenta_nombre || (r.cuenta_id ? `#${r.cuenta_id}` : '');
+    const estadoTxt = r.estado === '0' ? 'Inactivo' : 'Activo';
+    $('#modalRoot .modal-body').innerHTML = `
+      <dl class="data-list">
+        ${fila('Nombre',      r.nombre)}
+        ${fila('Estado',      estadoTxt)}
+        ${fila('Motor',       awsBaseMotorLabel(r.motor))}
+        ${fila('Host',        r.host, false, true)}
+        ${fila('Puerto',      r.puerto, false, true)}
+        ${fila('Base',        r.base, false, true)}
+        ${fila('Usuario',     r.usuario, false, true)}
+        ${fila('Contraseña',  r.contrasena, false, true)}
+        ${fila('Cuenta AWS',  cuentaTxt)}
+        ${fila('Actualizado', r.actualizado ? fmtFecha(r.actualizado) : '')}
+        ${fila('Notas',       r.notas, true)}
+      </dl>
+    `;
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Modal Alta / Edición (base AWS) ----
+async function abrirAltaEdicionAwsBase(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar base AWS <span class="modal-subtitle">#${id}</span>` : 'Nueva base AWS'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const [r, cuentas] = await Promise.all([
+      esEdicion ? apiGet(`api/awsbases.php?id=${id}`) : Promise.resolve({}),
+      awsSrvEnsureCuentas(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formAwsBaseHtml(r, cuentas);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarAwsBase(id, a);
+  });
+}
+
+function formAwsBaseHtml(r, cuentas) {
+  const v = (k) => esc(r?.[k] ?? '');
+  const motorSel  = r?.motor  || '';
+  const cuentaSel = r?.cuenta_id != null ? String(r.cuenta_id) : '';
+  const estadoSel = r?.estado === '0' ? '0' : '1';
+  const motorOpts = ['<option value="">— Sin especificar —</option>']
+    .concat(AWS_BASE_MOTORES.map((m) =>
+      `<option value="${m.v}"${m.v === motorSel ? ' selected' : ''}>${esc(m.label)}</option>`))
+    .join('');
+  const cuentaOpts = ['<option value="">— Sin asignar —</option>']
+    .concat((cuentas || []).map((c) =>
+      `<option value="${c.id}"${String(c.id) === cuentaSel ? ' selected' : ''}>${esc(c.nombre || '#' + c.id)}</option>`))
+    .join('');
+  return `
+    <div class="form-group">
+      <label>Nombre *</label>
+      <input type="text" id="awsBaseNombre" value="${v('nombre')}" required>
+    </div>
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Motor</label>
+        <select id="awsBaseMotor">${motorOpts}</select>
+      </div>
+      <div class="form-group">
+        <label>Puerto</label>
+        <input type="number" id="awsBasePuerto" value="${v('puerto')}" min="1" max="65535" style="font-family:monospace" placeholder="3306 / 5432">
+      </div>
+      <div class="form-group">
+        <label>Estado</label>
+        <select id="awsBaseEstado">
+          <option value="1"${estadoSel === '1' ? ' selected' : ''}>Activo</option>
+          <option value="0"${estadoSel === '0' ? ' selected' : ''}>Inactivo</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Host</label>
+      <input type="text" id="awsBaseHost" value="${v('host')}" style="font-family:monospace" placeholder="db.xxxx.us-east-1.rds.amazonaws.com">
+    </div>
+    <div class="form-group">
+      <label>Base (nombre del schema)</label>
+      <input type="text" id="awsBaseBase" value="${v('base')}" style="font-family:monospace">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Usuario</label>
+        <input type="text" id="awsBaseUsuario" value="${v('usuario')}" style="font-family:monospace">
+      </div>
+      <div class="form-group">
+        <label>Contraseña</label>
+        <input type="text" id="awsBaseContrasena" value="${v('contrasena')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cuenta AWS</label>
+      <select id="awsBaseCuenta">${cuentaOpts}</select>
+    </div>
+    <div class="form-group">
+      <label>Notas</label>
+      <textarea id="awsBaseNotas" rows="3">${v('notas')}</textarea>
+    </div>
+    <div class="field-error" id="awsBaseError" style="display:none"></div>
+  `;
+}
+
+async function guardarAwsBase(id, btn) {
+  const nombre = $('#awsBaseNombre').value.trim();
+  const err    = $('#awsBaseError');
+  err.style.display = 'none';
+  $('#awsBaseNombre').classList.remove('input-invalid');
+
+  if (!nombre) {
+    $('#awsBaseNombre').classList.add('input-invalid');
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    return;
+  }
+
+  const payload = {
+    nombre,
+    motor:      $('#awsBaseMotor').value,
+    host:       $('#awsBaseHost').value.trim(),
+    puerto:     $('#awsBasePuerto').value || null,
+    base:       $('#awsBaseBase').value.trim(),
+    usuario:    $('#awsBaseUsuario').value.trim(),
+    contrasena: $('#awsBaseContrasena').value.trim(),
+    cuenta_id:  $('#awsBaseCuenta').value || null,
+    estado:     $('#awsBaseEstado').value,
+    notas:      $('#awsBaseNotas').value.trim(),
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/awsbases.php', 'POST', payload);
+      toast('Base AWS creada.');
+    } else {
+      await apiSend(`api/awsbases.php?id=${id}`, 'PUT', payload);
+      toast('Base AWS actualizada.');
+    }
+    closeModal();
+    cargarAwsBase();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarAwsBase(id) {
+  const ok = await confirmar({
+    title: 'Eliminar base AWS',
+    message: `Se eliminará la base AWS #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awsbases.php?id=${id}`, 'DELETE');
+    toast('Base AWS eliminada.');
+    cargarAwsBase();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 // ------------------------- Vista: AWS > Mensajes (ABM) -------------------------
 const awsMsgFiltrosDefaults = {
   q: '', codigo: '', proyecto_id: '', canal_id: '', plantilla_id: '',
@@ -4706,6 +5913,10 @@ const awsMsgFiltrosDefaults = {
 const awsMsgFiltros = { ...awsMsgFiltrosDefaults };
 let awsMsgBuscadorTimer   = null;
 let awsMsgFiltrosSnapshot = null;
+// Ultimo valor conocido del flag `parametros.aws.mensajes.enviar`. Se pisa
+// en cada tick de pintarStatsAwsMsg y lo usa el boton hamburger del motor
+// para decidir que opcion mostrar en el ctx-menu (Detener/Iniciar).
+let awsMsgMotorActual     = '0';
 
 const AWS_MSG_FORMATO_MAP = {
   texto: 'Texto',
@@ -4785,9 +5996,11 @@ route('/awsmensajes', async (mount) => {
       </div>
 
       <div class="stats-bar" id="awsMsgStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Motor</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Pendientes</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -4804,6 +6017,9 @@ route('/awsmensajes', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="awsMsgRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="awsMsgMotorBtn" title="Motor de envio">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
         <div class="toolbar-right">
           <button class="btn btn-primary" id="awsMsgNuevoBtn">+ Nuevo mensaje</button>
@@ -4817,7 +6033,6 @@ route('/awsmensajes', async (mount) => {
               <th>Código</th>
               <th>Fecha</th>
               <th>Canal</th>
-              <th>Destinatario</th>
               <th>Destino</th>
               <th>Asunto</th>
               <th>Estado</th>
@@ -4826,10 +6041,19 @@ route('/awsmensajes', async (mount) => {
             </tr>
           </thead>
           <tbody id="awsMsgTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
+    </div>
+
+    <div id="awsMsgMotorMenu" class="ctx-menu" role="menu">
+      <button type="button" class="ctx-menu-plain" data-action="motor-detener" role="menuitem">
+        <i class="fa-solid fa-circle-stop"></i><span>Detener motor</span>
+      </button>
+      <button type="button" class="ctx-menu-plain" data-action="motor-iniciar" role="menuitem">
+        <i class="fa-solid fa-circle-play"></i><span>Iniciar motor</span>
+      </button>
     </div>
 
     <div id="awsMsgCtxMenu" class="ctx-menu" role="menu">
@@ -4843,8 +6067,8 @@ route('/awsmensajes', async (mount) => {
         <i class="fa-solid fa-clone"></i><span>Clonar</span>
       </button>
       <div class="ctx-menu-sep"></div>
-      <button type="button" data-action="editar" role="menuitem">
-        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      <button type="button" data-action="anular" role="menuitem">
+        <i class="fa-solid fa-ban"></i><span>Anular</span>
       </button>
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
         <i class="fa-solid fa-trash"></i><span>Eliminar</span>
@@ -4936,7 +6160,7 @@ route('/awsmensajes', async (mount) => {
     </div>
   `;
 
-  $('#awsMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionAwsMsg(null));
+  $('#awsMsgNuevoBtn').addEventListener('click', () => abrirAltaAwsMsg());
   $('#awsMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsMsg());
   $('#awsMsgRefrescarBtn').addEventListener('click', () => cargarAwsMsg());
 
@@ -4966,18 +6190,49 @@ route('/awsmensajes', async (mount) => {
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarAwsMsg(data.id);
     if (b.dataset.action === 'enviar')    enviarAhoraAwsMsg(data.id);
-    if (b.dataset.action === 'clonar')    abrirAltaEdicionAwsMsg(null, { clonarDeId: data.id });
-    if (b.dataset.action === 'editar')    abrirAltaEdicionAwsMsg(data.id);
+    if (b.dataset.action === 'clonar')    abrirAltaAwsMsg({ clonarDeId: data.id });
+    if (b.dataset.action === 'anular')    anularAwsMsg(data.id);
     if (b.dataset.action === 'eliminar')  eliminarAwsMsg(data.id);
+  });
+
+  // Boton hamburger del motor: abre el ctx-menu debajo, mostrando una sola
+  // opcion segun el valor actual del flag (leido en el ultimo tick de stats):
+  //   flag=0 -> "Iniciar motor" (unica visible)
+  //   flag!=0 -> "Detener motor" (unica visible)
+  $('#awsMsgMotorBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const menu     = $('#awsMsgMotorMenu');
+    const detenido = String(awsMsgMotorActual) === '0';
+    menu.querySelector('[data-action="motor-detener"]').style.display = detenido ? 'none' : '';
+    menu.querySelector('[data-action="motor-iniciar"]').style.display = detenido ? '' : 'none';
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu(menu, r.right - 180, r.bottom + 4, {});
+  });
+
+  $('#awsMsgMotorMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    const accion = b.dataset.action === 'motor-detener' ? 'detener' : 'iniciar';
+    try {
+      await apiSend('api/awsmensajes_motor.php', 'POST', { accion });
+      toast(accion === 'detener' ? 'Motor detenido.' : 'Motor iniciado.');
+      cargarAwsMsg();   // refresca stats (y por ende la tarjeta Motor)
+    } catch (e) {
+      toast('Error: ' + e.message, 'error');
+    }
   });
 
   $('#awsMsgTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
+      const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
+      const estado = tr?.dataset.estado || '';
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#awsMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      awsMsgAjustarCtxMenu(estado);
+      abrirCtxMenu($('#awsMsgCtxMenu'), r.right - 190, r.bottom + 4, { id, estado });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -4988,7 +6243,10 @@ route('/awsmensajes', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#awsMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    const id     = Number(tr.dataset.id);
+    const estado = tr.dataset.estado || '';
+    awsMsgAjustarCtxMenu(estado);
+    abrirCtxMenu($('#awsMsgCtxMenu'), ev.clientX, ev.clientY, { id, estado });
   });
 
   refrescarBadgeFiltrosAwsMsg();
@@ -4998,7 +6256,7 @@ route('/awsmensajes', async (mount) => {
 async function cargarAwsMsg() {
   const tbody = $('#awsMsgTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(awsMsgFiltros).forEach(([k, v]) => {
@@ -5009,31 +6267,64 @@ async function cargarAwsMsg() {
     pintarStatsAwsMsg(data.stats);
     pintarTablaAwsMsg(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
 function pintarStatsAwsMsg(s) {
   const cards = $$('#awsMsgStats .stat-card .stat-value');
-  if (cards.length < 3) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.enviados);
-  cards[2].textContent = fmtNum(s.con_error);
+  if (cards.length < 5) return;
+  // Orden: Motor, Pendientes, Enviados, Con error, Total.
+  // Ancho igualitario por `flex:1` en .stat-card (~20% cada una con 5 cards).
+  //
+  // Motor tiene 3 estados: 0=Detenido (rojo), 1=Esperando (blanco),
+  // 2=Enviando (verde). Semantica en cloud/api/lib/aws_mensajes.php.
+  awsMsgMotorActual = String(s.motor ?? '0');
+  const meta = ({
+    '0': { label: 'Detenido',  cls: 'red'   },
+    '1': { label: 'Esperando', cls: ''      },
+    '2': { label: 'Enviando',  cls: 'green' },
+  })[awsMsgMotorActual] || { label: 'Desconocido', cls: '' };
+  cards[0].textContent = meta.label;
+  cards[0].className   = 'stat-value' + (meta.cls ? ' ' + meta.cls : '');
+  cards[1].textContent = fmtNum(s.pendientes);
+  cards[2].textContent = fmtNum(s.enviados);
+  cards[3].textContent = fmtNum(s.con_error);
+  cards[4].textContent = fmtNum(s.total);
+}
+
+// Ajusta la visibilidad de opciones del ctx-menu segun el estado del mensaje.
+// Por ahora solo aplica a "Anular", que unicamente tiene sentido si el
+// mensaje esta en 'pendiente' (el back tambien rechaza otros estados con
+// 409 — awsmensajes_anular.php).
+function awsMsgAjustarCtxMenu(estado) {
+  const btn = document.querySelector('#awsMsgCtxMenu [data-action="anular"]');
+  if (!btn) return;
+  btn.style.display = estado === 'pendiente' ? '' : 'none';
 }
 
 function pintarTablaAwsMsg(rows) {
   const tbody = $('#awsMsgTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin mensajes.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin mensajes.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map((m) => `
-    <tr data-id="${m.id}" class="row-clickable">
+  tbody.innerHTML = rows.map((m) => {
+    // Celda compuesta de "Destino": si hay destinatario, va arriba en un
+    // renglon chico y apagado (var(--muted)); el destino en monospace en el
+    // renglon principal debajo. Si no hay destinatario, solo el destino.
+    const destinatarioLinea = m.destinatario
+      ? `<div style="font-size:.72rem;color:var(--muted);line-height:1.2">${esc(m.destinatario)}</div>`
+      : '';
+    return `
+    <tr data-id="${m.id}" data-estado="${esc(m.estado || '')}" class="row-clickable">
       <td class="td-id">#${esc(m.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
       <td>${esc(m.canal_nombre || (m.canal_id != null ? '#' + m.canal_id : '—'))}</td>
-      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
-      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
+      <td>
+        ${destinatarioLinea}
+        <div style="font-family:monospace">${esc(m.destino || '—')}</div>
+      </td>
       <td>${esc(m.asunto || '—')}</td>
       <td>${awsMsgEstadoBadge(m.estado)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
@@ -5044,8 +6335,8 @@ function pintarTablaAwsMsg(rows) {
           </button>
         </div>
       </td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 function onFiltroAwsMsg(key, value) {
@@ -5260,22 +6551,20 @@ function awsMsgCambiarTab(tab) {
 }
 window.awsMsgCambiarTab = awsMsgCambiarTab;
 
-async function abrirAltaEdicionAwsMsg(id, opciones = {}) {
-  // opciones.clonarDeId: si esta seteado, el modal opera en modo "nuevo"
-  // (id=null, POST al guardar) pero precarga los datos del mensaje fuente.
-  // Se descartan las columnas system-managed al copiar (id/fecha/estado/
-  // encolado/enviado/demora/error) — el servidor las regenera al crear.
+async function abrirAltaAwsMsg(opciones = {}) {
+  // Modo Nuevo (default) o Clonar (opciones.clonarDeId seteado). Un mensaje
+  // encolado no es editable — cualquier "cambio" real se resuelve clonando
+  // y anulando el original (ver ctx-menu del listado). No hay modo Editar.
+  //
+  // Al clonar se descartan las columnas system-managed (id/fecha/estado/
+  // encolado/enviado/demora/error/programado): el servidor las regenera al
+  // crear via encolarAwsMensaje().
   const clonarDeId = opciones.clonarDeId ?? null;
-  const esEdicion  = id != null;
   const esClonar   = clonarDeId != null;
-  const cargarId   = esEdicion ? id : clonarDeId;
 
-  const tituloModal = esEdicion
-    ? `Editar mensaje <span class="modal-subtitle">#${id}</span>`
-    : esClonar
-      ? `Nuevo mensaje <span class="modal-subtitle">(clonado de #${clonarDeId})</span>`
-      : 'Nuevo mensaje';
-  const textoBoton = esEdicion ? 'Guardar' : 'Crear';
+  const tituloModal = esClonar
+    ? `Nuevo mensaje <span class="modal-subtitle">(clonado de #${clonarDeId})</span>`
+    : 'Nuevo mensaje';
 
   openModal(`
     <div class="modal modal-wide">
@@ -5286,23 +6575,20 @@ async function abrirAltaEdicionAwsMsg(id, opciones = {}) {
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${textoBoton}</button>
+        <button class="btn btn-primary" data-act="guardar">Crear</button>
       </div>
     </div>
   `);
 
   try {
-    // Prefetch en paralelo: mensaje fuente (editar o clonar), proyectos
-    // filtrados por tipo='I' y canales. Plantillas se piden despues si hay
-    // proyecto preseleccionado.
-    const mPromise         = cargarId != null ? apiGet(`api/awsmensajes.php?id=${cargarId}`) : Promise.resolve({});
+    // Prefetch en paralelo: mensaje fuente (solo si clonamos), proyectos
+    // tipo='I' y canales. Plantillas se piden despues si hay proyecto
+    // preseleccionado por el clone.
+    const mPromise         = esClonar ? apiGet(`api/awsmensajes.php?id=${clonarDeId}`) : Promise.resolve({});
     const proyectosPromise = apiGet('api/proyectos.php?tipo=I');
     const canalesPromise   = apiGet('api/awscanales.php?limite=1000');
     const [m, proyectosResp, canalesResp] = await Promise.all([mPromise, proyectosPromise, canalesPromise]);
 
-    // Al clonar, descartar campos system-managed. `programado` se resetea
-    // tambien porque un valor pasado no tiene sentido para un envio nuevo;
-    // el default de "Nuevo" (ahora) lo cubre abajo.
     if (esClonar) {
       delete m.id;
       delete m.fecha;
@@ -5321,14 +6607,12 @@ async function abrirAltaEdicionAwsMsg(id, opciones = {}) {
     // nombre desde la lista de canales cargados — asi el id no queda
     // hardcodeado en el front. Si no aparece un canal llamado "databox",
     // el select queda vacio (fallback grafico).
-    if (!esEdicion) {
-      m.prioridad  = m.prioridad  ?? '3';
-      m.formato    = m.formato    ?? 'html';
-      m.programado = m.programado ?? awsMsgAhoraLocal();
-      if (m.canal_id == null || m.canal_id === '') {
-        const canalDatabox = canales.find((c) => String(c.nombre || '').toLowerCase() === 'databox');
-        if (canalDatabox) m.canal_id = canalDatabox.id;
-      }
+    m.prioridad  = m.prioridad  ?? '3';
+    m.formato    = m.formato    ?? 'html';
+    m.programado = m.programado ?? awsMsgAhoraLocal();
+    if (m.canal_id == null || m.canal_id === '') {
+      const canalDatabox = canales.find((c) => String(c.nombre || '').toLowerCase() === 'databox');
+      if (canalDatabox) m.canal_id = canalDatabox.id;
     }
 
     const plantillasResp = m.proyecto_id
@@ -5345,9 +6629,7 @@ async function abrirAltaEdicionAwsMsg(id, opciones = {}) {
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
-    // Al clonar guardamos como POST (id=null). Editar mantiene el id del
-    // registro que se esta editando.
-    if (a.dataset.act === 'guardar') await guardarAwsMsg(esEdicion ? id : null, a);
+    if (a.dataset.act === 'guardar') await guardarAwsMsg(a);
   });
 
   // Cascada proyecto -> plantilla: recarga las opciones del segundo select
@@ -5529,7 +6811,7 @@ const AWS_MSG_INPUT_IDS = {
   programado:   '#awsMsgProgramado',
 };
 
-async function guardarAwsMsg(id, btn) {
+async function guardarAwsMsg(btn) {
   const err = $('#awsMsgFormError');
   err.style.display = 'none';
 
@@ -5555,41 +6837,32 @@ async function guardarAwsMsg(id, btn) {
     programado:   $('#awsMsgProgramado').value || null,
   };
 
-  // Solo al crear: chequear obligatorios antes de mandar. Mismo criterio
-  // que AWS_MSG_REQUERIDOS_CREATE en cloud/api/awsmensajes.php.
-  if (id == null) {
-    const requeridos = [
-      ['proyecto_id', 'Proyecto'],
-      ['canal_id',    'Canal'],
-      ['remite',      'Remite'],
-      ['destino',     'Destino'],
-      ['asunto',      'Asunto'],
-      ['cuerpo',      'Cuerpo'],
-    ];
-    const faltantes = requeridos.filter(([k]) => !payload[k] || String(payload[k]).trim() === '');
-    if (faltantes.length) {
-      // Marcar cada input faltante con borde rojo (.input-invalid en
-      // style.css). El listener en abrirAltaEdicionAwsMsg quita la marca
-      // cuando el usuario empieza a completar cada campo.
-      faltantes.forEach(([k]) => {
-        const el = $(AWS_MSG_INPUT_IDS[k]);
-        if (el) el.classList.add('input-invalid');
-      });
-      err.textContent   = 'Faltan campos obligatorios: ' + faltantes.map(([, label]) => label).join(', ');
-      err.style.display = '';
-      return;
-    }
+  // Validar obligatorios. Mismo criterio que AWS_MSG_REQUERIDOS_CREATE en
+  // cloud/api/lib/aws_mensajes.php. Un mensaje encolado no es editable —
+  // este form siempre dispara POST (nuevo o clonado).
+  const requeridos = [
+    ['proyecto_id', 'Proyecto'],
+    ['canal_id',    'Canal'],
+    ['remite',      'Remite'],
+    ['destino',     'Destino'],
+    ['asunto',      'Asunto'],
+    ['cuerpo',      'Cuerpo'],
+  ];
+  const faltantes = requeridos.filter(([k]) => !payload[k] || String(payload[k]).trim() === '');
+  if (faltantes.length) {
+    faltantes.forEach(([k]) => {
+      const el = $(AWS_MSG_INPUT_IDS[k]);
+      if (el) el.classList.add('input-invalid');
+    });
+    err.textContent   = 'Faltan campos obligatorios: ' + faltantes.map(([, label]) => label).join(', ');
+    err.style.display = '';
+    return;
   }
 
   btn.disabled = true;
   try {
-    if (id == null) {
-      await apiSend('api/awsmensajes.php', 'POST', payload);
-      toast('Mensaje creado.');
-    } else {
-      await apiSend(`api/awsmensajes.php?id=${id}`, 'PUT', payload);
-      toast('Mensaje actualizado.');
-    }
+    await apiSend('api/awsmensajes.php', 'POST', payload);
+    toast('Mensaje creado.');
     closeModal();
     cargarAwsMsg();
   } catch (e) {
@@ -5609,6 +6882,25 @@ async function eliminarAwsMsg(id) {
   try {
     await apiSend(`api/awsmensajes.php?id=${id}`, 'DELETE');
     toast('Mensaje eliminado.');
+    cargarAwsMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Cambia estado -> 'anulado' via api/awsmensajes_anular.php. El sender solo
+// procesa 'pendiente', asi que un mensaje anulado deja de ser candidato para
+// envio. No borra la fila (se mantiene el historial).
+async function anularAwsMsg(id) {
+  const ok = await confirmar({
+    title: 'Anular mensaje',
+    message: `El mensaje #${id} pasará a estado "anulado" y no se enviará. ¿Continuar?`,
+    confirmText: 'Anular',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/awsmensajes_anular.php?id=${id}`, 'POST');
+    toast('Mensaje anulado.');
     cargarAwsMsg();
   } catch (e) {
     toast(e.message, { error: true });
@@ -17252,6 +18544,96 @@ route('/datasale', async (mount) => {
   `;
 }, 'Datasale');
 
+// ------------------------- Vista: Datainfra (landing) -------------------------
+// Sistema de infraestructura: catalogo de servidores, bases de datos y
+// endpoints administrados por Databox. Por ahora la landing es solo el
+// shell con 3 tarjetas; los ABMs de cada sub-modulo se agregan mas adelante.
+route('/datainfra', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Datainfra</div>
+      <div class="page-subtitle">Infraestructura: catálogo de servidores, bases de datos y endpoints administrados.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/datainfraservidores'">
+        <span class="tile-icon">🖥️</span>
+        <span class="tile-title">Servidores</span>
+        <span class="tile-desc">Catálogo de servidores administrados: host, proveedor, entorno y estado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datainfrabasesdatos'">
+        <span class="tile-icon">🗄️</span>
+        <span class="tile-title">Bases de Datos</span>
+        <span class="tile-desc">Catálogo de bases de datos administradas: motor, host, entorno y estado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datainfraendpoints'">
+        <span class="tile-icon">🔌</span>
+        <span class="tile-title">Endpoints</span>
+        <span class="tile-desc">Catálogo de endpoints HTTP/HTTPS expuestos: URL, propósito y estado.</span>
+      </button>
+    </div>
+  `;
+}, 'Datainfra');
+
+// ------------------------- Vista: Datainfra > Servidores (placeholder) -------------------------
+// Stub: la landing del sub-modulo solo muestra el encabezado y un aviso
+// de "proximamente". El ABM real se implementara en una migracion futura.
+route('/datainfraservidores', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <button type="button" class="btn btn-ghost btn-icon" style="margin-right:8px"
+              title="Volver a Datainfra" onclick="location.hash='#/datainfra'">
+        <i class="fa-solid fa-arrow-left"></i>
+      </button>
+      <div class="page-title">Datainfra > Servidores</div>
+      <div class="page-subtitle">Catálogo de servidores administrados.</div>
+    </div>
+    <div class="table-card" style="padding:40px;text-align:center;color:var(--muted)">
+      <div style="font-size:2rem;margin-bottom:8px">🖥️</div>
+      <div style="font-weight:600;color:var(--text);margin-bottom:4px">Próximamente</div>
+      <div style="font-size:.88rem">El ABM de servidores está pendiente de implementación.</div>
+    </div>
+  `;
+}, 'Datainfra > Servidores');
+
+// ------------------------- Vista: Datainfra > Bases de Datos (placeholder) -------------------------
+route('/datainfrabasesdatos', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <button type="button" class="btn btn-ghost btn-icon" style="margin-right:8px"
+              title="Volver a Datainfra" onclick="location.hash='#/datainfra'">
+        <i class="fa-solid fa-arrow-left"></i>
+      </button>
+      <div class="page-title">Datainfra > Bases de Datos</div>
+      <div class="page-subtitle">Catálogo de bases de datos administradas.</div>
+    </div>
+    <div class="table-card" style="padding:40px;text-align:center;color:var(--muted)">
+      <div style="font-size:2rem;margin-bottom:8px">🗄️</div>
+      <div style="font-weight:600;color:var(--text);margin-bottom:4px">Próximamente</div>
+      <div style="font-size:.88rem">El ABM de bases de datos está pendiente de implementación.</div>
+    </div>
+  `;
+}, 'Datainfra > Bases de Datos');
+
+// ------------------------- Vista: Datainfra > Endpoints (placeholder) -------------------------
+route('/datainfraendpoints', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <button type="button" class="btn btn-ghost btn-icon" style="margin-right:8px"
+              title="Volver a Datainfra" onclick="location.hash='#/datainfra'">
+        <i class="fa-solid fa-arrow-left"></i>
+      </button>
+      <div class="page-title">Datainfra > Endpoints</div>
+      <div class="page-subtitle">Catálogo de endpoints HTTP/HTTPS expuestos.</div>
+    </div>
+    <div class="table-card" style="padding:40px;text-align:center;color:var(--muted)">
+      <div style="font-size:2rem;margin-bottom:8px">🔌</div>
+      <div style="font-weight:600;color:var(--text);margin-bottom:4px">Próximamente</div>
+      <div style="font-size:.88rem">El ABM de endpoints está pendiente de implementación.</div>
+    </div>
+  `;
+}, 'Datainfra > Endpoints');
+
 // ------------------------- Vista: Datasale > Prospectos (ABM) -------------------------
 const dsProFiltrosDefaults = {
   q: '', codigo: '', proyecto: '', estado: '', asignado: '', atendido: '',
@@ -18442,9 +19824,11 @@ route('/evolutionmensajes', async (mount) => {
       </div>
 
       <div class="stats-bar" id="evoMsgStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
+        <div class="stat-card"><span class="stat-label">Motor</span><span class="stat-value" id="evoMsgStatMotor">—</span></div>
+        <div class="stat-card"><span class="stat-label">Pendientes</span><span class="stat-value" id="evoMsgStatPendientes">—</span></div>
+        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value" id="evoMsgStatEnviados">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value" id="evoMsgStatConError">—</span></div>
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" id="evoMsgStatTotal">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -18461,6 +19845,9 @@ route('/evolutionmensajes', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="evoMsgRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="evoMsgMotorMenuBtn" title="Motor de envío">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
         <div class="toolbar-right">
           <button class="btn btn-primary" id="evoMsgNuevoBtn">+ Nuevo mensaje</button>
@@ -18473,9 +19860,9 @@ route('/evolutionmensajes', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Fecha</th>
-              <th>Destinatario</th>
+              <th>Canal</th>
               <th>Destino</th>
-              <th>Asunto</th>
+              <th style="width:30%;max-width:30%">Cuerpo</th>
               <th>Estado</th>
               <th>Enviado</th>
               <th style="text-align:center">Acciones</th>
@@ -18495,12 +19882,24 @@ route('/evolutionmensajes', async (mount) => {
       <button type="button" data-action="enviar" role="menuitem">
         <i class="fa-solid fa-paper-plane"></i><span>Enviar ahora</span>
       </button>
+      <button type="button" data-action="clonar" role="menuitem">
+        <i class="fa-solid fa-clone"></i><span>Clonar</span>
+      </button>
       <div class="ctx-menu-sep"></div>
-      <button type="button" data-action="editar" role="menuitem">
-        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      <button type="button" data-action="anular" role="menuitem">
+        <i class="fa-solid fa-ban"></i><span>Anular</span>
       </button>
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
         <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div id="evoMsgMotorCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-motor-action="iniciar" role="menuitem" style="display:none">
+        <i class="fa-solid fa-play-circle"></i><span>Iniciar motor</span>
+      </button>
+      <button type="button" data-motor-action="detener" role="menuitem" style="display:none">
+        <i class="fa-solid fa-stop-circle"></i><span>Detener motor</span>
       </button>
     </div>
 
@@ -18563,9 +19962,7 @@ route('/evolutionmensajes', async (mount) => {
               <select id="fEvoMsgOrderBy" onchange="onFiltroEvoMsg('order_by', this.value)">
                 <option value="id">Código</option>
                 <option value="fecha">Fecha</option>
-                <option value="destinatario">Destinatario</option>
                 <option value="destino">Destino</option>
-                <option value="asunto">Asunto</option>
                 <option value="estado">Estado</option>
                 <option value="enviado">Enviado</option>
                 <option value="demora">Demora</option>
@@ -18589,9 +19986,38 @@ route('/evolutionmensajes', async (mount) => {
     </div>
   `;
 
-  $('#evoMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionEvoMsg(null));
+  $('#evoMsgNuevoBtn').addEventListener('click', () => abrirAltaEvoMsg());
   $('#evoMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosEvoMsg());
   $('#evoMsgRefrescarBtn').addEventListener('click', () => cargarEvoMsg());
+
+  // Menu del motor: abre un ctx menu con la opcion Iniciar / Detener segun
+  // el valor actual del flag (leido del cache que llena pintarStatsEvoMsg).
+  $('#evoMsgMotorMenuBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const menu   = $('#evoMsgMotorCtxMenu');
+    const motor  = evoMsgLastStats?.motor ?? null;
+    const isStop = motor === '0';
+    // Toggle via style.display (no `hidden`): el CSS .ctx-menu button aplica
+    // display:flex con mas especificidad y anula el atributo `hidden`.
+    menu.querySelector('[data-motor-action="iniciar"]').style.display = isStop ? '' : 'none';
+    menu.querySelector('[data-motor-action="detener"]').style.display = isStop ? 'none' : '';
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu(menu, r.right - 180, r.bottom + 4, {});
+  });
+
+  $('#evoMsgMotorCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-motor-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    const accion = b.dataset.motorAction; // 'iniciar' | 'detener'
+    try {
+      await apiSend('api/evolutionmensajes_motor.php', 'POST', { accion });
+      toast(accion === 'iniciar' ? 'Motor iniciado.' : 'Motor detenido.');
+      await cargarEvoMsg();
+    } catch (e) {
+      toast('Error: ' + e.message, { error: true });
+    }
+  });
 
   const inp = $('#evoMsgSearch');
   const clr = $('#evoMsgSearchClear');
@@ -18619,17 +20045,29 @@ route('/evolutionmensajes', async (mount) => {
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarEvoMsg(data.id);
     if (b.dataset.action === 'enviar')    enviarAhoraEvoMsg(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionEvoMsg(data.id);
+    if (b.dataset.action === 'clonar')    abrirAltaEvoMsg({ clonarDeId: data.id });
+    if (b.dataset.action === 'anular')    anularEvoMsg(data.id);
     if (b.dataset.action === 'eliminar')  eliminarEvoMsg(data.id);
   });
+
+  // Abre el ctx-menu para una fila, condicionando la visibilidad de "Anular"
+  // al estado: solo aplica sobre pendientes (el sender es dueno de los otros
+  // estados; anular sobre 'enviando' seria carrera con el lock; sobre
+  // 'enviado'/'anulado'/'error' es terminal y no tiene sentido).
+  const abrirEvoMsgCtxMenu = (x, y, id, estado) => {
+    const anularBtn = $('#evoMsgCtxMenu [data-action="anular"]');
+    if (anularBtn) anularBtn.style.display = estado === 'pendiente' ? '' : 'none';
+    abrirCtxMenu($('#evoMsgCtxMenu'), x, y, { id });
+  };
 
   $('#evoMsgTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
+      const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#evoMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      abrirEvoMsgCtxMenu(r.right - 190, r.bottom + 4, id, tr?.dataset.estado || '');
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -18640,7 +20078,7 @@ route('/evolutionmensajes', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#evoMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    abrirEvoMsgCtxMenu(ev.clientX, ev.clientY, Number(tr.dataset.id), tr.dataset.estado || '');
   });
 
   refrescarBadgeFiltrosEvoMsg();
@@ -18665,12 +20103,35 @@ async function cargarEvoMsg() {
   }
 }
 
+let evoMsgLastStats = null;
+
 function pintarStatsEvoMsg(s) {
-  const cards = $$('#evoMsgStats .stat-card .stat-value');
-  if (cards.length < 3) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.enviados);
-  cards[2].textContent = fmtNum(s.con_error);
+  // Cache global para que el menu del motor (hamburguesa) sepa el valor
+  // actual sin re-fetchear.
+  evoMsgLastStats = s;
+
+  // Motor: tri-estado alineado con parametros.evolution.mensajes.enviar
+  //   '2' -> Enviando  (verde, hay trabajo)
+  //   '1' -> Esperando (sin color, cola vacia)
+  //   '0' -> Detenido  (rojo, pausa manual)
+  // El unico caso destacado con color es cuando el operador tiene que
+  // decidir algo: pausa activa o motor trabajando.
+  const motorEl = $('#evoMsgStatMotor');
+  if (motorEl) {
+    motorEl.classList.remove('green', 'orange', 'red', 'blue');
+    if (s.motor === '2')      { motorEl.textContent = 'Enviando';  motorEl.classList.add('green'); }
+    else if (s.motor === '1') { motorEl.textContent = 'Esperando'; }
+    else if (s.motor === '0') { motorEl.textContent = 'Detenido';  motorEl.classList.add('red');   }
+    else                      { motorEl.textContent = '—'; }
+  }
+  const pendientesEl = $('#evoMsgStatPendientes');
+  if (pendientesEl) pendientesEl.textContent = fmtNum(s.pendientes);
+  const enviadosEl = $('#evoMsgStatEnviados');
+  if (enviadosEl) enviadosEl.textContent = fmtNum(s.enviados);
+  const conErrorEl = $('#evoMsgStatConError');
+  if (conErrorEl) conErrorEl.textContent = fmtNum(s.con_error);
+  const totalEl = $('#evoMsgStatTotal');
+  if (totalEl) totalEl.textContent = fmtNum(s.total);
 }
 
 function pintarTablaEvoMsg(rows) {
@@ -18680,12 +20141,18 @@ function pintarTablaEvoMsg(rows) {
     return;
   }
   tbody.innerHTML = rows.map((m) => `
-    <tr data-id="${m.id}" class="row-clickable">
+    <tr data-id="${m.id}" data-estado="${esc(m.estado || '')}" class="row-clickable">
       <td class="td-id">#${esc(m.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
-      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
-      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
-      <td>${esc(m.asunto || '—')}</td>
+      <td class="td-nombre">${esc(m.canal_nombre || '—')}</td>
+      <td style="font-family:monospace">
+        ${m.destinatario ? `<div style="font-size:.72rem;color:var(--muted);font-family:var(--font-sans, sans-serif);line-height:1.2">${esc(m.destinatario)}</div>` : ''}
+        <div>${esc(m.destino || '—')}</div>
+      </td>
+      <td style="max-width:0">
+        ${m.asunto ? `<div style="font-size:.72rem;color:var(--muted);line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.asunto)}">${esc(m.asunto)}</div>` : ''}
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.cuerpo || '')}">${esc(m.cuerpo || '—')}</div>
+      </td>
       <td>${evoMsgEstadoBadge(m.estado)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
       <td style="text-align:center">
@@ -18934,27 +20401,56 @@ function evoMsgPlantillaOptionsHtml(plantillas, proyectoId, selected) {
   return `<option value="">—</option>${extra}${rows}`;
 }
 
-async function abrirAltaEdicionEvoMsg(id) {
-  const esEdicion = id != null;
+async function abrirAltaEvoMsg(opciones = {}) {
+  // Los mensajes de Evolution ya no se pueden editar una vez encolados
+  // (solo consultar / clonar / anular / eliminar). Este modal es SOLO
+  // para Alta — con o sin precarga desde un mensaje fuente (clonar).
+  //
+  // opciones.clonarDeId: si esta seteado, precarga los datos del mensaje
+  // fuente y muestra el subtitulo "(clonado de #X)". Se descartan las
+  // columnas system-managed al copiar (id/fecha/estado/encolado/
+  // programado/enviado/demora/error) — el servidor las regenera al encolar.
+  const clonarDeId = opciones.clonarDeId ?? null;
+  const esClonar   = clonarDeId != null;
+
+  const tituloModal = esClonar
+    ? `Nuevo mensaje <span class="modal-subtitle">(clonado de #${clonarDeId})</span>`
+    : 'Nuevo mensaje';
+
   openModal(`
     <div class="modal modal-wide">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
+        <div class="modal-title">${tituloModal}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+        <button class="btn btn-primary" data-act="guardar">Crear</button>
       </div>
     </div>
   `);
 
   try {
     const [m, lookups] = await Promise.all([
-      esEdicion ? apiGet(`api/evolutionmensajes.php?id=${id}`) : Promise.resolve({}),
+      esClonar ? apiGet(`api/evolutionmensajes.php?id=${clonarDeId}`) : Promise.resolve({}),
       ensureEvoMsgLookups(),
     ]);
+
+    // Al clonar, descartar campos system-managed. El wrapper de defaults de
+    // formEvoMsgHtml va a reponer los que quedaron sin valor
+    // (formato/prioridad/programado).
+    if (esClonar) {
+      delete m.id;
+      delete m.fecha;
+      delete m.estado;
+      delete m.encolado;
+      delete m.programado;
+      delete m.enviado;
+      delete m.demora;
+      delete m.error;
+    }
+
     $('#modalRoot .modal-body').innerHTML = formEvoMsgHtml(m, lookups);
 
     // Cascada Proyecto -> Plantilla: al cambiar proyecto, refiltrar plantillas.
@@ -18973,21 +20469,21 @@ async function abrirAltaEdicionEvoMsg(id) {
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarEvoMsg(id, a);
+    if (a.dataset.act === 'guardar') await guardarEvoMsg(a);
   });
 }
 
 function formEvoMsgHtml(rawM, lookups) {
-  const esEdicionEarly = rawM?.id != null;
-  // En Alta preseleccionamos defaults en 3 campos para que el usuario los vea
-  // antes de guardar. El servidor tambien los aplica si vienen null (defensa
-  // en profundidad). Los `...rawM` al final permiten que si alguien abre Alta
-  // con datos pre-llenos (poco comun), esos ganen sobre los defaults.
+  // El form solo se usa para Alta (los mensajes ya no se editan). Rellenamos
+  // 3 defaults visibles para que el usuario los vea antes de guardar; el
+  // servidor tambien los aplica si vienen null (defensa en profundidad). Los
+  // `...rawM` al final permiten que si Alta se abrio con precarga (clonar),
+  // esos valores ganen sobre los defaults.
   const nowLocal = () => {
     const d = new Date(), pad = n => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
   };
-  const m = esEdicionEarly ? rawM : {
+  const m = {
     formato:    'texto',
     prioridad:  '3',
     programado: nowLocal(),
@@ -19022,9 +20518,9 @@ function formEvoMsgHtml(rawM, lookups) {
   // Alta expone solo 13 campos (proyecto/plantilla/canal, remitente/remite,
   // destinatario/destino, asunto, formato, cuerpo, adjunto, prioridad,
   // programado). El resto (fecha, tags, estado, encolado, enviado, demora,
-  // error) los aplica el servidor con defaults o el sender worker; en Edicion
-  // aparecen al final como bloque de auditoria.
-  const esEdicion = m?.id != null;
+  // error) los aplica el servidor con defaults o el sender worker; ya no
+  // hay modo Edicion (los mensajes encolados no se editan, solo se pueden
+  // consultar, clonar, anular o eliminar).
   return `
     <div class="form-row form-row-3">
       <div class="form-group">
@@ -19100,51 +20596,11 @@ function formEvoMsgHtml(rawM, lookups) {
         <input type="datetime-local" id="evoProgramado" value="${dt('programado')}">
       </div>
     </div>
-    ${esEdicion ? `
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Fecha</label>
-        <input type="datetime-local" id="evoFecha" value="${dt('fecha')}">
-      </div>
-      <div class="form-group">
-        <label>Encolado</label>
-        <input type="datetime-local" id="evoEncolado" value="${dt('encolado')}">
-      </div>
-      <div class="form-group">
-        <label>Enviado</label>
-        <input type="datetime-local" id="evoEnviado" value="${dt('enviado')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="evoEstado">
-          <option value=""          ${sel('estado','')}>—</option>
-          <option value="pendiente" ${sel('estado','pendiente')}>Pendiente</option>
-          <option value="enviando"  ${sel('estado','enviando')}>Enviando</option>
-          <option value="enviado"   ${sel('estado','enviado')}>Enviado</option>
-          <option value="anulado"   ${sel('estado','anulado')}>Anulado</option>
-          <option value="error"     ${sel('estado','error')}>Error</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Demora (seg.)</label>
-        <input type="number" id="evoDemora" min="0" value="${v('demora')}">
-      </div>
-      <div class="form-group">
-        <label>Tags</label>
-        <input type="text" id="evoTags" maxlength="255" value="${v('tags')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Error</label>
-      <textarea id="evoErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
-    </div>` : ''}
     <div class="field-error" id="evoFormError" style="display:none"></div>
   `;
 }
 
-async function guardarEvoMsg(id, btn) {
+async function guardarEvoMsg(btn) {
   const err = $('#evoFormError');
   err.style.display = 'none';
 
@@ -19166,10 +20622,9 @@ async function guardarEvoMsg(id, btn) {
     return;
   }
 
-  // Base: los 13 campos que expone Alta (proyecto/plantilla/canal, remitente/
-  // remite, destinatario/destino, asunto, formato, cuerpo, adjunto, prioridad,
-  // programado). `fecha` y `tags` se movieron a Edicion; en Alta los aplica
-  // el servidor (fecha = NOW(), tags = NULL).
+  // Los 13 campos que expone Alta. El resto (fecha, tags, estado, encolado,
+  // enviado, demora, error) los aplica el servidor con defaults; ya no hay
+  // modo Edicion (los mensajes encolados no se editan).
   const payload = {
     proyecto_id:  $('#evoProyecto').value,
     plantilla_id: $('#evoPlantilla').value,
@@ -19186,33 +20641,32 @@ async function guardarEvoMsg(id, btn) {
     programado:   $('#evoProgramado').value || null,
   };
 
-  // En Alta el resto de campos NO se piden — el servidor aplica defaults
-  // (fecha = NOW(), estado = 'pendiente', encolado = NOW(), resto NULL).
-  if (id != null) {
-    payload.fecha    = $('#evoFecha').value || null;
-    payload.tags     = $('#evoTags').value.trim();
-    payload.estado   = $('#evoEstado').value;
-    payload.error    = $('#evoErrorTxt').value;
-    payload.encolado = $('#evoEncolado').value || null;
-    payload.enviado  = $('#evoEnviado').value || null;
-    payload.demora   = $('#evoDemora').value;
-  }
-
   btn.disabled = true;
   try {
-    if (id == null) {
-      await apiSend('api/evolutionmensajes.php', 'POST', payload);
-      toast('Mensaje creado.');
-    } else {
-      await apiSend(`api/evolutionmensajes.php?id=${id}`, 'PUT', payload);
-      toast('Mensaje actualizado.');
-    }
+    await apiSend('api/evolutionmensajes.php', 'POST', payload);
+    toast('Mensaje creado.');
     closeModal();
     cargarEvoMsg();
   } catch (e) {
     err.textContent = e.message;
     err.style.display = '';
     btn.disabled = false;
+  }
+}
+
+async function anularEvoMsg(id) {
+  const ok = await confirmar({
+    title: 'Anular mensaje',
+    message: `Se anulará el mensaje #${id} (queda en estado "anulado" y no se envía). El registro no se borra — para eliminarlo usá "Eliminar".`,
+    confirmText: 'Anular',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/evolutionmensajes_anular.php?id=${id}`, 'POST', {});
+    toast('Mensaje anulado.');
+    cargarEvoMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
   }
 }
 

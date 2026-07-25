@@ -3,25 +3,27 @@
 // Microservicio de ingesta de mensajes de Evolution API.
 // Alta a la cola de envio y consulta del estado de un mensaje encolado.
 //
-//   POST /v4/evolution/mensajes           (JSON body) -> encola, devuelve {id, estado, encolado}
+//   POST /v4/evolution/mensajes           (JSON body) -> encola, devuelve {id, estado, encolado, programado}
 //   GET  /v4/evolution/mensajes?id=N                  -> estado actual del mensaje N
 //
 // Auth: Bearer con apikey de la tabla `aplicaciones` (mismo esquema que el resto
 // del stack — ver cloud/api/lib/apikey_auth.php).
 //
-// Tabla destino: `evolution_mensajes` (schema en db/schema.sql). Estados
-// (columna `estado`, char(1)) segun la convencion del panel cloud:
-//   P = Pendiente   E = Enviado   F = Fallado   C = Cancelado   R = Reintento
-// Este endpoint solo inserta con estado='P'; el sender externo actualiza el
-// resto (`estado`, `enviado`, `demora`, `error`).
+// Tabla destino: `evolution_mensajes` (schema en db/schema.sql).
 //
-// Archivo autocontenido a proposito: no depende de cloud/api/lib/*, para que
-// v4 pueda evolucionar (y eventualmente moverse a otro DocumentRoot) sin
-// arrastrar el runtime del panel.
+// Punto UNICO de entrada: la insercion se delega a
+// `cloud/api/lib/evolution_mensajes.php::encolarEvolutionMensaje()`, la misma
+// funcion que usa el ABM cloud. Asi ambos callers aplican las mismas reglas
+// de sanitizacion, obligatorios y defaults, y ambos levantan la bandera
+// `parametros.evolution.mensajes.enviar='1'` para despertar al sender worker.
+//
+// (Cuando v4 se mueva a otro DocumentRoot habra que reajustar el include del
+// require_once — es el unico acoplamiento con el runtime del panel.)
 
 header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/evolution_mensajes.php';
 
 // ---------------------------------------------------------------------------
 // Helpers de respuesta / DB / auth
@@ -126,112 +128,33 @@ try {
 // ---------------------------------------------------------------------------
 // POST /v4/evolution/mensajes  -> encolar
 // ---------------------------------------------------------------------------
-
-function nullableStr(mixed $v, ?int $max = null): ?string {
-    if ($v === null) return null;
-    $s = trim((string)$v);
-    if ($s === '') return null;
-    if ($max !== null) $s = substr($s, 0, $max);
-    return $s;
-}
-
-function nullableInt(mixed $v): ?int {
-    if ($v === null || $v === '') return null;
-    return (int)$v;
-}
-
-// Acepta "2026-07-24T20:15", "2026-07-24 20:15" o "2026-07-24 20:15:00" y
-// devuelve el formato MySQL "Y-m-d H:i:s". Formato invalido -> null (el
-// default del handleEnqueue se hace cargo).
-function nullableDateTime(mixed $v): ?string {
-    $s = nullableStr($v);
-    if ($s === null) return null;
-    $s = str_replace('T', ' ', $s);
-    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $s)) $s .= ':00';
-    if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $s)) return null;
-    return $s;
-}
+//
+// Toda la logica de sanitizacion, validacion, defaults e INSERT vive en la
+// funcion compartida encolarEvolutionMensaje() (cloud/api/lib/evolution_mensajes.php).
+// El handler v4 solo mapea la respuesta HTTP y traduce las excepciones a los
+// codigos de status apropiados.
 
 function handleEnqueue(array $in): void {
-    // Aceptamos tanto `canal_id` (nuevo, alineado con la columna) como el alias
-    // corto `canal` para no romper clientes viejos durante la transicion. Idem
-    // proyecto_id / plantilla_id.
-    $canal   = nullableInt($in['canal_id'] ?? $in['canal'] ?? null);
-    $destino = nullableStr($in['destino']  ?? null, 255);
-    if ($canal === null || $canal <= 0) jsonError('Falta canal_id (int > 0)', 400);
-    if ($destino === null)              jsonError('Falta destino (string no vacio)', 400);
-
-    // El mensaje necesita al menos una fuente de contenido: una plantilla
-    // pre-definida o un cuerpo inline. Sin alguna de las dos el sender no
-    // tendria que enviar.
-    $plantilla = nullableInt($in['plantilla_id'] ?? $in['plantilla'] ?? null);
-    $cuerpo    = nullableStr($in['cuerpo']       ?? null);
-    if ($plantilla === null && $cuerpo === null) {
-        jsonError('Se requiere plantilla_id o cuerpo', 400);
+    try {
+        $id = encolarEvolutionMensaje(db(), $in);
+    } catch (InvalidArgumentException $e) {
+        jsonError($e->getMessage(), 400);
     }
 
-    $p = [
-        'proyecto_id'  => nullableInt($in['proyecto_id'] ?? $in['proyecto'] ?? null),
-        'canal_id'     => $canal,
-        'plantilla_id' => $plantilla,
-        'remitente'    => nullableStr($in['remitente']    ?? null, 255),
-        'remite'       => nullableStr($in['remite']       ?? null, 255),
-        'destinatario' => nullableStr($in['destinatario'] ?? null, 255),
-        'destino'      => $destino,
-        'prioridad'    => nullableInt($in['prioridad']    ?? null),
-        'asunto'       => nullableStr($in['asunto']       ?? null, 255),
-        'cuerpo'       => $cuerpo,
-        'formato'      => nullableStr($in['formato']      ?? null, 20),
-        'adjunto'      => nullableStr($in['adjunto']      ?? null, 500),
-        'tags'         => nullableStr($in['tags']         ?? null, 255),
-        'programado'   => nullableDateTime($in['programado'] ?? null),
-    ];
-
-    $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
-             ->format('Y-m-d H:i:s');
-
-    // Defaults en profundidad (mismos que aplica cloud/api/evolutionmensajes.php):
-    //   formato    -> 'texto'
-    //   prioridad  -> 3 (media)
-    //   programado -> NOW (enviar apenas el worker lo tome)
-    if ($p['formato']    === null) $p['formato']    = 'texto';
-    if ($p['prioridad']  === null) $p['prioridad']  = 3;
-    if ($p['programado'] === null) $p['programado'] = $ahora;
-
-    $sql = "INSERT INTO evolution_mensajes
-                (fecha, proyecto_id, canal_id, plantilla_id, remitente, remite, destinatario,
-                 destino, prioridad, asunto, cuerpo, formato,
-                 adjunto, tags, estado, encolado, programado)
-            VALUES
-                (:fecha, :proyecto_id, :canal_id, :plantilla_id, :remitente, :remite, :destinatario,
-                 :destino, :prioridad, :asunto, :cuerpo, :formato,
-                 :adjunto, :tags, 'pendiente', :encolado, :programado)";
-    $pdo = db();
-    $st  = $pdo->prepare($sql);
-    $st->execute([
-        ':fecha'        => $ahora,
-        ':proyecto_id'  => $p['proyecto_id'],
-        ':canal_id'     => $p['canal_id'],
-        ':plantilla_id' => $p['plantilla_id'],
-        ':remitente'    => $p['remitente'],
-        ':remite'       => $p['remite'],
-        ':destinatario' => $p['destinatario'],
-        ':destino'      => $p['destino'],
-        ':prioridad'    => $p['prioridad'],
-        ':asunto'       => $p['asunto'],
-        ':cuerpo'       => $p['cuerpo'],
-        ':formato'      => $p['formato'],
-        ':adjunto'      => $p['adjunto'],
-        ':tags'         => $p['tags'],
-        ':encolado'     => $ahora,
-        ':programado'   => $p['programado'],
-    ]);
+    // Releemos las columnas system-managed (fecha/encolado/programado que
+    // el encolador puede haber defaulteado a NOW) para que la respuesta
+    // sea fiel a lo persistido — asi el cliente v4 no tiene que adivinar.
+    $st = db()->prepare("SELECT fecha, encolado, programado, estado
+                           FROM evolution_mensajes WHERE id = :id LIMIT 1");
+    $st->execute([':id' => $id]);
+    $r = $st->fetch() ?: [];
 
     jsonOk([
-        'id'         => (int)$pdo->lastInsertId(),
-        'estado'     => 'pendiente',
-        'encolado'   => $ahora,
-        'programado' => $p['programado'],
+        'id'         => $id,
+        'estado'     => $r['estado']     ?? 'pendiente',
+        'fecha'      => $r['fecha']      ?? null,
+        'encolado'   => $r['encolado']   ?? null,
+        'programado' => $r['programado'] ?? null,
     ], 201);
 }
 

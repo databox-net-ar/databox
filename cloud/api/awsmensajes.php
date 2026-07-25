@@ -5,12 +5,17 @@
 //   GET    api/awsmensajes.php          -> listado con filtros (query string)
 //   GET    api/awsmensajes.php?id=N     -> registro individual
 //   POST   api/awsmensajes.php          -> alta (JSON body)
-//   PUT    api/awsmensajes.php?id=N     -> modificacion (JSON body)
 //   DELETE api/awsmensajes.php?id=N     -> baja
+// Los mensajes encolados NO son editables: cambiar el asunto/cuerpo/destino
+// despues de que el mensaje entra a la cola no tiene semantica logica
+// (podria estar en pleno envio). Las unicas acciones post-encolado son
+// DELETE (borrar del historial) y anular (via api/awsmensajes_anular.php,
+// setea estado='anulado' y detiene el envio si aun no salio).
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/aws_mensajes.php';   // encolarAwsMensaje() + sanitizadores
 
 // SET de columnas de `aws_mensajes` (alias `m.`) + nombres traidos por LEFT
 // JOIN a proyectos / aws_canales / datarocket_plantillas. Reusado por listado
@@ -29,50 +34,6 @@ const AWS_MSG_JOINS = "LEFT JOIN proyectos             p ON p.id = m.proyecto_id
                        LEFT JOIN aws_canales           c ON c.id = m.canal_id
                        LEFT JOIN datarocket_plantillas t ON t.id = m.plantilla_id";
 
-// Sanitizadores por columna. Debe declararse antes del bloque `try` porque
-// las constantes top-level en PHP se procesan en orden de aparicion (no se
-// hoistean como las funciones); si esto queda debajo del dispatcher,
-// handleCreate/handleUpdate revientan con "Undefined constant".
-// handleCreate llena con NULL los campos ausentes (comportamiento historico,
-// con fallback especial de NOW() en zona AR para `fecha`), handleUpdate solo
-// toca los presentes para no pisar columnas system-managed.
-const AWS_MSG_SANITIZERS = [
-    'fecha'        => 'dt',
-    'proyecto_id'  => 'int',
-    'canal_id'     => 'int',
-    'plantilla_id' => 'int',
-    'remitente'    => 'str:255',
-    'remite'       => 'str:255',
-    'destinatario' => 'str:255',
-    'destino'      => 'str:255',
-    'prioridad'    => 'int',
-    'asunto'       => 'str:255',
-    'cuerpo'       => 'str',
-    'formato'      => 'str:10',
-    'adjunto'      => 'str:500',
-    'tags'         => 'str:255',
-    'estado'       => 'str:20',
-    'error'        => 'str:1000',
-    'encolado'     => 'dt',
-    'programado'   => 'dt',
-    'enviado'      => 'dt',
-    'demora'       => 'int',
-];
-
-// Campos obligatorios al encolar un mensaje nuevo. Coincide con lo que
-// exige el sender (`datarocket_mensajes_enviar.php`): sin proyecto/canal
-// no puede firmar contra SES, sin remite/destino/asunto/cuerpo no puede
-// armar el email. Validado tambien en el front (guardarAwsMsg), este
-// chequeo es defensivo por si alguien pega directo al endpoint.
-const AWS_MSG_REQUERIDOS_CREATE = [
-    'proyecto_id' => 'Proyecto',
-    'canal_id'    => 'Canal',
-    'remite'      => 'Remite',
-    'destino'     => 'Destino',
-    'asunto'      => 'Asunto',
-    'cuerpo'      => 'Cuerpo',
-];
-
 header('Content-Type: application/json; charset=utf-8');
 
 try {
@@ -87,9 +48,6 @@ try {
         handleList($pdo, $_GET);
     } elseif ($method === 'POST') {
         handleCreate($pdo, readJsonBody());
-    } elseif ($method === 'PUT') {
-        if ($id <= 0) jsonError('Falta id', 400);
-        handleUpdate($pdo, $id, readJsonBody());
     } elseif ($method === 'DELETE') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleDelete($pdo, $id);
@@ -154,6 +112,7 @@ function handleList(PDO $pdo, array $q): void {
         SELECT
             COUNT(*)                                                  AS total,
             SUM(CASE WHEN enviado IS NOT NULL THEN 1 ELSE 0 END)      AS enviados,
+            SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END)     AS pendientes,
             SUM(CASE WHEN error IS NOT NULL AND error <> '' THEN 1 ELSE 0 END) AS con_error
         FROM aws_mensajes
     ")->fetch();
@@ -172,9 +131,14 @@ function handleList(PDO $pdo, array $q): void {
 
     jsonOk([
         'stats' => [
-            'total'     => (int)($stats['total']     ?? 0),
-            'enviados'  => (int)($stats['enviados']  ?? 0),
-            'con_error' => (int)($stats['con_error'] ?? 0),
+            // Estado del motor del cron: '1' = enviando, '0' o ausente =
+            // esperando. Se lee del `parametros` en cada corrida del listado
+            // asi la tarjeta refleja cambios sin recarga del panel.
+            'motor'      => getParametro('aws.mensajes.enviar', '0'),
+            'total'      => (int)($stats['total']      ?? 0),
+            'pendientes' => (int)($stats['pendientes'] ?? 0),
+            'enviados'   => (int)($stats['enviados']   ?? 0),
+            'con_error'  => (int)($stats['con_error']  ?? 0),
         ],
         'items' => $rows,
     ]);
@@ -195,143 +159,24 @@ function handleGetOne(PDO $pdo, int $id): void {
 }
 
 // ----------------------------------------------------------------------------
-// Alta / Modificacion / Baja
+// Alta / Baja
 // ----------------------------------------------------------------------------
-
-function nullableStr(mixed $v, ?int $max = null): ?string {
-    if ($v === null) return null;
-    $s = trim((string)$v);
-    if ($s === '') return null;
-    if ($max !== null) $s = substr($s, 0, $max);
-    return $s;
-}
-
-function nullableInt(mixed $v): ?int {
-    if ($v === null || $v === '') return null;
-    return (int)$v;
-}
-
-function nullableDateTime(mixed $v): ?string {
-    $s = nullableStr($v);
-    if ($s === null) return null;
-    $s = str_replace('T', ' ', $s);
-    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $s)) $s .= ':00';
-    if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $s)) return null;
-    return $s;
-}
-
-function applySanitizer(string $rule, mixed $val): mixed {
-    if ($rule === 'int') return nullableInt($val);
-    if ($rule === 'dt')  return nullableDateTime($val);
-    if ($rule === 'str') return nullableStr($val);
-    if (str_starts_with($rule, 'str:')) {
-        return nullableStr($val, (int)substr($rule, 4));
-    }
-    throw new RuntimeException("Sanitizer desconocido: {$rule}");
-}
-
-// Sanitiza TODAS las columnas (usado por handleCreate — los faltantes quedan
-// en NULL, comportamiento historico).
-function sanitizePayload(array $in): array {
-    $out = [];
-    foreach (AWS_MSG_SANITIZERS as $col => $rule) {
-        $out[$col] = applySanitizer($rule, $in[$col] ?? null);
-    }
-    return $out;
-}
-
-// Sanitiza SOLO las columnas presentes en el payload (usado por handleUpdate
-// — asi un ABM que solo manda 13 campos no pisa a NULL las columnas system-
-// managed como `estado`, `encolado`, `enviado`, etc).
-function sanitizePartialPayload(array $in): array {
-    $out = [];
-    foreach (AWS_MSG_SANITIZERS as $col => $rule) {
-        if (array_key_exists($col, $in)) {
-            $out[$col] = applySanitizer($rule, $in[$col]);
-        }
-    }
-    return $out;
-}
+// Toda la logica de ingreso a `aws_mensajes` (sanitizacion, obligatorios,
+// defaults, wake-on-demand) vive en cloud/api/lib/aws_mensajes.php. Este
+// endpoint es un wrapper HTTP: convierte el body JSON en argumentos, mapea
+// InvalidArgumentException -> 400, y devuelve el id nuevo.
+//
+// La modificacion (PUT) NO existe adrede: un mensaje encolado no es editable.
+// La unica mutacion de estado post-encolado es "anular", que tiene su propio
+// endpoint dedicado (cloud/api/awsmensajes_anular.php).
 
 function handleCreate(PDO $pdo, array $in): void {
-    $p = sanitizePayload($in);
-
-    $faltantes = [];
-    foreach (AWS_MSG_REQUERIDOS_CREATE as $col => $label) {
-        if ($p[$col] === null) $faltantes[] = $label;
+    try {
+        $id = encolarAwsMensaje($pdo, $in);
+        jsonOk(['id' => $id], 201);
+    } catch (InvalidArgumentException $e) {
+        jsonError($e->getMessage(), 400);
     }
-    if ($faltantes) {
-        jsonError('Faltan campos obligatorios: ' . implode(', ', $faltantes), 400);
-    }
-
-    if ($p['fecha'] === null) {
-        $p['fecha'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
-                      ->format('Y-m-d H:i:s');
-    }
-    // Al crear via ABM, el mensaje nace ya encolado y pendiente. `encolado`
-    // reusa el mismo instante que `fecha` para evitar drift entre ambos.
-    if ($p['encolado'] === null) $p['encolado'] = $p['fecha'];
-    if ($p['estado']   === null) $p['estado']   = 'pendiente';
-
-    $sql = "
-        INSERT INTO aws_mensajes
-            (fecha, proyecto_id, canal_id, plantilla_id, remitente, remite, destinatario,
-             destino, prioridad, asunto, cuerpo, formato,
-             adjunto, tags, estado, error, encolado, programado, enviado, demora)
-        VALUES
-            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :remitente, :remite, :destinatario,
-             :destino, :prioridad, :asunto, :cuerpo, :formato,
-             :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
-    ";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-        ':fecha'        => $p['fecha'],
-        ':proyecto_id'  => $p['proyecto_id'],
-        ':canal_id'     => $p['canal_id'],
-        ':plantilla_id' => $p['plantilla_id'],
-        ':remitente'    => $p['remitente'],
-        ':remite'       => $p['remite'],
-        ':destinatario' => $p['destinatario'],
-        ':destino'      => $p['destino'],
-        ':prioridad'    => $p['prioridad'],
-        ':asunto'       => $p['asunto'],
-        ':cuerpo'       => $p['cuerpo'],
-        ':formato'      => $p['formato'],
-        ':adjunto'      => $p['adjunto'],
-        ':tags'         => $p['tags'],
-        ':estado'       => $p['estado'],
-        ':error'        => $p['error'],
-        ':encolado'     => $p['encolado'],
-        ':programado'   => $p['programado'],
-        ':enviado'      => $p['enviado'],
-        ':demora'       => $p['demora'],
-    ]);
-    jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
-}
-
-function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM aws_mensajes WHERE id = :id');
-    $exists->execute([':id' => $id]);
-    if (!$exists->fetch()) jsonError('Mensaje no encontrado', 404);
-
-    // Update parcial: solo tocamos las columnas presentes en el payload.
-    // Asi el ABM (que solo manda 13 campos editables) no pisa a NULL las
-    // columnas system-managed (fecha, estado, encolado, enviado, demora,
-    // error, tags) que setea el sender.
-    $p = sanitizePartialPayload($in);
-    if (!$p) jsonOk(['id' => $id]);   // payload vacio -> no-op
-
-    $sets   = [];
-    $params = [':id' => $id];
-    foreach ($p as $col => $val) {
-        $sets[]           = "`{$col}` = :{$col}";
-        $params[":{$col}"] = $val;
-    }
-
-    $sql = 'UPDATE aws_mensajes SET ' . implode(', ', $sets) . ' WHERE id = :id';
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    jsonOk(['id' => $id]);
 }
 
 function handleDelete(PDO $pdo, int $id): void {

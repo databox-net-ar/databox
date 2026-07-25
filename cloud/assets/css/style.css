@@ -554,6 +554,11 @@ textarea { resize: vertical; min-height: 60px; }
 .ctx-menu-danger:hover:not(:disabled),
 .ctx-menu-danger:hover:not(:disabled) i { background: var(--danger) !important;
                                           color: #fff !important; }
+/* Neutraliza el shift a --primary del hover global. Usado en items donde el
+   verde de acento resulta enganoso (p. ej. "Iniciar motor" / "Detener motor"
+   del listado de aws_mensajes). */
+.ctx-menu-plain:hover:not(:disabled)   { color: var(--text) !important; }
+.ctx-menu-plain:hover:not(:disabled) i { color: var(--muted) !important; }
 
 /* 28. Filas del listado clickeables (ABM.md §Interacción con la fila) */
 tbody tr.row-clickable { cursor: pointer; }
