@@ -6158,6 +6158,33 @@ route('/awsmensajes', async (mount) => {
         </div>
       </div>
     </div>
+
+    <!-- Editor HTML del cuerpo (se abre desde el boton flotante sobre el
+         preview del cuerpo cuando formato=html en el modal Nuevo mensaje).
+         Vive como backdrop propio para poder co-existir con el modal
+         principal sin pisar el #modalRoot. -->
+    <!-- z-index 400 supera al #modalRoot (150) para que este editor quede
+         ARRIBA del modal Nuevo mensaje que lo dispara. -->
+    <div class="modal-backdrop" id="awsMsgHtmlEditorBackdrop"
+         style="z-index: 400"
+         onclick="if(event.target===this) cerrarEditorHtmlAwsMsg()">
+      <div class="modal modal-wide" style="max-width:1100px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-code"></i> Editar HTML del cuerpo</div>
+          <button class="btn-icon-sm" onclick="cerrarEditorHtmlAwsMsg()">×</button>
+        </div>
+        <div class="modal-body">
+          <!-- CodeMirror se monta encima de este textarea (fromTextArea).
+               Mientras CM no cargue, el textarea queda como fallback visible. -->
+          <textarea id="awsMsgHtmlEditor"
+                    style="width:100%;height:520px;font-family:monospace;font-size:.85rem;line-height:1.45"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cerrarEditorHtmlAwsMsg()">Cancelar</button>
+          <button class="btn btn-primary" onclick="aceptarEditorHtmlAwsMsg()">Aceptar</button>
+        </div>
+      </div>
+    </div>
   `;
 
   $('#awsMsgNuevoBtn').addEventListener('click', () => abrirAltaAwsMsg());
@@ -6603,12 +6630,15 @@ async function abrirAltaAwsMsg(opciones = {}) {
     const proyectos = proyectosResp.items || [];
     const canales   = canalesResp.items   || [];
 
-    // Defaults para "Nuevo" (incluye clonar). Canal databox se elige por
-    // nombre desde la lista de canales cargados — asi el id no queda
-    // hardcodeado en el front. Si no aparece un canal llamado "databox",
-    // el select queda vacio (fallback grafico).
+    // Defaults para "Nuevo" (y clonar, cuando el source no trae valor).
+    // Canal databox se elige por nombre desde la lista de canales cargados
+    // — asi el id no queda hardcodeado en el front. Si no aparece un canal
+    // llamado "databox", el select queda vacio (fallback grafico).
+    // `formato` default = 'texto': la mayoria de los mensajes nuevos son de
+    // texto simple; los clonados conservan el formato del original (llegan
+    // ya seteados y el ?? no los pisa).
     m.prioridad  = m.prioridad  ?? '3';
-    m.formato    = m.formato    ?? 'html';
+    m.formato    = m.formato    ?? 'texto';
     m.programado = m.programado ?? awsMsgAhoraLocal();
     if (m.canal_id == null || m.canal_id === '') {
       const canalDatabox = canales.find((c) => String(c.nombre || '').toLowerCase() === 'databox');
@@ -6621,22 +6651,33 @@ async function abrirAltaAwsMsg(opciones = {}) {
     const plantillas = plantillasResp.items || [];
 
     $('#modalRoot .modal-body').innerHTML = formAwsMsgHtml(m, { proyectos, canales, plantillas });
+    // Render inicial del cuerpo (preview vs textarea) segun el formato
+    // preseleccionado por los defaults arriba.
+    awsMsgSincronizarCuerpo();
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
+    if (ev.target.closest('#awsMsgCuerpoEditarBtn')) {
+      abrirEditorHtmlAwsMsg();
+      return;
+    }
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
     if (a.dataset.act === 'guardar') await guardarAwsMsg(a);
   });
 
-  // Cascada proyecto -> plantilla: recarga las opciones del segundo select
-  // cada vez que cambia el primero.
+  // Cascada proyecto -> plantilla, y toggle preview/textarea al cambiar
+  // Formato.
   $('#modalRoot').addEventListener('change', async (ev) => {
     if (ev.target?.id === 'awsMsgProyecto') {
       await recargarPlantillasAwsMsg(ev.target.value);
+    } else if (ev.target?.id === 'awsMsgPlantilla') {
+      await cargarPlantillaEnFormAwsMsg(ev.target.value);
+    } else if (ev.target?.id === 'awsMsgFormato') {
+      awsMsgSincronizarCuerpo();
     }
   });
 
@@ -6647,6 +6688,145 @@ async function abrirAltaAwsMsg(opciones = {}) {
   $('#modalRoot').addEventListener('input',  limpiarInvalido);
   $('#modalRoot').addEventListener('change', limpiarInvalido);
 }
+
+// Alterna la vista del campo Cuerpo del modal Nuevo mensaje segun el select
+// Formato:
+//   html  -> oculta el textarea y muestra el <iframe> preview (con srcdoc =
+//            valor actual del textarea) + el boton flotante para abrir el
+//            editor HTML.
+//   texto -> muestra el textarea normal, oculta el preview.
+// El textarea siempre esta en el DOM — es la fuente de verdad para
+// guardarAwsMsg (que lee $('#awsMsgCuerpo').value).
+function awsMsgSincronizarCuerpo() {
+  const formato  = $('#awsMsgFormato')?.value || '';
+  const textarea = $('#awsMsgCuerpo');
+  const preview  = $('#awsMsgCuerpoPreview');
+  const iframe   = $('#awsMsgCuerpoIframe');
+  if (!textarea || !preview || !iframe) return;
+  if (formato === 'html') {
+    textarea.style.display = 'none';
+    preview.style.display  = '';
+    iframe.srcdoc = textarea.value || '';
+  } else {
+    textarea.style.display = '';
+    preview.style.display  = 'none';
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Editor HTML del cuerpo (TinyMCE community, lazy-load desde CDN)
+// ----------------------------------------------------------------------------
+// TinyMCE es el WYSIWYG usado por editores populares tipo html-online.com.
+// Ventajas para editar HTML de emails: (a) usa <iframe> aislado por defecto,
+// (b) preserva estructura y estilos inline del source sin reescribir, (c)
+// respeta <table>/<td> como layout, no como bloques. `code` plugin da el
+// toggle </> a vista fuente. Self-hosted (jsdelivr) GPL, sin API key.
+
+const AWS_MSG_TINY_URL = 'https://cdn.jsdelivr.net/npm/tinymce@6.8.5/tinymce.min.js';
+let _awsMsgTinyPromise = null;
+let _awsMsgTinyEditor  = null;
+
+function _awsMsgCargarAsset(tag, attrs) {
+  const selector = tag === 'link' ? `link[href="${attrs.href}"]` : `script[src="${attrs.src}"]`;
+  if (document.querySelector(selector)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const el = document.createElement(tag);
+    Object.assign(el, attrs);
+    el.onload  = () => resolve();
+    el.onerror = () => reject(new Error('No se pudo cargar ' + (attrs.href || attrs.src)));
+    document.head.appendChild(el);
+  });
+}
+
+function cargarTinyMceAwsMsg() {
+  if (_awsMsgTinyPromise) return _awsMsgTinyPromise;
+  _awsMsgTinyPromise = _awsMsgCargarAsset('script', { src: AWS_MSG_TINY_URL, referrerPolicy: 'origin' });
+  return _awsMsgTinyPromise;
+}
+
+async function abrirEditorHtmlAwsMsg() {
+  const ta = $('#awsMsgCuerpo');
+  if (!ta) return;
+  const editorTa = $('#awsMsgHtmlEditor');
+  editorTa.value = ta.value;
+  $('#awsMsgHtmlEditorBackdrop').classList.add('open');
+
+  try {
+    await cargarTinyMceAwsMsg();
+    // Destruir cualquier instancia previa asociada al mismo textarea antes
+    // de reinicializar (evita duplicados si el modal se abre varias veces).
+    if (_awsMsgTinyEditor) {
+      try { _awsMsgTinyEditor.destroy(); } catch (_) {}
+      _awsMsgTinyEditor = null;
+    }
+
+    const [editor] = await tinymce.init({
+      target: editorTa,
+      height: 560,
+      menubar: false,
+      branding: false,
+      license_key: 'gpl',       // TinyMCE 6+ pide reconocer el modo GPL
+      promotion: false,
+      statusbar: true,
+      plugins: 'code image link table lists advlist preview fullscreen visualblocks',
+      toolbar: 'undo redo | blocks fontsize | ' +
+               'bold italic underline strikethrough | forecolor backcolor removeformat | ' +
+               'alignleft aligncenter alignright alignjustify | ' +
+               'bullist numlist outdent indent | link image table hr | code preview fullscreen',
+      toolbar_mode: 'sliding',
+      // No reescribir el HTML source — vital para templates de email con
+      // estilos inline / atributos deprecados (width, cellpadding, bgcolor).
+      valid_elements:      '*[*]',
+      valid_children:      '+body[style]',
+      extended_valid_elements: '*[*]',
+      verify_html:         false,
+      cleanup:             false,
+      convert_urls:        false,
+      entity_encoding:     'raw',
+      forced_root_block:   false,
+      // Aislamos con un iframe (default) y le decimos que el contenido puede
+      // ser un documento HTML completo (respeta <html>/<head>/<style>).
+      fullpage_default_encoding: 'UTF-8',
+    });
+    _awsMsgTinyEditor = editor;
+    _awsMsgTinyEditor.setContent(ta.value || '');
+    setTimeout(() => _awsMsgTinyEditor.focus(), 60);
+  } catch (e) {
+    // Fallback: si el CDN falla, el textarea nativo queda visible y usable.
+    console.warn('TinyMCE no disponible, editor fallback a textarea plano:', e);
+    setTimeout(() => editorTa.focus(), 30);
+  }
+}
+
+function cerrarEditorHtmlAwsMsg() {
+  $('#awsMsgHtmlEditorBackdrop').classList.remove('open');
+  // Destruir en cada cierre — proxima apertura crea fresh, evita quedar con
+  // config vieja pegada durante desarrollo.
+  if (_awsMsgTinyEditor) {
+    try { _awsMsgTinyEditor.destroy(); } catch (_) {}
+    _awsMsgTinyEditor = null;
+  }
+}
+
+// "Aceptar": lee del editor (TinyMCE si esta montado, textarea sino), pisa
+// el textarea principal y refresca el iframe preview.
+function aceptarEditorHtmlAwsMsg() {
+  const html = _awsMsgTinyEditor
+    ? _awsMsgTinyEditor.getContent()
+    : $('#awsMsgHtmlEditor').value;
+  const ta = $('#awsMsgCuerpo');
+  if (ta) {
+    ta.value = html;
+    // Disparar 'input' para que la validacion en vivo (limpiarInvalido) se
+    // entere de que el usuario completo el campo.
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  const iframe = $('#awsMsgCuerpoIframe');
+  if (iframe) iframe.srcdoc = html;
+  cerrarEditorHtmlAwsMsg();
+}
+window.cerrarEditorHtmlAwsMsg = cerrarEditorHtmlAwsMsg;
+window.aceptarEditorHtmlAwsMsg = aceptarEditorHtmlAwsMsg;
 
 // Devuelve "YYYY-MM-DDTHH:mm" en zona local del navegador — formato que
 // entiende <input type="datetime-local">.
@@ -6670,6 +6850,43 @@ async function recargarPlantillasAwsMsg(proyectoId) {
     select.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
   } finally {
     select.disabled = false;
+  }
+}
+
+// Cuando el usuario elige una plantilla, cargar sus datos (remitente, remite,
+// asunto, cuerpo, formato, adjunto) en los campos del formulario. La idea es
+// que el operador elija una plantilla y el resto del mensaje quede
+// pre-armado — puede seguir editando a mano despues.
+//
+// El formato en `datarocket_plantillas` sigue con letras legacy (varchar(1))
+// mientras que `aws_mensajes` ya usa strings full-word; mapeamos aca:
+//   T/t -> texto | H/h -> html | otro -> texto (safe default; M=Markdown ya
+//   no se soporta en el nuevo modulo aws).
+async function cargarPlantillaEnFormAwsMsg(plantillaId) {
+  if (!plantillaId) return;
+  try {
+    const p = await apiGet('api/datarocketplantillas.php?id=' + encodeURIComponent(plantillaId));
+    if (p.remitente != null) $('#awsMsgRemitente').value = p.remitente;
+    if (p.remite    != null) $('#awsMsgRemite').value    = p.remite;
+    if (p.asunto    != null) $('#awsMsgAsunto').value    = p.asunto;
+    if (p.adjunto   != null) $('#awsMsgAdjunto').value   = p.adjunto;
+    if (p.cuerpo    != null) $('#awsMsgCuerpo').value    = p.cuerpo;
+
+    const legacyFormato = String(p.formato || '').toUpperCase();
+    const nuevoFormato  = legacyFormato === 'H' ? 'html'
+                        : legacyFormato === 'T' ? 'texto'
+                        : $('#awsMsgFormato').value || 'texto';
+    $('#awsMsgFormato').value = nuevoFormato;
+
+    // Refresca la vista del cuerpo (iframe preview si formato=html; textarea
+    // si texto) y limpia posibles marcas de invalido en los campos que
+    // acabamos de completar automaticamente.
+    awsMsgSincronizarCuerpo();
+    ['#awsMsgRemite', '#awsMsgAsunto', '#awsMsgCuerpo'].forEach((sel) => {
+      $(sel)?.classList.remove('input-invalid');
+    });
+  } catch (e) {
+    toast('Error al cargar plantilla: ' + e.message, { error: true });
   }
 }
 
@@ -6765,7 +6982,27 @@ function formAwsMsgHtml(m, opciones = { proyectos: [], canales: [], plantillas: 
     </div>
     <div class="form-group">
       <label>Cuerpo</label>
-      <textarea id="awsMsgCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
+      <!-- El textarea es la fuente de verdad del valor (siempre presente
+           en el DOM; guardarAwsMsg lee de #awsMsgCuerpo). Cuando formato=
+           html se oculta y se muestra el preview con iframe + boton flotante
+           de edicion. awsMsgSincronizarCuerpo() alterna la vista. -->
+      <div id="awsMsgCuerpoWrap" style="position:relative">
+        <textarea id="awsMsgCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
+        <div id="awsMsgCuerpoPreview" style="display:none;position:relative">
+          <iframe id="awsMsgCuerpoIframe"
+                  style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>
+          <button type="button" id="awsMsgCuerpoEditarBtn" title="Editar HTML"
+                  style="position:absolute;top:12px;right:12px;width:38px;height:38px;
+                         border-radius:50%;border:1px solid rgba(255,255,255,.4);
+                         background:rgba(0,0,0,.55);color:#fff;cursor:pointer;
+                         opacity:.65;transition:opacity .15s;display:flex;
+                         align-items:center;justify-content:center;font-size:.9rem"
+                  onmouseover="this.style.opacity=1"
+                  onmouseout="this.style.opacity=.65">
+            <i class="fa-solid fa-pen"></i>
+          </button>
+        </div>
+      </div>
     </div>
     <div class="form-group">
       <label>Adjunto (URL/ruta)</label>
@@ -7461,8 +7698,28 @@ const drPlFiltros = { ...drPlFiltrosDefaults };
 let drPlBuscadorTimer   = null;
 let drPlFiltrosSnapshot = null;
 
-const DR_PL_MEDIO_MAP   = { C: 'Correo', S: 'SMS', W: 'WhatsApp', P: 'Push' };
-const DR_PL_FORMATO_MAP = { T: 'Texto plano', H: 'HTML', M: 'Markdown' };
+const DR_PL_MEDIO_MAP   = { C: 'Correo', W: 'WhatsApp' };
+const DR_PL_MEDIO_ICON  = {
+  // WhatsApp es icono de brand en FA6 (fa-brands), correo va con el solid
+  // fa-envelope. Sin match => guion en la celda.
+  C: '<i class="fa-solid fa-envelope"  title="Correo"></i>',
+  W: '<i class="fa-brands fa-whatsapp" title="WhatsApp"></i>',
+};
+// `formato` sigue siendo varchar(1) en BD; los codigos abarcan los 6 tipos
+// que el ABM ahora reconoce: T=texto, H=HTML, I=imagen, V=video, A=audio,
+// U=ubicacion. El listado muestra solo el icono (con tooltip = label).
+const DR_PL_FORMATO_MAP  = {
+  T: 'Texto', H: 'HTML', I: 'Imagen', V: 'Video', A: 'Audio', U: 'Ubicación',
+};
+const DR_PL_FORMATO_ICON = {
+  T: '<i class="fa-solid fa-align-left"   title="Texto"></i>',
+  H: '<i class="fa-solid fa-code"         title="HTML"></i>',
+  I: '<i class="fa-solid fa-image"        title="Imagen"></i>',
+  V: '<i class="fa-solid fa-video"        title="Video"></i>',
+  A: '<i class="fa-solid fa-volume-high"  title="Audio"></i>',
+  U: '<i class="fa-solid fa-location-dot" title="Ubicación"></i>',
+};
+let drPlProyectosCache = null;
 
 route('/datarocketplantillas', async (mount) => {
   mount.innerHTML = `
@@ -7512,16 +7769,17 @@ route('/datarocketplantillas', async (mount) => {
           <thead>
             <tr>
               <th>Código</th>
-              <th>Nombre</th>
               <th>Proyecto</th>
+              <th style="text-align:center">Medio</th>
+              <th>Nombre</th>
               <th>Remitente</th>
               <th>Asunto</th>
-              <th>Formato</th>
+              <th style="text-align:center">Formato</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="drPlTbody">
-            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -7562,7 +7820,7 @@ route('/datarocketplantillas', async (mount) => {
             <div class="form-group">
               <label>Medio</label>
               <input type="text" id="fDrPlMedio" maxlength="1" style="font-family:monospace"
-                     placeholder="C/S/W/…" oninput="onFiltroDrPl('medio', this.value)">
+                     placeholder="C/W" oninput="onFiltroDrPl('medio', this.value)">
             </div>
             <div class="form-group">
               <label>Formato</label>
@@ -7665,19 +7923,31 @@ route('/datarocketplantillas', async (mount) => {
 async function cargarDrPl() {
   const tbody = $('#drPlTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(drPlFiltros).forEach(([k, v]) => {
     if (v !== '' && v != null) qs.set(k, v);
   });
   try {
-    const data = await apiGet('api/datarocketplantillas.php?' + qs.toString());
+    const [data, proyectos] = await Promise.all([
+      apiGet('api/datarocketplantillas.php?' + qs.toString()),
+      drPlCargarProyectos(),
+    ]);
     pintarStatsDrPl(data.stats);
-    pintarTablaDrPl(data.items || []);
+    pintarTablaDrPl(data.items || [], proyectos);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
+}
+
+// Lista de proyectos tipo='I' cacheada por vida del ABM. Se usa tanto para
+// mostrar el nombre en el listado como para poblar el <select> del alta/edicion.
+async function drPlCargarProyectos() {
+  if (drPlProyectosCache) return drPlProyectosCache;
+  const resp = await apiGet('api/proyectos.php?tipo=I');
+  drPlProyectosCache = resp.items || [];
+  return drPlProyectosCache;
 }
 
 function pintarStatsDrPl(s) {
@@ -7687,20 +7957,28 @@ function pintarStatsDrPl(s) {
   cards[1].textContent = fmtNum(s.con_adjunto);
 }
 
-function pintarTablaDrPl(rows) {
+function pintarTablaDrPl(rows, proyectos = []) {
   const tbody = $('#drPlTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin plantillas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin plantillas.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map((p) => `
+  const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
+  tbody.innerHTML = rows.map((p) => {
+    const proyNom = proyMap.get(Number(p.proyecto_id));
+    const proyCell = proyNom
+      ? esc(proyNom)
+      : (p.proyecto_id == null || p.proyecto_id === '' ? '—' : `#${esc(p.proyecto_id)}`);
+    const medioCell = DR_PL_MEDIO_ICON[p.medio] || '—';
+    return `
     <tr data-id="${p.id}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
+      <td>${proyCell}</td>
+      <td style="text-align:center">${medioCell}</td>
       <td class="td-nombre">${esc(p.nombre || '—')}</td>
-      <td>${p.proyecto_id == null || p.proyecto_id === '' ? '—' : `#${esc(p.proyecto_id)}`}</td>
       <td>${esc(p.remitente || '—')}</td>
       <td>${esc(p.asunto || '—')}</td>
-      <td>${esc(DR_PL_FORMATO_MAP[p.formato] || p.formato || '—')}</td>
+      <td style="text-align:center">${DR_PL_FORMATO_ICON[p.formato] || (p.formato ? esc(p.formato) : '—')}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
@@ -7709,7 +7987,8 @@ function pintarTablaDrPl(rows) {
         </div>
       </td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function onFiltroDrPl(key, value) {
@@ -7798,14 +8077,17 @@ async function abrirConsultarDrPl(id) {
   });
 
   try {
-    const p = await apiGet(`api/datarocketplantillas.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaDrPl(p);
+    const [p, proyectos] = await Promise.all([
+      apiGet(`api/datarocketplantillas.php?id=${id}`),
+      drPlCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrPl(p, proyectos);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
 
-function renderConsultaDrPl(p) {
+function renderConsultaDrPl(p, proyectos = []) {
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
     const inner = empty ? 'Sin dato'
@@ -7823,6 +8105,21 @@ function renderConsultaDrPl(p) {
       ${esc(titulo)}
     </div>`;
 
+  const proyMap = new Map(proyectos.map((pr) => [Number(pr.id), pr.nombre]));
+  const proyNombre = p.proyecto_id == null || p.proyecto_id === ''
+    ? null
+    : (proyMap.get(Number(p.proyecto_id)) || `#${p.proyecto_id}`);
+
+  // Preview HTML solo cuando medio=Correo (C) y formato=HTML (H); en cualquier
+  // otro caso (correo texto, whatsapp con cualquier formato) mostramos el
+  // cuerpo tal cual como texto plano — mismo criterio que aws_mensajes.
+  const esHtmlPreview = p.medio === 'C' && p.formato === 'H';
+  const cuerpoHtml = p.cuerpo && String(p.cuerpo).trim() !== ''
+    ? (esHtmlPreview
+        ? `<iframe srcdoc="${esc(p.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
+        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(p.cuerpo)}</pre>`)
+    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
+
   return `
     <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
       <div>
@@ -7833,36 +8130,65 @@ function renderConsultaDrPl(p) {
       </div>
     </div>
 
-    ${seccion('Identidad')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Nombre',   p.nombre)}
-      ${card('Proyecto', p.proyecto_id == null || p.proyecto_id === '' ? null : `#${p.proyecto_id}`)}
-      ${card('Medio',    DR_PL_MEDIO_MAP[p.medio] || p.medio)}
-      ${card('Formato',  DR_PL_FORMATO_MAP[p.formato] || p.formato)}
-    </dl>
-
-    ${seccion('Remitente')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Remitente', p.remitente)}
-      ${card('Remite',    p.remite, false, true)}
-    </dl>
-
-    ${seccion('Contenido')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Asunto', p.asunto, true)}
-    </dl>
-    <div class="data-row full" style="flex-direction:column;align-items:flex-start;gap:6px">
-      <span class="data-label">Cuerpo</span>
-      <textarea readonly rows="10"
-                style="width:100%;font-family:monospace;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:10px">${esc(p.cuerpo || '')}</textarea>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-drpl-tab="general" onclick="drPlCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-drpl-tab="cuerpo" onclick="drPlCambiarTab('cuerpo')">
+        <i class="fa-solid fa-envelope-open-text"></i> Cuerpo
+      </button>
     </div>
 
-    ${seccion('Adjunto')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Adjunto', p.adjunto, true, true)}
-    </dl>
+    <div class="modal-tabpanel" data-drpl-tab="general">
+      ${seccion('Identidad')}
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Nombre',   p.nombre)}
+        ${card('Proyecto', proyNombre)}
+        ${card('Medio',    DR_PL_MEDIO_MAP[p.medio] || p.medio)}
+        ${card('Formato',  DR_PL_FORMATO_MAP[p.formato] || p.formato)}
+      </dl>
+
+      ${seccion('Remitente')}
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Remitente', p.remitente)}
+        ${card('Remite',    p.remite, false, true)}
+      </dl>
+    </div>
+
+    <div class="modal-tabpanel" data-drpl-tab="cuerpo" hidden>
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Asunto', p.asunto, true)}
+      </dl>
+      <div class="data-row full" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <span class="data-label">Cuerpo</span>
+        ${cuerpoHtml}
+      </div>
+
+      <dl class="data-list" style="grid-template-columns:1fr">
+        <div class="data-row full">
+          <span class="data-label">Adjunto</span>
+          <span class="data-value${p.adjunto ? '' : ' muted'}">${
+            p.adjunto
+              ? `<a href="${esc(p.adjunto)}" target="_blank" rel="noopener noreferrer">${esc(p.adjunto)}</a>`
+              : 'Sin dato'
+          }</span>
+        </div>
+      </dl>
+    </div>
   `;
 }
+
+function drPlCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-drpl-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.drplTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-drpl-tab]').forEach((p) => {
+    p.hidden = p.dataset.drplTab !== tab;
+  });
+}
+window.drPlCambiarTab = drPlCambiarTab;
 
 async function abrirAltaEdicionDrPl(id) {
   const esEdicion = id != null;
@@ -7872,11 +8198,7 @@ async function abrirAltaEdicionDrPl(id) {
         <div class="modal-title">${esEdicion ? `Editar plantilla <span class="modal-subtitle">#${id}</span>` : 'Nueva plantilla'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formDrPlHtml({})}
-      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
         <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
@@ -7884,39 +8206,119 @@ async function abrirAltaEdicionDrPl(id) {
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const p = await apiGet(`api/datarocketplantillas.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formDrPlHtml(p);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  try {
+    const [p, proyectos] = await Promise.all([
+      esEdicion ? apiGet(`api/datarocketplantillas.php?id=${id}`) : Promise.resolve({}),
+      drPlCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formDrPlHtml(p, proyectos, id);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
+    if (ev.target.closest('#drPlAdjuntoSubirBtn')) {
+      $('#drPlAdjuntoInput')?.click();
+      return;
+    }
+    if (ev.target.closest('#drPlAdjuntoQuitarBtn')) {
+      drPlQuitarAdjunto();
+      return;
+    }
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
     if (a.dataset.act === 'guardar') await guardarDrPl(id, a);
   });
+  const limpiarInvalido = (ev) => ev.target?.classList?.remove('input-invalid');
+  $('#modalRoot').addEventListener('input',  limpiarInvalido);
+  $('#modalRoot').addEventListener('change', async (ev) => {
+    limpiarInvalido(ev);
+    // Cascada Medio -> Formato: al cambiar el medio, repoblar las opciones
+    // validas del formato preservando la seleccion actual si sigue vigente.
+    if (ev.target?.id === 'drPlMedio') {
+      const sel = $('#drPlFormato');
+      if (sel) sel.innerHTML = drPlFormatoOptionsHtml(ev.target.value, sel.value);
+    }
+    if (ev.target?.id === 'drPlAdjuntoInput') {
+      await drPlSubirAdjunto(id, ev.target.files);
+    }
+  });
 }
 
-function formDrPlHtml(p) {
+// Opciones validas del select Formato segun el medio elegido:
+//   correo   -> Texto/HTML
+//   whatsapp -> Texto/Imagen/Video/Audio/Ubicacion
+//   sin medio -> solo el guion (no se puede elegir formato hasta elegir medio)
+// Preserva `actual` como seleccionada si sigue siendo valida en el medio nuevo.
+function drPlFormatoOptionsHtml(medio, actual) {
+  const porMedio = {
+    C: ['T', 'H'],
+    W: ['T', 'I', 'V', 'A', 'U'],
+  };
+  const codigos = porMedio[medio] || [];
+  const opciones = [{ v: '', t: '—' }].concat(
+    codigos.map((c) => ({ v: c, t: DR_PL_FORMATO_MAP[c] || c }))
+  );
+  const sel = codigos.includes(actual) ? actual : '';
+  return opciones.map((o) =>
+    `<option value="${o.v}"${o.v === sel ? ' selected' : ''}>${o.t}</option>`
+  ).join('');
+}
+
+function formDrPlHtml(p, proyectos = [], plantillaId = null) {
   const v = (k) => esc(p?.[k] ?? '');
+  const proyectoActual = String(p?.proyecto_id ?? '');
+  const proyectoOptions = ['<option value="">—</option>']
+    .concat(proyectos.map((pr) =>
+      `<option value="${esc(pr.id)}"${String(pr.id) === proyectoActual ? ' selected' : ''}>${esc(pr.nombre)}</option>`
+    )).join('');
+  const medioActual = String(p?.medio ?? '');
+  const medioOptions = [
+    { v: '',  t: '—' },
+    { v: 'C', t: 'Correo' },
+    { v: 'W', t: 'WhatsApp' },
+  ].map((o) => `<option value="${o.v}"${o.v === medioActual ? ' selected' : ''}>${o.t}</option>`).join('');
+  const formatoActual = String(p?.formato ?? '');
+  const formatoOptions = drPlFormatoOptionsHtml(medioActual, formatoActual);
+
+  // Adjunto: el control se renderiza con 3 estados.
+  //   * alta (plantillaId==null): input URL r/w + boton "Subir" DESHABILITADO
+  //     (no hay id todavia para nombrar el archivo en S3; el usuario puede
+  //     pegar una URL externa pero no subir un archivo hasta que la plantilla
+  //     se cree).
+  //   * edicion + origen 'archivo': input readonly + boton "Quitar".
+  //   * edicion + origen 'url' (o vacio): input r/w + boton "Subir".
+  const esAlta       = plantillaId == null;
+  const origenActual = p?.adjunto_origen ?? '';
+  const esArchivo    = origenActual === 'archivo';
+  const inputAttrs   = esArchivo ? 'readonly' : '';
+  const adjuntoControl = esArchivo
+    ? `<button type="button" class="btn btn-ghost" id="drPlAdjuntoQuitarBtn"
+               title="Quitar el archivo del bucket al guardar">
+         <i class="fa-solid fa-trash"></i> Quitar
+       </button>
+       <input type="file" id="drPlAdjuntoInput" style="display:none">`
+    : `<button type="button" class="btn btn-ghost" id="drPlAdjuntoSubirBtn"
+               ${esAlta ? 'disabled title="Guardá la plantilla primero para poder subir un archivo"'
+                        : 'title="Subir archivo al bucket bajo datarocket/plantillas/"'}>
+         <i class="fa-solid fa-upload"></i> Subir
+       </button>
+       <input type="file" id="drPlAdjuntoInput" style="display:none">`;
+
   return `
     <div class="form-row form-row-3">
       <div class="form-group">
-        <label>Nombre</label>
-        <input type="text" id="drPlNombre" maxlength="100" value="${v('nombre')}">
-      </div>
-      <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="drPlProyecto" min="1" value="${v('proyecto_id')}">
+        <label>Proyecto</label>
+        <select id="drPlProyecto">${proyectoOptions}</select>
       </div>
       <div class="form-group">
         <label>Medio</label>
-        <input type="text" id="drPlMedio" maxlength="1" value="${v('medio')}"
-               style="font-family:monospace" placeholder="C/S/W/…">
+        <select id="drPlMedio">${medioOptions}</select>
+      </div>
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="drPlNombre" maxlength="100" value="${v('nombre')}">
       </div>
     </div>
     <div class="form-row">
@@ -7934,39 +8336,153 @@ function formDrPlHtml(p) {
       <input type="text" id="drPlAsunto" maxlength="255" value="${v('asunto')}">
     </div>
     <div class="form-group">
+      <label>Formato</label>
+      <select id="drPlFormato">${formatoOptions}</select>
+    </div>
+    <div class="form-group">
       <label>Cuerpo</label>
       <textarea id="drPlCuerpo" rows="12" style="font-family:monospace">${v('cuerpo')}</textarea>
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Formato</label>
-        <input type="text" id="drPlFormato" maxlength="1" value="${v('formato')}"
-               style="font-family:monospace" placeholder="T/H/M">
+    <div class="form-group">
+      <label>Adjunto (URL o archivo)</label>
+      <div style="display:flex;gap:8px;align-items:stretch">
+        <input type="text" id="drPlAdjunto" maxlength="500" value="${v('adjunto')}"
+               style="font-family:monospace;flex:1"
+               placeholder="${esArchivo ? '' : 'Pegá una URL o subí un archivo…'}"
+               ${inputAttrs}>
+        ${adjuntoControl}
       </div>
-      <div class="form-group">
-        <label>Adjunto (URL o path)</label>
-        <input type="text" id="drPlAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
-      </div>
+      <div id="drPlAdjuntoStatus" style="font-size:.78rem;color:var(--muted);margin-top:6px"></div>
     </div>
     <div class="field-error" id="drPlFormError" style="display:none"></div>
   `;
 }
 
+async function drPlSubirAdjunto(plantillaId, fileList) {
+  if (!fileList || !fileList.length) return;
+  if (plantillaId == null) return;
+  const file = fileList[0];
+  const status = $('#drPlAdjuntoStatus');
+  const btn    = $('#drPlAdjuntoSubirBtn');
+  const input  = $('#drPlAdjuntoInput');
+  const fd = new FormData();
+  fd.append('archivo', file);
+  fd.append('plantilla_id', String(plantillaId));
+  if (btn) btn.disabled = true;
+  status.style.color = 'var(--muted)';
+  status.textContent = `Subiendo ${file.name}…`;
+  try {
+    const r = await fetch('api/datarocketplantillas_adjunto.php', {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: fd,
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      status.style.color = 'var(--danger)';
+      status.textContent = data.error || 'Error al subir';
+      return;
+    }
+    const inp = $('#drPlAdjunto');
+    inp.value = data.url;
+    inp.classList.remove('input-invalid');
+    // Bloquear edicion manual y transformar el boton en "Quitar": el input
+    // pasa a ser read-only y el UI refleja `adjunto_origen = 'archivo'`.
+    inp.setAttribute('readonly', '');
+    inp.placeholder = '';
+    drPlIntercambiarBotonAdjunto('quitar');
+    status.style.color = 'var(--muted)';
+    status.textContent = `Subido: ${file.name}`;
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = 'Error de red al subir';
+  } finally {
+    if (btn) btn.disabled = false;
+    if (input) input.value = '';
+  }
+}
+
+// Al quitar el archivo, el frontend solo limpia el input y vuelve al estado
+// "url": el borrado real en S3 lo hace el PUT del ABM cuando detecta que el
+// adjunto viejo (`archivo`) cambio (drPlOwnedS3Key en datarocketplantillas.php).
+// Si el usuario cancela el modal, el archivo queda intacto — el estado real
+// vive en la BD.
+function drPlQuitarAdjunto() {
+  const inp = $('#drPlAdjunto');
+  if (!inp) return;
+  inp.value = '';
+  inp.removeAttribute('readonly');
+  inp.placeholder = 'Pegá una URL o subí un archivo…';
+  drPlIntercambiarBotonAdjunto('subir');
+  const status = $('#drPlAdjuntoStatus');
+  if (status) {
+    status.style.color = 'var(--muted)';
+    status.textContent = 'Archivo quitado. Se elimina del bucket al guardar.';
+  }
+}
+
+// Swap in-place del boton Subir <-> Quitar sin re-renderizar el form entero.
+// Preserva el <input type="file"> hermano para no perder el listener global.
+function drPlIntercambiarBotonAdjunto(modo) {
+  const wrap = $('#drPlAdjuntoInput')?.parentElement;
+  if (!wrap) return;
+  const viejo = wrap.querySelector('#drPlAdjuntoSubirBtn, #drPlAdjuntoQuitarBtn');
+  if (!viejo) return;
+  const nuevo = document.createElement('button');
+  nuevo.type = 'button';
+  nuevo.className = 'btn btn-ghost';
+  if (modo === 'quitar') {
+    nuevo.id = 'drPlAdjuntoQuitarBtn';
+    nuevo.title = 'Quitar el archivo del bucket al guardar';
+    nuevo.innerHTML = '<i class="fa-solid fa-trash"></i> Quitar';
+  } else {
+    nuevo.id = 'drPlAdjuntoSubirBtn';
+    nuevo.title = 'Subir archivo al bucket bajo datarocket/plantillas/';
+    nuevo.innerHTML = '<i class="fa-solid fa-upload"></i> Subir';
+  }
+  viejo.replaceWith(nuevo);
+}
+
 async function guardarDrPl(id, btn) {
   const err = $('#drPlFormError');
   err.style.display = 'none';
+  const camposReq = ['drPlProyecto', 'drPlMedio', 'drPlNombre',
+                     'drPlRemitente', 'drPlRemite', 'drPlAsunto',
+                     'drPlFormato', 'drPlCuerpo'];
+  camposReq.forEach((cid) => $('#' + cid)?.classList.remove('input-invalid'));
 
   const payload = {
     nombre:      $('#drPlNombre').value.trim(),
     proyecto_id: $('#drPlProyecto').value,
-    medio:       $('#drPlMedio').value.trim(),
+    medio:       $('#drPlMedio').value,
     remitente:   $('#drPlRemitente').value.trim(),
     remite:      $('#drPlRemite').value.trim(),
     asunto:      $('#drPlAsunto').value.trim(),
     cuerpo:      $('#drPlCuerpo').value,
-    formato:     $('#drPlFormato').value.trim(),
+    formato:     $('#drPlFormato').value,
     adjunto:     $('#drPlAdjunto').value.trim(),
   };
+
+  const reglas = [
+    ['drPlProyecto',  payload.proyecto_id === '' || payload.proyecto_id == null, 'El proyecto es obligatorio.'],
+    ['drPlMedio',     !payload.medio,       'El medio es obligatorio.'],
+    ['drPlNombre',    !payload.nombre,      'El nombre es obligatorio.'],
+    ['drPlRemitente', !payload.remitente,   'El remitente es obligatorio.'],
+    ['drPlRemite',    !payload.remite,      'El remite es obligatorio.'],
+    ['drPlAsunto',    !payload.asunto,      'El asunto es obligatorio.'],
+    ['drPlFormato',   !payload.formato,     'El formato es obligatorio.'],
+    ['drPlCuerpo',    !payload.cuerpo.trim(), 'El cuerpo es obligatorio.'],
+  ];
+  const faltantes = reglas.filter(([, invalido]) => invalido);
+  if (faltantes.length) {
+    faltantes.forEach(([cid]) => $('#' + cid)?.classList.add('input-invalid'));
+    err.textContent = faltantes.length === 1
+      ? faltantes[0][2]
+      : 'Completá los campos obligatorios marcados.';
+    err.style.display = '';
+    $('#' + faltantes[0][0])?.focus();
+    return;
+  }
 
   btn.disabled = true;
   try {
