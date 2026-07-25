@@ -6646,7 +6646,7 @@ async function abrirAltaAwsMsg(opciones = {}) {
     }
 
     const plantillasResp = m.proyecto_id
-      ? await apiGet('api/datarocketplantillas.php?limite=1000&proyecto_id=' + encodeURIComponent(m.proyecto_id))
+      ? await apiGet('api/datarocketplantillas.php?limite=1000&medio=C&proyecto_id=' + encodeURIComponent(m.proyecto_id))
       : { items: [] };
     const plantillas = plantillasResp.items || [];
 
@@ -6843,7 +6843,7 @@ async function recargarPlantillasAwsMsg(proyectoId) {
   select.innerHTML = `<option value="">Cargando…</option>`;
   try {
     const items = proyectoId
-      ? ((await apiGet('api/datarocketplantillas.php?limite=1000&proyecto_id=' + encodeURIComponent(proyectoId))).items || [])
+      ? ((await apiGet('api/datarocketplantillas.php?limite=1000&medio=C&proyecto_id=' + encodeURIComponent(proyectoId))).items || [])
       : [];
     select.innerHTML = awsMsgOptionsPlantilla(items, '');
   } catch (e) {
@@ -8087,6 +8087,34 @@ async function abrirConsultarDrPl(id) {
   }
 }
 
+// Miniatura 100x100 del adjunto para el header del modal Consultar.
+// Detecta imagen por extension y usa <img>; para otros tipos (o cuando no se
+// puede detectar) muestra un icono generico. Vacio => no renderiza nada, asi
+// el header queda como antes cuando la plantilla no tiene adjunto.
+function drPlAdjuntoPreviewHtml(url) {
+  if (url == null || String(url).trim() === '') return '';
+  const clean = String(url).trim();
+  const safeUrl = esc(clean);
+  const boxStyle =
+    'width:100px;height:100px;border-radius:8px;border:1px solid var(--border);'
+    + 'background:color-mix(in srgb, var(--surface) 80%, #000);flex-shrink:0;'
+    + 'display:flex;align-items:center;justify-content:center;overflow:hidden';
+  const esImagen = /\.(jpe?g|png|gif|webp|avif|bmp|svg)(\?.*)?$/i.test(clean);
+  if (esImagen) {
+    return `
+      <a href="${safeUrl}" target="_blank" rel="noopener" title="Abrir adjunto"
+         style="${boxStyle};cursor:zoom-in">
+        <img src="${safeUrl}" alt="Adjunto"
+             style="width:100%;height:100%;object-fit:cover;display:block">
+      </a>`;
+  }
+  return `
+    <a href="${safeUrl}" target="_blank" rel="noopener" title="Abrir adjunto"
+       style="${boxStyle};color:var(--muted);text-decoration:none;font-size:1.8rem">
+      <i class="fa-solid fa-file-arrow-down"></i>
+    </a>`;
+}
+
 function renderConsultaDrPl(p, proyectos = []) {
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
@@ -8128,6 +8156,7 @@ function renderConsultaDrPl(p, proyectos = []) {
           #${esc(p.id)} · Slug <code>${esc(p.slug || '—')}</code>
         </div>
       </div>
+      ${drPlAdjuntoPreviewHtml(p.adjunto)}
     </div>
 
     <div class="modal-tabs" role="tablist">
@@ -20975,6 +21004,29 @@ async function abrirAltaEvoMsg(opciones = {}) {
     if ($proy && $pl) {
       $proy.addEventListener('change', () => {
         $pl.innerHTML = evoMsgPlantillaOptionsHtml(lookups?.plantillas, $proy.value, '');
+      });
+    }
+
+    // Autofill de plantilla -> form: al elegir una plantilla, copiar sus
+    // campos de contenido al form. Es una accion deliberada, asi que
+    // sobreescribimos lo que el usuario haya tipeado. Al volver a "—" no
+    // limpiamos (el usuario puede querer conservar lo escrito).
+    if ($pl) {
+      $pl.addEventListener('change', () => {
+        const plId = $pl.value;
+        if (!plId) return;
+        const p = (lookups?.plantillas ?? []).find(x => String(x.id) === String(plId));
+        if (!p) return;
+        // Mapping de formato: la plantilla trae letra legacy, evolution_mensajes
+        // guarda string full-word. Espeja el switch del sender.
+        const formatoMap = { T: 'texto', I: 'imagen', V: 'video', A: 'audio', U: 'ubicacion' };
+        const setVal = (id, v) => { const el = $('#' + id); if (el) el.value = v ?? ''; };
+        setVal('evoRemitente', p.remitente);
+        setVal('evoRemite',    p.remite);
+        setVal('evoAsunto',    p.asunto);
+        setVal('evoCuerpo',    p.cuerpo);
+        setVal('evoAdjunto',   p.adjunto);
+        if (p.formato) setVal('evoFormato', formatoMap[p.formato] ?? p.formato);
       });
     }
   } catch (e) {

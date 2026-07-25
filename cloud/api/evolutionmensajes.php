@@ -189,11 +189,24 @@ function handleLookups(PDO $pdo): void {
         SELECT id, nombre FROM proyectos
         WHERE tipo = 'I' ORDER BY nombre
     ")->fetchAll();
-    // Plantillas incluyen `proyecto_id` para que el frontend pueda cascadear
-    // el select: al elegir un proyecto, filtramos las plantillas de ese
-    // proyecto. La columna se llama `proyecto_id` desde la migration
-    // 20260724_1500 (antes era `proyecto`).
-    $plantillas = $pdo->query('SELECT id, nombre, proyecto_id FROM datarocket_plantillas ORDER BY nombre')->fetchAll();
+    // Plantillas: ademas del id/nombre para el select y proyecto_id para el
+    // cascadeo, exponemos remitente/remite/asunto/cuerpo/formato/adjunto para
+    // que al elegir una plantilla el frontend pueda autocompletar esos
+    // campos del form. `formato` viene como letra legacy (T/I/V/A/U) — el
+    // frontend lo mapea a los string full-word que usa evolution_mensajes.
+    //
+    // Filtro `medio = 'W'` (WhatsApp): `datarocket_plantillas` es un catalogo
+    // multi-medio compartido con el ABM del sistema Datarocket (correo + WA);
+    // aca solo queremos las de WhatsApp porque el sender Evolution es
+    // whatsapp-only. `medio` es varchar(1) legacy — otras opciones son
+    // 'C' (correo, ~16 filas al 2026-07-25).
+    $plantillas = $pdo->query("
+        SELECT id, nombre, proyecto_id,
+               remitente, remite, asunto, cuerpo, formato, adjunto
+          FROM datarocket_plantillas
+         WHERE medio = 'W'
+         ORDER BY nombre
+    ")->fetchAll();
     $canales    = $pdo->query('SELECT id, nombre FROM evolution_canales ORDER BY nombre')->fetchAll();
 
     $mapNombre = fn($r) => ['id' => (int)$r['id'], 'nombre' => (string)($r['nombre'] ?? '')];
@@ -204,6 +217,13 @@ function handleLookups(PDO $pdo): void {
                 'id'          => (int)$r['id'],
                 'nombre'      => (string)($r['nombre'] ?? ''),
                 'proyecto_id' => $r['proyecto_id'] !== null ? (int)$r['proyecto_id'] : null,
+                // Contenido para el auto-fill del form al elegir plantilla:
+                'remitente'   => $r['remitente'] !== null ? (string)$r['remitente'] : null,
+                'remite'      => $r['remite']    !== null ? (string)$r['remite']    : null,
+                'asunto'      => $r['asunto']    !== null ? (string)$r['asunto']    : null,
+                'cuerpo'      => $r['cuerpo']    !== null ? (string)$r['cuerpo']    : null,
+                'formato'     => $r['formato']   !== null ? (string)$r['formato']   : null,
+                'adjunto'     => $r['adjunto']   !== null ? (string)$r['adjunto']   : null,
             ],
             $plantillas
         ),

@@ -1,25 +1,24 @@
 <?php
-// api/v4/evolution/mensajes.php
-// Microservicio de ingesta de mensajes de Evolution API.
+// api/v4/aws/mensajes.php
+// Microservicio de ingesta de mensajes AWS SES.
 // Alta a la cola de envio y consulta del estado de un mensaje encolado.
 //
-//   POST /v4/evolution/mensajes           (JSON body) -> encola, devuelve {id, estado, encolado, programado}
-//   GET  /v4/evolution/mensajes?id=N                  -> estado actual del mensaje N
+//   POST /v4/aws/mensajes           (JSON body) -> encola, devuelve {id, estado, fecha, encolado, programado}
+//   GET  /v4/aws/mensajes?id=N                  -> estado actual del mensaje N
 //
 // Auth: Bearer con apikey de la tabla `aplicaciones` (mismo esquema que el resto
 // del stack — ver cloud/api/lib/apikey_auth.php).
 //
-// Tabla destino: `evolution_mensajes` (schema en db/schema.sql).
+// Tabla destino: `aws_mensajes` (schema en db/schema.sql).
 //
 // Punto UNICO de entrada: la insercion se delega a
-// `cloud/api/lib/evolution_mensajes.php::encolarEvolutionMensaje()`, la misma
-// funcion que usa el ABM cloud. Asi ambos callers aplican las mismas reglas
-// de sanitizacion, obligatorios y defaults, y ambos levantan la bandera
-// tri-estado `parametros.evolution.mensajes.enviar` a '2' (ENVIANDO) para
-// despertar al sender worker — salvo que el operador la haya dejado en '0'
-// (DETENIDO / pausa manual desde el UI), en cuyo caso el mensaje queda
-// pendiente pero no se despierta al motor. Semantica del flag:
-//   '0' = DETENIDO  '1' = ESPERANDO  '2' = ENVIANDO
+// `cloud/api/lib/aws_mensajes.php::encolarAwsMensaje()`, la misma funcion que
+// usa el ABM cloud. Asi ambos callers aplican las mismas reglas de
+// sanitizacion, obligatorios y defaults, y ambos levantan la bandera
+// `parametros.aws.mensajes.enviar='2'` para despertar al sender worker
+// (cloud/jobs/aws_mensajes_enviar.php).
+//
+// Espejo estructural de api/v4/evolution/mensajes.php.
 //
 // (Cuando v4 se mueva a otro DocumentRoot habra que reajustar el include del
 // require_once — es el unico acoplamiento con el runtime del panel.)
@@ -27,7 +26,7 @@
 header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
-require_once dirname(__DIR__, 3) . '/cloud/api/lib/evolution_mensajes.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/aws_mensajes.php';
 
 // ---------------------------------------------------------------------------
 // Helpers de respuesta / DB / auth
@@ -130,27 +129,26 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// POST /v4/evolution/mensajes  -> encolar
+// POST /v4/aws/mensajes  -> encolar
 // ---------------------------------------------------------------------------
 //
 // Toda la logica de sanitizacion, validacion, defaults e INSERT vive en la
-// funcion compartida encolarEvolutionMensaje() (cloud/api/lib/evolution_mensajes.php).
+// funcion compartida encolarAwsMensaje() (cloud/api/lib/aws_mensajes.php).
 // El handler v4 solo mapea la respuesta HTTP y traduce las excepciones a los
 // codigos de status apropiados.
 
 function handleEnqueue(array $in): void {
     try {
-        $id = encolarEvolutionMensaje(db(), $in);
+        $id = encolarAwsMensaje(db(), $in);
     } catch (InvalidArgumentException $e) {
         jsonError($e->getMessage(), 400);
-        return; // inalcanzable — jsonError() hace exit; aca solo para el analizador estatico.
     }
 
     // Releemos las columnas system-managed (fecha/encolado/programado que
     // el encolador puede haber defaulteado a NOW) para que la respuesta
     // sea fiel a lo persistido — asi el cliente v4 no tiene que adivinar.
     $st = db()->prepare("SELECT fecha, encolado, programado, estado
-                           FROM evolution_mensajes WHERE id = :id LIMIT 1");
+                           FROM aws_mensajes WHERE id = :id LIMIT 1");
     $st->execute([':id' => $id]);
     $r = $st->fetch() ?: [];
 
@@ -164,13 +162,13 @@ function handleEnqueue(array $in): void {
 }
 
 // ---------------------------------------------------------------------------
-// GET /v4/evolution/mensajes?id=N  -> consultar estado
+// GET /v4/aws/mensajes?id=N  -> consultar estado
 // ---------------------------------------------------------------------------
 
-// Etiquetas de estado alineadas con la tabla `estados` (evolution_mensaje_estado).
+// Etiquetas de estado alineadas con la tabla `estados` (aws_mensaje_estado).
 // Solo se usan para el campo `estado_label` de conveniencia — la fuente de
-// verdad del valor sigue siendo `evolution_mensajes.estado` (varchar 20).
-const EVO_MSG_ESTADO_LABEL = [
+// verdad del valor sigue siendo `aws_mensajes.estado` (varchar 20).
+const AWS_MSG_ESTADO_LABEL = [
     'pendiente' => 'Pendiente',
     'enviando'  => 'Enviando',
     'enviado'   => 'Enviado',
@@ -181,8 +179,9 @@ const EVO_MSG_ESTADO_LABEL = [
 function handleStatus(int $id): void {
     $pdo = db();
     $st  = $pdo->prepare(
-        "SELECT id, canal_id, destino, estado, error, encolado, programado, enviado, demora
-         FROM evolution_mensajes WHERE id = :id LIMIT 1"
+        "SELECT id, canal_id, remite, remitente, destino, destinatario, asunto,
+                estado, error, fecha, encolado, programado, enviado, demora
+           FROM aws_mensajes WHERE id = :id LIMIT 1"
     );
     $st->execute([':id' => $id]);
     $row = $st->fetch();
@@ -190,8 +189,8 @@ function handleStatus(int $id): void {
 
     $row['id']           = (int)$row['id'];
     $row['canal_id']     = $row['canal_id'] !== null ? (int)$row['canal_id'] : null;
-    $row['demora']       = $row['demora'] !== null ? (int)$row['demora'] : null;
-    $row['estado_label'] = EVO_MSG_ESTADO_LABEL[$row['estado']] ?? $row['estado'];
+    $row['demora']       = $row['demora']   !== null ? (int)$row['demora']   : null;
+    $row['estado_label'] = AWS_MSG_ESTADO_LABEL[$row['estado']] ?? $row['estado'];
 
     jsonOk($row);
 }
