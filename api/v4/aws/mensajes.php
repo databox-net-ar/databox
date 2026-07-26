@@ -29,48 +29,12 @@ require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/aws_mensajes.php';
 
 // ---------------------------------------------------------------------------
-// Helpers de respuesta / DB / auth
+// Auth
 // ---------------------------------------------------------------------------
-
-function jsonOk(mixed $data, int $code = 200): void {
-    http_response_code($code);
-    echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE);
-    exit;
-}
-
-function jsonError(string $msg, int $code = 400): void {
-    http_response_code($code);
-    echo json_encode(['ok' => false, 'error' => $msg], JSON_UNESCAPED_UNICODE);
-    exit;
-}
-
-function db(): PDO {
-    static $pdo = null;
-    if ($pdo !== null) return $pdo;
-
-    $host = getenv('DB_HOST') ?: 'db';
-    $port = getenv('DB_PORT') ?: '3306';
-    $name = getenv('DB_NAME') ?: 'databox_dev';
-    $user = getenv('DB_USER') ?: 'root';
-    $pass = getenv('DB_PASS') ?: 'root';
-
-    $dsn = "mysql:host={$host};port={$port};dbname={$name};charset=utf8mb4";
-    $pdo = new PDO($dsn, $user, $pass, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES   => false,
-    ]);
-    $pdo->exec("SET time_zone = '-03:00'");
-    return $pdo;
-}
-
-function readJsonBody(): array {
-    $raw = file_get_contents('php://input') ?: '';
-    if ($raw === '') return [];
-    $j = json_decode($raw, true);
-    if (!is_array($j)) jsonError('Cuerpo no es JSON valido', 400);
-    return $j;
-}
+// db() / jsonOk() / jsonError() / readJsonBody() vienen del panel cloud via
+// el require_once de arriba (cloud/api/lib/aws_mensajes.php -> cloud/api/db.php).
+// Aca solo agregamos los helpers propios del microservicio: lectura del Bearer
+// y validacion del apikey contra la tabla `aplicaciones`.
 
 // Apache no siempre propaga Authorization a $_SERVER (depende de mod_rewrite
 // y CGIPassAuth). Chequeamos $_SERVER, REDIRECT_HTTP_AUTHORIZATION y como

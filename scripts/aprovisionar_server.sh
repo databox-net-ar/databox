@@ -124,6 +124,13 @@ services:
       - "127.0.0.1:${API_PORT}:${API_PORT}"
     volumes:
       - ./cloud:/var/www/html
+      # Segundo mount de la misma carpeta cloud en /var/www/cloud para que las
+      # APIs expuestas bajo /var/www/api/v4/... puedan hacer \`require_once\` de
+      # librerias compartidas del panel via \`dirname(__DIR__, 3) . '/cloud/...'\`
+      # sin acoplar el codigo PHP al DocumentRoot del panel (/var/www/html).
+      # Toda API v4 nueva que necesite compartir logica con el panel cloud
+      # (encoladores, motores, sanitizadores) resuelve el include por aca.
+      - ./cloud:/var/www/cloud
       - ./www:/var/www/www
       - ./robot:/var/www/robot
       - ./api:/var/www/api

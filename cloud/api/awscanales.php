@@ -12,7 +12,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const AWS_CH_COLS = "id, uuid, nombre, correo, servidor, usuario, contrasena,
+const AWS_CH_COLS = "id, slug, nombre, correo, servidor, usuario, contrasena,
                      accesskey, secreto, region, habilitado";
 
 header('Content-Type: application/json; charset=utf-8');
@@ -141,19 +141,19 @@ function sanitizePayload(array $in): array {
 
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
-    $p['uuid'] = $in['uuid'] ?? bin2hex(random_bytes(16));
+    $p['slug'] = $in['slug'] ?? bin2hex(random_bytes(16));
 
     $sql = "
         INSERT INTO aws_canales
-            (uuid, nombre, correo, servidor, usuario, contrasena,
+            (slug, nombre, correo, servidor, usuario, contrasena,
              accesskey, secreto, region, habilitado)
         VALUES
-            (:uuid, :nombre, :correo, :servidor, :usuario, :contrasena,
+            (:slug, :nombre, :correo, :servidor, :usuario, :contrasena,
              :accesskey, :secreto, :region, :habilitado)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
-        ':uuid'       => $p['uuid'],
+        ':slug'       => $p['slug'],
         ':nombre'     => $p['nombre'],
         ':correo'     => $p['correo'],
         ':servidor'   => $p['servidor'],

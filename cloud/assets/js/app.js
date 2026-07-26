@@ -7520,7 +7520,7 @@ function renderConsultaAwsCh(c) {
       <div>
         <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
         <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
-          #${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code>
+          #${esc(c.id)} · Slug <code>${esc(c.slug || '—')}</code>
         </div>
       </div>
       <div>${awsChHabilitadoBadge(c.habilitado)}</div>
@@ -7705,19 +7705,19 @@ const DR_PL_MEDIO_ICON  = {
   C: '<i class="fa-solid fa-envelope"  title="Correo"></i>',
   W: '<i class="fa-brands fa-whatsapp" title="WhatsApp"></i>',
 };
-// `formato` sigue siendo varchar(1) en BD; los codigos abarcan los 6 tipos
-// que el ABM ahora reconoce: T=texto, H=HTML, I=imagen, V=video, A=audio,
-// U=ubicacion. El listado muestra solo el icono (con tooltip = label).
+// `formato` es varchar(20) en BD (migrado desde varchar(1)); los codigos
+// abarcan los 6 tipos que el ABM reconoce. El listado muestra solo el icono
+// (con tooltip = label).
 const DR_PL_FORMATO_MAP  = {
-  T: 'Texto', H: 'HTML', I: 'Imagen', V: 'Video', A: 'Audio', U: 'Ubicación',
+  texto: 'Texto', html: 'HTML', imagen: 'Imagen', video: 'Video', audio: 'Audio', ubicacion: 'Ubicación',
 };
 const DR_PL_FORMATO_ICON = {
-  T: '<i class="fa-solid fa-align-left"   title="Texto"></i>',
-  H: '<i class="fa-solid fa-code"         title="HTML"></i>',
-  I: '<i class="fa-solid fa-image"        title="Imagen"></i>',
-  V: '<i class="fa-solid fa-video"        title="Video"></i>',
-  A: '<i class="fa-solid fa-volume-high"  title="Audio"></i>',
-  U: '<i class="fa-solid fa-location-dot" title="Ubicación"></i>',
+  texto:     '<i class="fa-solid fa-align-left"   title="Texto"></i>',
+  html:      '<i class="fa-solid fa-code"         title="HTML"></i>',
+  imagen:    '<i class="fa-solid fa-image"        title="Imagen"></i>',
+  video:     '<i class="fa-solid fa-video"        title="Video"></i>',
+  audio:     '<i class="fa-solid fa-volume-high"  title="Audio"></i>',
+  ubicacion: '<i class="fa-solid fa-location-dot" title="Ubicación"></i>',
 };
 let drPlProyectosCache = null;
 
@@ -7824,8 +7824,15 @@ route('/datarocketplantillas', async (mount) => {
             </div>
             <div class="form-group">
               <label>Formato</label>
-              <input type="text" id="fDrPlFormato" maxlength="1" style="font-family:monospace"
-                     placeholder="T/H/M" oninput="onFiltroDrPl('formato', this.value)">
+              <select id="fDrPlFormato" onchange="onFiltroDrPl('formato', this.value)">
+                <option value="">—</option>
+                <option value="texto">Texto</option>
+                <option value="html">HTML</option>
+                <option value="imagen">Imagen</option>
+                <option value="video">Video</option>
+                <option value="audio">Audio</option>
+                <option value="ubicacion">Ubicación</option>
+              </select>
             </div>
           </div>
           <div class="form-row form-row-3">
@@ -8141,7 +8148,7 @@ function renderConsultaDrPl(p, proyectos = []) {
   // Preview HTML solo cuando medio=Correo (C) y formato=HTML (H); en cualquier
   // otro caso (correo texto, whatsapp con cualquier formato) mostramos el
   // cuerpo tal cual como texto plano — mismo criterio que aws_mensajes.
-  const esHtmlPreview = p.medio === 'C' && p.formato === 'H';
+  const esHtmlPreview = p.medio === 'C' && p.formato === 'html';
   const cuerpoHtml = p.cuerpo && String(p.cuerpo).trim() !== ''
     ? (esHtmlPreview
         ? `<iframe srcdoc="${esc(p.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
@@ -8282,8 +8289,8 @@ async function abrirAltaEdicionDrPl(id) {
 // Preserva `actual` como seleccionada si sigue siendo valida en el medio nuevo.
 function drPlFormatoOptionsHtml(medio, actual) {
   const porMedio = {
-    C: ['T', 'H'],
-    W: ['T', 'I', 'V', 'A', 'U'],
+    C: ['texto', 'html'],
+    W: ['texto', 'imagen', 'video', 'audio', 'ubicacion'],
   };
   const codigos = porMedio[medio] || [];
   const opciones = [{ v: '', t: '—' }].concat(
@@ -8356,7 +8363,7 @@ function formDrPlHtml(p, proyectos = [], plantillaId = null) {
         <input type="text" id="drPlRemitente" maxlength="255" value="${v('remitente')}">
       </div>
       <div class="form-group">
-        <label>Remite (correo)</label>
+        <label>Remite</label>
         <input type="text" id="drPlRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
       </div>
     </div>
@@ -21691,7 +21698,7 @@ function renderConsultaEvoCh(c) {
       <div>
         <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
         <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
-          #${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code>
+          #${esc(c.id)} · Slug <code>${esc(c.slug || '—')}</code>
         </div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">

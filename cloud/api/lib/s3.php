@@ -42,10 +42,16 @@ function s3_secret_key(): string {
 }
 
 function s3_public_url(string $key): string {
+    $key = ltrim($key, '/');
+    // Preferimos el CNAME publico (AWS_S3_URL del .env) — asi las URLs que
+    // guardamos en BD y devolvemos al frontend son "https://media.databox.
+    // net.ar/<key>" en vez del endpoint path-style de amazonaws.com. El
+    // fallback (path-style) sigue por si alguien despliega sin la variable.
+    if (defined('AWS_S3_URL') && (string) AWS_S3_URL !== '') {
+        return rtrim(AWS_S3_URL, '/') . '/' . s3_uri_encode($key, true);
+    }
     $bucket = s3_bucket_name();
     $region = s3_region();
-    $key    = ltrim($key, '/');
-    // Endpoint directo de S3 (path-style). No depende de DNS del subdominio custom.
     return 'https://s3.' . $region . '.amazonaws.com/'
         . rawurlencode($bucket) . '/' . s3_uri_encode($key, true);
 }

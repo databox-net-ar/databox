@@ -17,8 +17,8 @@
 
 require_once __DIR__ . '/../db.php';
 
-// Mapa columna -> regla del sanitizador. Reusado por sanitizeAwsMsgPayload
-// (INSERT completo) y sanitizeAwsMsgPartialPayload (UPDATE parcial).
+// Mapa columna -> regla del sanitizador. Reusado por sanitizeAwsMsgPayload.
+// (No hay variante partial: los mensajes encolados no se editan.)
 const AWS_MSG_SANITIZERS = [
     'fecha'        => 'dt',
     'proyecto_id'  => 'int',
@@ -43,15 +43,20 @@ const AWS_MSG_SANITIZERS = [
 ];
 
 // Campos obligatorios al encolar un mensaje nuevo. Coincide con lo que exige
-// el sender: sin proyecto/canal no puede firmar contra SES, sin
-// remite/destino/asunto/cuerpo no puede armar el email.
+// el sender: sin proyecto/canal no puede firmar contra SES, sin destino no
+// puede rutear.
 const AWS_MSG_REQUERIDOS_CREATE = [
     'proyecto_id' => 'Proyecto',
     'canal_id'    => 'Canal',
-    'remite'      => 'Remite',
     'destino'     => 'Destino',
-    'asunto'      => 'Asunto',
-    'cuerpo'      => 'Cuerpo',
+];
+
+// Obligatorios adicionales cuando NO hay plantilla — con plantilla estos
+// campos los aporta `datarocket_plantillas` (ver aplicarPlantillaAws()).
+const AWS_MSG_REQUERIDOS_SIN_PLANTILLA = [
+    'remite' => 'Remite',
+    'asunto' => 'Asunto',
+    'cuerpo' => 'Cuerpo',
 ];
 
 // ----------------------------------------------------------------------------
@@ -64,12 +69,19 @@ const AWS_MSG_REQUERIDOS_CREATE = [
  * apliquen reglas de ingreso divergentes.
  */
 function encolarAwsMensaje(PDO $pdo, array $datos): int {
-    $p = sanitizeAwsMsgPayload($datos);
+    $p = sanitizeAwsMsgPayload($pdo, $datos);
 
-    // Validar obligatorios antes de tocar la BD.
+    // Validar obligatorios antes de tocar la BD. Con plantilla,
+    // remite/asunto/cuerpo los aporta datarocket_plantillas (ya aplicada por
+    // aplicarPlantillaAws() dentro del sanitize).
     $faltantes = [];
     foreach (AWS_MSG_REQUERIDOS_CREATE as $col => $label) {
         if ($p[$col] === null) $faltantes[] = $label;
+    }
+    if ($p['plantilla_id'] === null) {
+        foreach (AWS_MSG_REQUERIDOS_SIN_PLANTILLA as $col => $label) {
+            if ($p[$col] === null) $faltantes[] = $label;
+        }
     }
     if ($faltantes) {
         throw new InvalidArgumentException(
@@ -138,12 +150,109 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
 // Sanitiza TODAS las columnas — los faltantes quedan NULL. Usado por
 // encolarAwsMensaje al crear. No hay variante partial porque los mensajes
 // encolados no se editan (ver comentario en cloud/api/awsmensajes.php).
-function sanitizeAwsMsgPayload(array $in): array {
+function sanitizeAwsMsgPayload(PDO $pdo, array $in): array {
+    // Resolucion de slugs -> ids (proyecto_slug, canal_slug, plantilla_slug).
+    // Si vienen ambos slug + id, el slug gana y se ignora el id.
+    $in = resolverAwsMsgSlugs($pdo, $in);
+
+    // Si viene plantilla_id, expandirla: la plantilla aporta remitente/remite/
+    // asunto/cuerpo/formato/adjunto y el body inyecta {asunto}/{cuerpo}/{...vars}
+    // como variables dentro de esos strings. Mirror del legacy v3
+    // databox_legacy/databox-api/v3/awsses/mensajes/index.php.
+    $in = aplicarPlantillaAws($pdo, $in);
+
     $out = [];
     foreach (AWS_MSG_SANITIZERS as $col => $rule) {
         $out[$col] = applyAwsMsgSanitizer($rule, $in[$col] ?? null);
     }
     return $out;
+}
+
+// Expande el mensaje con los campos de `datarocket_plantillas` cuando viene
+// `plantilla_id`. Semantica identica al legacy v3:
+//
+//   - remitente / remite / adjunto  -> pisan lo del body (los toma la plantilla).
+//   - formato                       -> pisan lo del body, mapeado H->html, T->texto,
+//                                       M->null (Markdown deprecado en el sender).
+//   - asunto                        -> plantilla.asunto con str_replace('{asunto}', body.asunto).
+//   - cuerpo                        -> plantilla.cuerpo con str_replace('{cuerpo}', body.cuerpo).
+//   - variables (JSON opcional)     -> hace str_replace('{clave}', valor) sobre asunto y cuerpo.
+//
+// Si no viene plantilla_id, no toca nada. Si viene pero no matchea, el error
+// ya lo tiro resolverAwsMsgSlugs (que tambien resuelve plantilla_id numerico
+// bypasseando esto — validamos aca de nuevo por defensa).
+function aplicarPlantillaAws(PDO $pdo, array $in): array {
+    $plantillaId = (int)($in['plantilla_id'] ?? 0);
+    if ($plantillaId <= 0) return $in;
+
+    $st = $pdo->prepare(
+        "SELECT remitente, remite, asunto, cuerpo, formato, adjunto
+           FROM datarocket_plantillas WHERE id = :id LIMIT 1"
+    );
+    $st->execute([':id' => $plantillaId]);
+    $tpl = $st->fetch();
+    if (!$tpl) {
+        throw new InvalidArgumentException("Plantilla id={$plantillaId} no encontrada");
+    }
+
+    // Renderizado de asunto y cuerpo: primero {asunto}/{cuerpo} desde el body,
+    // despues cada clave del JSON `variables` (si vino).
+    $asuntoBody = (string)($in['asunto'] ?? '');
+    $cuerpoBody = (string)($in['cuerpo'] ?? '');
+    $asunto     = str_replace('{asunto}', $asuntoBody, (string)$tpl['asunto']);
+    $cuerpo     = str_replace('{cuerpo}', $cuerpoBody, (string)$tpl['cuerpo']);
+
+    if (!empty($in['variables'])) {
+        $vars = is_array($in['variables']) ? $in['variables'] : json_decode((string)$in['variables'], true);
+        if (is_array($vars)) {
+            foreach ($vars as $clave => $valor) {
+                $asunto = str_replace('{' . $clave . '}', (string)$valor, $asunto);
+                $cuerpo = str_replace('{' . $clave . '}', (string)$valor, $cuerpo);
+            }
+        }
+    }
+
+    // Mapeo de formato legacy (H/T/M) al vocabulario del sender (html/texto/null).
+    $formatoMap = ['H' => 'html', 'T' => 'texto', 'M' => null];
+    $formatoTpl = strtoupper(trim((string)$tpl['formato']));
+    $formato    = $formatoMap[$formatoTpl] ?? null;
+
+    $in['remitente'] = $tpl['remitente'];
+    $in['remite']    = $tpl['remite'];
+    $in['asunto']    = $asunto;
+    $in['cuerpo']    = $cuerpo;
+    $in['formato']   = $formato;
+    $in['adjunto']   = $tpl['adjunto'];
+    return $in;
+}
+
+// Resuelve `proyecto_slug` / `canal_slug` / `plantilla_slug` a sus ids
+// correspondientes en `proyectos.slug`, `aws_canales.slug` y
+// `datarocket_plantillas.slug`. Cuando viene el slug se ignora el id numerico
+// del mismo campo (el slug es la fuente de verdad). Slug no encontrado ->
+// InvalidArgumentException (400 en la capa HTTP).
+//
+// Espejo estructural de resolverEvoMsgSlugs() en evolution_mensajes.php — si
+// se toca la firma o la semantica, mantener ambas en linea.
+function resolverAwsMsgSlugs(PDO $pdo, array $in): array {
+    $resolver = [
+        'proyecto_slug'  => ['proyecto_id',  'proyectos',              'Proyecto'],
+        'canal_slug'     => ['canal_id',     'aws_canales',            'Canal'],
+        'plantilla_slug' => ['plantilla_id', 'datarocket_plantillas',  'Plantilla'],
+    ];
+    foreach ($resolver as $slugKey => [$idKey, $tabla, $label]) {
+        if (!array_key_exists($slugKey, $in)) continue;
+        $slug = trim((string)$in[$slugKey]);
+        if ($slug === '') continue;
+        $st = $pdo->prepare("SELECT id FROM {$tabla} WHERE slug = :s LIMIT 1");
+        $st->execute([':s' => $slug]);
+        $id = $st->fetchColumn();
+        if ($id === false) {
+            throw new InvalidArgumentException("{$label} con slug '{$slug}' no encontrado");
+        }
+        $in[$idKey] = (int)$id;
+    }
+    return $in;
 }
 
 function applyAwsMsgSanitizer(string $rule, mixed $val): mixed {

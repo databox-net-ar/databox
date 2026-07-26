@@ -62,24 +62,59 @@ Content-Type: `application/json; charset=utf-8`.
 Campos que acepta el sanitizador (ver [cloud/api/lib/evolution_mensajes.php](../../../cloud/api/lib/evolution_mensajes.php)
 constante `EVO_MSG_SANITIZERS`):
 
-| Campo            | Tipo         | Obligatorio | Notas                                                                     |
-|------------------|--------------|-------------|---------------------------------------------------------------------------|
-| `proyecto_id`    | int          | Sí          | FK a `proyectos.id`. Alias legacy: `proyecto`.                            |
-| `canal_id`       | int          | Sí          | FK a `evolution_canales.id`. Alias legacy: `canal`.                       |
-| `remite`         | string(255)  | Sí          | Número emisor (ej. `5491133445566`).                                      |
-| `destino`        | string(255)  | Sí          | Número destinatario en E.164 sin `+`.                                     |
-| `cuerpo`         | string       | Sí          | Texto del mensaje. Para plantillas se auto-completa desde `plantilla_id`. |
-| `plantilla_id`   | int          | No          | FK a `datarocket_plantillas.id`. Alias legacy: `plantilla`.               |
+| Campo             | Tipo         | Obligatorio | Notas                                                                                                                    |
+|-------------------|--------------|-------------|--------------------------------------------------------------------------------------------------------------------------|
+| `proyecto_slug`   | string       | Sí¹         | Slug de `proyectos.slug` (ej. `"vigicom"`). Se resuelve al id correspondiente antes del INSERT.                          |
+| `proyecto_id`     | int          | Sí¹         | Alternativa numérica a `proyecto_slug`. FK a `proyectos.id`. Alias legacy: `proyecto`.                                   |
+| `canal_slug`      | string       | Sí¹         | Slug de `evolution_canales.slug` (ej. `"vigicom-bot"`). Corresponde al instance name del bot en Evolution API.           |
+| `canal_id`        | int          | Sí¹         | Alternativa numérica a `canal_slug`. FK a `evolution_canales.id`. Alias legacy: `canal`.                                 |
+| `remite`          | string(255)  | Sí²         | Número emisor (ej. `5491133445566`).                                                                                     |
+| `destino`         | string(255)  | Sí          | Número destinatario en E.164 sin `+`.                                                                                    |
+| `cuerpo`          | string       | Sí²         | Texto del mensaje. Cuando viene plantilla, se ignora y se usa el `cuerpo` de la plantilla.                               |
+| `plantilla_slug`  | string       | No          | Slug de `datarocket_plantillas.slug` (ej. `"1DV1ZH"`). Dispara el merge de plantilla (ver más abajo).                    |
+| `plantilla_id`    | int          | No          | Alternativa numérica a `plantilla_slug`. FK a `datarocket_plantillas.id`. Alias legacy: `plantilla`.                     |
+| `variables`       | object       | No          | Diccionario `{clave: valor}` para sustituir placeholders `{clave}` en `cuerpo` / `asunto` de la plantilla. Ver abajo.    |
 | `remitente`      | string(255)  | No          | Nombre humano del emisor (para display).                                  |
 | `destinatario`   | string(255)  | No          | Nombre humano del destinatario.                                           |
 | `prioridad`      | int (1–5)    | No          | Default `3` (Media). `5` = Muy Alta (sale primero), `1` = Muy Baja.       |
 | `asunto`         | string(255)  | No          | WhatsApp no tiene subject; el sender lo antepone en negrita al cuerpo.    |
-| `formato`        | string(20)   | No          | Default `'texto'`. Otros: `'imagen'`, `'video'`, `'audio'`, `'url'`.      |
+| `formato`        | string(20)   | No          | Default `'texto'`. Otros: `'imagen'`, `'video'`, `'audio'`, `'ubicacion'`.|
 | `adjunto`        | string(500)  | No          | URL/path del adjunto cuando `formato` != `'texto'`.                       |
 | `tags`           | string(255)  | No          | Etiquetas libres para segmentación / búsqueda.                            |
 | `fecha`          | datetime     | No          | `YYYY-MM-DD HH:MM[:SS]`. Default: `NOW()` en `America/Argentina/Buenos_Aires`. |
 | `encolado`       | datetime     | No          | Default: mismo valor que `fecha`.                                         |
 | `programado`     | datetime     | No          | Cuándo debe salir. Default: mismo valor que `fecha` (envío inmediato).    |
+
+¹ **Slug o id, no ambos**: Para `proyecto`, `canal` y `plantilla` podés pasar el
+identificador humano (`_slug`) o el numérico (`_id`). Si mandás los dos, el slug
+gana y el id se ignora. Slug inexistente → `400 <X> con slug '<slug>' no encontrado`.
+
+² **Aportados por la plantilla**: si mandás `plantilla_slug` (o `plantilla_id`),
+los campos `cuerpo`, `asunto`, `formato`, `adjunto`, `remite` y `remitente` se
+sobrescriben con los de la plantilla — el body ya no necesita mandarlos, y si
+los manda, se ignoran. Excepción: los campos que la plantilla tiene vacíos no
+sobrescriben, así que `remite` del body sirve como fallback si la plantilla no
+lo definió.
+
+### Aplicación de plantilla
+
+Cuando el body incluye `plantilla_slug` (o `plantilla_id`), el microservicio
+carga la fila de `datarocket_plantillas` y hace merge sobre el payload antes
+de insertar en `evolution_mensajes`:
+
+1. **Sobrescritura**: `cuerpo`, `asunto`, `formato`, `adjunto`, `remite` y
+   `remitente` de la plantilla pisan cualquier valor equivalente que haya en
+   el body. Si el campo está vacío en la plantilla, el body sobrevive como
+   fallback.
+2. **Sustitución de variables**: si el body trae un objeto `variables`, cada
+   par `clave: valor` se aplica sobre `cuerpo` y `asunto` reemplazando el
+   literal `{clave}` (case-sensitive, sin espacios). Los placeholders sin
+   valor correspondiente quedan intactos en el texto final — no es error.
+
+Ejemplo: la plantilla `1DV1ZH` tiene `cuerpo = "Hola {comunidad.nombre}, …"`
+y `formato = "imagen"`. Al mandar `variables: {"comunidad.nombre": "Los Alerces"}`,
+el mensaje encolado queda con `cuerpo = "Hola Los Alerces, …"` y
+`formato = "imagen"` (el body ni siquiera necesita mencionar el formato).
 
 Reglas de sanitización:
 
@@ -133,6 +168,7 @@ Semántica del flag tri-estado (definida en la migración
 |--------|--------------------------------------------------|-----------------------------------------------------|
 | 400    | `Cuerpo no es JSON valido`                       | El body no es JSON válido.                          |
 | 400    | `Faltan campos obligatorios: Proyecto, Canal, …` | Falta uno o más de los 5 requeridos.                |
+| 400    | `<X> con slug '<slug>' no encontrado`            | Slug pasado en `proyecto_slug`/`canal_slug`/`plantilla_slug` no existe. |
 | 500    | `<mensaje de la excepción>`                      | Falla inesperada (PDO, etc.).                       |
 
 ---
@@ -184,7 +220,44 @@ Valores posibles de `estado` (catálogo `estados.campo = 'evolution_mensaje_esta
 
 ## Ejemplos
 
-### curl — encolar
+### curl — encolar (por slug)
+
+```bash
+curl -X POST https://api.databox.net.ar/v4/evolution/mensajes \
+  -H "Authorization: Bearer $APIKEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proyecto_slug": "vigicom",
+    "canal_slug":    "vigicom-bot",
+    "remite":        "5491133445566",
+    "destino":       "5491199887766",
+    "cuerpo":        "Hola, tu turno es a las 15:30.",
+    "prioridad":     4
+  }'
+```
+
+### curl — encolar desde plantilla (con variables)
+
+Toma `cuerpo`, `asunto`, `formato` y `adjunto` de la plantilla y sustituye
+`{comunidad.nombre}` por el valor pasado en `variables`. El body no necesita
+mandar `cuerpo` — lo aporta la plantilla.
+
+```bash
+curl -X POST https://api.databox.net.ar/v4/evolution/mensajes \
+  -H "Authorization: Bearer $APIKEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proyecto_slug":  "vigicom",
+    "canal_slug":     "vigicom-bot",
+    "plantilla_slug": "1DV1ZH",
+    "destino":        "5491199887766",
+    "variables": {
+      "comunidad.nombre": "Los Alerces"
+    }
+  }'
+```
+
+### curl — encolar (por id, equivalente)
 
 ```bash
 curl -X POST https://api.databox.net.ar/v4/evolution/mensajes \
@@ -207,12 +280,12 @@ curl -X POST https://api.databox.net.ar/v4/evolution/mensajes \
   -H "Authorization: Bearer $APIKEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "proyecto_id": 12,
-    "canal_id":    42,
-    "remite":      "5491133445566",
-    "destino":     "5491199887766",
-    "cuerpo":      "Recordatorio: cita mañana 10:00.",
-    "programado":  "2026-07-26 09:00:00"
+    "proyecto_slug": "vigicom",
+    "canal_slug":    "vigicom-bot",
+    "remite":        "5491133445566",
+    "destino":       "5491199887766",
+    "cuerpo":        "Recordatorio: cita mañana 10:00.",
+    "programado":    "2026-07-26 09:00:00"
   }'
 ```
 

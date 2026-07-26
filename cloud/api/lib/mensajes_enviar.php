@@ -62,7 +62,7 @@ function evolutionMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
     $st = $pdo->prepare("
         SELECT m.id, m.canal_id, m.destino, m.asunto, m.cuerpo, m.formato,
                m.adjunto, m.encolado,
-               c.uuid AS canal_uuid, c.token AS canal_token,
+               c.slug AS canal_slug, c.token AS canal_token,
                c.prefijo AS canal_prefijo, c.nombre AS canal_nombre
           FROM evolution_mensajes m
      LEFT JOIN evolution_canales  c ON c.id = m.canal_id
@@ -80,7 +80,7 @@ function evolutionMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
 
     // -- 3) Validaciones ----------------------------------------------------
     $faltantes = [];
-    if (empty($m['canal_uuid']))  $faltantes[] = 'uuid';
+    if (empty($m['canal_slug']))  $faltantes[] = 'slug';
     if (empty($m['canal_token'])) $faltantes[] = 'token';
     if ($faltantes) {
         $mensaje = 'Canal sin configuracion (falta: ' . implode(', ', $faltantes) . ')';
@@ -100,7 +100,7 @@ function evolutionMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
 
     // -- 5) HTTP a Evolution ------------------------------------------------
     try {
-        $resp = evolutionApiEnviar((string)$m['canal_uuid'], (string)$m['canal_token'],
+        $resp = evolutionApiEnviar((string)$m['canal_slug'], (string)$m['canal_token'],
                                    $destino, $cuerpo, $formato, $adjunto);
     } catch (Throwable $e) {
         $err = 'cURL: ' . $e->getMessage();
@@ -308,12 +308,12 @@ function vetarEvolutionContacto(PDO $pdo, string $destino, string $error): void 
  * Devuelve ['status'=>int, 'body'=>string, 'decoded'=>array|null].
  */
 function evolutionApiEnviar(
-    string $uuid, string $token, string $destino, string $cuerpo,
+    string $slug, string $token, string $destino, string $cuerpo,
     string $formato, string $adjunto
 ): array {
     switch ($formato) {
         case 'imagen':
-            $url = EVOLUTION_ENDPOINT . '/message/sendMedia/' . $uuid;
+            $url = EVOLUTION_ENDPOINT . '/message/sendMedia/' . $slug;
             $payload = [
                 'number'    => $destino,
                 'media'     => $adjunto,
@@ -324,7 +324,7 @@ function evolutionApiEnviar(
             ];
             break;
         case 'video':
-            $url = EVOLUTION_ENDPOINT . '/message/sendMedia/' . $uuid;
+            $url = EVOLUTION_ENDPOINT . '/message/sendMedia/' . $slug;
             $payload = [
                 'number'    => $destino,
                 'media'     => $adjunto,
@@ -335,7 +335,7 @@ function evolutionApiEnviar(
             ];
             break;
         case 'audio':
-            $url = EVOLUTION_ENDPOINT . '/message/sendWhatsAppAudio/' . $uuid;
+            $url = EVOLUTION_ENDPOINT . '/message/sendWhatsAppAudio/' . $slug;
             $payload = [
                 'number' => $destino,
                 'audio'  => $adjunto,
@@ -344,7 +344,7 @@ function evolutionApiEnviar(
             break;
         case 'ubicacion':
             [$lat, $lon] = array_pad(explode(',', $adjunto, 2), 2, '');
-            $url = EVOLUTION_ENDPOINT . '/message/sendLocation/' . $uuid;
+            $url = EVOLUTION_ENDPOINT . '/message/sendLocation/' . $slug;
             $payload = [
                 'number'    => $destino,
                 'name'      => $cuerpo !== '' ? $cuerpo : 'Ubicacion compartida',
@@ -356,7 +356,7 @@ function evolutionApiEnviar(
             break;
         case 'texto':
         default:
-            $url = EVOLUTION_ENDPOINT . '/message/sendText/' . $uuid;
+            $url = EVOLUTION_ENDPOINT . '/message/sendText/' . $slug;
             $payload = [
                 'number' => $destino,
                 'text'   => $cuerpo,

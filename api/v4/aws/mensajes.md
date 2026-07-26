@@ -1,12 +1,13 @@
-# v4 · aws
+# `/v4/aws/mensajes`
 
-Microservicios de ingesta externos para el vertical **AWS SES** (correo
-masivo transaccional). Cada endpoint es un unico archivo `.php` que sirve
-todos los verbos HTTP del recurso — sin frameworks ni router aparte.
+Microservicio de ingesta y consulta de estado de mensajes **AWS SES**
+(correo masivo transaccional). Un unico archivo `.php`
+([mensajes.php](mensajes.php)) que sirve todos los verbos HTTP del
+recurso — sin framework ni router aparte.
 
 Se accede via el vhost `api.databox.net.ar` (puerto interno `8114`, ver
 `docker-compose.yml`). El `.htaccess` local mapea URLs sin extension al
-archivo `.php` correspondiente, asi que ambos son equivalentes:
+archivo `.php` correspondiente, asi que ambas formas son equivalentes:
 
 ```
 POST https://api.databox.net.ar/v4/aws/mensajes
@@ -59,22 +60,42 @@ wake-on-demand del motor quedan consistentes.
 
 **Body:**
 
-| Campo          | Tipo    | Obligatorio | Notas                                                                                          |
-| -------------- | ------- | :---------: | ---------------------------------------------------------------------------------------------- |
-| `proyecto_id`  | int     | si          | FK `proyectos.id`.                                                                             |
-| `canal_id`     | int     | si          | FK `aws_canales.id` — determina la cuenta/region SES usada para firmar.                        |
-| `remite`       | string  | si          | Email del remitente (ej. `no-reply@dominio.com`).                                              |
-| `destino`      | string  | si          | Email del destinatario.                                                                        |
-| `asunto`       | string  | si          | Subject del mail.                                                                              |
-| `cuerpo`       | string  | si          | Body del mail. Formato indicado por `formato` (default `html` segun el sender).                |
-| `plantilla_id` | int     | no          | FK `datarocket_plantillas.id`. Meramente informativo (el body ya va renderizado).              |
-| `remitente`    | string  | no          | Nombre visible del remitente (`"Nombre" <email>`).                                             |
-| `destinatario` | string  | no          | Nombre visible del destinatario.                                                               |
-| `prioridad`    | int     | no          | Rango 1..5 (5 = envia primero). El sender ordena la cola por este campo.                       |
-| `formato`      | string  | no          | `html` \| `text`.                                                                              |
-| `adjunto`      | string  | no          | Ruta / URL del adjunto (segun convencion del sender).                                          |
-| `tags`         | string  | no          | Tags libres para filtrar en el ABM.                                                            |
-| `programado`   | string  | no          | `YYYY-MM-DD HH:MM[:SS]`. Si esta seteado, el sender no lo toma hasta esa fecha.                |
+| Campo             | Tipo         | Obligatorio     | Notas                                                                                                                                |
+| ----------------- | ------------ | :-------------: | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `proyecto_slug`   | string       | si              | Se resuelve contra `proyectos.slug`. Slug inexistente -> 400.                                                                        |
+| `canal_slug`      | string       | si              | Se resuelve contra `aws_canales.slug` — determina la cuenta/region SES usada para firmar. Slug inexistente -> 400.                   |
+| `destino`         | string       | si              | Email del destinatario.                                                                                                              |
+| `plantilla_slug`  | string       | no*             | Se resuelve contra `datarocket_plantillas.slug`. Cuando viene, expande al mensaje (ver seccion **Plantillas**). Slug inexistente -> 400. |
+| `remite`          | string       | si sin plantilla | Email del remitente (ej. `no-reply@dominio.com`). Con plantilla lo aporta ella y se ignora si viene aca.                            |
+| `asunto`          | string       | si sin plantilla | Subject. Con plantilla, se inyecta como `{asunto}` dentro del subject de la plantilla (ver **Plantillas**).                         |
+| `cuerpo`          | string       | si sin plantilla | Body. Con plantilla, se inyecta como `{cuerpo}` dentro del cuerpo de la plantilla (ver **Plantillas**).                             |
+| `variables`       | object       | no              | Diccionario opcional de reemplazos custom. Cada `{"clave":"valor"}` se aplica como `str_replace('{clave}', 'valor')` en el subject y el cuerpo (utiles solo con plantilla). |
+| `remitente`       | string       | no              | Nombre visible del remitente. Con plantilla lo aporta ella.                                                                          |
+| `destinatario`    | string       | no              | Nombre visible del destinatario.                                                                                                     |
+| `prioridad`       | int          | no              | Rango 1..5 (5 = envia primero). El sender ordena la cola por este campo.                                                             |
+| `formato`         | string       | no              | `html` \| `texto`. Con plantilla lo aporta ella (mapea `H` -> `html`, `T` -> `texto`).                                               |
+| `adjunto`         | string       | no              | Ruta / URL del adjunto. Con plantilla lo aporta ella.                                                                                |
+| `tags`            | string       | no              | Tags libres para filtrar en el ABM.                                                                                                  |
+| `programado`      | string       | no              | `YYYY-MM-DD HH:MM[:SS]`. Si esta seteado, el sender no lo toma hasta esa fecha.                                                      |
+
+> Tambien se aceptan las variantes `_id` (`proyecto_id`, `canal_id`, `plantilla_id`) para
+> callers que ya tienen el FK numerico a mano. Si vienen ambos, el `_slug` gana.
+
+### Plantillas
+
+Cuando el body trae `plantilla_slug` (o `plantilla_id`), la plantilla se
+expande **antes** del INSERT — el mensaje queda persistido con los campos ya
+renderizados y el sender solo despacha lo que ve en `aws_mensajes`. Semantica
+identica al legacy v3 (`databox_legacy/databox-api/v3/awsses/mensajes`):
+
+- `remitente`, `remite`, `formato`, `adjunto` los aporta la plantilla y **pisan**
+  lo que venga en el body.
+- `asunto` = `str_replace('{asunto}', <body.asunto>, <plantilla.asunto>)`.
+- `cuerpo` = `str_replace('{cuerpo}', <body.cuerpo>, <plantilla.cuerpo>)`.
+- Si viene `variables`, cada `{clave}` se reemplaza en el asunto y el cuerpo
+  resultantes (util para nombres, codigos, links personalizados, etc.).
+- `destino`, `destinatario`, `prioridad`, `tags`, `programado` siempre vienen
+  del body — la plantilla no los aporta.
 
 Campos system-managed (los setea el encolador, no aceptar en el body): `fecha`,
 `encolado`, `estado`, `error`, `enviado`, `demora`.
@@ -110,15 +131,14 @@ curl -X POST https://api.databox.net.ar/v4/aws/mensajes \
   -H "Authorization: Bearer $APIKEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "proyecto_id": 12,
-    "canal_id": 3,
-    "remite": "no-reply@databox.net.ar",
-    "remitente": "Databox",
+    "proyecto_slug": "databox",
+    "canal_slug": "databox",
+    "plantilla_slug": "databox",
     "destino": "cliente@ejemplo.com",
     "destinatario": "Juan Perez",
     "asunto": "Bienvenido",
     "cuerpo": "<p>Hola Juan</p>",
-    "formato": "html",
+    "variables": { "nombre": "Juan", "codigo": "AB-123" },
     "tags": "onboarding"
   }'
 ```

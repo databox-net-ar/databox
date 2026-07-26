@@ -67,7 +67,7 @@ const EVO_MSG_REQUERIDOS_CREATE = [
  * apliquen reglas de ingreso divergentes.
  */
 function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
-    $p = sanitizeEvoMsgPayload($datos);
+    $p = sanitizeEvoMsgPayload($pdo, $datos);
 
     // Validar obligatorios antes de tocar la BD.
     $faltantes = [];
@@ -148,13 +148,22 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
 
 // Sanitiza TODAS las columnas — los faltantes quedan NULL. Usado por
 // encolarEvolutionMensaje al crear.
-function sanitizeEvoMsgPayload(array $in): array {
+function sanitizeEvoMsgPayload(PDO $pdo, array $in): array {
     // Aliases legacy: aceptar `proyecto`/`canal`/`plantilla` (sin sufijo _id)
     // ademas de la forma canonica. Asi bookmarks y clientes viejos del v4
     // siguen andando sin romper la unificacion.
     if (!array_key_exists('proyecto_id',  $in) && array_key_exists('proyecto',  $in)) $in['proyecto_id']  = $in['proyecto'];
     if (!array_key_exists('canal_id',     $in) && array_key_exists('canal',     $in)) $in['canal_id']     = $in['canal'];
     if (!array_key_exists('plantilla_id', $in) && array_key_exists('plantilla', $in)) $in['plantilla_id'] = $in['plantilla'];
+
+    // Resolucion de slugs -> ids (proyecto_slug, canal_slug, plantilla_slug).
+    // Si vienen ambos slug + id, el slug gana y se ignora el id.
+    $in = resolverEvoMsgSlugs($pdo, $in);
+
+    // Aplicacion de plantilla: si viene plantilla_id, sobrescribe
+    // cuerpo/asunto/formato/adjunto/remite/remitente con los valores de la
+    // plantilla, y sustituye placeholders `{clave}` con $in['variables'].
+    $in = aplicarPlantillaEvoMsg($pdo, $in);
 
     $out = [];
     foreach (EVO_MSG_SANITIZERS as $col => $rule) {
@@ -165,11 +174,17 @@ function sanitizeEvoMsgPayload(array $in): array {
 
 // Sanitiza SOLO las columnas presentes en el payload. Usado por handleUpdate
 // para no pisar a NULL las columnas system-managed que setea el sender.
-function sanitizeEvoMsgPartialPayload(array $in): array {
+function sanitizeEvoMsgPartialPayload(PDO $pdo, array $in): array {
     // Mismos aliases legacy que en sanitizeEvoMsgPayload — mirror para consistencia.
     if (!array_key_exists('proyecto_id',  $in) && array_key_exists('proyecto',  $in)) $in['proyecto_id']  = $in['proyecto'];
     if (!array_key_exists('canal_id',     $in) && array_key_exists('canal',     $in)) $in['canal_id']     = $in['canal'];
     if (!array_key_exists('plantilla_id', $in) && array_key_exists('plantilla', $in)) $in['plantilla_id'] = $in['plantilla'];
+
+    // Resolucion de slugs -> ids (mismo comportamiento que sanitizeEvoMsgPayload).
+    $in = resolverEvoMsgSlugs($pdo, $in);
+
+    // Aplicacion de plantilla (idem sanitizeEvoMsgPayload).
+    $in = aplicarPlantillaEvoMsg($pdo, $in);
 
     $out = [];
     foreach (EVO_MSG_SANITIZERS as $col => $rule) {
@@ -178,6 +193,86 @@ function sanitizeEvoMsgPartialPayload(array $in): array {
         }
     }
     return $out;
+}
+
+// Si viene `plantilla_id`, carga la fila de `datarocket_plantillas` y
+// sobrescribe con ella los campos `cuerpo`, `asunto`, `formato`, `adjunto`,
+// `remite` y `remitente` del payload (la plantilla siempre gana sobre lo que
+// venga en el body — solo respeta los campos que la plantilla no tenga
+// seteados). Despues aplica sustitucion de variables `{clave}` sobre `cuerpo`
+// y `asunto` usando el dict `$in['variables']` (opcional) via str_replace
+// literal — placeholders sin valor quedan tal cual en el texto.
+//
+// El campo `variables` no se guarda como columna en `evolution_mensajes`; se
+// descarta al final. Si no viene `plantilla_id`, es no-op.
+const EVO_MSG_PLANTILLA_COLS = ['cuerpo', 'asunto', 'formato', 'adjunto', 'remite', 'remitente'];
+
+function aplicarPlantillaEvoMsg(PDO $pdo, array $in): array {
+    if (empty($in['plantilla_id'])) {
+        unset($in['variables']);
+        return $in;
+    }
+    $st = $pdo->prepare(
+        "SELECT " . implode(', ', EVO_MSG_PLANTILLA_COLS) . "
+           FROM datarocket_plantillas WHERE id = :id LIMIT 1"
+    );
+    $st->execute([':id' => (int)$in['plantilla_id']]);
+    $pl = $st->fetch();
+    if (!$pl) {
+        unset($in['variables']);
+        return $in;
+    }
+
+    // Sobrescribir con los valores de la plantilla — solo los que la plantilla
+    // tiene efectivamente seteados (no NULL / no vacios). Asi un campo vacio
+    // en la plantilla no borra un valor legitimo que el caller mando en el body
+    // (ej. la plantilla no tiene `remite` pero el body si).
+    foreach (EVO_MSG_PLANTILLA_COLS as $col) {
+        if (isset($pl[$col]) && (string)$pl[$col] !== '') {
+            $in[$col] = $pl[$col];
+        }
+    }
+
+    // Sustitucion de variables `{clave}` en cuerpo y asunto.
+    $vars = $in['variables'] ?? null;
+    if (is_array($vars)) {
+        foreach (['cuerpo', 'asunto'] as $col) {
+            if (empty($in[$col])) continue;
+            foreach ($vars as $k => $v) {
+                $k = trim((string)$k);
+                if ($k === '') continue;
+                $in[$col] = str_replace('{' . $k . '}', (string)$v, (string)$in[$col]);
+            }
+        }
+    }
+    unset($in['variables']);
+    return $in;
+}
+
+// Resuelve `proyecto_slug` / `canal_slug` / `plantilla_slug` a sus ids
+// correspondientes en `proyectos.slug`, `evolution_canales.slug` y
+// `datarocket_plantillas.slug`. Cuando viene el slug se ignora el id numerico
+// del mismo campo (el slug es la fuente de verdad). Slug no encontrado ->
+// InvalidArgumentException (400 en la capa HTTP).
+function resolverEvoMsgSlugs(PDO $pdo, array $in): array {
+    $resolver = [
+        'proyecto_slug'  => ['proyecto_id',  'proyectos',              'Proyecto'],
+        'canal_slug'     => ['canal_id',     'evolution_canales',      'Canal'],
+        'plantilla_slug' => ['plantilla_id', 'datarocket_plantillas',  'Plantilla'],
+    ];
+    foreach ($resolver as $slugKey => [$idKey, $tabla, $label]) {
+        if (!array_key_exists($slugKey, $in)) continue;
+        $slug = trim((string)$in[$slugKey]);
+        if ($slug === '') continue;
+        $st = $pdo->prepare("SELECT id FROM {$tabla} WHERE slug = :s LIMIT 1");
+        $st->execute([':s' => $slug]);
+        $id = $st->fetchColumn();
+        if ($id === false) {
+            throw new InvalidArgumentException("{$label} con slug '{$slug}' no encontrado");
+        }
+        $in[$idKey] = (int)$id;
+    }
+    return $in;
 }
 
 // Chequea los 5 campos obligatorios (proyecto_id, canal_id, remite, destino,

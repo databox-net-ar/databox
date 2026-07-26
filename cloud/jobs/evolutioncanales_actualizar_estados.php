@@ -14,7 +14,7 @@
  *
  * Deja un suceso por canal en la tabla `sucesos`:
  *   - tipo=info   : Evolution respondio OK, cache actualizado.
- *   - tipo=alerta : falta configuracion (uuid/token) o Evolution devolvio
+ *   - tipo=alerta : falta configuracion (slug/token) o Evolution devolvio
  *                   error / respuesta invalida.
  *
  * Los errores por canal NO frenan el job: sigue con el proximo.
@@ -39,7 +39,7 @@ try {
     // ('0' o NULL) se ignoran silenciosamente: no tiene sentido consultar
     // Evolution para un canal que el operador desactivo a proposito.
     $stmt = $pdo->query("
-        SELECT id, nombre, uuid, token
+        SELECT id, nombre, slug, token
           FROM evolution_canales
          WHERE habilitado = '1'
          ORDER BY id
@@ -61,9 +61,9 @@ try {
         $prefix = sprintf('[%d/%d] canal #%d (%s)',
             $i + 1, $total, (int)$c['id'], $c['nombre'] ?? '');
 
-        // Canales sin uuid/token no se pueden consultar: alerta + siguiente.
+        // Canales sin slug/token no se pueden consultar: alerta + siguiente.
         $faltantes = [];
-        if (empty($c['uuid']))  $faltantes[] = 'uuid';
+        if (empty($c['slug']))  $faltantes[] = 'slug';
         if (empty($c['token'])) $faltantes[] = 'token';
         if ($faltantes) {
             $msg = 'Sin configuracion completa (falta: ' . implode(', ', $faltantes) . ')';
@@ -159,7 +159,7 @@ function verificarCanalEvolution(PDO $pdo, array $c): array {
 
     // La respuesta es un array de instancias. Cuando el apikey es del
     // canal (no global), Evolution filtra a esa unica instancia.
-    // Preferimos matchear por uuid/token; si no matchea, tomamos la
+    // Preferimos matchear por slug/token; si no matchea, tomamos la
     // primera (comportamiento del robot legacy).
     $instancia = elegirInstanciaEvolution($data, $c);
     if ($instancia === null) {
@@ -209,18 +209,18 @@ function verificarCanalEvolution(PDO $pdo, array $c): array {
 
 /**
  * Elige la instancia correcta dentro de la respuesta de fetchInstances.
- * Preferencia: match por uuid (instanceName) o por token. Fallback: [0].
+ * Preferencia: match por slug (instanceName) o por token. Fallback: [0].
  * Devuelve null si el array esta vacio.
  */
 function elegirInstanciaEvolution(array $data, array $c): ?array {
     if (!$data) return null;
-    $uuid  = (string) ($c['uuid']  ?? '');
+    $slug  = (string) ($c['slug']  ?? '');
     $token = (string) ($c['token'] ?? '');
     foreach ($data as $inst) {
         if (!is_array($inst)) continue;
         $instName  = (string) ($inst['name'] ?? $inst['instanceName'] ?? '');
         $instToken = (string) ($inst['token'] ?? '');
-        if ($uuid  !== '' && $instName  === $uuid)  return $inst;
+        if ($slug  !== '' && $instName  === $slug)  return $inst;
         if ($token !== '' && $instToken === $token) return $inst;
     }
     $first = $data[0] ?? null;

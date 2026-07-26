@@ -12,7 +12,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const EVO_CH_COLS = "id, uuid, proyecto, nombre, prefijo, numero, celular, token,
+const EVO_CH_COLS = "id, slug, proyecto, nombre, prefijo, numero, celular, token,
                      prompt, intervaloCorto, intervaloLargo, ultimo, alerta, limite,
                      enviados, acumulados, webhook, online, latido, habilitado,
                      canalEstado, gruposEstado, actualizado";
@@ -76,7 +76,7 @@ function handleList(PDO $pdo, array $q): void {
 
     if ($search !== '') {
         $where[] = '(nombre LIKE :s1 OR numero LIKE :s2 OR celular LIKE :s3
-                     OR prefijo LIKE :s4 OR token LIKE :s5 OR uuid LIKE :s6)';
+                     OR prefijo LIKE :s4 OR token LIKE :s5 OR slug LIKE :s6)';
         $like = "%{$search}%";
         $params[':s1'] = $like;
         $params[':s2'] = $like;
@@ -168,22 +168,22 @@ function sanitizePayload(array $in): array {
 
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
-    $uuid = nullableStr($in['uuid'] ?? null, 50);
-    if ($uuid === null) $uuid = bin2hex(random_bytes(16));
+    $slug = nullableStr($in['slug'] ?? null, 50);
+    if ($slug === null) $slug = bin2hex(random_bytes(16));
 
     $sql = "
         INSERT INTO evolution_canales
-            (uuid, proyecto, nombre, prefijo, numero, celular, token, prompt,
+            (slug, proyecto, nombre, prefijo, numero, celular, token, prompt,
              intervaloCorto, intervaloLargo, ultimo, alerta, limite, enviados,
              acumulados, webhook, online, habilitado, canalEstado, gruposEstado)
         VALUES
-            (:uuid, :proyecto, :nombre, :prefijo, :numero, :celular, :token, :prompt,
+            (:slug, :proyecto, :nombre, :prefijo, :numero, :celular, :token, :prompt,
              :intervaloCorto, :intervaloLargo, :ultimo, :alerta, :limite, :enviados,
              :acumulados, :webhook, :online, :habilitado, :canalEstado, :gruposEstado)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
-        ':uuid'           => $uuid,
+        ':slug'           => $slug,
         ':proyecto'       => $p['proyecto'],
         ':nombre'         => $p['nombre'],
         ':prefijo'        => $p['prefijo'],

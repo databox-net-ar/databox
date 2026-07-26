@@ -164,7 +164,7 @@ function sanitizePayload(array $in): array {
         'asunto'         => nullableStr($in['asunto']      ?? null, 255),
         // `cuerpo` es mediumtext: no cortamos por longitud.
         'cuerpo'         => nullableStr($in['cuerpo']      ?? null),
-        'formato'        => nullableStr($in['formato']     ?? null, 1),
+        'formato'        => nullableStr($in['formato']     ?? null, 20),
         'adjunto'        => $adjunto,
         'adjunto_origen' => $origen,
     ];
