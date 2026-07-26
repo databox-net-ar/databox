@@ -6102,16 +6102,22 @@ route('/awsmensajes', async (mount) => {
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
-              <label>Proyecto (ID)</label>
-              <input type="number" id="fAwsMsgProyecto" min="1" oninput="onFiltroAwsMsg('proyecto_id', this.value)">
+              <label>Proyecto</label>
+              <select id="fAwsMsgProyecto" onchange="onFiltroAwsMsg('proyecto_id', this.value)">
+                <option value="">—</option>
+              </select>
             </div>
             <div class="form-group">
-              <label>Canal (ID)</label>
-              <input type="number" id="fAwsMsgCanal" min="1" oninput="onFiltroAwsMsg('canal_id', this.value)">
+              <label>Plantilla</label>
+              <select id="fAwsMsgPlantilla" onchange="onFiltroAwsMsg('plantilla_id', this.value)">
+                <option value="">—</option>
+              </select>
             </div>
             <div class="form-group">
-              <label>Plantilla (ID)</label>
-              <input type="number" id="fAwsMsgPlantilla" min="1" oninput="onFiltroAwsMsg('plantilla_id', this.value)">
+              <label>Canal</label>
+              <select id="fAwsMsgCanal" onchange="onFiltroAwsMsg('canal_id', this.value)">
+                <option value="">—</option>
+              </select>
             </div>
           </div>
           <div class="form-row">
@@ -6378,6 +6384,14 @@ function onFiltroAwsMsg(key, value) {
   } else {
     awsMsgFiltros[key] = value;
   }
+  // Cascada del filtro: al cambiar el proyecto, el select de plantilla se
+  // recarga (mismo patron que el modal Nuevo mensaje). recargarPlantillas...
+  // ya llama refrescarBadge+cargarAwsMsg internamente, evitamos el doble
+  // trigger devolviendo temprano.
+  if (key === 'proyecto_id') {
+    recargarPlantillasFiltroAwsMsg(awsMsgFiltros.proyecto_id);
+    return;
+  }
   refrescarBadgeFiltrosAwsMsg();
   cargarAwsMsg();
 }
@@ -6409,10 +6423,63 @@ function sincronizarControlesFiltrosAwsMsg() {
   $('#fAwsMsgDir').value       = f.dir;
 }
 
-function abrirModalFiltrosAwsMsg() {
+async function abrirModalFiltrosAwsMsg() {
   awsMsgFiltrosSnapshot = { ...awsMsgFiltros };
-  sincronizarControlesFiltrosAwsMsg();
   $('#filtrosAwsMsgBackdrop').classList.add('open');
+  // Poblar los 3 selects (proyecto/plantilla/canal) con los mismos criterios
+  // que usa el modal Nuevo mensaje: proyectos tipo='I', canales todos,
+  // plantillas medio='C' filtradas por proyecto seleccionado. Cachea la
+  // primera corrida (idempotente entre aperturas).
+  await cargarOpcionesFiltrosAwsMsg();
+  sincronizarControlesFiltrosAwsMsg();
+}
+
+let _awsMsgFiltrosOpcCache = null;
+async function cargarOpcionesFiltrosAwsMsg() {
+  const proyId = awsMsgFiltros.proyecto_id;
+  try {
+    if (!_awsMsgFiltrosOpcCache) {
+      const [pr, ca] = await Promise.all([
+        apiGet('api/proyectos.php?tipo=I'),
+        apiGet('api/awscanales.php?limite=1000'),
+      ]);
+      _awsMsgFiltrosOpcCache = { proyectos: pr.items || [], canales: ca.items || [] };
+    }
+    $('#fAwsMsgProyecto').innerHTML = awsMsgOptionsProyecto(_awsMsgFiltrosOpcCache.proyectos, proyId);
+    $('#fAwsMsgCanal').innerHTML    = awsMsgOptionsCanal(_awsMsgFiltrosOpcCache.canales,    awsMsgFiltros.canal_id);
+    // Plantillas: solo si hay proyecto elegido (mismo criterio que Nuevo
+    // mensaje — sin proyecto no tiene sentido listarlas todas).
+    if (proyId) {
+      const pl = await apiGet('api/datarocketplantillas.php?limite=1000&medio=C&proyecto_id=' + encodeURIComponent(proyId));
+      $('#fAwsMsgPlantilla').innerHTML = awsMsgOptionsPlantilla(pl.items || [], awsMsgFiltros.plantilla_id);
+    } else {
+      $('#fAwsMsgPlantilla').innerHTML = `<option value="">—</option>`;
+    }
+  } catch (e) {
+    console.warn('No se pudieron cargar opciones de filtros aws mensajes:', e);
+  }
+}
+
+// Cuando el usuario cambia el proyecto en el filtro, recargar las plantillas
+// disponibles y limpiar la seleccion previa (que probablemente ya no aplica).
+async function recargarPlantillasFiltroAwsMsg(proyectoId) {
+  awsMsgFiltros.plantilla_id = '';
+  refrescarBadgeFiltrosAwsMsg();
+  cargarAwsMsg();
+  const sel = $('#fAwsMsgPlantilla');
+  if (!sel) return;
+  sel.disabled  = true;
+  sel.innerHTML = `<option value="">Cargando…</option>`;
+  try {
+    const items = proyectoId
+      ? ((await apiGet('api/datarocketplantillas.php?limite=1000&medio=C&proyecto_id=' + encodeURIComponent(proyectoId))).items || [])
+      : [];
+    sel.innerHTML = awsMsgOptionsPlantilla(items, '');
+  } catch (e) {
+    sel.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
+  } finally {
+    sel.disabled = false;
+  }
 }
 function cerrarModalFiltrosAwsMsg() { $('#filtrosAwsMsgBackdrop').classList.remove('open'); }
 function cancelarFiltrosAwsMsg() {
@@ -6872,10 +6939,16 @@ async function cargarPlantillaEnFormAwsMsg(plantillaId) {
     if (p.adjunto   != null) $('#awsMsgAdjunto').value   = p.adjunto;
     if (p.cuerpo    != null) $('#awsMsgCuerpo').value    = p.cuerpo;
 
-    const legacyFormato = String(p.formato || '').toUpperCase();
-    const nuevoFormato  = legacyFormato === 'H' ? 'html'
-                        : legacyFormato === 'T' ? 'texto'
-                        : $('#awsMsgFormato').value || 'texto';
+    // Normalizacion de `formato`: `datarocket_plantillas` desde la migracion
+    // 20260725_2200 usa strings full-word ('texto'/'html'/'imagen'/'video'/
+    // 'audio'/'ubicacion'). `aws_mensajes` solo acepta 'texto' o 'html'.
+    // Aceptamos ambos formatos ademas de los codigos legacy de un caracter
+    // (T/H) por defensa. Cualquier otro valor (imagen/video/etc — aplican a
+    // Evolution pero no a AWS) cae a 'texto' como safe default.
+    const raw = String(p.formato || '').trim().toLowerCase();
+    const nuevoFormato = (raw === 'html'  || raw === 'h') ? 'html'
+                       : (raw === 'texto' || raw === 't') ? 'texto'
+                       : 'texto';
     $('#awsMsgFormato').value = nuevoFormato;
 
     // Refresca la vista del cuerpo (iframe preview si formato=html; textarea
@@ -7819,8 +7892,11 @@ route('/datarocketplantillas', async (mount) => {
           <div class="form-row">
             <div class="form-group">
               <label>Medio</label>
-              <input type="text" id="fDrPlMedio" maxlength="1" style="font-family:monospace"
-                     placeholder="C/W" oninput="onFiltroDrPl('medio', this.value)">
+              <select id="fDrPlMedio" onchange="onFiltroDrPl('medio', this.value)">
+                <option value="">Todos</option>
+                <option value="C">Correo</option>
+                <option value="W">WhatsApp</option>
+              </select>
             </div>
             <div class="form-group">
               <label>Formato</label>
@@ -7865,6 +7941,27 @@ route('/datarocketplantillas', async (mount) => {
           <button class="btn btn-ghost"   onclick="cancelarFiltrosDrPl()">Cerrar</button>
           <button class="btn btn-ghost"   onclick="limpiarFiltrosDrPl()">Limpiar</button>
           <button class="btn btn-primary" onclick="cerrarModalFiltrosDrPl()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editor HTML del cuerpo (misma modalidad que aws_mensajes). z-index 400
+         para quedar arriba del modal Editar plantilla que lo dispara. -->
+    <div class="modal-backdrop" id="drPlHtmlEditorBackdrop"
+         style="z-index: 400"
+         onclick="if(event.target===this) cerrarEditorHtmlDrPl()">
+      <div class="modal modal-wide" style="max-width:1100px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-code"></i> Editar HTML del cuerpo</div>
+          <button class="btn-icon-sm" onclick="cerrarEditorHtmlDrPl()">×</button>
+        </div>
+        <div class="modal-body">
+          <textarea id="drPlHtmlEditor"
+                    style="width:100%;height:520px;font-family:monospace;font-size:.85rem;line-height:1.45"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cerrarEditorHtmlDrPl()">Cancelar</button>
+          <button class="btn btn-primary" onclick="aceptarEditorHtmlDrPl()">Aceptar</button>
         </div>
       </div>
     </div>
@@ -8248,11 +8345,18 @@ async function abrirAltaEdicionDrPl(id) {
       drPlCargarProyectos(),
     ]);
     $('#modalRoot .modal-body').innerHTML = formDrPlHtml(p, proyectos, id);
+    // Sincronizar la vista del cuerpo (textarea vs preview iframe) segun el
+    // formato preseleccionado — mismo patron que awsMsgSincronizarCuerpo().
+    drPlSincronizarCuerpo();
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
+    if (ev.target.closest('#drPlCuerpoEditarBtn')) {
+      abrirEditorHtmlDrPl();
+      return;
+    }
     if (ev.target.closest('#drPlAdjuntoSubirBtn')) {
       $('#drPlAdjuntoInput')?.click();
       return;
@@ -8272,15 +8376,122 @@ async function abrirAltaEdicionDrPl(id) {
     limpiarInvalido(ev);
     // Cascada Medio -> Formato: al cambiar el medio, repoblar las opciones
     // validas del formato preservando la seleccion actual si sigue vigente.
+    // Luego resyncar la vista del cuerpo por si el formato quedo en H o
+    // dejo de estar en H.
     if (ev.target?.id === 'drPlMedio') {
       const sel = $('#drPlFormato');
       if (sel) sel.innerHTML = drPlFormatoOptionsHtml(ev.target.value, sel.value);
+      drPlSincronizarCuerpo();
+    }
+    if (ev.target?.id === 'drPlFormato') {
+      drPlSincronizarCuerpo();
     }
     if (ev.target?.id === 'drPlAdjuntoInput') {
       await drPlSubirAdjunto(id, ev.target.files);
     }
   });
 }
+
+// Alterna la vista del campo Cuerpo en el editor de plantilla segun el select
+// Formato: si formato=H mostramos el iframe preview + boton flotante para
+// abrir el editor HTML (TinyMCE); si no, textarea normal. Mismo criterio que
+// awsMsgSincronizarCuerpo() — el textarea siempre queda en el DOM como fuente
+// de verdad.
+function drPlSincronizarCuerpo() {
+  const formato  = $('#drPlFormato')?.value || '';
+  const textarea = $('#drPlCuerpo');
+  const preview  = $('#drPlCuerpoPreview');
+  const iframe   = $('#drPlCuerpoIframe');
+  if (!textarea || !preview || !iframe) return;
+  if (formato === 'html') {
+    textarea.style.display = 'none';
+    preview.style.display  = '';
+    iframe.srcdoc = textarea.value || '';
+  } else {
+    textarea.style.display = '';
+    preview.style.display  = 'none';
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Editor HTML del cuerpo de plantilla — imita el flujo de aws_mensajes
+// ----------------------------------------------------------------------------
+// Reutiliza cargarTinyMceAwsMsg() (el <script> de TinyMCE es el mismo asset,
+// no hace falta duplicar). Solo mantenemos estado de editor separado para
+// que no colisione con la instancia del modal de aws_mensajes.
+
+let _drPlTinyEditor = null;
+
+async function abrirEditorHtmlDrPl() {
+  const ta = $('#drPlCuerpo');
+  if (!ta) return;
+  const editorTa = $('#drPlHtmlEditor');
+  editorTa.value = ta.value;
+  $('#drPlHtmlEditorBackdrop').classList.add('open');
+
+  try {
+    await cargarTinyMceAwsMsg();
+    if (_drPlTinyEditor) {
+      try { _drPlTinyEditor.destroy(); } catch (_) {}
+      _drPlTinyEditor = null;
+    }
+
+    const [editor] = await tinymce.init({
+      target: editorTa,
+      height: 560,
+      menubar: false,
+      branding: false,
+      license_key: 'gpl',
+      promotion: false,
+      statusbar: true,
+      plugins: 'code image link table lists advlist preview fullscreen visualblocks',
+      toolbar: 'undo redo | blocks fontsize | ' +
+               'bold italic underline strikethrough | forecolor backcolor removeformat | ' +
+               'alignleft aligncenter alignright alignjustify | ' +
+               'bullist numlist outdent indent | link image table hr | code preview fullscreen',
+      toolbar_mode: 'sliding',
+      valid_elements:      '*[*]',
+      valid_children:      '+body[style]',
+      extended_valid_elements: '*[*]',
+      verify_html:         false,
+      cleanup:             false,
+      convert_urls:        false,
+      entity_encoding:     'raw',
+      forced_root_block:   false,
+      fullpage_default_encoding: 'UTF-8',
+    });
+    _drPlTinyEditor = editor;
+    _drPlTinyEditor.setContent(ta.value || '');
+    setTimeout(() => _drPlTinyEditor.focus(), 60);
+  } catch (e) {
+    console.warn('TinyMCE no disponible, editor fallback a textarea plano:', e);
+    setTimeout(() => editorTa.focus(), 30);
+  }
+}
+
+function cerrarEditorHtmlDrPl() {
+  $('#drPlHtmlEditorBackdrop').classList.remove('open');
+  if (_drPlTinyEditor) {
+    try { _drPlTinyEditor.destroy(); } catch (_) {}
+    _drPlTinyEditor = null;
+  }
+}
+
+function aceptarEditorHtmlDrPl() {
+  const html = _drPlTinyEditor
+    ? _drPlTinyEditor.getContent()
+    : $('#drPlHtmlEditor').value;
+  const ta = $('#drPlCuerpo');
+  if (ta) {
+    ta.value = html;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  const iframe = $('#drPlCuerpoIframe');
+  if (iframe) iframe.srcdoc = html;
+  cerrarEditorHtmlDrPl();
+}
+window.cerrarEditorHtmlDrPl  = cerrarEditorHtmlDrPl;
+window.aceptarEditorHtmlDrPl = aceptarEditorHtmlDrPl;
 
 // Opciones validas del select Formato segun el medio elegido:
 //   correo   -> Texto/HTML
@@ -8377,7 +8588,28 @@ function formDrPlHtml(p, proyectos = [], plantillaId = null) {
     </div>
     <div class="form-group">
       <label>Cuerpo</label>
-      <textarea id="drPlCuerpo" rows="12" style="font-family:monospace">${v('cuerpo')}</textarea>
+      <!-- Mismo patron que el editor de aws_mensajes: el textarea es la
+           fuente de verdad y siempre esta en el DOM (guardarDrPl lee de
+           #drPlCuerpo). Cuando formato=H el textarea se oculta y se muestra
+           un preview iframe con un boton flotante que abre el editor HTML
+           (TinyMCE). drPlSincronizarCuerpo() alterna la vista. -->
+      <div id="drPlCuerpoWrap" style="position:relative">
+        <textarea id="drPlCuerpo" rows="12" style="font-family:monospace">${v('cuerpo')}</textarea>
+        <div id="drPlCuerpoPreview" style="display:none;position:relative">
+          <iframe id="drPlCuerpoIframe"
+                  style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>
+          <button type="button" id="drPlCuerpoEditarBtn" title="Editar HTML"
+                  style="position:absolute;top:12px;right:12px;width:38px;height:38px;
+                         border-radius:50%;border:1px solid rgba(255,255,255,.4);
+                         background:rgba(0,0,0,.55);color:#fff;cursor:pointer;
+                         opacity:.65;transition:opacity .15s;display:flex;
+                         align-items:center;justify-content:center;font-size:.9rem"
+                  onmouseover="this.style.opacity=1"
+                  onmouseout="this.style.opacity=.65">
+            <i class="fa-solid fa-pen"></i>
+          </button>
+        </div>
+      </div>
     </div>
     <div class="form-group">
       <label>Adjunto (URL o archivo)</label>
@@ -20482,16 +20714,22 @@ route('/evolutionmensajes', async (mount) => {
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
-              <label>Proyecto (ID)</label>
-              <input type="number" id="fEvoMsgProyecto" min="1" oninput="onFiltroEvoMsg('proyecto_id', this.value)">
+              <label>Proyecto</label>
+              <select id="fEvoMsgProyecto" onchange="onFiltroEvoMsg('proyecto_id', this.value)">
+                <option value="">— Todos —</option>
+              </select>
             </div>
             <div class="form-group">
-              <label>Canal (ID)</label>
-              <input type="number" id="fEvoMsgCanal" min="1" oninput="onFiltroEvoMsg('canal_id', this.value)">
+              <label>Plantilla</label>
+              <select id="fEvoMsgPlantilla" onchange="onFiltroEvoMsg('plantilla_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
             </div>
             <div class="form-group">
-              <label>Plantilla (ID)</label>
-              <input type="number" id="fEvoMsgPlantilla" min="1" oninput="onFiltroEvoMsg('plantilla_id', this.value)">
+              <label>Canal</label>
+              <select id="fEvoMsgCanal" onchange="onFiltroEvoMsg('canal_id', this.value)">
+                <option value="">— Todos —</option>
+              </select>
             </div>
           </div>
           <div class="form-row">
@@ -20761,10 +20999,35 @@ function sincronizarControlesFiltrosEvoMsg() {
   $('#fEvoMsgDir').value       = f.dir;
 }
 
-function abrirModalFiltrosEvoMsg() {
+async function abrirModalFiltrosEvoMsg() {
   evoMsgFiltrosSnapshot = { ...evoMsgFiltros };
+  // Los 3 selects de FK (Proyecto/Plantilla/Canal) se pueblan desde el mismo
+  // cache que usa el modal Nuevo mensaje. Plantillas ya vienen filtradas a
+  // WhatsApp (medio='W'); proyectos filtrados a tipo='I'; canales todos.
+  // El try/catch evita que un fallo del lookup deje el modal a medio armar
+  // — en el peor caso los <select> quedan con solo el "— Todos —" y el
+  // usuario puede filtrar por lo demas (Codigo/Estado/Fechas/etc).
+  try {
+    await poblarSelectsFiltrosEvoMsg();
+  } catch (e) {
+    console.warn('Filtros Evo: no se pudieron cargar los lookups', e);
+  }
   sincronizarControlesFiltrosEvoMsg();
   $('#filtrosEvoMsgBackdrop').classList.add('open');
+}
+
+async function poblarSelectsFiltrosEvoMsg() {
+  const lookups = await ensureEvoMsgLookups();
+  const opt = (v, label) => `<option value="${esc(v)}">${esc(label)}</option>`;
+  const mapItems = (items, todos) =>
+    (todos ? `<option value="">${todos}</option>` : '') +
+    (items ?? []).map(x => opt(x.id, x.nombre || ('#' + x.id))).join('');
+  const $proy = $('#fEvoMsgProyecto');
+  const $pl   = $('#fEvoMsgPlantilla');
+  const $can  = $('#fEvoMsgCanal');
+  if ($proy) $proy.innerHTML = mapItems(lookups?.proyectos,  '— Todos —');
+  if ($pl)   $pl.innerHTML   = mapItems(lookups?.plantillas, '— Todas —');
+  if ($can)  $can.innerHTML  = mapItems(lookups?.canales,    '— Todos —');
 }
 function cerrarModalFiltrosEvoMsg() { $('#filtrosEvoMsgBackdrop').classList.remove('open'); }
 function cancelarFiltrosEvoMsg() {
@@ -20922,7 +21185,16 @@ function renderConsultaEvoMsg(m) {
 
 let evoMsgLookupsCache = null;
 async function ensureEvoMsgLookups() {
-  if (evoMsgLookupsCache) return evoMsgLookupsCache;
+  if (evoMsgLookupsCache) {
+    // Cache-bust si detectamos un payload viejo (previo al agregado de los
+    // campos de contenido en cada plantilla). Sin este check, una sesion
+    // que abrio Nuevo mensaje ANTES del deploy que sumo remitente/asunto/
+    // cuerpo/formato/adjunto seguiria sirviendo la version amputada.
+    const primera = (evoMsgLookupsCache.plantillas ?? [])[0];
+    const tieneCampos = primera && 'formato' in primera && 'cuerpo' in primera;
+    if (tieneCampos) return evoMsgLookupsCache;
+    evoMsgLookupsCache = null;
+  }
   evoMsgLookupsCache = await apiGet('api/evolutionmensajes.php?lookups=1');
   return evoMsgLookupsCache;
 }
@@ -21024,16 +21296,19 @@ async function abrirAltaEvoMsg(opciones = {}) {
         if (!plId) return;
         const p = (lookups?.plantillas ?? []).find(x => String(x.id) === String(plId));
         if (!p) return;
-        // Mapping de formato: la plantilla trae letra legacy, evolution_mensajes
-        // guarda string full-word. Espeja el switch del sender.
-        const formatoMap = { T: 'texto', I: 'imagen', V: 'video', A: 'audio', U: 'ubicacion' };
         const setVal = (id, v) => { const el = $('#' + id); if (el) el.value = v ?? ''; };
         setVal('evoRemitente', p.remitente);
         setVal('evoRemite',    p.remite);
         setVal('evoAsunto',    p.asunto);
         setVal('evoCuerpo',    p.cuerpo);
         setVal('evoAdjunto',   p.adjunto);
-        if (p.formato) setVal('evoFormato', formatoMap[p.formato] ?? p.formato);
+        // Formato: la data actual ya esta migrada a full-word (texto/imagen/
+        // video/audio/ubicacion), pero mantenemos el fallback desde letras
+        // legacy (T/I/V/A/U) por si algun row viejo no se convirtio. Sin
+        // guard `if (p.formato)`: si la plantilla no define formato limpiamos
+        // el select para que sea evidente (mejor que dejar un default fantasma).
+        const formatoLegacy = { T: 'texto', I: 'imagen', V: 'video', A: 'audio', U: 'ubicacion' };
+        setVal('evoFormato', formatoLegacy[p.formato] ?? p.formato);
       });
     }
   } catch (e) {
