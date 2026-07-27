@@ -21,10 +21,10 @@ require_once __DIR__ . '/lib/aws_mensajes.php';   // encolarAwsMensaje() + sanit
 // JOIN a proyectos / aws_canales / datarocket_plantillas. Reusado por listado
 // y consulta individual — el modal Consultar los muestra en la pestana
 // Detalles.
-const AWS_MSG_COLS = "m.id, m.fecha, m.proyecto_id, m.canal_id, m.plantilla_id,
+const AWS_MSG_COLS = "m.id, m.uuid, m.fecha, m.proyecto_id, m.canal_id, m.plantilla_id,
                       m.remitente, m.remite, m.destinatario, m.destino,
                       m.prioridad, m.asunto, m.cuerpo, m.formato,
-                      m.adjunto, m.tags, m.estado, m.error,
+                      m.adjunto, m.tags, m.estado, m.error, m.resultado,
                       m.encolado, m.programado, m.enviado, m.demora,
                       p.nombre AS proyecto_nombre,
                       c.nombre AS canal_nombre,
@@ -68,6 +68,7 @@ function handleList(PDO $pdo, array $q): void {
     $canal     = isset($q['canal_id'])     && $q['canal_id']     !== '' ? (int)$q['canal_id']     : null;
     $plantilla = isset($q['plantilla_id']) && $q['plantilla_id'] !== '' ? (int)$q['plantilla_id'] : null;
     $estado    = trim((string)($q['estado']    ?? ''));
+    $resultado = trim((string)($q['resultado'] ?? ''));
     $desde     = trim((string)($q['desde']     ?? ''));
     $hasta     = trim((string)($q['hasta']     ?? ''));
     $search    = trim((string)($q['q']         ?? ''));
@@ -91,6 +92,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($canal     !== null) { $where[] = 'm.canal_id = :canal_id';             $params[':canal_id']     = $canal; }
     if ($plantilla !== null) { $where[] = 'm.plantilla_id = :plantilla_id';     $params[':plantilla_id'] = $plantilla; }
     if ($estado    !== '')   { $where[] = 'm.estado = :estado';                 $params[':estado']       = $estado; }
+    if ($resultado !== '')   { $where[] = 'm.resultado = :resultado';           $params[':resultado']    = $resultado; }
     if ($desde     !== '')   { $where[] = 'm.fecha >= :desde';          $params[':desde']     = $desde . ' 00:00:00'; }
     if ($hasta     !== '')   { $where[] = 'm.fecha <= :hasta';          $params[':hasta']     = $hasta . ' 23:59:59'; }
 

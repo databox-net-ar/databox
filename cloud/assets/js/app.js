@@ -340,7 +340,6 @@ const ROUTE_PERMS = {
 
   '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
-  '/datarocketdominios':       { perm:   'datarocket.dominios.consultar' },
   '/datarocketmensajes':       { perm:   'datarocket.mensajes.consultar' },
   '/datarocketplantillas':     { perm:   'sistemas.datarocket.plantillas.consultar' },
 
@@ -348,6 +347,7 @@ const ROUTE_PERMS = {
   '/prospectos':               { perm:   'datasale.prospectos.consultar' },
 
   '/datainfra':                { prefix: 'datainfra.' },
+  '/datainfradominios':        { perm:   'datainfra.dominios.consultar' },
   '/datainfraservidores':      { perm:   'datainfra.servidores.consultar' },
   '/datainfrabasesdatos':      { perm:   'datainfra.bases_datos.consultar' },
   '/datainfraendpoints':       { perm:   'datainfra.endpoints.consultar' },
@@ -356,6 +356,7 @@ const ROUTE_PERMS = {
   '/awscuentas':               { perm:   'plataformas.aws.cuentas.consultar' },
   '/awscanales':               { perm:   'plataformas.aws.canales.consultar' },
   '/awsmensajes':              { perm:   'plataformas.aws.mensajes.consultar' },
+  '/awseventos':               { perm:   'plataformas.aws.eventos.consultar' },
   '/awsservidores':            { perm:   'plataformas.aws.servidores.consultar' },
   '/awsbases':                 { perm:   'plataformas.aws.bases_datos.consultar' },
 
@@ -635,12 +636,78 @@ route('/dashboard', async (mount) => {
       </div>
     </div>
 
+    ${renderDashDatainfraEndpoints(data.datainfra_endpoints)}
     ${renderDashDatasaleProspectosEsperando(data.datasale_prospectos_esperando)}
-    ${renderDashDatarocketDominios(data.datarocket_dominios)}
+    ${renderDashDatainfraDominios(data.datainfra_dominios)}
     ${renderDashAwsCuentas(data.aws_cuentas)}
     ${renderDashEvolutionCanales(data.evolution_canales)}
   `;
 }, 'Dashboard');
+
+// Bloque "Endpoints con problemas" del dashboard. La API lo omite si el
+// usuario no tiene permiso `datainfra.endpoints.consultar`; en ese caso no
+// renderizamos nada. Muestra solo endpoints con `activo = 1` cuyo ultimo
+// health-check dio `error` o `timeout` (los inactivos y los `nunca` se
+// ignoran). Fila roja para llamar la atencion, "Todo bien" cuando no hay
+// ninguno.
+function renderDashDatainfraEndpoints(ep) {
+  if (!ep) return '';
+  const conProblemas = Number(ep.con_problemas) || 0;
+  const items        = ep.items || [];
+  const hayAlerta    = conProblemas > 0;
+
+  const truncar = (s, n) => {
+    if (!s) return '—';
+    return s.length > n ? s.substring(0, n - 1) + '…' : s;
+  };
+  const estadoBadge = (e) => e === 'timeout'
+    ? `<span class="badge badge-danger">Timeout</span>`
+    : `<span class="badge badge-danger">Error</span>`;
+
+  const filas = items.length
+    ? items.map((e) => `
+          <tr class="row-clickable" onclick="location.hash='#/datainfraendpoints'"
+              style="background:rgba(230,42,42,.12)">
+            <td class="td-id">#${esc(e.id)}</td>
+            <td class="td-nombre">${esc(e.nombre || '—')}</td>
+            <td><span class="badge badge-info">${esc(e.metodo || '—')}</span></td>
+            <td style="font-family:monospace;font-size:.82rem;color:var(--muted)"
+                title="${esc(e.url || '')}">${esc(truncar(e.url, 60))}</td>
+            <td>${estadoBadge(e.ultimo_estado)}</td>
+            <td style="text-align:center;font-family:monospace">${e.ultimo_codigo == null ? '—' : esc(String(e.ultimo_codigo))}</td>
+            <td style="color:var(--muted);font-size:.82rem"
+                title="${esc(e.ultimo_error || '')}">${esc(truncar(e.ultimo_error, 80))}</td>
+          </tr>
+        `).join('')
+    : `<tr><td colspan="7" class="table-empty">Todo bien.</td></tr>`;
+
+  const badgeHeader = hayAlerta
+    ? `<span class="badge badge-danger" style="margin-left:6px">${conProblemas} ${conProblemas === 1 ? 'endpoint' : 'endpoints'}</span>`
+    : '';
+
+  return `
+    <div class="table-card" style="margin-top:16px">
+      <div class="dash-table-header">
+        <span>🔌 Endpoints con problemas ${badgeHeader}</span>
+        <span class="dash-ver-mas" onclick="location.hash='#/datainfraendpoints'" style="cursor:pointer">Ver más</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Nombre</th>
+            <th>Método</th>
+            <th>URL</th>
+            <th>Estado</th>
+            <th style="text-align:center">HTTP</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
+}
 
 // Bloque "Prospectos esperando" del dashboard. La API lo omite si el usuario no
 // tiene permiso `datasale.prospectos.consultar`; en ese caso no renderizamos
@@ -706,11 +773,11 @@ function renderDashDatasaleProspectosEsperando(dsp) {
 }
 
 // Bloque "Dominios por vencer" del dashboard. La API lo omite si el usuario no
-// tiene permiso `datarocket.dominios.consultar`; en ese caso no renderizamos
+// tiene permiso `datainfra.dominios.consultar`; en ese caso no renderizamos
 // nada. Incluye dominios con `fecha_siguiente_renovacion` dentro de los proximos
 // 30 dias y tambien los ya vencidos. Fila roja para vencidos, amarilla para
 // proximos, y "Todo bien" cuando no hay ninguno.
-function renderDashDatarocketDominios(dom) {
+function renderDashDatainfraDominios(dom) {
   if (!dom) return '';
   const porVencer = Number(dom.por_vencer) || 0;
   const vencidos  = Number(dom.vencidos)   || 0;
@@ -733,7 +800,7 @@ function renderDashDatarocketDominios(dom) {
 
   const filas = items.length
     ? items.map((d) => `
-          <tr class="row-clickable" onclick="location.hash='#/datarocketdominios'"
+          <tr class="row-clickable" onclick="location.hash='#/datainfradominios'"
               style="background:rgba(230,42,42,.12)">
             <td class="td-id">#${esc(d.id)}</td>
             <td class="td-nombre" style="font-family:monospace">${esc(d.dominio || '—')}</td>
@@ -752,7 +819,7 @@ function renderDashDatarocketDominios(dom) {
     <div class="table-card" style="margin-top:16px">
       <div class="dash-table-header">
         <span>🌐 Dominios por vencer (30 días) ${badgeHeader}</span>
-        <span class="dash-ver-mas" onclick="location.hash='#/datarocketdominios'" style="cursor:pointer">Ver más</span>
+        <span class="dash-ver-mas" onclick="location.hash='#/datainfradominios'" style="cursor:pointer">Ver más</span>
       </div>
       <table>
         <thead>
@@ -3961,14 +4028,19 @@ route('/aws', async (mount) => {
       <div class="page-subtitle">Herramientas y recursos de la plataforma AWS.</div>
     </div>
 
-    <!-- orden fijo pedido por el negocio: Mensajes, Canales, Servidores,
-         Bases de Datos, Cuentas (Plataforma queda siempre al final como
-         acceso externo). -->
+    <!-- orden fijo pedido por el negocio: Mensajes, Eventos, Canales,
+         Servidores, Bases de Datos, Cuentas (Plataforma queda siempre al
+         final como acceso externo). -->
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/awsmensajes'">
         <span class="tile-icon">✉️</span>
         <span class="tile-title">Mensajes</span>
         <span class="tile-desc">Cada envío individual de correo procesado por AWS, con destinatario, cuerpo, estado y tiempo de entrega.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/awseventos'">
+        <span class="tile-icon">🛎️</span>
+        <span class="tile-title">Eventos</span>
+        <span class="tile-desc">Notificaciones que AWS SES publica en SNS: entregas, rebotes, quejas, rechazos y aperturas de cada mensaje.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/awscanales'">
         <span class="tile-icon">📡</span>
@@ -5907,7 +5979,7 @@ async function eliminarAwsBase(id) {
 // ------------------------- Vista: AWS > Mensajes (ABM) -------------------------
 const awsMsgFiltrosDefaults = {
   q: '', codigo: '', proyecto_id: '', canal_id: '', plantilla_id: '',
-  estado: '', desde: '', hasta: '',
+  estado: '', resultado: '', desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const awsMsgFiltros = { ...awsMsgFiltrosDefaults };
@@ -5955,6 +6027,39 @@ function awsMsgEstadoBadge(e) {
   const key = String(e).toLowerCase();
   const cls = AWS_MSG_ESTADO_COLOR[key] || 'badge-info';
   return `<span class="badge ${cls}">${esc(AWS_MSG_ESTADO_LABEL[key] || e)}</span>`;
+}
+
+// Etiquetas humanas del resultado final (post-envio, alimentado por los
+// eventos SNS/SES via api/v4/aws/eventos.php). Precedencia (mayor gana,
+// nunca downgrade):
+//   rechazado > rebotado > spam > cliqueado > abierto > entregado
+const AWS_MSG_RESULTADO_LABEL = {
+  entregado: 'Entregado',
+  abierto:   'Abierto',
+  cliqueado: 'Cliqueado',
+  spam:      'Spam',
+  rebotado:  'Rebotado',
+  rechazado: 'Rechazado',
+};
+const AWS_MSG_RESULTADO_COLOR = {
+  entregado: 'badge-success',
+  abierto:   'badge-info',
+  cliqueado: 'badge-info',      // mismo azul info que abierto (ambos son engagement)
+  spam:      'badge-warn',
+  rebotado:  'badge-danger',
+  rechazado: 'badge-danger',
+};
+
+function awsMsgResultadoBadge(r) {
+  // Sin resultado (evento SNS aun no llego) -> celda vacia, sin badge "—".
+  // El resultado se puebla cuando Amazon reporta delivery/bounce/etc via
+  // api/v4/aws/eventos.php, asi que null es un estado normal transitorio
+  // (los mensajes recien enviados no tienen resultado hasta que llega el
+  // evento SNS correspondiente).
+  if (r == null || r === '') return '';
+  const key = String(r).toLowerCase();
+  const cls = AWS_MSG_RESULTADO_COLOR[key] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(AWS_MSG_RESULTADO_LABEL[key] || r)}</span>`;
 }
 
 function awsMsgFmtDemora(seg) {
@@ -6036,7 +6141,7 @@ route('/awsmensajes', async (mount) => {
               <th>Destino</th>
               <th>Asunto</th>
               <th>Estado</th>
-              <th>Enviado</th>
+              <th>Resultado</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
@@ -6083,7 +6188,7 @@ route('/awsmensajes', async (mount) => {
           <button class="btn btn-ghost" onclick="cancelarFiltrosAwsMsg()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
-          <div class="form-row">
+          <div class="form-row form-row-3">
             <div class="form-group">
               <label>Código</label>
               <input type="number" id="fAwsMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroAwsMsg('codigo', this.value)">
@@ -6097,6 +6202,18 @@ route('/awsmensajes', async (mount) => {
                 <option value="enviado">Enviado</option>
                 <option value="anulado">Anulado</option>
                 <option value="error">Error</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Resultado</label>
+              <select id="fAwsMsgResultado" onchange="onFiltroAwsMsg('resultado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="entregado">Entregado</option>
+                <option value="abierto">Abierto</option>
+                <option value="cliqueado">Cliqueado</option>
+                <option value="spam">Spam</option>
+                <option value="rebotado">Rebotado</option>
+                <option value="rechazado">Rechazado</option>
               </select>
             </div>
           </div>
@@ -6360,7 +6477,7 @@ function pintarTablaAwsMsg(rows) {
       </td>
       <td>${esc(m.asunto || '—')}</td>
       <td>${awsMsgEstadoBadge(m.estado)}</td>
-      <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
+      <td>${awsMsgResultadoBadge(m.resultado)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
@@ -6373,7 +6490,7 @@ function pintarTablaAwsMsg(rows) {
 }
 
 function onFiltroAwsMsg(key, value) {
-  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+  if (['estado', 'resultado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     awsMsgFiltros[key] = value;
   } else if (['codigo', 'proyecto_id', 'canal_id', 'plantilla_id'].includes(key)) {
     const v = String(value).trim();
@@ -6413,6 +6530,7 @@ function sincronizarControlesFiltrosAwsMsg() {
   const f = awsMsgFiltros;
   $('#fAwsMsgCodigo').value    = f.codigo;
   $('#fAwsMsgEstado').value    = f.estado;
+  $('#fAwsMsgResultado').value = f.resultado;
   $('#fAwsMsgProyecto').value  = f.proyecto_id;
   $('#fAwsMsgCanal').value     = f.canal_id;
   $('#fAwsMsgPlantilla').value = f.plantilla_id;
@@ -6560,6 +6678,7 @@ function renderConsultaAwsMsg(m) {
         </div>
         <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
+        ${m.uuid ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all"><span>uuid:</span> ${esc(m.uuid)}</div>` : ''}
       </div>
       <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
         <div>${awsMsgEstadoBadge(m.estado)}</div>
@@ -6628,8 +6747,9 @@ function renderConsultaAwsMsg(m) {
         ${card('Estado',     AWS_MSG_ESTADO_LABEL[String(m.estado || '').toLowerCase()] || m.estado)}
       </dl>
 
-      <dl class="data-list" style="grid-template-columns:1fr">
-        ${card('Error', m.error, true)}
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Error',     m.error)}
+        ${card('Resultado', m.resultado)}
       </dl>
     </div>
   `;
@@ -7243,6 +7363,438 @@ function awsChHabilitadoBadge(h) {
   if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
   if (h === '0') return `<span class="badge badge-danger">Deshabilitado</span>`;
   return `<span class="badge badge-info">—</span>`;
+}
+
+// ------------------------- Vista: AWS > Eventos (read-only) ----------------
+// Log de notificaciones que AWS SES publica en SNS y que se reciben en el
+// webhook `api/v4/aws/eventos.php`. El ABM es read-only: no se puede
+// modificar ni borrar eventos (los eventos son inmutables por definicion).
+const awsEvtFiltrosDefaults = {
+  q: '', uuid: '', tipo: '', destino: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const awsEvtFiltros = { ...awsEvtFiltrosDefaults };
+let awsEvtBuscadorTimer   = null;
+let awsEvtFiltrosSnapshot = null;
+
+const AWS_EVT_TIPO_LABEL = {
+  delivery:         'Entrega',
+  bounce:           'Rebote',
+  complaint:        'Queja',
+  reject:           'Rechazo',
+  open:             'Apertura',
+  click:            'Click',
+  send:             'Enviado',
+  deliverydelay:    'Demora',
+  renderingfailure: 'Render error',
+  subscription:     'Suscripción',
+  invalido:         'Inválido',
+};
+const AWS_EVT_TIPO_COLOR = {
+  delivery:         'badge-success',
+  bounce:           'badge-danger',
+  complaint:        'badge-danger',
+  reject:           'badge-danger',
+  open:             'badge-info',
+  click:            'badge-info',
+  send:             'badge-info',
+  deliverydelay:    'badge-warn',
+  renderingfailure: 'badge-warn',
+  subscription:     'badge-info',
+  invalido:         'badge-warn',
+};
+
+function awsEvtTipoBadge(t) {
+  if (!t) return `<span class="badge badge-info">—</span>`;
+  const key   = String(t).toLowerCase();
+  const cls   = AWS_EVT_TIPO_COLOR[key] || 'badge-info';
+  const label = AWS_EVT_TIPO_LABEL[key] || t;
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
+route('/awseventos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a AWS" onclick="location.hash='#/aws'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🛎️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Notificaciones que AWS SES publica en SNS y que llegan al webhook
+            <code>/v4/aws/eventos</code>. Cada evento cruza contra un mensaje via el
+            <code>uuid</code> (SES MessageId) y actualiza automáticamente el campo
+            <code>resultado</code> del mensaje.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="awsEvtStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Entregas</span><span class="stat-value green">—</span></div>
+        <div class="stat-card"><span class="stat-label">Rebotes</span><span class="stat-value red">—</span></div>
+        <div class="stat-card"><span class="stat-label">Quejas</span><span class="stat-value red">—</span></div>
+        <div class="stat-card"><span class="stat-label">Aperturas</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="awsEvtSearch"
+                   placeholder="🔍 Buscar uuid, destino o subtipo…">
+            <button class="search-clear" id="awsEvtSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="awsEvtFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="awsEvtFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="awsEvtRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Recibido</th>
+              <th>Tipo</th>
+              <th>Destino</th>
+              <th>UUID</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="awsEvtTbody">
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="awsEvtCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosAwsEvtBackdrop"
+         onclick="if(event.target===this) cancelarFiltrosAwsEvt()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosAwsEvt()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>UUID (SES MessageId)</label>
+              <input type="text" id="fAwsEvtUuid" oninput="onFiltroAwsEvt('uuid', this.value)" style="font-family:monospace">
+            </div>
+            <div class="form-group">
+              <label>Tipo</label>
+              <select id="fAwsEvtTipo" onchange="onFiltroAwsEvt('tipo', this.value)">
+                <option value="">— Todos —</option>
+                <option value="delivery">Entrega</option>
+                <option value="bounce">Rebote</option>
+                <option value="complaint">Queja</option>
+                <option value="reject">Rechazo</option>
+                <option value="open">Apertura</option>
+                <option value="click">Click</option>
+                <option value="send">Enviado</option>
+                <option value="deliverydelay">Demora</option>
+                <option value="renderingfailure">Render error</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Destino (email)</label>
+            <input type="text" id="fAwsEvtDestino" oninput="onFiltroAwsEvt('destino', this.value)" style="font-family:monospace">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fAwsEvtDesde" onchange="onFiltroAwsEvt('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fAwsEvtHasta" onchange="onFiltroAwsEvt('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fAwsEvtLimite" min="1" max="1000" oninput="onFiltroAwsEvt('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fAwsEvtOrderBy" onchange="onFiltroAwsEvt('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="recibido">Recibido</option>
+                <option value="tipo">Tipo</option>
+                <option value="destino">Destino</option>
+                <option value="uuid">UUID</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fAwsEvtDir" onchange="onFiltroAwsEvt('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosAwsEvt()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosAwsEvt()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosAwsEvt()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#awsEvtFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsEvt());
+  $('#awsEvtRefrescarBtn').addEventListener('click', () => cargarAwsEvt());
+
+  const inp = $('#awsEvtSearch');
+  const clr = $('#awsEvtSearchClear');
+  inp.addEventListener('input', () => {
+    const v = inp.value.trim();
+    clr.style.display = v ? '' : 'none';
+    awsEvtFiltros.q = v;
+    clearTimeout(awsEvtBuscadorTimer);
+    awsEvtBuscadorTimer = setTimeout(() => { cargarAwsEvt(); refrescarBadgeFiltrosAwsEvt(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    awsEvtFiltros.q = '';
+    cargarAwsEvt();
+    refrescarBadgeFiltrosAwsEvt();
+  });
+
+  $('#awsEvtCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarAwsEvt(data.id);
+  });
+
+  $('#awsEvtTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#awsEvtCtxMenu'), r.right - 180, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarAwsEvt(Number(tr.dataset.id));
+  });
+  $('#awsEvtTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#awsEvtCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosAwsEvt();
+  await cargarAwsEvt();
+}, 'AWS &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Eventos');
+
+async function cargarAwsEvt() {
+  const tbody = $('#awsEvtTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  const qs = new URLSearchParams();
+  Object.entries(awsEvtFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/awseventos.php?' + qs.toString());
+    pintarStatsAwsEvt(data.stats);
+    pintarTablaAwsEvt(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsAwsEvt(s) {
+  const cards = $$('#awsEvtStats .stat-card .stat-value');
+  if (cards.length < 5) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.entregados);
+  cards[2].textContent = fmtNum(s.rebotados);
+  cards[3].textContent = fmtNum(s.quejas);
+  cards[4].textContent = fmtNum(s.aperturas);
+}
+
+function pintarTablaAwsEvt(rows) {
+  const tbody = $('#awsEvtTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin eventos.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((e) => `
+    <tr data-id="${e.id}" class="row-clickable">
+      <td class="td-id">#${esc(e.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(e.recibido))}</td>
+      <td>${awsEvtTipoBadge(e.tipo)}${e.subtipo ? ` <span style="color:var(--muted);font-size:.75rem">${esc(e.subtipo)}</span>` : ''}</td>
+      <td style="font-family:monospace">${esc(e.destino || '—')}</td>
+      <td style="font-family:monospace;font-size:.72rem;word-break:break-all;max-width:280px">${esc(e.uuid || '—')}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroAwsEvt(key, value) {
+  if (['tipo', 'order_by', 'dir', 'desde', 'hasta', 'uuid', 'destino'].includes(key)) {
+    awsEvtFiltros[key] = value;
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    awsEvtFiltros.limite = n;
+  } else {
+    awsEvtFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosAwsEvt();
+  cargarAwsEvt();
+}
+window.onFiltroAwsEvt = onFiltroAwsEvt;
+
+function refrescarBadgeFiltrosAwsEvt() {
+  const btn   = $('#awsEvtFiltrosBtn');
+  const badge = $('#awsEvtFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(awsEvtFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(awsEvtFiltros[k]) !== String(awsEvtFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosAwsEvt() {
+  const f = awsEvtFiltros;
+  $('#fAwsEvtUuid').value    = f.uuid;
+  $('#fAwsEvtTipo').value    = f.tipo;
+  $('#fAwsEvtDestino').value = f.destino;
+  $('#fAwsEvtDesde').value   = f.desde;
+  $('#fAwsEvtHasta').value   = f.hasta;
+  $('#fAwsEvtLimite').value  = f.limite;
+  $('#fAwsEvtOrderBy').value = f.order_by;
+  $('#fAwsEvtDir').value     = f.dir;
+}
+
+function abrirModalFiltrosAwsEvt() {
+  awsEvtFiltrosSnapshot = { ...awsEvtFiltros };
+  sincronizarControlesFiltrosAwsEvt();
+  $('#filtrosAwsEvtBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosAwsEvt() { $('#filtrosAwsEvtBackdrop').classList.remove('open'); }
+function cancelarFiltrosAwsEvt() {
+  if (awsEvtFiltrosSnapshot) {
+    Object.assign(awsEvtFiltros, awsEvtFiltrosSnapshot);
+    refrescarBadgeFiltrosAwsEvt();
+    cargarAwsEvt();
+  }
+  cerrarModalFiltrosAwsEvt();
+}
+function limpiarFiltrosAwsEvt() {
+  Object.assign(awsEvtFiltros, awsEvtFiltrosDefaults);
+  awsEvtFiltros.q = $('#awsEvtSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosAwsEvt();
+  refrescarBadgeFiltrosAwsEvt();
+  cargarAwsEvt();
+}
+window.cancelarFiltrosAwsEvt    = cancelarFiltrosAwsEvt;
+window.limpiarFiltrosAwsEvt     = limpiarFiltrosAwsEvt;
+window.cerrarModalFiltrosAwsEvt = cerrarModalFiltrosAwsEvt;
+
+async function abrirConsultarAwsEvt(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1000px">
+      <div class="modal-header">
+        <div class="modal-title">Evento AWS <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+  try {
+    const e = await apiGet(`api/awseventos.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaAwsEvt(e);
+  } catch (err) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+function renderConsultaAwsEvt(e) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  // Pretty-print del raw JSON si es valido; si no, lo mostramos crudo.
+  let rawPretty = e.raw || '';
+  try {
+    if (rawPretty) rawPretty = JSON.stringify(JSON.parse(rawPretty), null, 2);
+  } catch (_) { /* dejar tal cual */ }
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div>${awsEvtTipoBadge(e.tipo)}${e.subtipo ? ` <span style="color:var(--muted);font-size:.85rem">${esc(e.subtipo)}</span>` : ''}</div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(e.destino || 'Sin destino')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(e.id)}</div>
+        ${e.uuid ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all"><span>uuid:</span> ${esc(e.uuid)}</div>` : ''}
+      </div>
+      <div style="text-align:right;min-width:200px">
+        <div style="font-size:.85rem;color:var(--muted)">Recibido</div>
+        <div style="font-family:monospace">${esc(fmtFecha(e.recibido))}</div>
+      </div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr);margin-top:16px">
+      ${card('Tipo',            AWS_EVT_TIPO_LABEL[String(e.tipo || '').toLowerCase()] || e.tipo)}
+      ${card('Subtipo',         e.subtipo)}
+      ${card('Destino',         e.destino)}
+      ${card('UUID (SES)',      e.uuid, false, true)}
+      ${card('SNS MessageId',   e.sns_message_id, true, true)}
+    </dl>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:16px 0 6px">
+      Raw JSON
+    </div>
+    <pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.78rem;line-height:1.5;max-height:400px;overflow:auto">${esc(rawPretty || 'Sin raw')}</pre>
+  `;
 }
 
 route('/awscanales', async (mount) => {
@@ -16815,42 +17367,37 @@ route('/datarocket', async (mount) => {
         <span class="tile-title">Contactos</span>
         <span class="tile-desc">Base de contactos destino con nombre, canal, teléfono, email y estado.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datarocketdominios'">
-        <span class="tile-icon">🌐</span>
-        <span class="tile-title">Dominios</span>
-        <span class="tile-desc">Catálogo de dominios DNS administrados por Databox con titular, responsable, fechas y costo de renovación.</span>
-      </button>
     </div>
   `;
 }, 'Datarocket');
 
-// ------------------------- Vista: Datarocket > Dominios (ABM) -------------------------
-// Catálogo de dominios DNS administrados por Databox. Portado del módulo
-// `dominios` de dex sin la columna `cuenta_id`. Estructura y patrones
-// tomados de datacount_clientes (misma skill abm_design).
-const DRDO_API           = 'api/datarocketdominios.php';
-const DRDO_RESPONSABLES  = ['Databox', 'Cliente'];
-const DRDO_MONEDAS       = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
+// ------------------------- Vista: Datainfra > Dominios (ABM) -------------------------
+// Catálogo de dominios DNS administrados por Databox. Vive bajo el módulo
+// Sistemas > Datainfra (infraestructura), NO bajo Datarocket. Estructura y
+// patrones tomados de datacount_clientes (misma skill abm_design).
+const DIDO_API           = 'api/datainfradominios.php';
+const DIDO_RESPONSABLES  = ['Databox', 'Cliente'];
+const DIDO_MONEDAS       = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
 
-let drdoItems            = [];
-let drdoBusqueda         = '';
-let drdoFiltroCodigo     = '';
-let drdoFiltroResponsable = '';
-let drdoFiltroEnUso      = '';
-let drdoFiltroLimite     = 100;
-let drdoFiltroOrden      = 'id';
-let drdoFiltroDir        = 'desc';
-let drdoEditandoId       = null;
-let drdoBuscadorTimer    = null;
-let drdoFiltrosSnapshot  = null;
+let didoItems            = [];
+let didoBusqueda         = '';
+let didoFiltroCodigo     = '';
+let didoFiltroResponsable = '';
+let didoFiltroEnUso      = '';
+let didoFiltroLimite     = 100;
+let didoFiltroOrden      = 'id';
+let didoFiltroDir        = 'desc';
+let didoEditandoId       = null;
+let didoBuscadorTimer    = null;
+let didoFiltrosSnapshot  = null;
 
-function drdoResponsableBadge(r) {
+function didoResponsableBadge(r) {
   if (!r) return `<span class="badge badge-info">—</span>`;
   const cls = r === 'Databox' ? 'badge-success' : 'badge-info';
   return `<span class="badge ${cls}">${esc(r)}</span>`;
 }
 
-function drdoFmtFecha(f) {
+function didoFmtFecha(f) {
   if (!f) return '—';
   const s = String(f).substring(0, 10);
   const [y, m, d] = s.split('-');
@@ -16858,7 +17405,7 @@ function drdoFmtFecha(f) {
   return `${d}/${m}/${y}`;
 }
 
-function drdoFmtMoneda(monto, moneda) {
+function didoFmtMoneda(monto, moneda) {
   if (monto === null || monto === undefined || monto === '') return '—';
   const n = Number(monto);
   if (!isFinite(n)) return '—';
@@ -16866,7 +17413,7 @@ function drdoFmtMoneda(monto, moneda) {
   return `${moneda || 'ARS'} ${s}`;
 }
 
-function drdoFechaVencimientoInfo(fecha) {
+function didoFechaVencimientoInfo(fecha) {
   if (!fecha) return { html: '—', dias: null, vencido: false, proximo: false };
   const hoy   = new Date(); hoy.setHours(0, 0, 0, 0);
   const [y, m, d] = String(fecha).substring(0, 10).split('-').map(Number);
@@ -16890,7 +17437,7 @@ function drdoFechaVencimientoInfo(fecha) {
   return { html: dateLine, dias, vencido: false, proximo: false };
 }
 
-function drdoFmtHace(dt) {
+function didoFmtHace(dt) {
   if (!dt) return `<span style="color:var(--muted)">Nunca</span>`;
   const ahora = new Date();
   const then  = new Date(String(dt).replace(' ', 'T'));
@@ -16913,12 +17460,12 @@ function drdoFmtHace(dt) {
   return `<span style="color:${tone}">${esc(txt)}</span>`;
 }
 
-route('/datarocketdominios', async (mount) => {
+route('/datainfradominios', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
         <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
-                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+                title="Volver a Datainfra" onclick="location.hash='#/datainfra'">
           <i class="fa-solid fa-chevron-left"></i>
         </button>
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
@@ -16932,37 +17479,37 @@ route('/datarocketdominios', async (mount) => {
         </div>
       </div>
 
-      <div class="stats-bar" id="drdoStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="drdoStatTotal">—</span></div>
-        <div class="stat-card"><span class="stat-label">Databox</span><span class="stat-value green" id="drdoStatDatabox">—</span></div>
-        <div class="stat-card"><span class="stat-label">Cliente</span><span class="stat-value" style="color:#93c5fd" id="drdoStatCliente">—</span></div>
-        <div class="stat-card"><span class="stat-label">Por vencer (30d)</span><span class="stat-value" style="color:#fcd34d" id="drdoStatProx">—</span></div>
-        <div class="stat-card"><span class="stat-label">Vencidos</span><span class="stat-value" style="color:#fca5a5" id="drdoStatVenc">—</span></div>
+      <div class="stats-bar" id="didoStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="didoStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Databox</span><span class="stat-value green" id="didoStatDatabox">—</span></div>
+        <div class="stat-card"><span class="stat-label">Cliente</span><span class="stat-value" style="color:#93c5fd" id="didoStatCliente">—</span></div>
+        <div class="stat-card"><span class="stat-label">Por vencer (30d)</span><span class="stat-value" style="color:#fcd34d" id="didoStatProx">—</span></div>
+        <div class="stat-card"><span class="stat-label">Vencidos</span><span class="stat-value" style="color:#fca5a5" id="didoStatVenc">—</span></div>
       </div>
 
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
-            <input type="search" class="search-input" id="drdoSearch"
+            <input type="search" class="search-input" id="didoSearch"
                    placeholder="🔍 Buscar dominio, titular o entidad registrante…">
-            <button class="search-clear" id="drdoSearchClear" style="display:none">×</button>
+            <button class="search-clear" id="didoSearchClear" style="display:none">×</button>
           </div>
-          <button class="btn btn-ghost btn-icon" id="drdoFiltrosBtn" title="Filtros">
+          <button class="btn btn-ghost btn-icon" id="didoFiltrosBtn" title="Filtros">
             <i class="fa-solid fa-filter"></i>
-            <span class="btn-icon-badge" id="drdoFiltrosBadge" style="display:none">0</span>
+            <span class="btn-icon-badge" id="didoFiltrosBadge" style="display:none">0</span>
           </button>
-          <button class="btn btn-ghost btn-icon" id="drdoRefrescarBtn" title="Refrescar">
+          <button class="btn btn-ghost btn-icon" id="didoRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
         </div>
         <div class="toolbar-right">
-          <button class="btn btn-primary" id="drdoNuevoBtn">+ Nuevo dominio</button>
+          <button class="btn btn-primary" id="didoNuevoBtn">+ Nuevo dominio</button>
         </div>
       </div>
 
       <div class="table-card">
         <table>
-          <thead id="drdoThead">
+          <thead id="didoThead">
             <tr>
               ${thOrdenable('id',                         'Código',       'width:80px')}
               ${thOrdenable('dominio',                    'Dominio')}
@@ -16976,14 +17523,14 @@ route('/datarocketdominios', async (mount) => {
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
-          <tbody id="drdoTbody">
+          <tbody id="didoTbody">
             <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <div id="drdoCtxMenu" class="ctx-menu" role="menu">
+    <div id="didoCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
@@ -17006,28 +17553,28 @@ route('/datarocketdominios', async (mount) => {
       </button>
     </div>
 
-    <div class="modal-backdrop" id="filtrosDrdoBackdrop"
-         onclick="if(event.target===this)cancelarFiltrosDrdo()">
+    <div class="modal-backdrop" id="filtrosDidoBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDido()">
       <div class="modal" style="max-width:560px">
         <div class="modal-header">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrdo()" title="Cerrar">✕</button>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDido()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
           <div class="form-row">
             <div class="form-group">
               <label>Código</label>
-              <input type="number" id="fDrdoCodigo" min="1" placeholder="ID …"
-                     oninput="onFiltroDrdo('codigo', this.value)">
+              <input type="number" id="fDidoCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDido('codigo', this.value)">
             </div>
           </div>
           <div class="form-group">
             <label>Responsable</label>
-            <div id="fDrdoResponsableChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+            <div id="fDidoResponsableChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
           </div>
           <div class="form-group">
             <label>En uso</label>
-            <select id="fDrdoEnUso" onchange="onFiltroDrdo('en_uso', this.value)">
+            <select id="fDidoEnUso" onchange="onFiltroDido('en_uso', this.value)">
               <option value="">Todos</option>
               <option value="si">En uso</option>
               <option value="no">Sin uso</option>
@@ -17037,12 +17584,12 @@ route('/datarocketdominios', async (mount) => {
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Límite</label>
-              <input type="number" id="fDrdoLimite" min="1" max="1000" value="100"
-                     onchange="onFiltroDrdo('limite', this.value)">
+              <input type="number" id="fDidoLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDido('limite', this.value)">
             </div>
             <div class="form-group">
               <label>Ordenar por</label>
-              <select id="fDrdoOrden" onchange="onFiltroDrdo('orden', this.value)">
+              <select id="fDidoOrden" onchange="onFiltroDido('orden', this.value)">
                 <option value="id">Código</option>
                 <option value="dominio">Dominio</option>
                 <option value="titular_dominio">Titular</option>
@@ -17057,7 +17604,7 @@ route('/datarocketdominios', async (mount) => {
             </div>
             <div class="form-group">
               <label>Dirección</label>
-              <select id="fDrdoDir" onchange="onFiltroDrdo('dir', this.value)">
+              <select id="fDidoDir" onchange="onFiltroDido('dir', this.value)">
                 <option value="desc">Descendente</option>
                 <option value="asc">Ascendente</option>
               </select>
@@ -17065,158 +17612,158 @@ route('/datarocketdominios', async (mount) => {
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrdo()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrdo()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrdo()">Aplicar</button>
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDido()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDido()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDido()">Aplicar</button>
         </div>
       </div>
     </div>
   `;
 
-  const inp = $('#drdoSearch');
-  const clr = $('#drdoSearchClear');
-  inp.value = drdoBusqueda;
+  const inp = $('#didoSearch');
+  const clr = $('#didoSearchClear');
+  inp.value = didoBusqueda;
   clr.style.display = inp.value ? '' : 'none';
   inp.addEventListener('input', () => {
     clr.style.display = inp.value ? '' : 'none';
-    drdoBusqueda = inp.value.trim();
-    clearTimeout(drdoBuscadorTimer);
-    drdoBuscadorTimer = setTimeout(cargarDrdo, 250);
+    didoBusqueda = inp.value.trim();
+    clearTimeout(didoBuscadorTimer);
+    didoBuscadorTimer = setTimeout(cargarDido, 250);
   });
   clr.addEventListener('click', () => {
-    inp.value = ''; clr.style.display = 'none'; drdoBusqueda = ''; cargarDrdo();
+    inp.value = ''; clr.style.display = 'none'; didoBusqueda = ''; cargarDido();
   });
 
-  $('#drdoFiltrosBtn').addEventListener('click', abrirModalFiltrosDrdo);
-  $('#drdoRefrescarBtn').addEventListener('click', cargarDrdo);
-  $('#drdoNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrdo(null));
+  $('#didoFiltrosBtn').addEventListener('click', abrirModalFiltrosDido);
+  $('#didoRefrescarBtn').addEventListener('click', cargarDido);
+  $('#didoNuevoBtn').addEventListener('click', () => abrirAltaEdicionDido(null));
 
   // Click en el header para ordenar. Toggle de dir si es la misma columna,
   // 'asc' al arrancar cuando cambia la columna. Espeja el modal de filtros.
-  $('#drdoThead').addEventListener('click', (ev) => {
+  $('#didoThead').addEventListener('click', (ev) => {
     const th = ev.target.closest('th[data-sort]');
     if (!th) return;
     const col = th.dataset.sort;
-    if (drdoFiltroOrden === col) {
-      drdoFiltroDir = drdoFiltroDir === 'asc' ? 'desc' : 'asc';
+    if (didoFiltroOrden === col) {
+      didoFiltroDir = didoFiltroDir === 'asc' ? 'desc' : 'asc';
     } else {
-      drdoFiltroOrden = col;
-      drdoFiltroDir   = 'asc';
+      didoFiltroOrden = col;
+      didoFiltroDir   = 'asc';
     }
-    drdoActualizarBadgeFiltros();
-    cargarDrdo();
+    didoActualizarBadgeFiltros();
+    cargarDido();
   });
 
-  const chipsCont = $('#fDrdoResponsableChips');
+  const chipsCont = $('#fDidoResponsableChips');
   chipsCont.innerHTML = `
     <button type="button" class="filter-chip" data-resp="">Todos</button>
-    ${DRDO_RESPONSABLES.map((r) => `
+    ${DIDO_RESPONSABLES.map((r) => `
       <button type="button" class="filter-chip" data-resp="${r}">${esc(r)}</button>
     `).join('')}
   `;
   chipsCont.addEventListener('click', (ev) => {
     const b = ev.target.closest('.filter-chip');
     if (!b) return;
-    drdoFiltroResponsable = b.dataset.resp || '';
-    drdoSincronizarChipsResponsable();
-    drdoActualizarBadgeFiltros();
-    cargarDrdo();
+    didoFiltroResponsable = b.dataset.resp || '';
+    didoSincronizarChipsResponsable();
+    didoActualizarBadgeFiltros();
+    cargarDido();
   });
 
-  $('#drdoCtxMenu').addEventListener('click', (ev) => {
+  $('#didoCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
     if (!b || b.disabled) return;
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar')      abrirConsultaDrdo(data.id);
-    if (b.dataset.action === 'actualizar')     actualizarDrdoDesdeWhois(data.id);
-    if (b.dataset.action === 'editar')         abrirAltaEdicionDrdo(data.id);
-    if (b.dataset.action === 'eliminar')       eliminarDrdo(data.id);
-    if (b.dataset.action === 'marcar-en-uso')  cambiarEnUsoDrdo(data.id, 'si');
-    if (b.dataset.action === 'marcar-sin-uso') cambiarEnUsoDrdo(data.id, 'no');
+    if (b.dataset.action === 'consultar')      abrirConsultaDido(data.id);
+    if (b.dataset.action === 'actualizar')     actualizarDidoDesdeWhois(data.id);
+    if (b.dataset.action === 'editar')         abrirAltaEdicionDido(data.id);
+    if (b.dataset.action === 'eliminar')       eliminarDido(data.id);
+    if (b.dataset.action === 'marcar-en-uso')  cambiarEnUsoDido(data.id, 'si');
+    if (b.dataset.action === 'marcar-sin-uso') cambiarEnUsoDido(data.id, 'no');
   });
 
   // Refleja el `en_uso` actual del dominio deshabilitando la opcion que ya
   // esta aplicada, para que el usuario vea de un vistazo cual es el estado.
-  const sincronizarCtxMenuDrdo = (enUso) => {
-    const menu = $('#drdoCtxMenu');
+  const sincronizarCtxMenuDido = (enUso) => {
+    const menu = $('#didoCtxMenu');
     menu.querySelector('[data-action="marcar-en-uso"]').disabled  = (enUso === 'si');
     menu.querySelector('[data-action="marcar-sin-uso"]').disabled = (enUso === 'no');
   };
 
-  $('#drdoTbody').addEventListener('click', (ev) => {
+  $('#didoTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
       const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
       const enUso = tr?.dataset.enUso || '';
-      sincronizarCtxMenuDrdo(enUso);
+      sincronizarCtxMenuDido(enUso);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#drdoCtxMenu'), r.right - 200, r.bottom + 4, { id, enUso });
+      abrirCtxMenu($('#didoCtxMenu'), r.right - 200, r.bottom + 4, { id, enUso });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
-    abrirConsultaDrdo(Number(tr.dataset.id));
+    abrirConsultaDido(Number(tr.dataset.id));
   });
-  $('#drdoTbody').addEventListener('contextmenu', (ev) => {
+  $('#didoTbody').addEventListener('contextmenu', (ev) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
     const enUso = tr.dataset.enUso || '';
-    sincronizarCtxMenuDrdo(enUso);
-    abrirCtxMenu($('#drdoCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), enUso });
+    sincronizarCtxMenuDido(enUso);
+    abrirCtxMenu($('#didoCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), enUso });
   });
 
-  drdoActualizarBadgeFiltros();
-  await cargarDrdo();
-}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Dominios');
+  didoActualizarBadgeFiltros();
+  await cargarDido();
+}, 'Datainfra &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Dominios');
 
-async function cargarDrdo() {
-  const tbody = $('#drdoTbody');
+async function cargarDido() {
+  const tbody = $('#didoTbody');
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
-  if (drdoBusqueda)          qs.set('q', drdoBusqueda);
-  if (drdoFiltroResponsable) qs.set('responsable', drdoFiltroResponsable);
-  if (drdoFiltroEnUso)       qs.set('en_uso', drdoFiltroEnUso);
-  if (drdoFiltroLimite)      qs.set('limite', drdoFiltroLimite);
-  if (drdoFiltroOrden)       qs.set('orden', drdoFiltroOrden);
-  if (drdoFiltroDir)         qs.set('dir', drdoFiltroDir);
+  if (didoBusqueda)          qs.set('q', didoBusqueda);
+  if (didoFiltroResponsable) qs.set('responsable', didoFiltroResponsable);
+  if (didoFiltroEnUso)       qs.set('en_uso', didoFiltroEnUso);
+  if (didoFiltroLimite)      qs.set('limite', didoFiltroLimite);
+  if (didoFiltroOrden)       qs.set('orden', didoFiltroOrden);
+  if (didoFiltroDir)         qs.set('dir', didoFiltroDir);
 
   try {
-    const data = await apiGet(DRDO_API + (qs.toString() ? '?' + qs.toString() : ''));
-    drdoItems = data.items || [];
-    pintarStatsDrdo(data.stats || {});
-    renderDrdo();
+    const data = await apiGet(DIDO_API + (qs.toString() ? '?' + qs.toString() : ''));
+    didoItems = data.items || [];
+    pintarStatsDido(data.stats || {});
+    renderDido();
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
-function pintarStatsDrdo(s) {
-  $('#drdoStatTotal').textContent   = fmtNum(s.total      ?? drdoItems.length);
-  $('#drdoStatDatabox').textContent = fmtNum(s.databox    ?? 0);
-  $('#drdoStatCliente').textContent = fmtNum(s.cliente    ?? 0);
-  $('#drdoStatProx').textContent    = fmtNum(s.por_vencer ?? 0);
-  $('#drdoStatVenc').textContent    = fmtNum(s.vencidos   ?? 0);
+function pintarStatsDido(s) {
+  $('#didoStatTotal').textContent   = fmtNum(s.total      ?? didoItems.length);
+  $('#didoStatDatabox').textContent = fmtNum(s.databox    ?? 0);
+  $('#didoStatCliente').textContent = fmtNum(s.cliente    ?? 0);
+  $('#didoStatProx').textContent    = fmtNum(s.por_vencer ?? 0);
+  $('#didoStatVenc').textContent    = fmtNum(s.vencidos   ?? 0);
 }
 
-function renderDrdo() {
-  const tbody = $('#drdoTbody');
+function renderDido() {
+  const tbody = $('#didoTbody');
   if (!tbody) return;
-  actualizarSortIndicadores($('#drdoThead'), { order_by: drdoFiltroOrden, dir: drdoFiltroDir });
-  if (!drdoItems.length) {
+  actualizarSortIndicadores($('#didoThead'), { order_by: didoFiltroOrden, dir: didoFiltroDir });
+  if (!didoItems.length) {
     tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin dominios registrados.</td></tr>`;
     return;
   }
 
-  let filas = drdoItems;
-  if (drdoFiltroCodigo) {
-    const cod = Number(drdoFiltroCodigo);
+  let filas = didoItems;
+  if (didoFiltroCodigo) {
+    const cod = Number(didoFiltroCodigo);
     filas = filas.filter((e) => e.id === cod);
   }
 
@@ -17226,7 +17773,7 @@ function renderDrdo() {
   }
 
   tbody.innerHTML = filas.map((e) => {
-    const venc = drdoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
+    const venc = didoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
     // Dominios por vencer o vencidos van con fondo tenue: rojo cuando los
     // renueva Databox (nuestro problema), azul cuando los renueva el Cliente
     // (visible para saber que se vence, pero no urgencia nuestra).
@@ -17242,10 +17789,10 @@ function renderDrdo() {
       <td style="font-weight:600">${esc(e.dominio)}</td>
       <td style="color:var(--muted)">${esc(e.titular_dominio || '—')}</td>
       <td style="font-size:.85rem;color:var(--muted)">${esc(e.entidad_registrante || '—')}</td>
-      <td>${drdoResponsableBadge(e.responsable)}</td>
+      <td>${didoResponsableBadge(e.responsable)}</td>
       <td>${venc.html}</td>
-      <td style="font-family:monospace;font-size:.85rem">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</td>
-      <td style="font-size:.85rem">${drdoFmtHace(e.actualizado)}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(didoFmtMoneda(e.costo_renovacion, e.moneda))}</td>
+      <td style="font-size:.85rem">${didoFmtHace(e.actualizado)}</td>
       <td style="text-align:center">${simFmtEnUso(e.en_uso)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
@@ -17259,86 +17806,86 @@ function renderDrdo() {
   }).join('');
 }
 
-function abrirModalFiltrosDrdo() {
-  drdoFiltrosSnapshot = {
-    codigo:      drdoFiltroCodigo,
-    responsable: drdoFiltroResponsable,
-    en_uso:      drdoFiltroEnUso,
-    limite:      drdoFiltroLimite,
-    orden:       drdoFiltroOrden,
-    dir:         drdoFiltroDir,
+function abrirModalFiltrosDido() {
+  didoFiltrosSnapshot = {
+    codigo:      didoFiltroCodigo,
+    responsable: didoFiltroResponsable,
+    en_uso:      didoFiltroEnUso,
+    limite:      didoFiltroLimite,
+    orden:       didoFiltroOrden,
+    dir:         didoFiltroDir,
   };
-  $('#fDrdoCodigo').value = drdoFiltroCodigo || '';
-  $('#fDrdoEnUso').value  = drdoFiltroEnUso  || '';
-  $('#fDrdoLimite').value = drdoFiltroLimite || 100;
-  $('#fDrdoOrden').value  = drdoFiltroOrden  || 'id';
-  $('#fDrdoDir').value    = drdoFiltroDir    || 'desc';
-  drdoSincronizarChipsResponsable();
-  document.getElementById('filtrosDrdoBackdrop').classList.add('open');
+  $('#fDidoCodigo').value = didoFiltroCodigo || '';
+  $('#fDidoEnUso').value  = didoFiltroEnUso  || '';
+  $('#fDidoLimite').value = didoFiltroLimite || 100;
+  $('#fDidoOrden').value  = didoFiltroOrden  || 'id';
+  $('#fDidoDir').value    = didoFiltroDir    || 'desc';
+  didoSincronizarChipsResponsable();
+  document.getElementById('filtrosDidoBackdrop').classList.add('open');
 }
 
-function cerrarModalFiltrosDrdo() {
-  document.getElementById('filtrosDrdoBackdrop').classList.remove('open');
+function cerrarModalFiltrosDido() {
+  document.getElementById('filtrosDidoBackdrop').classList.remove('open');
 }
 
-function cancelarFiltrosDrdo() {
-  if (drdoFiltrosSnapshot) {
-    drdoFiltroCodigo      = drdoFiltrosSnapshot.codigo;
-    drdoFiltroResponsable = drdoFiltrosSnapshot.responsable;
-    drdoFiltroEnUso       = drdoFiltrosSnapshot.en_uso;
-    drdoFiltroLimite      = drdoFiltrosSnapshot.limite;
-    drdoFiltroOrden       = drdoFiltrosSnapshot.orden;
-    drdoFiltroDir         = drdoFiltrosSnapshot.dir;
-    drdoActualizarBadgeFiltros();
-    cargarDrdo();
+function cancelarFiltrosDido() {
+  if (didoFiltrosSnapshot) {
+    didoFiltroCodigo      = didoFiltrosSnapshot.codigo;
+    didoFiltroResponsable = didoFiltrosSnapshot.responsable;
+    didoFiltroEnUso       = didoFiltrosSnapshot.en_uso;
+    didoFiltroLimite      = didoFiltrosSnapshot.limite;
+    didoFiltroOrden       = didoFiltrosSnapshot.orden;
+    didoFiltroDir         = didoFiltrosSnapshot.dir;
+    didoActualizarBadgeFiltros();
+    cargarDido();
   }
-  cerrarModalFiltrosDrdo();
+  cerrarModalFiltrosDido();
 }
 
-function limpiarFiltrosDrdo() {
-  drdoFiltroCodigo      = '';
-  drdoFiltroResponsable = '';
-  drdoFiltroEnUso       = '';
-  drdoFiltroLimite      = 100;
-  drdoFiltroOrden       = 'id';
-  drdoFiltroDir         = 'desc';
-  $('#fDrdoCodigo').value = '';
-  $('#fDrdoEnUso').value  = '';
-  $('#fDrdoLimite').value = 100;
-  $('#fDrdoOrden').value  = 'id';
-  $('#fDrdoDir').value    = 'desc';
-  drdoSincronizarChipsResponsable();
-  drdoActualizarBadgeFiltros();
-  cargarDrdo();
+function limpiarFiltrosDido() {
+  didoFiltroCodigo      = '';
+  didoFiltroResponsable = '';
+  didoFiltroEnUso       = '';
+  didoFiltroLimite      = 100;
+  didoFiltroOrden       = 'id';
+  didoFiltroDir         = 'desc';
+  $('#fDidoCodigo').value = '';
+  $('#fDidoEnUso').value  = '';
+  $('#fDidoLimite').value = 100;
+  $('#fDidoOrden').value  = 'id';
+  $('#fDidoDir').value    = 'desc';
+  didoSincronizarChipsResponsable();
+  didoActualizarBadgeFiltros();
+  cargarDido();
 }
 
-function onFiltroDrdo(campo, valor) {
-  if (campo === 'codigo') drdoFiltroCodigo = (valor || '').trim();
-  if (campo === 'en_uso') drdoFiltroEnUso  = valor || '';
-  if (campo === 'limite') drdoFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
-  if (campo === 'orden')  drdoFiltroOrden  = valor || 'id';
-  if (campo === 'dir')    drdoFiltroDir    = valor || 'desc';
-  drdoActualizarBadgeFiltros();
-  cargarDrdo();
+function onFiltroDido(campo, valor) {
+  if (campo === 'codigo') didoFiltroCodigo = (valor || '').trim();
+  if (campo === 'en_uso') didoFiltroEnUso  = valor || '';
+  if (campo === 'limite') didoFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  didoFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    didoFiltroDir    = valor || 'desc';
+  didoActualizarBadgeFiltros();
+  cargarDido();
 }
 
-function drdoSincronizarChipsResponsable() {
-  const chips = document.querySelectorAll('#fDrdoResponsableChips .filter-chip');
+function didoSincronizarChipsResponsable() {
+  const chips = document.querySelectorAll('#fDidoResponsableChips .filter-chip');
   chips.forEach((b) => {
-    b.classList.toggle('active', (b.dataset.resp || '') === (drdoFiltroResponsable || ''));
+    b.classList.toggle('active', (b.dataset.resp || '') === (didoFiltroResponsable || ''));
   });
 }
 
-function drdoActualizarBadgeFiltros() {
+function didoActualizarBadgeFiltros() {
   let n = 0;
-  if (drdoFiltroCodigo)                 n++;
-  if (drdoFiltroResponsable)            n++;
-  if (drdoFiltroEnUso)                  n++;
-  if (Number(drdoFiltroLimite) !== 100) n++;
-  if (drdoFiltroOrden !== 'id')         n++;
-  if (drdoFiltroDir   !== 'desc')       n++;
-  const badge = $('#drdoFiltrosBadge');
-  const btn   = $('#drdoFiltrosBtn');
+  if (didoFiltroCodigo)                 n++;
+  if (didoFiltroResponsable)            n++;
+  if (didoFiltroEnUso)                  n++;
+  if (Number(didoFiltroLimite) !== 100) n++;
+  if (didoFiltroOrden !== 'id')         n++;
+  if (didoFiltroDir   !== 'desc')       n++;
+  const badge = $('#didoFiltrosBadge');
+  const btn   = $('#didoFiltrosBtn');
   if (!badge || !btn) return;
   if (n > 0) {
     badge.style.display = '';
@@ -17350,13 +17897,13 @@ function drdoActualizarBadgeFiltros() {
   }
 }
 
-function abrirAltaEdicionDrdo(id) {
-  drdoEditandoId = id;
+function abrirAltaEdicionDido(id) {
+  didoEditandoId = id;
   const editando = !!id;
-  const e = editando ? drdoItems.find((x) => x.id === id) : null;
+  const e = editando ? didoItems.find((x) => x.id === id) : null;
   const titulo = editando ? 'Editar dominio' : 'Nuevo dominio';
-  const opcResp = DRDO_RESPONSABLES.map((r) => `<option value="${r}">${esc(r)}</option>`).join('');
-  const opcMon  = DRDO_MONEDAS.map((m) => `<option value="${m}">${esc(m)}</option>`).join('');
+  const opcResp = DIDO_RESPONSABLES.map((r) => `<option value="${r}">${esc(r)}</option>`).join('');
+  const opcMon  = DIDO_MONEDAS.map((m) => `<option value="${m}">${esc(m)}</option>`).join('');
 
   openModal(`
     <div class="modal" style="max-width:720px">
@@ -17366,48 +17913,48 @@ function abrirAltaEdicionDrdo(id) {
       </div>
       <div class="modal-body">
         <div class="form-group">
-          <label for="drdoDominio">Dominio *</label>
-          <input type="text" id="drdoDominio" placeholder="ejemplo.com" maxlength="255"
+          <label for="didoDominio">Dominio *</label>
+          <input type="text" id="didoDominio" placeholder="ejemplo.com" maxlength="255"
                  style="font-family:monospace" autocomplete="off">
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label for="drdoTitular">Titular WHOIS</label>
-            <input type="text" id="drdoTitular" placeholder="Persona o razón social a nombre del dominio" maxlength="200" autocomplete="off">
+            <label for="didoTitular">Titular WHOIS</label>
+            <input type="text" id="didoTitular" placeholder="Persona o razón social a nombre del dominio" maxlength="200" autocomplete="off">
           </div>
           <div class="form-group">
-            <label for="drdoEntidad">Entidad registrante</label>
-            <input type="text" id="drdoEntidad" placeholder="NIC Argentina, GoDaddy, Network Solutions…" maxlength="200" autocomplete="off">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label for="drdoResponsable">Responsable *</label>
-            <select id="drdoResponsable">${opcResp}</select>
-          </div>
-          <div class="form-group">
-            <label for="drdoFechaRegistro">Fecha registro</label>
-            <input type="date" id="drdoFechaRegistro">
+            <label for="didoEntidad">Entidad registrante</label>
+            <input type="text" id="didoEntidad" placeholder="NIC Argentina, GoDaddy, Network Solutions…" maxlength="200" autocomplete="off">
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label for="drdoFechaUltima">Última renovación</label>
-            <input type="date" id="drdoFechaUltima">
+            <label for="didoResponsable">Responsable *</label>
+            <select id="didoResponsable">${opcResp}</select>
           </div>
           <div class="form-group">
-            <label for="drdoFechaSiguiente">Próxima renovación</label>
-            <input type="date" id="drdoFechaSiguiente">
+            <label for="didoFechaRegistro">Fecha registro</label>
+            <input type="date" id="didoFechaRegistro">
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label for="drdoCosto">Costo renovación</label>
-            <input type="number" id="drdoCosto" step="0.01" min="0" placeholder="0.00" style="font-family:monospace" autocomplete="off">
+            <label for="didoFechaUltima">Última renovación</label>
+            <input type="date" id="didoFechaUltima">
           </div>
           <div class="form-group">
-            <label for="drdoMoneda">Moneda *</label>
-            <select id="drdoMoneda">${opcMon}</select>
+            <label for="didoFechaSiguiente">Próxima renovación</label>
+            <input type="date" id="didoFechaSiguiente">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="didoCosto">Costo renovación</label>
+            <input type="number" id="didoCosto" step="0.01" min="0" placeholder="0.00" style="font-family:monospace" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="didoMoneda">Moneda *</label>
+            <select id="didoMoneda">${opcMon}</select>
           </div>
         </div>
       </div>
@@ -17419,38 +17966,38 @@ function abrirAltaEdicionDrdo(id) {
   `);
 
   if (editando && e) {
-    $('#drdoDominio').value        = e.dominio             || '';
-    $('#drdoTitular').value        = e.titular_dominio     || '';
-    $('#drdoEntidad').value        = e.entidad_registrante || '';
-    $('#drdoResponsable').value    = e.responsable         || 'Databox';
-    $('#drdoFechaRegistro').value  = (e.fecha_registro             || '').substring(0, 10);
-    $('#drdoFechaUltima').value    = (e.fecha_ultima_renovacion    || '').substring(0, 10);
-    $('#drdoFechaSiguiente').value = (e.fecha_siguiente_renovacion || '').substring(0, 10);
-    $('#drdoCosto').value          = e.costo_renovacion !== null && e.costo_renovacion !== undefined ? e.costo_renovacion : '';
-    $('#drdoMoneda').value         = e.moneda || 'ARS';
+    $('#didoDominio').value        = e.dominio             || '';
+    $('#didoTitular').value        = e.titular_dominio     || '';
+    $('#didoEntidad').value        = e.entidad_registrante || '';
+    $('#didoResponsable').value    = e.responsable         || 'Databox';
+    $('#didoFechaRegistro').value  = (e.fecha_registro             || '').substring(0, 10);
+    $('#didoFechaUltima').value    = (e.fecha_ultima_renovacion    || '').substring(0, 10);
+    $('#didoFechaSiguiente').value = (e.fecha_siguiente_renovacion || '').substring(0, 10);
+    $('#didoCosto').value          = e.costo_renovacion !== null && e.costo_renovacion !== undefined ? e.costo_renovacion : '';
+    $('#didoMoneda').value         = e.moneda || 'ARS';
   } else {
-    $('#drdoResponsable').value = 'Databox';
-    $('#drdoMoneda').value      = 'ARS';
+    $('#didoResponsable').value = 'Databox';
+    $('#didoMoneda').value      = 'ARS';
   }
 
-  setTimeout(() => $('#drdoDominio')?.focus(), 50);
+  setTimeout(() => $('#didoDominio')?.focus(), 50);
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))   closeModal();
-    if (ev.target.closest('[data-act="guardar"]')) guardarDrdo();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDido();
   });
 }
 
-async function guardarDrdo() {
-  const dominio                    = $('#drdoDominio').value.trim().toLowerCase();
-  const titular_dominio            = $('#drdoTitular').value.trim();
-  const entidad_registrante        = $('#drdoEntidad').value.trim();
-  const responsable                = $('#drdoResponsable').value;
-  const fecha_registro             = $('#drdoFechaRegistro').value;
-  const fecha_ultima_renovacion    = $('#drdoFechaUltima').value;
-  const fecha_siguiente_renovacion = $('#drdoFechaSiguiente').value;
-  const costoStr                   = $('#drdoCosto').value.trim();
-  const moneda                     = $('#drdoMoneda').value;
+async function guardarDido() {
+  const dominio                    = $('#didoDominio').value.trim().toLowerCase();
+  const titular_dominio            = $('#didoTitular').value.trim();
+  const entidad_registrante        = $('#didoEntidad').value.trim();
+  const responsable                = $('#didoResponsable').value;
+  const fecha_registro             = $('#didoFechaRegistro').value;
+  const fecha_ultima_renovacion    = $('#didoFechaUltima').value;
+  const fecha_siguiente_renovacion = $('#didoFechaSiguiente').value;
+  const costoStr                   = $('#didoCosto').value.trim();
+  const moneda                     = $('#didoMoneda').value;
 
   if (!dominio) { toast('El dominio es obligatorio', { error: true }); return; }
 
@@ -17467,23 +18014,23 @@ async function guardarDrdo() {
   };
 
   try {
-    if (drdoEditandoId) {
-      await apiSend(`${DRDO_API}?id=${drdoEditandoId}`, 'PUT', body);
+    if (didoEditandoId) {
+      await apiSend(`${DIDO_API}?id=${didoEditandoId}`, 'PUT', body);
       toast('Dominio actualizado');
     } else {
-      await apiSend(DRDO_API, 'POST', body);
+      await apiSend(DIDO_API, 'POST', body);
       toast('Dominio creado');
     }
     closeModal();
-    drdoEditandoId = null;
-    await cargarDrdo();
+    didoEditandoId = null;
+    await cargarDido();
   } catch (err) {
     toast(err.message, { error: true });
   }
 }
 
-function abrirConsultaDrdo(id) {
-  const e = drdoItems.find((x) => x.id === id);
+function abrirConsultaDido(id) {
+  const e = didoItems.find((x) => x.id === id);
   if (!e) return;
 
   const card = (label, valor, ancho) => `
@@ -17495,7 +18042,7 @@ function abrirConsultaDrdo(id) {
     </div>
   `;
 
-  const venc = drdoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
+  const venc = didoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
 
   openModal(`
     <div class="modal" style="max-width:720px">
@@ -17508,17 +18055,17 @@ function abrirConsultaDrdo(id) {
       <div class="modal-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px">
           ${card('Código',              `<code>${e.id}</code>`)}
-          ${card('Responsable',         drdoResponsableBadge(e.responsable))}
+          ${card('Responsable',         didoResponsableBadge(e.responsable))}
           ${card('Dominio',             `<span style="font-family:monospace">${esc(e.dominio)}</span>`, 'full')}
           ${card('Titular WHOIS',       esc(e.titular_dominio || '—'), 'full')}
           ${card('Entidad registrante', esc(e.entidad_registrante || '—'), 'full')}
-          ${card('Fecha registro',      esc(drdoFmtFecha(e.fecha_registro)))}
-          ${card('Última renovación',   esc(drdoFmtFecha(e.fecha_ultima_renovacion)))}
+          ${card('Fecha registro',      esc(didoFmtFecha(e.fecha_registro)))}
+          ${card('Última renovación',   esc(didoFmtFecha(e.fecha_ultima_renovacion)))}
           ${card('Próxima renovación',  venc.html)}
-          ${card('Costo renovación',    `<span style="font-family:monospace">${esc(drdoFmtMoneda(e.costo_renovacion, e.moneda))}</span>`)}
+          ${card('Costo renovación',    `<span style="font-family:monospace">${esc(didoFmtMoneda(e.costo_renovacion, e.moneda))}</span>`)}
           ${card('En uso',              `${simFmtEnUso(e.en_uso)} <span style="margin-left:8px">${e.en_uso === 'si' ? 'Sí' : e.en_uso === 'no' ? 'No' : 'Sin definir'}</span>`)}
-          ${card('Actualizado WHOIS',   drdoFmtHace(e.actualizado))}
-          ${card('Alta',                esc(drdoFmtFecha(e.fecha_creacion)))}
+          ${card('Actualizado WHOIS',   didoFmtHace(e.actualizado))}
+          ${card('Alta',                esc(didoFmtFecha(e.fecha_creacion)))}
         </div>
       </div>
       <div class="modal-footer">
@@ -17530,12 +18077,12 @@ function abrirConsultaDrdo(id) {
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrdo(id); }
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDido(id); }
   });
 }
 
-async function eliminarDrdo(id) {
-  const e = drdoItems.find((x) => x.id === id);
+async function eliminarDido(id) {
+  const e = didoItems.find((x) => x.id === id);
   if (!e) return;
   const ok = await confirmar({
     title:       'Eliminar dominio',
@@ -17545,16 +18092,16 @@ async function eliminarDrdo(id) {
   });
   if (!ok) return;
   try {
-    await apiSend(`${DRDO_API}?id=${id}`, 'DELETE');
+    await apiSend(`${DIDO_API}?id=${id}`, 'DELETE');
     toast('Dominio eliminado');
-    await cargarDrdo();
+    await cargarDido();
   } catch (err) {
     toast(err.message, { error: true });
   }
 }
 
-async function actualizarDrdoDesdeWhois(id) {
-  const e = drdoItems.find((x) => x.id === id);
+async function actualizarDidoDesdeWhois(id) {
+  const e = didoItems.find((x) => x.id === id);
   if (!e) return;
 
   openModal(`
@@ -17562,12 +18109,12 @@ async function actualizarDrdoDesdeWhois(id) {
       <div class="modal-header">
         <div class="modal-title">
           🌐 <span class="modal-subtitle">Actualizar WHOIS — ${esc(e.dominio)}</span>
-          <span id="drdoWhoisEstado" class="badge badge-info" style="margin-left:8px">Consultando…</span>
+          <span id="didoWhoisEstado" class="badge badge-info" style="margin-left:8px">Consultando…</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        <pre id="drdoWhoisLog" style="background:#0b1220;color:#d1d5db;border:1px solid var(--border);border-radius:8px;padding:12px;height:360px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;white-space:pre-wrap;margin:0"></pre>
+        <pre id="didoWhoisLog" style="background:#0b1220;color:#d1d5db;border:1px solid var(--border);border-radius:8px;padding:12px;height:360px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;white-space:pre-wrap;margin:0"></pre>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" data-act="close">Cerrar</button>
@@ -17579,8 +18126,8 @@ async function actualizarDrdoDesdeWhois(id) {
     if (ev.target.closest('[data-act="close"]')) closeModal();
   });
 
-  const pre    = document.getElementById('drdoWhoisLog');
-  const estado = document.getElementById('drdoWhoisEstado');
+  const pre    = document.getElementById('didoWhoisLog');
+  const estado = document.getElementById('didoWhoisEstado');
   const append = (s) => { if (!pre) return; pre.textContent += s + '\n'; pre.scrollTop = pre.scrollHeight; };
   const setEstado = (cls, txt) => {
     if (!estado) return;
@@ -17589,7 +18136,7 @@ async function actualizarDrdoDesdeWhois(id) {
   };
 
   try {
-    const r = await fetch('api/datarocketdominios_whois.php', {
+    const r = await fetch('api/datainfradominios_whois.php', {
       method:      'POST',
       headers:     { 'Content-Type': 'application/json' },
       body:        JSON.stringify({ id: e.id }),
@@ -17640,7 +18187,7 @@ async function actualizarDrdoDesdeWhois(id) {
       setEstado('badge-success', `OK (${resumen.cambios} cambio${resumen.cambios === 1 ? '' : 's'})`);
       toast(`Dominio actualizado desde ${resumen.fuente}.`);
     }
-    await cargarDrdo();
+    await cargarDido();
   } catch (err) {
     setEstado('badge-danger', 'Error');
     append('✖ Error de red: ' + (err.message || err));
@@ -17648,10 +18195,10 @@ async function actualizarDrdoDesdeWhois(id) {
   }
 }
 
-async function cambiarEnUsoDrdo(id, valor) {
+async function cambiarEnUsoDido(id, valor) {
   try {
-    await apiSend(`${DRDO_API}?id=${id}`, 'PUT', { en_uso: valor });
-    await cargarDrdo();
+    await apiSend(`${DIDO_API}?id=${id}`, 'PUT', { en_uso: valor });
+    await cargarDido();
   } catch (e) {
     toast(e.message, { error: true });
   }
@@ -19350,6 +19897,11 @@ route('/datainfra', async (mount) => {
         <span class="tile-title">Bases de Datos</span>
         <span class="tile-desc">Catálogo de bases de datos administradas: motor, host, entorno y estado.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datainfradominios'">
+        <span class="tile-icon">🌐</span>
+        <span class="tile-title">Dominios</span>
+        <span class="tile-desc">Catálogo de dominios DNS administrados por Databox con titular, responsable, fechas y costo de renovación.</span>
+      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datainfraendpoints'">
         <span class="tile-icon">🔌</span>
         <span class="tile-title">Endpoints</span>
@@ -19399,24 +19951,932 @@ route('/datainfrabasesdatos', async (mount) => {
   `;
 }, 'Datainfra > Bases de Datos');
 
-// ------------------------- Vista: Datainfra > Endpoints (placeholder) -------------------------
+// ------------------------- Vista: Datainfra > Endpoints (ABM) -------------------------
+// Catalogo de endpoints HTTP/HTTPS con los que Databox integra (propios y de
+// terceros). Un job cron aparte hace el health-check periodico y actualiza
+// los campos `ultimo_*` de la tabla `datainfra_endpoints`. Este ABM solo
+// gestiona la configuracion; el snapshot del ultimo check se muestra en la
+// tabla y en el modal de Consulta pero es read-only desde aca.
+const DIEP_API      = 'api/datainfraendpoints.php';
+const DIEP_METODOS  = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH', 'OPTIONS'];
+const DIEP_ESTADOS  = ['ok', 'error', 'timeout', 'nunca'];
+
+let diepItems           = [];
+let diepBusqueda        = '';
+let diepFiltroCodigo    = '';
+let diepFiltroMetodo    = '';
+let diepFiltroEstado    = '';
+let diepFiltroActivo    = '';
+let diepFiltroLimite    = 100;
+let diepFiltroOrden     = 'id';
+let diepFiltroDir       = 'desc';
+let diepEditandoId      = null;
+let diepBuscadorTimer   = null;
+let diepFiltrosSnapshot = null;
+
+function diepMetodoBadge(m) {
+  if (!m) return `<span class="badge badge-info">—</span>`;
+  const cls = m === 'GET'  ? 'badge-info'
+            : m === 'POST' ? 'badge-success'
+            : m === 'PUT'  ? 'badge-warn'
+            : m === 'DELETE' ? 'badge-danger'
+            : 'badge-info';
+  return `<span class="badge ${cls}">${esc(m)}</span>`;
+}
+
+function diepEstadoBadge(e) {
+  const label = {
+    ok:      'OK',
+    error:   'Error',
+    timeout: 'Timeout',
+    nunca:   'Sin datos',
+  }[e] || '—';
+  const cls = {
+    ok:      'badge-success',
+    error:   'badge-danger',
+    timeout: 'badge-danger',
+    nunca:   'badge-info',
+  }[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
+function diepActivoBadge(a) {
+  // Semaforo puntual, sin texto: verde = activo, rojo = inactivo, gris = sin
+  // definir. En la tabla la columna `activo` esta declarada NOT NULL con
+  // default 1, asi que el caso gris en la practica no aparece; se
+  // contempla igual por defensa (import legacy, filas nuevas sin cargar).
+  if (a === null || a === undefined || a === '') {
+    return `<i class="fa-solid fa-circle" style="color:#94a3b8;font-size:.9rem" title="Sin definir"></i>`;
+  }
+  const on = Number(a) === 1;
+  return on
+    ? `<i class="fa-solid fa-circle" style="color:#22c55e;font-size:.9rem" title="Activo"></i>`
+    : `<i class="fa-solid fa-circle" style="color:#ef4444;font-size:.9rem" title="Inactivo"></i>`;
+}
+
+function diepFmtTiempo(ms) {
+  if (ms === null || ms === undefined || ms === '') return '—';
+  const n = Number(ms);
+  if (!isFinite(n)) return '—';
+  if (n < 1000) return `${n} ms`;
+  return `${(n / 1000).toFixed(2)} s`;
+}
+
+function diepFmtCodigo(c) {
+  if (c === null || c === undefined || c === '') return '—';
+  const n = Number(c);
+  if (!isFinite(n)) return esc(String(c));
+  const cls = n >= 200 && n < 300 ? 'badge-success'
+            : n >= 300 && n < 400 ? 'badge-info'
+            : n >= 400 && n < 500 ? 'badge-warn'
+            : n >= 500            ? 'badge-danger'
+            : 'badge-info';
+  return `<span class="badge ${cls}">${n}</span>`;
+}
+
+function diepFmtHace(dt) {
+  if (!dt) return `<span style="color:var(--muted)">Nunca</span>`;
+  const ahora = new Date();
+  const then  = new Date(String(dt).replace(' ', 'T'));
+  if (isNaN(then.getTime())) return `<span style="color:var(--muted)">—</span>`;
+  const seg  = Math.max(0, Math.round((ahora - then) / 1000));
+  const min  = Math.round(seg / 60);
+  const hs   = Math.round(seg / 3600);
+  const dias = Math.round(seg / 86400);
+  let txt, tone = 'var(--muted)';
+  if      (seg  < 60)   txt = 'recién';
+  else if (min  < 60)   txt = `hace ${min} min`;
+  else if (hs   < 24)   txt = `hace ${hs} h`;
+  else if (dias === 1)  txt = 'hace 1 día';
+  else if (dias <= 30)  txt = `hace ${dias} días`;
+  else if (dias <= 365) txt = `hace ${Math.round(dias / 30)} meses`;
+  else                  txt = `hace ${Math.round(dias / 365)} años`;
+  if (min > 15) tone = '#fcd34d';
+  if (hs  > 2)  tone = '#fca5a5';
+  return `<span style="color:${tone}">${esc(txt)}</span>`;
+}
+
 route('/datainfraendpoints', async (mount) => {
   mount.innerHTML = `
-    <div class="page-header">
-      <button type="button" class="btn btn-ghost btn-icon" style="margin-right:8px"
-              title="Volver a Datainfra" onclick="location.hash='#/datainfra'">
-        <i class="fa-solid fa-arrow-left"></i>
-      </button>
-      <div class="page-title">Datainfra > Endpoints</div>
-      <div class="page-subtitle">Catálogo de endpoints HTTP/HTTPS expuestos.</div>
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datainfra" onclick="location.hash='#/datainfra'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🔌</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los endpoints son las URLs de servicios HTTP/HTTPS con los que
+            Databox integra (propios y de terceros). Un job cron periódico
+            chequea la salud de cada uno y guarda el último estado, código
+            HTTP, tiempo de respuesta y error.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="diepStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="diepStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green" id="diepStatActivos">—</span></div>
+        <div class="stat-card"><span class="stat-label">OK</span><span class="stat-value green" id="diepStatOk">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value" style="color:#fca5a5" id="diepStatError">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin datos</span><span class="stat-value" style="color:#93c5fd" id="diepStatNunca">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="diepSearch"
+                   placeholder="🔍 Buscar nombre, URL o descripción…">
+            <button class="search-clear" id="diepSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="diepFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="diepFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="diepRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="diepNuevoBtn">+ Nuevo endpoint</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead id="diepThead">
+            <tr>
+              ${thOrdenable('id',               'Código',      'width:80px')}
+              ${thOrdenable('nombre',           'Nombre')}
+              ${thOrdenable('metodo',           'Método',      'width:90px')}
+              ${thOrdenable('url',              'URL')}
+              ${thOrdenable('ultimo_estado',    'Estado',      'width:110px')}
+              ${thOrdenable('ultimo_codigo',    'HTTP',        'width:80px;text-align:center')}
+              ${thOrdenable('ultimo_tiempo_ms', 'Tiempo',      'width:100px;text-align:right')}
+              ${thOrdenable('ultimo_check',     'Últ. check',  'width:130px')}
+              ${thOrdenable('activo',           'Activo',      'width:80px;text-align:center')}
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="diepTbody">
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
-    <div class="table-card" style="padding:40px;text-align:center;color:var(--muted)">
-      <div style="font-size:2rem;margin-bottom:8px">🔌</div>
-      <div style="font-weight:600;color:var(--text);margin-bottom:4px">Próximamente</div>
-      <div style="font-size:.88rem">El ABM de endpoints está pendiente de implementación.</div>
+
+    <div id="diepCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="testear" role="menuitem">
+        <i class="fa-solid fa-heart-pulse" style="color:#f97316"></i><span>Testear ahora</span>
+      </button>
+      <button type="button" data-action="activar" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#22c55e"></i><span>Activar</span>
+      </button>
+      <button type="button" data-action="desactivar" role="menuitem">
+        <i class="fa-solid fa-circle" style="color:#94a3b8"></i><span>Desactivar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDiepBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDiep()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDiep()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDiepCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDiep('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Método</label>
+              <select id="fDiepMetodo" onchange="onFiltroDiep('metodo', this.value)">
+                <option value="">Todos</option>
+                ${DIEP_METODOS.map((m) => `<option value="${m}">${esc(m)}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Último estado</label>
+            <div id="fDiepEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-group">
+            <label>Activo</label>
+            <div id="fDiepActivoChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDiepLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDiep('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDiepOrden" onchange="onFiltroDiep('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="url">URL</option>
+                <option value="metodo">Método</option>
+                <option value="ultimo_estado">Estado</option>
+                <option value="ultimo_codigo">HTTP</option>
+                <option value="ultimo_tiempo_ms">Tiempo</option>
+                <option value="ultimo_check">Últ. check</option>
+                <option value="activo">Activo</option>
+                <option value="fecha_creacion">Alta</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDiepDir" onchange="onFiltroDiep('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDiep()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDiep()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDiep()">Aplicar</button>
+        </div>
+      </div>
     </div>
   `;
-}, 'Datainfra > Endpoints');
+
+  const inp = $('#diepSearch');
+  const clr = $('#diepSearchClear');
+  inp.value = diepBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    diepBusqueda = inp.value.trim();
+    clearTimeout(diepBuscadorTimer);
+    diepBuscadorTimer = setTimeout(cargarDiep, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; diepBusqueda = ''; cargarDiep();
+  });
+
+  $('#diepFiltrosBtn').addEventListener('click', abrirModalFiltrosDiep);
+  $('#diepRefrescarBtn').addEventListener('click', cargarDiep);
+  $('#diepNuevoBtn').addEventListener('click', () => abrirAltaEdicionDiep(null));
+
+  // Click en el header para ordenar. Toggle de dir si es la misma columna,
+  // 'asc' al arrancar cuando cambia la columna. Espeja el modal de filtros.
+  $('#diepThead').addEventListener('click', (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (diepFiltroOrden === col) {
+      diepFiltroDir = diepFiltroDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      diepFiltroOrden = col;
+      diepFiltroDir   = 'asc';
+    }
+    diepActualizarBadgeFiltros();
+    cargarDiep();
+  });
+
+  // Chips de "Último estado" (Todos + ok/error/timeout/nunca).
+  const chipsEst = $('#fDiepEstadoChips');
+  chipsEst.innerHTML = `
+    <button type="button" class="filter-chip" data-est="">Todos</button>
+    ${DIEP_ESTADOS.map((e) => `
+      <button type="button" class="filter-chip" data-est="${e}">${esc(diepEstadoLabel(e))}</button>
+    `).join('')}
+  `;
+  chipsEst.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    diepFiltroEstado = b.dataset.est || '';
+    diepSincronizarChipsEstado();
+    diepActualizarBadgeFiltros();
+    cargarDiep();
+  });
+
+  // Chips de "Activo" (Todos / Sí / No).
+  const chipsAct = $('#fDiepActivoChips');
+  chipsAct.innerHTML = `
+    <button type="button" class="filter-chip" data-act="">Todos</button>
+    <button type="button" class="filter-chip" data-act="si">Sí</button>
+    <button type="button" class="filter-chip" data-act="no">No</button>
+  `;
+  chipsAct.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    diepFiltroActivo = b.dataset.act || '';
+    diepSincronizarChipsActivo();
+    diepActualizarBadgeFiltros();
+    cargarDiep();
+  });
+
+  // Menu contextual: refleja el `activo` de la fila deshabilitando la
+  // opcion que ya esta aplicada, para que se vea de un vistazo el estado.
+  const sincronizarCtxMenuDiep = (activo) => {
+    const menu = $('#diepCtxMenu');
+    menu.querySelector('[data-action="activar"]').disabled    = (activo === '1');
+    menu.querySelector('[data-action="desactivar"]').disabled = (activo === '0');
+  };
+
+  $('#diepCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b || b.disabled) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')  abrirConsultaDiep(data.id);
+    if (b.dataset.action === 'testear')    testearDiep(data.id);
+    if (b.dataset.action === 'activar')    cambiarActivoDiep(data.id, 1);
+    if (b.dataset.action === 'desactivar') cambiarActivoDiep(data.id, 0);
+    if (b.dataset.action === 'editar')     abrirAltaEdicionDiep(data.id);
+    if (b.dataset.action === 'eliminar')   eliminarDiep(data.id);
+  });
+
+  $('#diepTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const tr = ham.closest('tr[data-id]');
+      const id = Number(ham.dataset.id);
+      const activo = tr?.dataset.activo || '';
+      sincronizarCtxMenuDiep(activo);
+      const r = ham.getBoundingClientRect();
+      abrirCtxMenu($('#diepCtxMenu'), r.right - 200, r.bottom + 4, { id, activo });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDiep(Number(tr.dataset.id));
+  });
+  $('#diepTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    const activo = tr.dataset.activo || '';
+    sincronizarCtxMenuDiep(activo);
+    abrirCtxMenu($('#diepCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), activo });
+  });
+
+  diepActualizarBadgeFiltros();
+  await cargarDiep();
+}, 'Datainfra &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Endpoints');
+
+function diepEstadoLabel(e) {
+  return { ok: 'OK', error: 'Error', timeout: 'Timeout', nunca: 'Sin datos' }[e] || e;
+}
+
+async function cargarDiep() {
+  const tbody = $('#diepTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (diepBusqueda)      qs.set('q', diepBusqueda);
+  if (diepFiltroMetodo)  qs.set('metodo', diepFiltroMetodo);
+  if (diepFiltroEstado)  qs.set('estado', diepFiltroEstado);
+  if (diepFiltroActivo)  qs.set('activo', diepFiltroActivo);
+  if (diepFiltroLimite)  qs.set('limite', diepFiltroLimite);
+  if (diepFiltroOrden)   qs.set('orden', diepFiltroOrden);
+  if (diepFiltroDir)     qs.set('dir', diepFiltroDir);
+
+  try {
+    const data = await apiGet(DIEP_API + (qs.toString() ? '?' + qs.toString() : ''));
+    diepItems = data.items || [];
+    pintarStatsDiep(data.stats || {});
+    renderDiep();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDiep(s) {
+  $('#diepStatTotal').textContent   = fmtNum(s.total     ?? diepItems.length);
+  $('#diepStatActivos').textContent = fmtNum(s.activos   ?? 0);
+  $('#diepStatOk').textContent      = fmtNum(s.ok        ?? 0);
+  $('#diepStatError').textContent   = fmtNum(s.error     ?? 0);
+  $('#diepStatNunca').textContent   = fmtNum(s.nunca     ?? 0);
+}
+
+function renderDiep() {
+  const tbody = $('#diepTbody');
+  if (!tbody) return;
+  actualizarSortIndicadores($('#diepThead'), { order_by: diepFiltroOrden, dir: diepFiltroDir });
+  if (!diepItems.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin endpoints registrados.</td></tr>`;
+    return;
+  }
+
+  let filas = diepItems;
+  if (diepFiltroCodigo) {
+    const cod = Number(diepFiltroCodigo);
+    filas = filas.filter((e) => e.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((e) => {
+    // Filas caídas (error o timeout) van con fondo rojo tenue; inactivas
+    // se muestran opacas para que se noten pero no llamen la atencion.
+    let rowStyle = '';
+    if (e.activo === 0) {
+      rowStyle = ' style="opacity:.55"';
+    } else if (e.ultimo_estado === 'error' || e.ultimo_estado === 'timeout') {
+      rowStyle = ' style="background:rgba(230,42,42,.12)"';
+    }
+    const urlCorta = e.url && e.url.length > 60 ? e.url.substring(0, 57) + '…' : (e.url || '—');
+    return `
+    <tr data-id="${e.id}" data-activo="${e.activo}" class="row-clickable"${rowStyle}>
+      <td><code style="font-size:.82rem">${e.id}</code></td>
+      <td style="font-weight:600">${esc(e.nombre || '—')}</td>
+      <td>${diepMetodoBadge(e.metodo)}</td>
+      <td style="font-family:monospace;font-size:.82rem;color:var(--muted)" title="${esc(e.url || '')}">${esc(urlCorta)}</td>
+      <td>${diepEstadoBadge(e.ultimo_estado)}</td>
+      <td style="text-align:center">${diepFmtCodigo(e.ultimo_codigo)}</td>
+      <td style="text-align:right;font-family:monospace;font-size:.82rem">${esc(diepFmtTiempo(e.ultimo_tiempo_ms))}</td>
+      <td style="font-size:.85rem">${diepFmtHace(e.ultimo_check)}</td>
+      <td style="text-align:center">${diepActivoBadge(e.activo)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+function abrirModalFiltrosDiep() {
+  diepFiltrosSnapshot = {
+    codigo: diepFiltroCodigo,
+    metodo: diepFiltroMetodo,
+    estado: diepFiltroEstado,
+    activo: diepFiltroActivo,
+    limite: diepFiltroLimite,
+    orden:  diepFiltroOrden,
+    dir:    diepFiltroDir,
+  };
+  $('#fDiepCodigo').value = diepFiltroCodigo || '';
+  $('#fDiepMetodo').value = diepFiltroMetodo || '';
+  $('#fDiepLimite').value = diepFiltroLimite || 100;
+  $('#fDiepOrden').value  = diepFiltroOrden  || 'id';
+  $('#fDiepDir').value    = diepFiltroDir    || 'desc';
+  diepSincronizarChipsEstado();
+  diepSincronizarChipsActivo();
+  document.getElementById('filtrosDiepBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDiep() {
+  document.getElementById('filtrosDiepBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDiep() {
+  if (diepFiltrosSnapshot) {
+    diepFiltroCodigo = diepFiltrosSnapshot.codigo;
+    diepFiltroMetodo = diepFiltrosSnapshot.metodo;
+    diepFiltroEstado = diepFiltrosSnapshot.estado;
+    diepFiltroActivo = diepFiltrosSnapshot.activo;
+    diepFiltroLimite = diepFiltrosSnapshot.limite;
+    diepFiltroOrden  = diepFiltrosSnapshot.orden;
+    diepFiltroDir    = diepFiltrosSnapshot.dir;
+    diepActualizarBadgeFiltros();
+    cargarDiep();
+  }
+  cerrarModalFiltrosDiep();
+}
+
+function limpiarFiltrosDiep() {
+  diepFiltroCodigo = '';
+  diepFiltroMetodo = '';
+  diepFiltroEstado = '';
+  diepFiltroActivo = '';
+  diepFiltroLimite = 100;
+  diepFiltroOrden  = 'id';
+  diepFiltroDir    = 'desc';
+  $('#fDiepCodigo').value = '';
+  $('#fDiepMetodo').value = '';
+  $('#fDiepLimite').value = 100;
+  $('#fDiepOrden').value  = 'id';
+  $('#fDiepDir').value    = 'desc';
+  diepSincronizarChipsEstado();
+  diepSincronizarChipsActivo();
+  diepActualizarBadgeFiltros();
+  cargarDiep();
+}
+
+function onFiltroDiep(campo, valor) {
+  if (campo === 'codigo') diepFiltroCodigo = (valor || '').trim();
+  if (campo === 'metodo') diepFiltroMetodo = valor || '';
+  if (campo === 'limite') diepFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  diepFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    diepFiltroDir    = valor || 'desc';
+  diepActualizarBadgeFiltros();
+  cargarDiep();
+}
+
+function diepSincronizarChipsEstado() {
+  const chips = document.querySelectorAll('#fDiepEstadoChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.est || '') === (diepFiltroEstado || ''));
+  });
+}
+
+function diepSincronizarChipsActivo() {
+  const chips = document.querySelectorAll('#fDiepActivoChips .filter-chip');
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.act || '') === (diepFiltroActivo || ''));
+  });
+}
+
+function diepActualizarBadgeFiltros() {
+  let n = 0;
+  if (diepFiltroCodigo)                 n++;
+  if (diepFiltroMetodo)                 n++;
+  if (diepFiltroEstado)                 n++;
+  if (diepFiltroActivo)                 n++;
+  if (Number(diepFiltroLimite) !== 100) n++;
+  if (diepFiltroOrden !== 'id')         n++;
+  if (diepFiltroDir   !== 'desc')       n++;
+  const badge = $('#diepFiltrosBadge');
+  const btn   = $('#diepFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+function abrirAltaEdicionDiep(id) {
+  diepEditandoId = id;
+  const editando = !!id;
+  const e = editando ? diepItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar endpoint' : 'Nuevo endpoint';
+  const opcMet = DIEP_METODOS.map((m) => `<option value="${m}">${esc(m)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:760px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="diepNombre">Nombre *</label>
+          <input type="text" id="diepNombre" placeholder="API v3 Databox, Cloud panel, …" maxlength="120" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="diepDescripcion">Descripción</label>
+          <input type="text" id="diepDescripcion" placeholder="Para qué sirve este endpoint" maxlength="500" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="diepUrl">URL *</label>
+          <input type="url" id="diepUrl" placeholder="https://api.example.com/health" maxlength="500"
+                 style="font-family:monospace" autocomplete="off">
+        </div>
+        <div class="form-row form-row-3">
+          <div class="form-group">
+            <label for="diepMetodo">Método *</label>
+            <select id="diepMetodo">${opcMet}</select>
+          </div>
+          <div class="form-group">
+            <label for="diepCodigoEsperado">Código esperado *</label>
+            <input type="number" id="diepCodigoEsperado" min="100" max="599" value="200" style="font-family:monospace">
+          </div>
+          <div class="form-group">
+            <label for="diepTimeoutSeg">Timeout (seg) *</label>
+            <input type="number" id="diepTimeoutSeg" min="1" max="600" value="15" style="font-family:monospace">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="diepHeaders">Headers (JSON, opcional)</label>
+          <textarea id="diepHeaders" rows="3" placeholder='{ "Authorization": "Bearer …" }'
+                    style="font-family:monospace;font-size:.85rem" autocomplete="off"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="diepBody">Body (opcional)</label>
+          <textarea id="diepBody" rows="3" placeholder="Cuerpo de la request para POST/PUT"
+                    style="font-family:monospace;font-size:.85rem" autocomplete="off"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="diepPatron">Patrón esperado en la respuesta (opcional)</label>
+          <input type="text" id="diepPatron" placeholder='ej. "ok":true' maxlength="255"
+                 style="font-family:monospace" autocomplete="off">
+          <small style="color:var(--muted)">Substring case-sensitive que debe aparecer en el body de la respuesta para considerar el check exitoso.</small>
+        </div>
+        <div class="form-group" style="align-items:flex-start">
+          <label class="toggle-switch" style="align-self:flex-start">
+            <input type="checkbox" id="diepActivo" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Activo <span style="color:var(--muted);font-weight:normal;font-size:.85em">— el job cron lo incluye en el health-check periódico</span></span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && e) {
+    $('#diepNombre').value          = e.nombre           || '';
+    $('#diepDescripcion').value     = e.descripcion      || '';
+    $('#diepUrl').value             = e.url              || '';
+    $('#diepMetodo').value          = e.metodo           || 'GET';
+    $('#diepCodigoEsperado').value  = e.codigo_esperado ?? 200;
+    $('#diepTimeoutSeg').value      = e.timeout_seg     ?? 15;
+    $('#diepHeaders').value         = e.headers          || '';
+    $('#diepBody').value            = e.body             || '';
+    $('#diepPatron').value          = e.patron_respuesta || '';
+    $('#diepActivo').checked        = Number(e.activo) === 1;
+  } else {
+    $('#diepMetodo').value          = 'GET';
+    $('#diepCodigoEsperado').value  = 200;
+    $('#diepTimeoutSeg').value      = 15;
+    $('#diepActivo').checked        = true;
+  }
+
+  setTimeout(() => $('#diepNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDiep();
+  });
+}
+
+async function guardarDiep() {
+  const nombre           = $('#diepNombre').value.trim();
+  const descripcion      = $('#diepDescripcion').value.trim();
+  const url              = $('#diepUrl').value.trim();
+  const metodo           = $('#diepMetodo').value;
+  const codigoStr        = $('#diepCodigoEsperado').value.trim();
+  const timeoutStr       = $('#diepTimeoutSeg').value.trim();
+  const headers          = $('#diepHeaders').value.trim();
+  const body             = $('#diepBody').value;
+  const patron_respuesta = $('#diepPatron').value.trim();
+  const activo           = $('#diepActivo').checked ? 1 : 0;
+
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+  if (!url)    { toast('La URL es obligatoria',    { error: true }); return; }
+
+  // Validacion en cliente del JSON de headers para evitar el roundtrip.
+  if (headers !== '') {
+    try {
+      const parsed = JSON.parse(headers);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('debe ser un objeto');
+      }
+    } catch (err) {
+      toast('Los headers no son un JSON válido tipo objeto', { error: true });
+      return;
+    }
+  }
+
+  const payload = {
+    nombre,
+    descripcion,
+    url,
+    metodo,
+    headers,
+    body,
+    patron_respuesta,
+    codigo_esperado: codigoStr === '' ? 200 : Number(codigoStr),
+    timeout_seg:     timeoutStr === '' ? 15  : Number(timeoutStr),
+    activo,
+  };
+
+  try {
+    if (diepEditandoId) {
+      await apiSend(`${DIEP_API}?id=${diepEditandoId}`, 'PUT', payload);
+      toast('Endpoint actualizado');
+    } else {
+      await apiSend(DIEP_API, 'POST', payload);
+      toast('Endpoint creado');
+    }
+    closeModal();
+    diepEditandoId = null;
+    await cargarDiep();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+function abrirConsultaDiep(id) {
+  const e = diepItems.find((x) => x.id === id);
+  if (!e) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  const cardMono = (label, valor, ancho) => card(label,
+    `<div style="font-family:monospace;font-size:.82rem;white-space:pre-wrap;word-break:break-all">${esc(valor || '—')}</div>`,
+    ancho);
+
+  openModal(`
+    <div class="modal" style="max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🔌 <span class="modal-subtitle">${esc(e.nombre || '(sin nombre)')}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',                `<code>${e.id}</code>`)}
+          ${card('Activo',                diepActivoBadge(e.activo))}
+          ${card('Nombre',                esc(e.nombre || '—'), 'full')}
+          ${cardMono('URL',               e.url, 'full')}
+          ${card('Descripción',           esc(e.descripcion || '—'), 'full')}
+          ${card('Método',                diepMetodoBadge(e.metodo))}
+          ${card('Código esperado',       `<code>${e.codigo_esperado ?? '—'}</code>`)}
+          ${card('Timeout',               `<code>${e.timeout_seg ?? '—'} seg</code>`)}
+          ${cardMono('Patrón esperado',   e.patron_respuesta, 'full')}
+          ${cardMono('Headers',           e.headers,          'full')}
+          ${cardMono('Body',              e.body,             'full')}
+          ${card('Último estado',         diepEstadoBadge(e.ultimo_estado))}
+          ${card('Último código HTTP',    diepFmtCodigo(e.ultimo_codigo))}
+          ${card('Tiempo respuesta',      `<code>${esc(diepFmtTiempo(e.ultimo_tiempo_ms))}</code>`)}
+          ${card('Último check',          diepFmtHace(e.ultimo_check))}
+          ${cardMono('Último error',      e.ultimo_error,     'full')}
+          ${card('Alta',                  esc(e.fecha_creacion     || '—'))}
+          ${card('Última modificación',   esc(e.fecha_modificacion || '—'))}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDiep(id); }
+  });
+}
+
+async function eliminarDiep(id) {
+  const e = diepItems.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar endpoint',
+    message:     `¿Eliminás el endpoint "${e.nombre}"?\nSe borrarán también todas sus corridas históricas del health-check.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DIEP_API}?id=${id}`, 'DELETE');
+    toast('Endpoint eliminado');
+    await cargarDiep();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function cambiarActivoDiep(id, valor) {
+  try {
+    await apiSend(`${DIEP_API}?id=${id}`, 'PUT', { activo: valor });
+    await cargarDiep();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Dispara un health-check on-demand sobre un endpoint. El backend
+// (api/datainfraendpoints_check.php) streamea el log linea por linea y
+// cierra con `___END___ <json>` con el resumen (mismo patron que WHOIS de
+// dominios). Al terminar, refresca el listado para que el semaforo, el
+// codigo HTTP y el tiempo del snapshot reflejen esta corrida.
+async function testearDiep(id) {
+  const e = diepItems.find((x) => x.id === id);
+  if (!e) return;
+
+  openModal(`
+    <div class="modal" style="max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🔌 <span class="modal-subtitle">Health-check — ${esc(e.nombre || '(sin nombre)')}</span>
+          <span id="diepChkEstado" class="badge badge-info" style="margin-left:8px">Consultando…</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="diepChkLog" style="background:#0b1220;color:#d1d5db;border:1px solid var(--border);border-radius:8px;padding:12px;height:360px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;white-space:pre-wrap;margin:0"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+
+  const pre    = document.getElementById('diepChkLog');
+  const estado = document.getElementById('diepChkEstado');
+  const append = (s) => { if (!pre) return; pre.textContent += s + '\n'; pre.scrollTop = pre.scrollHeight; };
+  const setEstado = (cls, txt) => {
+    if (!estado) return;
+    estado.className = `badge ${cls}`;
+    estado.textContent = txt;
+  };
+
+  try {
+    const r = await fetch('api/datainfraendpoints_check.php', {
+      method:      'POST',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ id: e.id }),
+      credentials: 'same-origin',
+    });
+
+    if (!r.ok && r.status !== 200) {
+      append(`✖ HTTP ${r.status} ${r.statusText}`);
+      setEstado('badge-danger', 'Error');
+      return;
+    }
+
+    const reader  = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer  = '';
+    let resumen = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const linea = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        if (linea.startsWith('___END___ ')) {
+          try { resumen = JSON.parse(linea.slice(10)); }
+          catch (_) { resumen = { ok: false, error: 'Respuesta final inválida.' }; }
+        } else if (linea !== '') {
+          append(linea);
+        }
+      }
+    }
+    if (buffer !== '') append(buffer);
+
+    if (!resumen) {
+      setEstado('badge-danger', 'Error');
+      append('✖ El servidor cerró la conexión sin enviar resumen.');
+      return;
+    }
+    const est    = resumen.estado    ?? (resumen.ok ? 'ok' : 'error');
+    const codigo = resumen.codigo    ?? null;
+    const tms    = resumen.tiempo_ms ?? null;
+    const err    = resumen.error     ?? resumen.detail ?? null;
+    const codTxt = codigo === null ? '—' : String(codigo);
+    const tmsTxt = tms    === null ? '—' : diepFmtTiempo(tms);
+
+    if (est === 'ok') {
+      setEstado('badge-success', `OK  HTTP ${codTxt}  (${tmsTxt})`);
+      toast(`Endpoint OK — HTTP ${codTxt} en ${tmsTxt}.`);
+    } else if (est === 'timeout') {
+      setEstado('badge-danger', `Timeout  (${tmsTxt})`);
+      toast(err || 'El endpoint no respondió a tiempo.', { error: true });
+    } else {
+      setEstado('badge-danger', `Error  HTTP ${codTxt}  (${tmsTxt})`);
+      toast(err || 'El health-check falló.', { error: true });
+    }
+    await cargarDiep();
+  } catch (err) {
+    setEstado('badge-danger', 'Error');
+    append('✖ Error de red: ' + (err.message || err));
+    toast('Error de red: ' + (err.message || err), { error: true });
+  }
+}
 
 // ------------------------- Vista: Datasale > Prospectos (ABM) -------------------------
 const dsProFiltrosDefaults = {
@@ -20648,12 +22108,11 @@ route('/evolutionmensajes', async (mount) => {
               <th>Destino</th>
               <th style="width:30%;max-width:30%">Cuerpo</th>
               <th>Estado</th>
-              <th>Enviado</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="evoMsgTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -20754,7 +22213,6 @@ route('/evolutionmensajes', async (mount) => {
                 <option value="fecha">Fecha</option>
                 <option value="destino">Destino</option>
                 <option value="estado">Estado</option>
-                <option value="enviado">Enviado</option>
                 <option value="demora">Demora</option>
               </select>
             </div>
@@ -20889,7 +22347,7 @@ async function cargarEvoMsg() {
     pintarStatsEvoMsg(data.stats);
     pintarTablaEvoMsg(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -20927,7 +22385,7 @@ function pintarStatsEvoMsg(s) {
 function pintarTablaEvoMsg(rows) {
   const tbody = $('#evoMsgTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin mensajes.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin mensajes.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((m) => `
@@ -20944,7 +22402,6 @@ function pintarTablaEvoMsg(rows) {
         <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.cuerpo || '')}">${esc(m.cuerpo || '—')}</div>
       </td>
       <td>${evoMsgEstadoBadge(m.estado)}</td>
-      <td style="font-family:monospace">${esc(fmtFechaLarga(m.enviado))}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
@@ -22989,9 +24446,7 @@ route('/movistarsims', async (mount) => {
             <tr>
               <th style="width:90px">Código</th>
               ${thOrdenable('nombre',        'Nombre')}
-              <th>Alias</th>
               ${thOrdenable('linea',         'Línea')}
-              <th>MSISDN</th>
               <th style="width:180px">ICC</th>
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
@@ -23001,7 +24456,7 @@ route('/movistarsims', async (mount) => {
             </tr>
           </thead>
           <tbody id="msimTbody">
-            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -23197,7 +24652,7 @@ route('/movistarsims', async (mount) => {
 async function cargarMsim() {
   const tbody = $('#msimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(msimFiltros).forEach(([k, v]) => {
@@ -23209,7 +24664,7 @@ async function cargarMsim() {
     pintarStatsMsim(data.stats);
     pintarTablaMsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -23229,16 +24684,14 @@ function pintarStatsMsim(s) {
 function pintarTablaMsim(rows) {
   const tbody = $('#msimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
-      <td>${esc(r.nombre || '—')}</td>
-      <td>${esc(r.alias || '—')}</td>
+      <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
-      <td style="font-family:monospace">${esc(r.msisdn || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
       <td>${msimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
@@ -24059,9 +25512,7 @@ route('/clarosims', async (mount) => {
             <tr>
               <th style="width:90px">Código</th>
               ${thOrdenable('nombre',        'Nombre')}
-              <th>Alias</th>
               ${thOrdenable('linea',         'Línea')}
-              <th>MSISDN</th>
               <th style="width:180px">ICC</th>
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
@@ -24071,7 +25522,7 @@ route('/clarosims', async (mount) => {
             </tr>
           </thead>
           <tbody id="csimTbody">
-            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -24249,7 +25700,7 @@ route('/clarosims', async (mount) => {
 async function cargarCsim() {
   const tbody = $('#csimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(csimFiltros).forEach(([k, v]) => {
@@ -24261,7 +25712,7 @@ async function cargarCsim() {
     pintarStatsCsim(data.stats);
     pintarTablaCsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -24280,16 +25731,14 @@ function pintarStatsCsim(s) {
 function pintarTablaCsim(rows) {
   const tbody = $('#csimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
-      <td>${esc(r.nombre || '—')}</td>
-      <td>${esc(r.alias || '—')}</td>
+      <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
-      <td style="font-family:monospace">${esc(r.msisdn || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
       <td>${csimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>

@@ -1,9 +1,9 @@
 <?php
 /**
- * cloud/jobs/datarocketdominios_actualizar_whois.php
- * Recorre todos los dominios de `datarocket_dominios` y refresca sus datos
+ * cloud/jobs/datainfradominios_actualizar_whois.php
+ * Recorre todos los dominios de `datainfra_dominios` y refresca sus datos
  * WHOIS (titular, fechas, entidad registrante, costo estimado). Reusa la
- * funcion `drdoActualizarWhois()` del endpoint HTTP para mantener la
+ * funcion `didoActualizarWhois()` del endpoint HTTP para mantener la
  * logica en un solo lugar.
  *
  * Deja un suceso por dominio en la tabla `sucesos`:
@@ -13,21 +13,21 @@
  * Los errores por dominio NO frenan el job: sigue con el proximo.
  *
  * Se registra desde el Programador de tareas (tabla `tareas`) apuntando
- * `script` = "datarocketdominios_actualizar_whois". Corrida sugerida:
+ * `script` = "datainfradominios_actualizar_whois". Corrida sugerida:
  * diaria, madrugada.
  */
 
 require_once __DIR__ . '/_bootstrap.php';
-require_once __DIR__ . '/../api/lib/datarocketdominios_whois.php';
+require_once __DIR__ . '/../api/lib/datainfradominios_whois.php';
 
-$ORIGEN_SUCESO = 'cron/datarocketdominios_whois';
+$ORIGEN_SUCESO = 'cron/datainfradominios_whois';
 
 try {
     $pdo = db();
 
     $stmt = $pdo->query('
         SELECT id, dominio
-          FROM datarocket_dominios
+          FROM datainfra_dominios
          ORDER BY id
     ');
     $dominios = $stmt->fetchAll();
@@ -53,7 +53,7 @@ try {
             // en una linea por dominio y evita saturar la ejecucion con
             // decenas de lineas por cada consulta HTTP.
             $noop = static fn (string $_m) => null;
-            $r = drdoActualizarWhois($pdo, (int)$d['id'], $noop);
+            $r = didoActualizarWhois($pdo, (int)$d['id'], $noop);
 
             if ($r['ok']) {
                 $cambios = (int)($r['cambios'] ?? 0);

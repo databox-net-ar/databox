@@ -1,8 +1,8 @@
 <?php
-// api/lib/datarocketdominios_whois.php
-// Logica de scraping WHOIS para dominios de `datarocket_dominios`.
-// La usa el endpoint HTTP `api/datarocketdominios_whois.php` (streaming
-// desde el UI) y tambien el job CLI `jobs/datarocketdominios_actualizar_whois.php`
+// api/lib/datainfradominios_whois.php
+// Logica de scraping WHOIS para dominios de `datainfra_dominios`.
+// La usa el endpoint HTTP `api/datainfradominios_whois.php` (streaming
+// desde el UI) y tambien el job CLI `jobs/datainfradominios_actualizar_whois.php`
 // (batch diario). Portado del monorepo `dex` (cloud/api/dominios_whois.php).
 //
 // Fuente segun el TLD:
@@ -13,13 +13,13 @@
 // fecha_siguiente_renovacion, entidad_registrante (si venia vacio),
 // costo_renovacion + moneda (si venia vacio) y `actualizado = NOW()`.
 
-if (!function_exists('drdoActualizarWhois')) {
+if (!function_exists('didoActualizarWhois')) {
 
 /**
  * Actualiza los datos WHOIS de un dominio y retorna un resumen JSON-serializable.
  *
  * @param PDO      $pdo
- * @param int      $id            Id de la fila en `datarocket_dominios`.
+ * @param int      $id            Id de la fila en `datainfra_dominios`.
  * @param callable $log           Callable que recibe cada linea de log (string).
  *                                Pasar `fn($m) => null` para silenciar.
  * @return array {
@@ -31,10 +31,10 @@ if (!function_exists('drdoActualizarWhois')) {
  *     detail?: string,
  * }
  */
-function drdoActualizarWhois(PDO $pdo, int $id, callable $log): array {
+function didoActualizarWhois(PDO $pdo, int $id, callable $log): array {
     $stmt = $pdo->prepare('SELECT id, dominio, titular_dominio, entidad_registrante,
                                   costo_renovacion, moneda
-                             FROM datarocket_dominios WHERE id = ? LIMIT 1');
+                             FROM datainfra_dominios WHERE id = ? LIMIT 1');
     $stmt->execute([$id]);
     $dom = $stmt->fetch();
     if (!$dom) {
@@ -54,13 +54,13 @@ function drdoActualizarWhois(PDO $pdo, int $id, callable $log): array {
     $fuente = $esAr ? 'nic.ar' : 'who.is';
     $log("TLD detectado: " . ($esAr ? '.ar -> uso nic.ar' : 'no .ar -> uso who.is'));
 
-    $datos = $esAr ? drdoConsultarNicAr($dominio, $log) : drdoConsultarWhoIs($dominio, $log);
+    $datos = $esAr ? didoConsultarNicAr($dominio, $log) : didoConsultarWhoIs($dominio, $log);
 
     if (!$datos['ok']) {
         $log('X ' . ($datos['detail'] ?? 'Error consultando el WHOIS.'));
         // Marcamos `actualizado` igual para que el job no re-golpee cada
         // corrida a dominios que fallan de forma sostenida.
-        $upd = $pdo->prepare('UPDATE datarocket_dominios SET actualizado = NOW() WHERE id = ?');
+        $upd = $pdo->prepare('UPDATE datainfra_dominios SET actualizado = NOW() WHERE id = ?');
         $upd->execute([$id]);
         return [
             'ok'     => false,
@@ -124,7 +124,7 @@ function drdoActualizarWhois(PDO $pdo, int $id, callable $log): array {
     }
 
     $args[] = $id;
-    $sql = 'UPDATE datarocket_dominios SET ' . implode(', ', $sets) . ' WHERE id = ?';
+    $sql = 'UPDATE datainfra_dominios SET ' . implode(', ', $sets) . ' WHERE id = ?';
     $upd = $pdo->prepare($sql);
     $upd->execute($args);
 
@@ -140,7 +140,7 @@ function drdoActualizarWhois(PDO $pdo, int $id, callable $log): array {
 
 // ---------- Consulta HTTP ----------
 
-function drdoHttpRequest(string $url, ?string $cookieJar = null, ?array $post = null): array {
+function didoHttpRequest(string $url, ?string $cookieJar = null, ?array $post = null): array {
     $ch = curl_init($url);
     $opts = [
         CURLOPT_RETURNTRANSFER => true,
@@ -175,10 +175,10 @@ function drdoHttpRequest(string $url, ?string $cookieJar = null, ?array $post = 
 
 // ---------- NIC.ar ----------
 
-function drdoConsultarNicAr(string $dominio, callable $log): array {
+function didoConsultarNicAr(string $dominio, callable $log): array {
     $log('-> Consultando nic.ar...');
 
-    $partes = drdoDescomponerDominioAr($dominio);
+    $partes = didoDescomponerDominioAr($dominio);
     if (!$partes) {
         return ['ok' => false, 'error' => 'dominio_no_ar',
                 'detail' => "No pude separar '$dominio' en nombre + extension .ar.",
@@ -191,7 +191,7 @@ function drdoConsultarNicAr(string $dominio, callable $log): array {
 
     try {
         $log('  Paso 1: GET https://nic.ar/  (cookies + form)');
-        $home = drdoHttpRequest('https://nic.ar/', $cookieJar);
+        $home = didoHttpRequest('https://nic.ar/', $cookieJar);
         $log("    HTTP {$home['code']} — " . strlen((string)$home['body']) . ' bytes');
         if ($home['body'] === false || $home['body'] === '') {
             return ['ok' => false, 'error' => 'whois_inalcanzable',
@@ -199,13 +199,13 @@ function drdoConsultarNicAr(string $dominio, callable $log): array {
                     'fuente' => 'nic.ar'];
         }
 
-        $form = drdoExtraerFormularioBuscadorNicAr($home['body']);
+        $form = didoExtraerFormularioBuscadorNicAr($home['body']);
         if (!$form) {
             return ['ok' => false, 'error' => 'form_no_encontrado',
                     'detail' => 'No encontre el formulario de busqueda en nic.ar.',
                     'fuente' => 'nic.ar'];
         }
-        $actionAbs = drdoResolverUrl($form['action'] ?: 'https://nic.ar/', $home['url']);
+        $actionAbs = didoResolverUrl($form['action'] ?: 'https://nic.ar/', $home['url']);
         $method    = strtoupper($form['method'] ?: 'POST');
         $log("    Form: {$method} {$actionAbs}");
         $log("    Campo dominio: '{$form['inputName']}'  Campo ext: '{$form['selectName']}'");
@@ -215,11 +215,11 @@ function drdoConsultarNicAr(string $dominio, callable $log): array {
             $form['selectName'] => $ext,
         ]);
         $log("  Paso 2: POST del formulario con dominio='$nombre' ext='$ext'");
-        $res = drdoHttpRequest($actionAbs, $cookieJar, $method === 'POST' ? $post : null);
+        $res = didoHttpRequest($actionAbs, $cookieJar, $method === 'POST' ? $post : null);
         if ($method === 'GET') {
             $url = $actionAbs . (str_contains($actionAbs, '?') ? '&' : '?') . http_build_query($post);
             $log("    (metodo GET) GET $url");
-            $res = drdoHttpRequest($url, $cookieJar);
+            $res = didoHttpRequest($url, $cookieJar);
         }
         $log("    HTTP {$res['code']} — " . strlen((string)$res['body']) . ' bytes');
         $log("    URL final: {$res['url']}");
@@ -243,9 +243,9 @@ function drdoConsultarNicAr(string $dominio, callable $log): array {
                     'fuente' => 'nic.ar'];
         }
 
-        $titular = drdoExtraerNicAr($html, 'Nombre y Apellido');
-        $alta    = drdoExtraerNicAr($html, 'Fecha de Alta');
-        $venc    = drdoExtraerNicAr($html, 'Fecha de vencimiento');
+        $titular = didoExtraerNicAr($html, 'Nombre y Apellido');
+        $alta    = didoExtraerNicAr($html, 'Fecha de Alta');
+        $venc    = didoExtraerNicAr($html, 'Fecha de vencimiento');
 
         $log('  Nombre y Apellido: '    . ($titular ?: '(sin dato)'));
         $log('  Fecha de Alta: '        . ($alta    ?: '(sin dato)'));
@@ -254,9 +254,9 @@ function drdoConsultarNicAr(string $dominio, callable $log): array {
         return [
             'ok'                         => true,
             'fuente'                     => 'nic.ar',
-            'titular_dominio'            => drdoATitleCase(drdoNormalizarNombre($titular)),
-            'fecha_registro'             => drdoParseFechaDMY($alta),
-            'fecha_siguiente_renovacion' => drdoParseFechaDMY($venc),
+            'titular_dominio'            => didoATitleCase(didoNormalizarNombre($titular)),
+            'fecha_registro'             => didoParseFechaDMY($alta),
+            'fecha_siguiente_renovacion' => didoParseFechaDMY($venc),
             'entidad_registrante'        => 'Nic Argentina',
             'costo_renovacion'           => 25000,
             'moneda'                     => 'ARS',
@@ -271,7 +271,7 @@ function drdoConsultarNicAr(string $dominio, callable $log): array {
     }
 }
 
-function drdoDescomponerDominioAr(string $dominio): ?array {
+function didoDescomponerDominioAr(string $dominio): ?array {
     $exts = [
         '.com.ar', '.net.ar', '.org.ar', '.gob.ar', '.gov.ar',
         '.edu.ar', '.mil.ar', '.int.ar', '.tur.ar', '.mus.ar', '.ar',
@@ -287,7 +287,7 @@ function drdoDescomponerDominioAr(string $dominio): ?array {
     return null;
 }
 
-function drdoExtraerFormularioBuscadorNicAr(string $html): ?array {
+function didoExtraerFormularioBuscadorNicAr(string $html): ?array {
     if (!preg_match_all('/<form\b[^>]*>[\s\S]*?<\/form>/i', $html, $forms)) return null;
     foreach ($forms[0] as $formHtml) {
         if (!preg_match('/\.com\.ar|\.net\.ar|value="\.ar"/i', $formHtml)) continue;
@@ -325,7 +325,7 @@ function drdoExtraerFormularioBuscadorNicAr(string $html): ?array {
     return null;
 }
 
-function drdoResolverUrl(string $ref, string $base): string {
+function didoResolverUrl(string $ref, string $base): string {
     if ($ref === '') return $base;
     if (preg_match('#^https?://#i', $ref)) return $ref;
     $p = parse_url($base);
@@ -337,7 +337,7 @@ function drdoResolverUrl(string $ref, string $base): string {
     return $origin . $path . $ref;
 }
 
-function drdoExtraerNicAr(string $html, string $label): ?string {
+function didoExtraerNicAr(string $html, string $label): ?string {
     $labelEsc = preg_quote($label, '/');
     $rgx = '/' . $labelEsc . '\s*:\s*<\/[a-z]+>\s*([^<]+)/i';
     if (preg_match($rgx, $html, $m)) return trim($m[1]);
@@ -348,11 +348,11 @@ function drdoExtraerNicAr(string $html, string $label): ?string {
 
 // ---------- who.is ----------
 
-function drdoConsultarWhoIs(string $dominio, callable $log): array {
+function didoConsultarWhoIs(string $dominio, callable $log): array {
     $log('-> Consultando who.is...');
     $url = 'https://who.is/whois/' . rawurlencode($dominio);
     $log("  GET $url");
-    $res = drdoHttpRequest($url);
+    $res = didoHttpRequest($url);
     $log("  HTTP {$res['code']} — " . ($res['body'] === false ? 'sin respuesta' : (strlen($res['body']) . ' bytes')));
 
     if ($res['body'] === false || $res['body'] === '') {
@@ -362,16 +362,16 @@ function drdoConsultarWhoIs(string $dominio, callable $log): array {
     }
     $html = $res['body'];
 
-    $registrar = drdoExtraerWhoIsCampo($html, 'Registrar');
-    $creado    = drdoExtraerWhoIsCampo($html, 'Registered On')
-              ?? drdoExtraerWhoIsCampo($html, 'Created On')
-              ?? drdoExtraerWhoIsCampo($html, 'Created')
-              ?? drdoExtraerWhoIsCampo($html, 'Creation Date');
-    $expira    = drdoExtraerWhoIsCampo($html, 'Expires On')
-              ?? drdoExtraerWhoIsCampo($html, 'Registry Expiry Date')
-              ?? drdoExtraerWhoIsCampo($html, 'Expiration Date');
-    $titular   = drdoExtraerWhoIsName($html);
-    $titularNorm = drdoNormalizarNombre($titular);
+    $registrar = didoExtraerWhoIsCampo($html, 'Registrar');
+    $creado    = didoExtraerWhoIsCampo($html, 'Registered On')
+              ?? didoExtraerWhoIsCampo($html, 'Created On')
+              ?? didoExtraerWhoIsCampo($html, 'Created')
+              ?? didoExtraerWhoIsCampo($html, 'Creation Date');
+    $expira    = didoExtraerWhoIsCampo($html, 'Expires On')
+              ?? didoExtraerWhoIsCampo($html, 'Registry Expiry Date')
+              ?? didoExtraerWhoIsCampo($html, 'Expiration Date');
+    $titular   = didoExtraerWhoIsName($html);
+    $titularNorm = didoNormalizarNombre($titular);
     if ($titularNorm === null || $titularNorm === '') {
         $titularNorm = 'Privado';
     }
@@ -385,9 +385,9 @@ function drdoConsultarWhoIs(string $dominio, callable $log): array {
         'ok'                         => true,
         'fuente'                     => 'who.is',
         'titular_dominio'            => $titularNorm,
-        'fecha_registro'             => drdoParseFechaLibre($creado),
-        'fecha_siguiente_renovacion' => drdoParseFechaLibre($expira),
-        'entidad_registrante'        => drdoMapearEntidad($registrar),
+        'fecha_registro'             => didoParseFechaLibre($creado),
+        'fecha_siguiente_renovacion' => didoParseFechaLibre($expira),
+        'entidad_registrante'        => didoMapearEntidad($registrar),
         'costo_renovacion'           => 35,
         'moneda'                     => 'USD',
         'crudo'                      => [
@@ -399,7 +399,7 @@ function drdoConsultarWhoIs(string $dominio, callable $log): array {
     ];
 }
 
-function drdoExtraerWhoIsCampo(string $html, string $label): ?string {
+function didoExtraerWhoIsCampo(string $html, string $label): ?string {
     $labelEsc = preg_quote($label, '/');
     $rgx = '/<div[^>]*>\s*' . $labelEsc . '\s*<\/div>\s*<div[^>]*>\s*([^<]+?)\s*<\/div>/i';
     if (preg_match($rgx, $html, $m)) return trim($m[1]);
@@ -408,7 +408,7 @@ function drdoExtraerWhoIsCampo(string $html, string $label): ?string {
     return null;
 }
 
-function drdoExtraerWhoIsName(string $html): ?string {
+function didoExtraerWhoIsName(string $html): ?string {
     if (preg_match('/<div[^>]*>\s*Name\s*<\/div>\s*<div[^>]*>\s*([^<]+?)\s*<\/div>/i', $html, $m)) {
         return trim($m[1]);
     }
@@ -420,19 +420,19 @@ function drdoExtraerWhoIsName(string $html): ?string {
 
 // ---------- helpers de normalizacion ----------
 
-function drdoNormalizarNombre(?string $s): ?string {
+function didoNormalizarNombre(?string $s): ?string {
     if ($s === null) return null;
     $s = html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $s = trim(preg_replace('/\s+/', ' ', $s));
     return $s === '' ? null : $s;
 }
 
-function drdoATitleCase(?string $s): ?string {
+function didoATitleCase(?string $s): ?string {
     if ($s === null || $s === '') return $s;
     return mb_convert_case($s, MB_CASE_TITLE, 'UTF-8');
 }
 
-function drdoParseFechaDMY(?string $s): ?string {
+function didoParseFechaDMY(?string $s): ?string {
     if (!$s) return null;
     if (preg_match('/(\d{1,2})\/(\d{1,2})\/(\d{4})/', $s, $m)) {
         return sprintf('%04d-%02d-%02d', (int)$m[3], (int)$m[2], (int)$m[1]);
@@ -440,7 +440,7 @@ function drdoParseFechaDMY(?string $s): ?string {
     return null;
 }
 
-function drdoParseFechaLibre(?string $s): ?string {
+function didoParseFechaLibre(?string $s): ?string {
     if (!$s) return null;
     $s = trim($s);
     if (preg_match('/(\d{4})-(\d{2})-(\d{2})/', $s, $m)) {
@@ -454,7 +454,7 @@ function drdoParseFechaLibre(?string $s): ?string {
     return null;
 }
 
-function drdoMapearEntidad(?string $registrar): ?string {
+function didoMapearEntidad(?string $registrar): ?string {
     if (!$registrar) return null;
     $r = strtolower($registrar);
     if (str_contains($r, 'network solutions'))  return 'Networksolutions';
@@ -466,4 +466,4 @@ function drdoMapearEntidad(?string $registrar): ?string {
     return null;
 }
 
-} // if (!function_exists('drdoActualizarWhois'))
+} // if (!function_exists('didoActualizarWhois'))

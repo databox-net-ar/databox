@@ -20,6 +20,7 @@ require_once __DIR__ . '/../db.php';
 // Mapa columna -> regla del sanitizador. Reusado por sanitizeAwsMsgPayload.
 // (No hay variante partial: los mensajes encolados no se editan.)
 const AWS_MSG_SANITIZERS = [
+    'uuid'         => 'str:255',
     'fecha'        => 'dt',
     'proyecto_id'  => 'int',
     'canal_id'     => 'int',
@@ -36,6 +37,7 @@ const AWS_MSG_SANITIZERS = [
     'tags'         => 'str:255',
     'estado'       => 'str:20',
     'error'        => 'str:1000',
+    'resultado'    => 'str:20',
     'encolado'     => 'dt',
     'programado'   => 'dt',
     'enviado'      => 'dt',

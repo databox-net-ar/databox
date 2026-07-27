@@ -52,23 +52,63 @@ if (hasPermission('datasale.prospectos.consultar')) {
     ];
 }
 
-// Datarocket dominios: bloque "dominios por vencer en los proximos 30 dias".
+// Datainfra endpoints: bloque "endpoints activos con problemas". Muestra los
+// endpoints con `activo = 1` cuyo ultimo health-check dio `error` o `timeout`.
+// Ignora los inactivos (paused por el operador) y los que aun no fueron
+// chequeados (`nunca`). Se muestra solo si el usuario tiene permiso de ver el
+// modulo Endpoints. Si no hay ninguno con problemas, `items` viene vacio y el
+// UI renderiza "Todo bien".
+$datainfraEndpoints = null;
+if (hasPermission('datainfra.endpoints.consultar')) {
+    $pdo = $pdo ?? db();
+
+    $total = (int)$pdo->query(
+        'SELECT COUNT(*) FROM datainfra_endpoints WHERE activo = 1'
+    )->fetchColumn();
+
+    $conProblemas = (int)$pdo->query(
+        "SELECT COUNT(*) FROM datainfra_endpoints
+          WHERE activo = 1 AND ultimo_estado IN ('error','timeout')"
+    )->fetchColumn();
+
+    $items = [];
+    if ($conProblemas > 0) {
+        $stmt = $pdo->query("
+            SELECT id, nombre, url, metodo,
+                   ultimo_estado, ultimo_codigo, ultimo_tiempo_ms,
+                   ultimo_check, ultimo_error
+              FROM datainfra_endpoints
+             WHERE activo = 1 AND ultimo_estado IN ('error','timeout')
+             ORDER BY ultimo_check DESC, id DESC
+             LIMIT 20
+        ");
+        $items = $stmt->fetchAll();
+    }
+
+    $datainfraEndpoints = [
+        'total'         => $total,
+        'con_problemas' => $conProblemas,
+        'items'         => $items,
+    ];
+}
+
+// Datainfra dominios: bloque "dominios por vencer en los proximos 30 dias".
 // Incluye tambien los ya vencidos (fecha_siguiente_renovacion < hoy). Solo
 // considera dominios cuyo responsable operativo es Databox — los de responsable
 // 'Cliente' se ignoran porque no los renueva Databox y no son un problema
 // nuestro. Se muestra solo si el usuario tiene permiso de ver el modulo
 // Dominios. Si no hay ninguno por vencer ni vencido, `items` viene vacio y el
 // UI renderiza "Todo bien".
-$datarocketDominios = null;
-if (hasPermission('datarocket.dominios.consultar')) {
+$datainfraDominios = null;
+if (hasPermission('datainfra.dominios.consultar')) {
     $pdo = $pdo ?? db();
 
     $total = (int)$pdo->query(
-        "SELECT COUNT(*) FROM datarocket_dominios WHERE responsable = 'Databox'"
+        "SELECT COUNT(*) FROM datainfra_dominios WHERE responsable = 'Databox'"
     )->fetchColumn();
 
     $porVencer = (int)$pdo->query("
-        SELECT COUNT(*) FROM datarocket_dominios
+        SELECT COUNT(*) FROM datainfra_dominios
          WHERE responsable = 'Databox'
            AND fecha_siguiente_renovacion IS NOT NULL
            AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
@@ -76,7 +116,7 @@ if (hasPermission('datarocket.dominios.consultar')) {
     ")->fetchColumn();
 
     $vencidos = (int)$pdo->query("
-        SELECT COUNT(*) FROM datarocket_dominios
+        SELECT COUNT(*) FROM datainfra_dominios
          WHERE responsable = 'Databox'
            AND fecha_siguiente_renovacion IS NOT NULL
            AND fecha_siguiente_renovacion < CURDATE()
@@ -88,7 +128,7 @@ if (hasPermission('datarocket.dominios.consultar')) {
             SELECT id, dominio, titular_dominio, responsable,
                    fecha_siguiente_renovacion, costo_renovacion, moneda,
                    DATEDIFF(fecha_siguiente_renovacion, CURDATE()) AS dias
-              FROM datarocket_dominios
+              FROM datainfra_dominios
              WHERE responsable = 'Databox'
                AND fecha_siguiente_renovacion IS NOT NULL
                AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
@@ -98,7 +138,7 @@ if (hasPermission('datarocket.dominios.consultar')) {
         $items = $stmt->fetchAll();
     }
 
-    $datarocketDominios = [
+    $datainfraDominios = [
         'total'      => $total,
         'por_vencer' => $porVencer,
         'vencidos'   => $vencidos,
@@ -186,8 +226,9 @@ $data = [
         'campanias_activas' => 7,
         'clientes'          => 38,
     ],
+    'datainfra_endpoints'           => $datainfraEndpoints,
     'datasale_prospectos_esperando' => $datasaleProspectosEsperando,
-    'datarocket_dominios'           => $datarocketDominios,
+    'datainfra_dominios'            => $datainfraDominios,
     'aws_cuentas'                   => $awsCuentas,
     'evolution_canales'             => $evolutionCanales,
 ];

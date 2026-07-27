@@ -226,8 +226,9 @@ function awsMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
     $adjunto = trim((string)($m['adjunto'] ?? ''));
     $rfc822  = construirMime($fromHeader, $to, $asunto, $cuerpo, $formato, $adjunto);
 
+    $messageId = null;
     try {
-        smtpEnviar(
+        $messageId = smtpEnviar(
             (string)$m['servidor'],
             SMTP_PORT_DEFAULT,
             (string)$m['usuario'],
@@ -244,17 +245,20 @@ function awsMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
     }
 
     // -- 5) Persistir resultado --------------------------------------------
+    // `uuid` = messageId de SES (para cruzar con webhooks SNS de bounce/
+    // complaint/open). Si smtpEnviar no pudo parsearlo, queda NULL.
     $upd = $pdo->prepare("
         UPDATE aws_mensajes
            SET estado  = 'enviado',
                error   = NULL,
                enviado = NOW(),
-               demora  = TIMESTAMPDIFF(SECOND, COALESCE(encolado, fecha, NOW()), NOW())
+               demora  = TIMESTAMPDIFF(SECOND, COALESCE(encolado, fecha, NOW()), NOW()),
+               uuid    = COALESCE(:uuid, uuid)
          WHERE id = :id
     ");
-    $upd->execute([':id' => $id]);
+    $upd->execute([':uuid' => $messageId, ':id' => $id]);
     registrarSuceso($pdo, $origen, 'info', "AWS mensaje #{$id} enviado a " . implode(', ', $to));
-    return ['ok' => true, 'destino' => implode(', ', $to), 'canal_nombre' => $canalNombre, 'formato' => $formato];
+    return ['ok' => true, 'destino' => implode(', ', $to), 'canal_nombre' => $canalNombre, 'formato' => $formato, 'uuid' => $messageId];
 }
 
 // ============================================================================
@@ -433,6 +437,14 @@ function construirMime(
     $lineas[] = 'Subject: ' . mimeEncodeHeader($asunto);
     $lineas[] = 'Date: '    . date('r');
     $lineas[] = 'MIME-Version: 1.0';
+    // SES ve este header y aplica el config set que dispara notificaciones
+    // de eventos (delivery/bounce/complaint/open) al topic SNS que apunta a
+    // nuestro webhook api/v4/aws/eventos.php. Aplicando el config set via
+    // header (en vez de "default configuration set" por identidad) el
+    // pipeline de eventos funciona para las 14+ identidades verificadas sin
+    // configurar cada dominio individualmente. El nombre del config set
+    // vive en la consola SES > us-east-1 > Configuration sets.
+    $lineas[] = 'X-SES-CONFIGURATION-SET: databox-eventos';
 
     if ($adjunto === '') {
         $lineas[] = 'Content-Type: ' . $mimeType . '; charset=UTF-8';
@@ -480,7 +492,7 @@ function construirMime(
 function smtpEnviar(
     string $host, int $port, string $usuario, string $contrasena,
     string $mailFrom, array $rcptTo, string $rfc822
-): void {
+): ?string {
     $errno  = 0;
     $errstr = '';
     // stream_socket_client tira warning si falla; usamos @ y validamos manualmente.
@@ -512,11 +524,34 @@ function smtpEnviar(
         // Escapa lineas que empiezan con "." (RFC 5321 §4.5.2).
         $body = preg_replace('/^\./m', '..', $rfc822);
         fwrite($sock, $body . "\r\n.\r\n");
-        smtpEsperar($sock, 250);
+        // AWS SES devuelve algo tipo "250 Ok 01000119329f3b0d-abc-...-000000".
+        // Parseamos el messageId del final para persistir como uuid.
+        $respFinal = smtpEsperar($sock, 250);
         @fwrite($sock, "QUIT\r\n");  // best-effort
+        return smtpParsearMessageId($respFinal);
     } finally {
         @fclose($sock);
     }
+}
+
+// Extrae el messageId de la respuesta 250 post-DATA. Formato SES:
+//   "250 Ok 01000119329f3b0d-abc-...-000000\r\n"
+// Otros servidores SMTP responden distinto ("250 2.0.0 Ok: queued as ABC"),
+// asi que la heuristica es: tomar el ultimo token no-vacio de la ultima
+// linea. Devuelve null si nada parece un id decente.
+function smtpParsearMessageId(string $resp): ?string {
+    $lineas = preg_split('/\r?\n/', trim($resp));
+    if (!$lineas) return null;
+    $ultima = end($lineas);
+    // Quitar el codigo "250 " del principio y separadores tipicos.
+    $ultima = preg_replace('/^\d{3}[\s-]+/', '', $ultima);
+    $ultima = preg_replace('/^(Ok|OK|2\.\d+\.\d+|queued as|Message accepted for delivery)[\s:]*/i', '', $ultima);
+    $ultima = trim($ultima);
+    if ($ultima === '') return null;
+    // Si sigue habiendo palabras, quedarnos con la ultima (suele ser el id).
+    $tokens = preg_split('/\s+/', $ultima);
+    $id = end($tokens);
+    return $id === '' ? null : $id;
 }
 
 function smtpCmd($sock, string $cmd, int $codigoEsperado): string {

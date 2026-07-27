@@ -163,11 +163,31 @@ CREATE TABLE `aws_servidores`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 100 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for aws_eventos
+-- ----------------------------
+DROP TABLE IF EXISTS `aws_eventos`;
+CREATE TABLE `aws_eventos` (
+  `id`             int(11) NOT NULL AUTO_INCREMENT,
+  `uuid`           varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `sns_message_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `tipo`           varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `subtipo`        varchar(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `destino`        varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `raw`            mediumtext   CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `recibido`       datetime(0)  NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE KEY `uk_sns_message_id` (`sns_message_id`) USING BTREE,
+  KEY `idx_uuid`     (`uuid`) USING BTREE,
+  KEY `idx_recibido` (`recibido`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for aws_mensajes
 -- ----------------------------
 DROP TABLE IF EXISTS `aws_mensajes`;
 CREATE TABLE `aws_mensajes`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `uuid` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `fecha` datetime(0) NULL DEFAULT NULL,
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `canal_id` int(11) NULL DEFAULT NULL,
@@ -184,6 +204,7 @@ CREATE TABLE `aws_mensajes`  (
   `tags` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `estado` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `error` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `resultado` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `encolado` datetime(0) NULL DEFAULT NULL,
   `programado` datetime(0) NULL DEFAULT NULL,
   `enviado` datetime(0) NULL DEFAULT NULL,
@@ -1358,10 +1379,12 @@ CREATE TABLE `datarocket_contactos`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 148287 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datarocket_dominios
+-- Table structure for datainfra_dominios
 -- ----------------------------
-DROP TABLE IF EXISTS `datarocket_dominios`;
-CREATE TABLE `datarocket_dominios`  (
+-- Catalogo de dominios DNS administrados por Databox. Pertenece al modulo
+-- Sistemas > Datainfra (infraestructura), NO a Datarocket (motor de envios).
+DROP TABLE IF EXISTS `datainfra_dominios`;
+CREATE TABLE `datainfra_dominios`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `dominio` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `titular_dominio` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -1376,9 +1399,72 @@ CREATE TABLE `datarocket_dominios`  (
   `actualizado` datetime(0) NULL DEFAULT NULL,
   `fecha_creacion` datetime(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uq_datarocket_dominios_dominio`(`dominio`) USING BTREE,
-  INDEX `idx_datarocket_dominios_prox_renov`(`fecha_siguiente_renovacion`) USING BTREE,
-  INDEX `idx_datarocket_dominios_responsable`(`responsable`) USING BTREE
+  UNIQUE INDEX `uq_datainfra_dominios_dominio`(`dominio`) USING BTREE,
+  INDEX `idx_datainfra_dominios_prox_renov`(`fecha_siguiente_renovacion`) USING BTREE,
+  INDEX `idx_datainfra_dominios_responsable`(`responsable`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datainfra_endpoints
+-- ----------------------------
+-- Catalogo de endpoints HTTP/HTTPS con los que Databox integra (propios y de
+-- terceros). Un job cron recorre las filas `activo = 1`, hace la request
+-- configurada y compara con `codigo_esperado` + (opcional) `patron_respuesta`.
+-- El snapshot del ultimo check se guarda en las columnas `ultimo_*` para el
+-- semaforo verde/rojo del ABM y del dashboard; el historial completo va en
+-- `datainfra_endpoints_ejecuciones` para armar graficos de uptime/latencia.
+--   * `metodo` VARCHAR(10) (no ENUM) para admitir verbos nuevos sin migrar.
+--   * `headers` es TEXT con JSON opcional (ej. { "Authorization": "Bearer ..." })
+--     que el job parsea antes de armar la request.
+--   * `patron_respuesta` es un substring case-sensitive buscado en el body.
+--   * `ultimo_estado = 'nunca'` para filas recien creadas sin corrida aun.
+DROP TABLE IF EXISTS `datainfra_endpoints`;
+CREATE TABLE `datainfra_endpoints`  (
+  `id`                  int(11)              NOT NULL AUTO_INCREMENT,
+  `nombre`              varchar(120) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `descripcion`         varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `url`                 varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `metodo`              varchar(10)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'GET',
+  `headers`             text         CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `body`                mediumtext   CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `codigo_esperado`     smallint(5) UNSIGNED NOT NULL DEFAULT 200,
+  `patron_respuesta`    varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `timeout_seg`         smallint(5) UNSIGNED NOT NULL DEFAULT 15,
+  `activo`              tinyint(1)           NOT NULL DEFAULT 1,
+  `ultimo_check`        datetime             NULL DEFAULT NULL,
+  `ultimo_estado`       enum('ok','error','timeout','nunca') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'nunca',
+  `ultimo_codigo`       smallint(5) UNSIGNED NULL DEFAULT NULL,
+  `ultimo_tiempo_ms`    int(10) UNSIGNED     NULL DEFAULT NULL,
+  `ultimo_error`        varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `fecha_creacion`      datetime             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `fecha_modificacion`  datetime             NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_datainfra_endpoints_activo`(`activo`) USING BTREE,
+  INDEX `idx_datainfra_endpoints_ultimo_estado`(`ultimo_estado`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datainfra_endpoints_ejecuciones
+-- ----------------------------
+-- Historial de corridas del health-check por endpoint. Una fila por cada
+-- intento del job cron sobre un `datainfra_endpoints.id`. `endpoint_id`
+-- lleva FK con ON DELETE CASCADE, asi que al eliminar el endpoint se van
+-- todas sus corridas historicas. Se usa para dashboards de uptime/latencia
+-- y para auditar caidas viejas.
+DROP TABLE IF EXISTS `datainfra_endpoints_ejecuciones`;
+CREATE TABLE `datainfra_endpoints_ejecuciones`  (
+  `id`             int(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `endpoint_id`    int(11)          NOT NULL,
+  `inicio`         datetime         NOT NULL,
+  `fin`            datetime         NULL DEFAULT NULL,
+  `estado`         enum('ok','error','timeout') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `codigo`         smallint(5) UNSIGNED NULL DEFAULT NULL,
+  `tiempo_ms`      int(10) UNSIGNED NULL DEFAULT NULL,
+  `error`          varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_de_ejec_endpoint_inicio`(`endpoint_id`, `inicio`) USING BTREE,
+  INDEX `idx_de_ejec_estado`(`estado`) USING BTREE,
+  CONSTRAINT `fk_de_ejec_endpoint` FOREIGN KEY (`endpoint_id`) REFERENCES `datainfra_endpoints` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

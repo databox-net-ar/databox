@@ -1,20 +1,20 @@
 <?php
-// api/datarocketdominios.php
-// Dominios Datarocket (CRUD). Lee/escribe sobre la tabla `datarocket_dominios`
+// api/datainfradominios.php
+// Dominios Datainfra (CRUD). Lee/escribe sobre la tabla `datainfra_dominios`
 // definida en db/schema.sql — cada fila representa un dominio DNS
 // administrado por Databox con su titular WHOIS, entidad registrante,
 // responsable operativo (Databox / Cliente), fechas del ciclo de vida
 // (registro, ultima renovacion, proxima renovacion) y costo de renovacion
 // con su moneda ISO 4217.
 //
-//   GET    api/datarocketdominios.php[?q=...&responsable=...&limite=100&orden=id&dir=desc]
+//   GET    api/datainfradominios.php[?q=...&responsable=...&limite=100&orden=id&dir=desc]
 //                                      -> listado + stats por responsable
-//   GET    api/datarocketdominios.php?id=N
+//   GET    api/datainfradominios.php?id=N
 //                                      -> registro individual
-//   POST   api/datarocketdominios.php     -> alta (JSON body)
-//   PUT    api/datarocketdominios.php?id=N
+//   POST   api/datainfradominios.php     -> alta (JSON body)
+//   PUT    api/datainfradominios.php?id=N
 //                                      -> modificacion (JSON body)
-//   DELETE api/datarocketdominios.php?id=N
+//   DELETE api/datainfradominios.php?id=N
 //                                      -> baja
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -26,17 +26,17 @@ require_once __DIR__ . '/lib/sucesos.php';
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
-const DRDO_RESPONSABLES = ['Databox', 'Cliente'];
-const DRDO_MONEDAS      = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
-const DRDO_ORDENES      = ['id', 'dominio', 'titular_dominio', 'entidad_registrante',
+const DIDO_RESPONSABLES = ['Databox', 'Cliente'];
+const DIDO_MONEDAS      = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
+const DIDO_ORDENES      = ['id', 'dominio', 'titular_dominio', 'entidad_registrante',
                            'responsable', 'fecha_registro', 'fecha_siguiente_renovacion',
                            'costo_renovacion', 'en_uso', 'actualizado'];
-const DRDO_COLS         = 'id, dominio, titular_dominio, entidad_registrante, responsable, '
+const DIDO_COLS         = 'id, dominio, titular_dominio, entidad_registrante, responsable, '
                         . 'fecha_registro, fecha_ultima_renovacion, fecha_siguiente_renovacion, '
                         . 'costo_renovacion, moneda, en_uso, actualizado, fecha_creacion';
 
 try {
-    requirePermCrud('datarocket.dominios');
+    requirePermCrud('datainfra.dominios');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -114,10 +114,10 @@ function sanitizePayloadDominio(array $in, bool $esAlta): array {
     if ($entidad !== '' && mb_strlen($entidad) > 200) {
         jsonError('La entidad registrante no puede superar los 200 caracteres.', 400);
     }
-    if ($responsable !== '' && !in_array($responsable, DRDO_RESPONSABLES, true)) {
+    if ($responsable !== '' && !in_array($responsable, DIDO_RESPONSABLES, true)) {
         jsonError('Responsable invalido (debe ser Databox o Cliente).', 400);
     }
-    if ($moneda !== '' && !in_array($moneda, DRDO_MONEDAS, true)) {
+    if ($moneda !== '' && !in_array($moneda, DIDO_MONEDAS, true)) {
         jsonError('Moneda invalida.', 400);
     }
     foreach (['fecha_registro' => $fechaRegistro, 'fecha_ultima_renovacion' => $fechaUltimaRenov, 'fecha_siguiente_renovacion' => $fechaSiguienteRenov] as $campo => $val) {
@@ -151,7 +151,7 @@ function handleListDominios(PDO $pdo, array $q): void {
     $responsable = trim((string)($q['responsable'] ?? ''));
     $enUso       = trim((string)($q['en_uso'] ?? ''));
     $limite      = max(1, min(1000, (int)($q['limite'] ?? 100)));
-    $orden       = in_array(($q['orden'] ?? ''), DRDO_ORDENES, true) ? $q['orden'] : 'id';
+    $orden       = in_array(($q['orden'] ?? ''), DIDO_ORDENES, true) ? $q['orden'] : 'id';
     $dir         = strtolower((string)($q['dir'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
 
     $where  = [];
@@ -163,7 +163,7 @@ function handleListDominios(PDO $pdo, array $q): void {
         $params[':s_tit'] = "%{$search}%";
         $params[':s_ent'] = "%{$search}%";
     }
-    if ($responsable !== '' && in_array($responsable, DRDO_RESPONSABLES, true)) {
+    if ($responsable !== '' && in_array($responsable, DIDO_RESPONSABLES, true)) {
         $where[] = 'responsable = :responsable';
         $params[':responsable'] = $responsable;
     }
@@ -176,20 +176,20 @@ function handleListDominios(PDO $pdo, array $q): void {
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
-    $sql = 'SELECT ' . DRDO_COLS . " FROM datarocket_dominios {$sqlWhere} ORDER BY {$orden} {$dir} LIMIT {$limite}";
+    $sql = 'SELECT ' . DIDO_COLS . " FROM datainfra_dominios {$sqlWhere} ORDER BY {$orden} {$dir} LIMIT {$limite}";
     $st = $pdo->prepare($sql);
     $st->execute($params);
     $rows = array_map('normalizarFilaDominio', $st->fetchAll());
 
     $stats = [
-        'total'      => (int)$pdo->query('SELECT COUNT(*) FROM datarocket_dominios')->fetchColumn(),
-        'databox'    => (int)$pdo->query("SELECT COUNT(*) FROM datarocket_dominios WHERE responsable = 'Databox'")->fetchColumn(),
-        'cliente'    => (int)$pdo->query("SELECT COUNT(*) FROM datarocket_dominios WHERE responsable = 'Cliente'")->fetchColumn(),
-        'por_vencer' => (int)$pdo->query('SELECT COUNT(*) FROM datarocket_dominios '
+        'total'      => (int)$pdo->query('SELECT COUNT(*) FROM datainfra_dominios')->fetchColumn(),
+        'databox'    => (int)$pdo->query("SELECT COUNT(*) FROM datainfra_dominios WHERE responsable = 'Databox'")->fetchColumn(),
+        'cliente'    => (int)$pdo->query("SELECT COUNT(*) FROM datainfra_dominios WHERE responsable = 'Cliente'")->fetchColumn(),
+        'por_vencer' => (int)$pdo->query('SELECT COUNT(*) FROM datainfra_dominios '
                         . 'WHERE fecha_siguiente_renovacion IS NOT NULL '
                         . 'AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) '
                         . 'AND fecha_siguiente_renovacion >= CURDATE()')->fetchColumn(),
-        'vencidos'   => (int)$pdo->query('SELECT COUNT(*) FROM datarocket_dominios '
+        'vencidos'   => (int)$pdo->query('SELECT COUNT(*) FROM datainfra_dominios '
                         . 'WHERE fecha_siguiente_renovacion IS NOT NULL '
                         . 'AND fecha_siguiente_renovacion < CURDATE()')->fetchColumn(),
     ];
@@ -198,7 +198,7 @@ function handleListDominios(PDO $pdo, array $q): void {
 }
 
 function handleGetOneDominio(PDO $pdo, int $id): void {
-    $st = $pdo->prepare('SELECT ' . DRDO_COLS . ' FROM datarocket_dominios WHERE id = :id LIMIT 1');
+    $st = $pdo->prepare('SELECT ' . DIDO_COLS . ' FROM datainfra_dominios WHERE id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $row = $st->fetch();
     if (!$row) jsonError('Dominio no encontrado', 404);
@@ -208,12 +208,12 @@ function handleGetOneDominio(PDO $pdo, int $id): void {
 function handleCreateDominio(PDO $pdo, array $body): void {
     $p = sanitizePayloadDominio($body, true);
 
-    $st = $pdo->prepare('SELECT id FROM datarocket_dominios WHERE dominio = :d LIMIT 1');
+    $st = $pdo->prepare('SELECT id FROM datainfra_dominios WHERE dominio = :d LIMIT 1');
     $st->execute([':d' => $p['dominio']]);
     if ($st->fetch()) jsonError('Ya existe un dominio con ese nombre.', 409);
 
     $st = $pdo->prepare(
-        'INSERT INTO datarocket_dominios
+        'INSERT INTO datainfra_dominios
             (dominio, titular_dominio, entidad_registrante, responsable,
              fecha_registro, fecha_ultima_renovacion, fecha_siguiente_renovacion,
              costo_renovacion, moneda)
@@ -235,14 +235,14 @@ function handleCreateDominio(PDO $pdo, array $body): void {
     ]);
 
     $id = (int)$pdo->lastInsertId();
-    registrarSuceso($pdo, 'datarocketdominios', 'info',
+    registrarSuceso($pdo, 'datainfradominios', 'info',
         "Alta dominio #{$id} — \"{$p['dominio']}\"");
 
     handleGetOneDominio($pdo, $id);
 }
 
 function handleUpdateDominio(PDO $pdo, int $id, array $body): void {
-    $st = $pdo->prepare('SELECT ' . DRDO_COLS . ' FROM datarocket_dominios WHERE id = :id LIMIT 1');
+    $st = $pdo->prepare('SELECT ' . DIDO_COLS . ' FROM datainfra_dominios WHERE id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $prev = $st->fetch();
     if (!$prev) jsonError('Dominio no encontrado', 404);
@@ -250,7 +250,7 @@ function handleUpdateDominio(PDO $pdo, int $id, array $body): void {
     $p = sanitizePayloadDominio($body, false);
 
     if (array_key_exists('dominio', $body) && $p['dominio'] !== '' && $p['dominio'] !== $prev['dominio']) {
-        $st = $pdo->prepare('SELECT id FROM datarocket_dominios WHERE dominio = :d AND id <> :id LIMIT 1');
+        $st = $pdo->prepare('SELECT id FROM datainfra_dominios WHERE dominio = :d AND id <> :id LIMIT 1');
         $st->execute([':d' => $p['dominio'], ':id' => $id]);
         if ($st->fetch()) jsonError('Ya existe otro dominio con ese nombre.', 409);
     }
@@ -305,26 +305,26 @@ function handleUpdateDominio(PDO $pdo, int $id, array $body): void {
 
     if (empty($sets)) jsonError('No hay campos para actualizar.', 400);
 
-    $sql = 'UPDATE datarocket_dominios SET ' . implode(', ', $sets) . ' WHERE id = :id';
+    $sql = 'UPDATE datainfra_dominios SET ' . implode(', ', $sets) . ' WHERE id = :id';
     $st  = $pdo->prepare($sql);
     $st->execute($params);
 
-    registrarSuceso($pdo, 'datarocketdominios', 'info',
+    registrarSuceso($pdo, 'datainfradominios', 'info',
         "Modificacion dominio #{$id} — \"{$prev['dominio']}\"");
 
     handleGetOneDominio($pdo, $id);
 }
 
 function handleDeleteDominio(PDO $pdo, int $id): void {
-    $st = $pdo->prepare('SELECT dominio FROM datarocket_dominios WHERE id = :id LIMIT 1');
+    $st = $pdo->prepare('SELECT dominio FROM datainfra_dominios WHERE id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $prev = $st->fetch();
     if (!$prev) jsonError('Dominio no encontrado', 404);
 
-    $sd = $pdo->prepare('DELETE FROM datarocket_dominios WHERE id = :id');
+    $sd = $pdo->prepare('DELETE FROM datainfra_dominios WHERE id = :id');
     $sd->execute([':id' => $id]);
 
-    registrarSuceso($pdo, 'datarocketdominios', 'info',
+    registrarSuceso($pdo, 'datainfradominios', 'info',
         "Baja dominio #{$id} — \"{$prev['dominio']}\"");
 
     jsonOk(['id' => $id]);

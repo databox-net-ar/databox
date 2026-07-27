@@ -1,23 +1,23 @@
 <?php
-// api/datainfradominios_whois.php
-// Endpoint HTTP que refresca los datos WHOIS de un dominio de
-// `datainfradominios` y streamea el log al UI. La logica del scraper
-// vive en `lib/datainfradominios_whois.php` para poder reusarse tambien
-// desde el job `jobs/datainfradominios_actualizar_whois.php`.
+// api/datainfraendpoints_check.php
+// Endpoint HTTP que corre el health-check on-demand de un endpoint de
+// `datainfra_endpoints` y streamea el log al UI. La logica del check
+// vive en `lib/datainfraendpoints_check.php` para poder reusarse tambien
+// desde el job cron `jobs/datainfra_endpoints_check.php`.
 //
-// Uso: POST api/datainfradominios_whois.php  { id: 123 }
+// Uso: POST api/datainfraendpoints_check.php  { id: 123 }
 //
 // Formato de respuesta: text/plain con una linea por evento y una linea
-// final `___END___ <json>` con el resumen (ok, cambios, fuente, datos).
-// La UI lee el stream con fetch().body.getReader() y appendea cada linea
-// al <pre> del modal.
+// final `___END___ <json>` con el resumen (ok, estado, codigo, tiempo_ms,
+// error, ejecucion_id). La UI lee el stream con fetch().body.getReader()
+// y appendea cada linea al <pre> del modal.
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/sucesos.php';
-require_once __DIR__ . '/lib/datainfradominios_whois.php';
+require_once __DIR__ . '/lib/datainfraendpoints_check.php';
 
-requirePermission('datainfra.dominios.editar');
+requirePermission('datainfra.endpoints.editar');
 
 // -------- Configuracion de streaming --------
 @ini_set('output_buffering', '0');
@@ -30,7 +30,9 @@ header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-cache');
 header('X-Accel-Buffering: no');
 
-@set_time_limit(60);
+// Cota superior del script: el timeout del endpoint es <= 600s + margen
+// para persistencia + red del cliente. Con 640s cubrimos el peor caso.
+@set_time_limit(640);
 
 $log = function (string $msg): void {
     echo '[' . date('H:i:s') . '] ' . $msg . "\n";
@@ -52,12 +54,12 @@ try {
     $body = json_decode(file_get_contents('php://input'), true) ?: [];
     $id   = (int)($body['id'] ?? 0);
     if (!$id) {
-        $log('Falta el id del dominio.');
+        $log('Falta el id del endpoint.');
         $endJson(['ok' => false, 'error' => 'missing_id']);
     }
 
     $pdo = db();
-    $r   = didoActualizarWhois($pdo, $id, $log);
+    $r   = diepChequearEndpoint($pdo, $id, $log);
     $endJson($r);
 
 } catch (Throwable $e) {
