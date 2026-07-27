@@ -49,6 +49,12 @@ Body-in y body-out son JSON `utf-8` (`Content-Type: application/json`).
 
 ## Endpoints
 
+| Metodo | Path                              | Uso                                                       |
+| ------ | --------------------------------- | --------------------------------------------------------- |
+| POST   | `/v4/aws/mensajes`                | Encola un mensaje nuevo.                                  |
+| GET    | `/v4/aws/mensajes`                | Listado con filtros (query string). Incluye `resultado`.  |
+| GET    | `/v4/aws/mensajes?id=N`           | Estado actual del mensaje N (incluye `uuid` y `resultado`). |
+
 ### `POST /v4/aws/mensajes` — Encolar mensaje
 
 Encola un mail para que el sender worker (`cloud/jobs/aws_mensajes_enviar.php`)
@@ -109,6 +115,7 @@ Campos system-managed (los setea el encolador, no aceptar en el body): `fecha`,
   "ok": true,
   "data": {
     "id": 14512,
+    "uuid": null,
     "estado": "pendiente",
     "fecha": "2026-07-25 14:32:07",
     "encolado": "2026-07-25 14:32:07",
@@ -116,6 +123,11 @@ Campos system-managed (los setea el encolador, no aceptar en el body): `fecha`,
   }
 }
 ```
+
+`uuid` (SES MessageId) sale `null` al encolar — lo pobla el sender worker
+cuando SES acepta el mail. Se devuelve igual en el 201 para que el shape
+del POST sea identico al del GET; para leer el UUID final, consultar el
+mensaje con `GET ?id=N` una vez que el sender lo despache.
 
 **Errores tipicos:**
 
@@ -145,6 +157,77 @@ curl -X POST https://api.databox.net.ar/v4/aws/mensajes \
   }'
 ```
 
+### `GET /v4/aws/mensajes` — Listado
+
+Devuelve un listado paginado de mensajes de la cola / historial de AWS SES,
+filtrable por cualquier combinacion de columnas. **Es el endpoint natural
+para buscar por `resultado`** — asincronico, se puebla desde las
+notificaciones SNS ([/v4/aws/eventos](eventos.md)).
+
+**Query params (todos opcionales, combinables con `AND`):**
+
+| Parametro      | Tipo   | Notas                                                                                    |
+| -------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `codigo`       | int    | Filtra por `id` exacto.                                                                  |
+| `proyecto_id`  | int    | Match exacto contra `proyecto_id`.                                                       |
+| `canal_id`     | int    | Match exacto contra `canal_id`.                                                          |
+| `plantilla_id` | int    | Match exacto contra `plantilla_id`.                                                      |
+| `estado`       | string | Match exacto contra `estado` (`pendiente`, `enviando`, `enviado`, `anulado`, `error`).   |
+| `resultado`    | string | Match exacto contra `resultado` (`entregado`, `abierto`, `cliqueado`, `spam`, `rebotado`, `rechazado`, o vacio para "sin notificacion SNS todavia"). |
+| `uuid`         | string | Match exacto contra `uuid` (SES MessageId). Util para reconciliar contra logs de SES/SNS. |
+| `desde`        | date   | `YYYY-MM-DD`. Filtra `fecha >= '<desde> 00:00:00'`.                                      |
+| `hasta`        | date   | `YYYY-MM-DD`. Filtra `fecha <= '<hasta> 23:59:59'`.                                      |
+| `q`            | string | Busqueda difusa: `LIKE '%<q>%'` sobre `destinatario`, `destino`, `asunto`, `remitente`, `remite`, `tags`. |
+| `order_by`     | string | Default `id`. Whitelist: `id`, `fecha`, `proyecto_id`, `canal_id`, `plantilla_id`, `destino`, `asunto`, `estado`, `resultado`, `enviado`, `demora`. Valor fuera de la lista cae a `id`. |
+| `dir`          | string | `asc` \| `desc`. Default `desc`.                                                         |
+| `limite`       | int    | Default `100`. Clampeado a `[1, 1000]`.                                                  |
+
+**Respuesta (200):**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "total": 2,
+    "items": [
+      {
+        "id": 14513,
+        "uuid": "0100019a8b7c6d5e-...",
+        "canal_id": 3,
+        "proyecto_id": 1,
+        "plantilla_id": null,
+        "contacto_id": 148286,
+        "remite": "no-reply@databox.net.ar",
+        "remitente": "Databox",
+        "destino": "cliente@ejemplo.com",
+        "destinatario": "Juan Perez",
+        "asunto": "Bienvenido",
+        "estado": "enviado",
+        "estado_label": "Enviado",
+        "resultado": "rebotado",
+        "resultado_label": "Rebotado",
+        "error": null,
+        "fecha": "2026-07-25 14:32:07",
+        "encolado": "2026-07-25 14:32:07",
+        "programado": null,
+        "enviado": "2026-07-25 14:32:14",
+        "demora": 7
+      }
+    ]
+  }
+}
+```
+
+`total` es la cantidad de filas devueltas (post-`LIMIT`), no el total absoluto
+en la tabla — mismo criterio que el resto del `v4/`.
+
+**Ejemplo `curl`** — listar los ultimos 50 rebotes de un canal:
+
+```bash
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/aws/mensajes?canal_id=3&resultado=rebotado&limite=50&order_by=fecha&dir=desc"
+```
+
 ### `GET /v4/aws/mensajes?id=N` — Consultar estado
 
 Devuelve el estado actual del mensaje N encolado, para que el cliente
@@ -157,6 +240,7 @@ pueda hacer polling sin acceso directo a la BD.
   "ok": true,
   "data": {
     "id": 14512,
+    "uuid": "0100019a8b7c6d5e-abcdef12-3456-7890-abcd-ef1234567890-000000",
     "canal_id": 3,
     "remite": "no-reply@databox.net.ar",
     "remitente": "Databox",
@@ -165,6 +249,8 @@ pueda hacer polling sin acceso directo a la BD.
     "asunto": "Bienvenido",
     "estado": "enviado",
     "estado_label": "Enviado",
+    "resultado": "entregado",
+    "resultado_label": "Entregado",
     "error": null,
     "fecha": "2026-07-25 14:32:07",
     "encolado": "2026-07-25 14:32:07",
@@ -174,6 +260,12 @@ pueda hacer polling sin acceso directo a la BD.
   }
 }
 ```
+
+`uuid` es el **SES MessageId** que devuelve AWS cuando acepta el mail. Lo
+setea el sender worker en el momento del envio, asi que sale `null` mientras
+el mensaje esta `pendiente`/`enviando`, y se popula al pasar a `enviado`.
+Es la clave con la que las notificaciones asincronicas de SNS
+([/v4/aws/eventos](eventos.md)) cruzan de vuelta contra este mensaje.
 
 `estado` viene de la tabla `aws_mensajes` (varchar 20) y tiene 5 valores
 posibles alineados con el catalogo `estados.campo = 'aws_mensaje_estado'`:
@@ -188,11 +280,34 @@ posibles alineados con el catalogo `estados.campo = 'aws_mensaje_estado'`:
 
 `estado_label` se agrega por conveniencia — la fuente de verdad es `estado`.
 
+`resultado` es el **desenlace end-to-end** del mensaje una vez despachado —
+se popula de forma **asincronica** desde las notificaciones SNS de SES
+(webhook [/v4/aws/eventos](eventos.md)). Empieza en `null` (mientras SES no
+haya emitido ningun evento) y avanza segun los callbacks que llegan. Nunca
+hace downgrade: una vez que el mensaje llego a `rebotado` no vuelve a
+`entregado`. Los seis valores posibles (alineados con `estados.campo = 'aws_mensaje_resultado'`):
+
+| valor       | label     | Significado                                                                                        |
+| ----------- | --------- | -------------------------------------------------------------------------------------------------- |
+| `entregado` | Entregado | SES confirmo la entrega al MTA del destino (evento SNS `Delivery`).                                |
+| `abierto`   | Abierto   | El destinatario abrio el mail (evento `Open` — solo se registra la primera vez).                   |
+| `cliqueado` | Cliqueado | El destinatario hizo click en un link (evento `Click`).                                            |
+| `spam`      | Spam      | El destinatario marco el mail como spam (evento `Complaint`, terminal).                            |
+| `rebotado`  | Rebotado  | Bounce definitivo (mailbox lleno, direccion invalida, etc.). Evento `Bounce`, terminal.            |
+| `rechazado` | Rechazado | SES rechazo el envio antes de intentarlo (contenido, reputacion, etc.). Evento `Reject`, terminal. |
+
+`resultado_label` se agrega por conveniencia — la fuente de verdad es `resultado`.
+
+Recomendacion de polling: consultar cada 30-60s hasta que `estado` sea
+terminal (`enviado`/`error`/`anulado`). Para saber si efectivamente llego,
+seguir consultando hasta que `resultado` sea distinto de `null` (o dar por
+"entregado" pasado un timeout razonable si SES nunca devuelve evento — ese
+caso es raro pero puede pasar si el TopicArn de SNS no esta bien atado).
+
 **Errores:**
 
 | Codigo | Motivo                                            |
 | ------ | ------------------------------------------------- |
-| 400    | `id` ausente o no positivo.                       |
 | 401    | Bearer ausente o apikey invalida.                 |
 | 404    | Mensaje no encontrado.                            |
 

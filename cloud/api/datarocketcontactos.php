@@ -172,6 +172,17 @@ function digitsOnly(mixed $v): ?string {
     return $s === '' ? null : substr($s, 0, 255);
 }
 
+// Genera un UUID v4 RFC 4122 (36 chars con guiones) alineado con el formato
+// que ya persiste `datarocket_contactos.uuid` (regenerado por la migracion
+// 20260727_2000). Antes usabamos bin2hex(random_bytes(16)) que producia 32
+// chars hex sin guiones — no era UUID estandar.
+function uuidV4(): string {
+    $d = random_bytes(16);
+    $d[6] = chr((ord($d[6]) & 0x0f) | 0x40);
+    $d[8] = chr((ord($d[8]) & 0x3f) | 0x80);
+    return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($d), 4));
+}
+
 function nullableDateTime(mixed $v): ?string {
     $s = nullableStr($v);
     if ($s === null) return null;
@@ -222,7 +233,7 @@ function sanitizePayload(array $in): array {
 
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
-    $p['uuid'] = nullableStr($in['uuid'] ?? null, 255) ?? bin2hex(random_bytes(16));
+    $p['uuid'] = nullableStr($in['uuid'] ?? null, 255) ?? uuidV4();
     if ($p['registrado'] === null) {
         $p['registrado'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                            ->format('Y-m-d H:i:s');

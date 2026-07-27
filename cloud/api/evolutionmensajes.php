@@ -14,7 +14,7 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/evolution_mensajes.php';
 
-const EVO_MSG_COLS = "id, fecha, proyecto_id, canal_id, plantilla_id, contacto_id,
+const EVO_MSG_COLS = "id, uuid, fecha, proyecto_id, canal_id, plantilla_id, contacto_id,
                       remitente, remite, destinatario, destino, prioridad,
                       asunto, cuerpo, formato, adjunto, tags, estado, error,
                       encolado, programado, enviado, demora";

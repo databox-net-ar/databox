@@ -108,6 +108,10 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
                data-perm-prefix="plataformas.evolution.">
               <span class="nav-icon">💬</span> Evolution API
             </a>
+            <a href="#/telegram" class="nav-item nav-sub-item" data-route="/telegram"
+               data-perm-prefix="plataformas.telegram.">
+              <span class="nav-icon">💬</span> Telegram
+            </a>
             <a href="#/mercadopago" class="nav-item nav-sub-item" data-route="/mercadopago"
                data-perm-prefix="plataformas.mercadopago.">
               <span class="nav-icon">💳</span> Mercadopago

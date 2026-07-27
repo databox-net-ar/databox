@@ -4,7 +4,7 @@
 // (endpoint HTTP del ABM cloud, microservicio v4 de ingesta, futuros scripts CLI
 // o jobs manuales) debe pasar por encolarEvolutionMensaje() para garantizar las
 // mismas reglas de ingreso — sanitizacion, obligatorios, defaults y wake-on-demand
-// del cron sender (cloud/jobs/datarocket_mensajes_enviar.php).
+// del cron sender (cloud/jobs/evolution_mensajes_enviar.php).
 //
 // Espejo estructural de cloud/api/lib/aws_mensajes.php.
 //
@@ -23,6 +23,7 @@ require_once __DIR__ . '/datarocket_interacciones.php';
 // Mapa columna -> regla del sanitizador. Reusado por sanitizeEvoMsgPayload
 // (INSERT completo) y sanitizeEvoMsgPartialPayload (UPDATE parcial).
 const EVO_MSG_SANITIZERS = [
+    'uuid'         => 'str:255',
     'fecha'        => 'dt',
     'proyecto_id'  => 'int',
     'canal_id'     => 'int',
@@ -101,6 +102,15 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
     if ($p['formato']    === null) $p['formato']    = 'texto';
     if ($p['prioridad']  === null) $p['prioridad']  = 3;
 
+    // uuid: identificador propio del mensaje en formato UUID estandar RFC 4122
+    // (36 chars con guiones). Se genera aca si el caller no lo mando — asi
+    // toda insercion nueva queda con uuid poblado (mirror del backfill que
+    // aplico la migracion 20260727_2200_evolution_mensajes_uuid.sql sobre
+    // las filas historicas).
+    if ($p['uuid'] === null) {
+        $p['uuid'] = (string)$pdo->query('SELECT UUID()')->fetchColumn();
+    }
+
     // Resolucion de contacto_id a partir del destino (celular): buscamos en
     // `datarocket_contactos.celular` y, si no existe, damos de alta el contacto
     // antes de insertar el mensaje. Si el caller ya paso un contacto_id
@@ -113,16 +123,17 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
 
     $sql = "
         INSERT INTO evolution_mensajes
-            (fecha, proyecto_id, canal_id, plantilla_id, contacto_id, remitente,
+            (uuid, fecha, proyecto_id, canal_id, plantilla_id, contacto_id, remitente,
              remite, destinatario, destino, prioridad, asunto, cuerpo, formato,
              adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
-            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :contacto_id, :remitente,
+            (:uuid, :fecha, :proyecto_id, :canal_id, :plantilla_id, :contacto_id, :remitente,
              :remite, :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
+        ':uuid'         => $p['uuid'],
         ':fecha'        => $p['fecha'],
         ':proyecto_id'  => $p['proyecto_id'],
         ':canal_id'     => $p['canal_id'],

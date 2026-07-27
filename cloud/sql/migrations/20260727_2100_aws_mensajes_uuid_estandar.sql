@@ -1,0 +1,26 @@
+-- Regenera `aws_mensajes.uuid` con UUID() en TODAS las filas para unificar el
+-- formato al estandar RFC 4122 (36 chars con guiones). La columna se agrego en
+-- 20260725_2300_aws_mensajes_uuid_y_resultado.sql y hasta ahora convivian dos
+-- formatos:
+--   - NULL en las filas historicas previas al agregado de la columna.
+--   - MessageId de AWS SES (formato propio de SES, ~60 chars) en las filas
+--     enviadas despues de esa migracion, escrito por
+--     cloud/api/lib/mensajes_enviar.php al aceptar el envio via SMTP.
+--
+-- Aviso: sobrescribir el uuid de las filas que ya tenian MessageId de SES rompe
+-- la traza contra `aws_eventos.uuid` (webhooks SNS de bounce/complaint/open),
+-- decidido explicitamente en 2026-07-27 para dejar la tabla con un unico
+-- formato uniforme. El sender (`mensajes_enviar.php`) usa
+-- `uuid = COALESCE(:uuid, uuid)` en el UPDATE post-envio: la proxima vez que
+-- SES devuelva un MessageId para un mensaje YA enviado no se va a pisar,
+-- porque el sender solo corre sobre pendientes.
+--
+-- UUID() se re-evalua por cada fila en un UPDATE, por lo que un unico statement
+-- basta para asignar un valor distinto a cada registro. Funciona igual en
+-- MySQL 8 (dev) y MariaDB 10.11 (prod).
+--
+-- Nota: correr esta migracion de nuevo generaria uuids nuevos otra vez. Si en
+-- el futuro hace falta re-normalizar, crear una migracion nueva; no reaplicar
+-- esta.
+
+UPDATE `aws_mensajes` SET `uuid` = UUID();

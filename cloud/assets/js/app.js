@@ -341,7 +341,6 @@ const ROUTE_PERMS = {
   '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketinteracciones':    { perm:   'datarocket.interacciones.consultar' },
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
-  '/datarocketmensajes':       { perm:   'datarocket.mensajes.consultar' },
   '/datarocketplantillas':     { perm:   'sistemas.datarocket.plantillas.consultar' },
 
   '/datasale':                 { prefix: 'datasale.' },
@@ -365,6 +364,10 @@ const ROUTE_PERMS = {
   '/evolutioncanales':         { perm:   'plataformas.evolution.canales.consultar' },
   '/evolutioncontactos':       { perm:   'plataformas.evolution.contactos.consultar' },
   '/evolutionmensajes':        { perm:   'plataformas.evolution.mensajes.consultar' },
+
+  '/telegram':                 { prefix: 'plataformas.telegram.' },
+  '/telegrambots':             { perm:   'plataformas.telegram.bots.consultar' },
+  '/telegrammensajes':         { perm:   'plataformas.telegram.mensajes.consultar' },
 
   '/mercadopago':              { prefix: 'plataformas.mercadopago.' },
   '/mercadopagopagos':         { perm:   'plataformas.mercadopago.pagos.consultar' },
@@ -506,7 +509,7 @@ const PLATAFORMAS_GRUPOS = [
       { icono: '🖥️', titulo: 'DonWeb',        desc: 'Panel de hosting.',                  url: 'https://donweb.com/clientes/' },
       { icono: '🖥️', titulo: 'Porteden',      desc: 'Panel de hosting.',                  url: 'https://my.porteden.com/' },
       { icono: '🎮', titulo: 'Play Console',  desc: 'Google Play — publicación Android.', url: 'https://play.google.com/console/u/0/developers/6570590227569156980/inbox' },
-      { icono: '🐳', titulo: 'Portainer',     desc: 'Gestión de contenedores Docker.',    url: 'http://localhost:9000/#!/home' },
+      { icono: '🐳', titulo: 'Portainer',     desc: 'Gestión de contenedores Docker.',    url: 'https://portainer.databox.net.ar' },
     ],
   },
   {
@@ -559,6 +562,7 @@ const PLATAFORMAS_GRUPOS = [
   {
     id: 'marketing', label: 'Marketing', icono: '📢',
     items: [
+      { icono: '🧑‍💼', titulo: 'EspoCRM',              desc: 'CRM — gestión de clientes y leads.',   url: 'https://espocrm.databox.net.ar' },
       { icono: '📈', titulo: 'Google Ads',            desc: 'Campañas de Ads.',                     url: 'https://ads.google.com/aw/overview' },
       { icono: '📊', titulo: 'Google Analytics',      desc: 'Analítica web.',                       url: 'https://analytics.google.com/analytics/web/#/p402561541/reports/intelligenthome' },
       { icono: '🏬', titulo: 'Google Negocios',       desc: 'Perfiles de Empresa.',                 url: 'https://business.google.com/locations' },
@@ -8158,7 +8162,7 @@ function renderConsultaAwsCh(c) {
       ${card('Correo',   c.correo)}
       ${card('Servidor', c.servidor, false, true)}
       ${card('Usuario',  c.usuario, false, true)}
-      ${card('Contraseña', c.contrasena ? '••••••••' : null, false, true)}
+      ${card('Contraseña', c.contrasena, false, true)}
       ${card('Access Key', c.accesskey, false, true)}
       ${card('Secreto',    c.secreto ? '••••••••' : null, false, true)}
       ${card('Región',     c.region, false, true)}
@@ -17354,11 +17358,6 @@ route('/datarocket', async (mount) => {
     </div>
 
     <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/datarocketmensajes'">
-        <span class="tile-icon">✉️</span>
-        <span class="tile-title">Mensajes</span>
-        <span class="tile-desc">Envíos individuales con medio, canal, campaña, contacto, estado y resultado.</span>
-      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketplantillas'">
         <span class="tile-icon">📄</span>
         <span class="tile-title">Plantillas</span>
@@ -18206,831 +18205,6 @@ async function cambiarEnUsoDido(id, valor) {
   try {
     await apiSend(`${DIDO_API}?id=${id}`, 'PUT', { en_uso: valor });
     await cargarDido();
-  } catch (e) {
-    toast(e.message, { error: true });
-  }
-}
-
-// ------------------------- Vista: Datarocket > Mensajes (ABM) -------------------------
-const drMsgFiltrosDefaults = {
-  q: '', codigo: '', medio: '', proyecto: '', canal: '', campana: '', contacto: '',
-  estado: '', resultado: '', desde: '', hasta: '',
-  order_by: 'id', dir: 'desc', limite: 100,
-};
-const drMsgFiltros = { ...drMsgFiltrosDefaults };
-let drMsgBuscadorTimer   = null;
-let drMsgFiltrosSnapshot = null;
-
-const DR_MSG_MEDIO_MAP = {
-  C: { label: 'Correo',   icon: 'fa-envelope' },
-  W: { label: 'WhatsApp', icon: 'fa-whatsapp' },
-  S: { label: 'SMS',      icon: 'fa-comment-sms' },
-  T: { label: 'Telegram', icon: 'fa-telegram' },
-  P: { label: 'Push',     icon: 'fa-bell' },
-};
-const DR_MSG_FORMATO_MAP = {
-  T: 'Texto plano',
-  H: 'HTML',
-  M: 'Markdown',
-};
-const DR_MSG_PRIORIDAD_MAP = {
-  A: 'Alta',
-  N: 'Normal',
-  B: 'Baja',
-};
-
-function drMsgMedioBadge(m) {
-  if (m == null || m === '') return `<span class="badge badge-info">—</span>`;
-  const info = DR_MSG_MEDIO_MAP[m];
-  if (!info) return `<span class="badge badge-info">${esc(m)}</span>`;
-  return `<span class="badge badge-info"><i class="fa-solid ${info.icon}"></i> ${esc(info.label)}</span>`;
-}
-
-function drMsgEstadoBadge(e) {
-  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  const colorMap = {
-    P: 'badge-warn',   // Pendiente
-    E: 'badge-success',// Enviado
-    F: 'badge-danger', // Fallado
-    C: 'badge-danger', // Cancelado
-    R: 'badge-info',   // Reintento
-  };
-  const labelMap = {
-    P: 'Pendiente', E: 'Enviado', F: 'Fallado', C: 'Cancelado', R: 'Reintento',
-  };
-  const cls = colorMap[e] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(labelMap[e] || e)}</span>`;
-}
-
-function drMsgResultadoBadge(r) {
-  if (r == null || r === '') return `<span class="badge badge-info">—</span>`;
-  const colorMap = { O: 'badge-success', F: 'badge-danger', P: 'badge-warn' };
-  const labelMap = { O: 'OK', F: 'Fallo', P: 'Pendiente' };
-  const cls = colorMap[r] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(labelMap[r] || r)}</span>`;
-}
-
-function drMsgFmtDemora(seg) {
-  if (seg == null || seg === '' || isNaN(Number(seg))) return '—';
-  const n = Number(seg);
-  if (n < 60)    return `${n}s`;
-  if (n < 3600)  return `${Math.round(n / 60)}m`;
-  return `${(n / 3600).toFixed(1)}h`;
-}
-
-route('/datarocketmensajes', async (mount) => {
-  mount.innerHTML = `
-    <div class="section">
-      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
-        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
-                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
-          <i class="fa-solid fa-chevron-left"></i>
-        </button>
-        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
-          <div style="font-size:1.6rem;line-height:1">✉️</div>
-          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los mensajes de Datarocket son los envíos individuales de correo, WhatsApp,
-            SMS y demás medios que el motor genera a partir de las campañas y
-            plantillas, con su destinatario, cuerpo, estado y resultado del envío.
-          </div>
-        </div>
-      </div>
-
-      <div class="stats-bar" id="drMsgStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
-      </div>
-
-      <div class="toolbar">
-        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
-          <div class="search-wrap">
-            <input type="search" class="search-input" id="drMsgSearch"
-                   placeholder="🔍 Buscar destinatario, destino, asunto o remitente…">
-            <button class="search-clear" id="drMsgSearchClear" style="display:none">×</button>
-          </div>
-          <button class="btn btn-ghost btn-icon" id="drMsgFiltrosBtn" title="Filtros">
-            <i class="fa-solid fa-filter"></i>
-            <span class="btn-icon-badge" id="drMsgFiltrosBadge" style="display:none">0</span>
-          </button>
-          <button class="btn btn-ghost btn-icon" id="drMsgRefrescarBtn" title="Refrescar">
-            <i class="fa-solid fa-rotate"></i>
-          </button>
-        </div>
-        <div class="toolbar-right">
-          <button class="btn btn-primary" id="drMsgNuevoBtn">+ Nuevo mensaje</button>
-        </div>
-      </div>
-
-      <div class="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Fecha</th>
-              <th>Medio</th>
-              <th>Destinatario</th>
-              <th>Destino</th>
-              <th>Asunto</th>
-              <th>Estado</th>
-              <th>Resultado</th>
-              <th style="text-align:center">Acciones</th>
-            </tr>
-          </thead>
-          <tbody id="drMsgTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Menú contextual único de la sección -->
-    <div id="drMsgCtxMenu" class="ctx-menu" role="menu">
-      <button type="button" data-action="consultar" role="menuitem">
-        <i class="fa-solid fa-eye"></i><span>Consultar</span>
-      </button>
-      <div class="ctx-menu-sep"></div>
-      <button type="button" data-action="editar" role="menuitem">
-        <i class="fa-solid fa-pen"></i><span>Editar</span>
-      </button>
-      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
-        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
-      </button>
-    </div>
-
-    <!-- Modal de filtros -->
-    <div class="modal-backdrop" id="filtrosDrMsgBackdrop"
-         onclick="if(event.target===this)cancelarFiltrosDrMsg()">
-      <div class="modal" style="max-width:620px">
-        <div class="modal-header">
-          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrMsg()" title="Cerrar">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>Código</label>
-              <input type="number" id="fDrMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroDrMsg('codigo', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Medio</label>
-              <select id="fDrMsgMedio" onchange="onFiltroDrMsg('medio', this.value)">
-                <option value="">— Todos —</option>
-                <option value="C">Correo</option>
-                <option value="W">WhatsApp</option>
-                <option value="S">SMS</option>
-                <option value="T">Telegram</option>
-                <option value="P">Push</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Proyecto (ID)</label>
-              <input type="number" id="fDrMsgProyecto" min="1" oninput="onFiltroDrMsg('proyecto', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Canal (ID)</label>
-              <input type="number" id="fDrMsgCanal" min="1" oninput="onFiltroDrMsg('canal', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Campaña (ID)</label>
-              <input type="number" id="fDrMsgCampana" min="1" oninput="onFiltroDrMsg('campana', this.value)">
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Contacto (ID)</label>
-              <input type="number" id="fDrMsgContacto" min="1" oninput="onFiltroDrMsg('contacto', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Estado</label>
-              <select id="fDrMsgEstado" onchange="onFiltroDrMsg('estado', this.value)">
-                <option value="">— Todos —</option>
-                <option value="P">Pendiente</option>
-                <option value="E">Enviado</option>
-                <option value="F">Fallado</option>
-                <option value="C">Cancelado</option>
-                <option value="R">Reintento</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Resultado</label>
-              <select id="fDrMsgResultado" onchange="onFiltroDrMsg('resultado', this.value)">
-                <option value="">— Todos —</option>
-                <option value="O">OK</option>
-                <option value="F">Fallo</option>
-                <option value="P">Pendiente</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Desde</label>
-              <input type="date" id="fDrMsgDesde" onchange="onFiltroDrMsg('desde', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Hasta</label>
-              <input type="date" id="fDrMsgHasta" onchange="onFiltroDrMsg('hasta', this.value)">
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Límite</label>
-              <input type="number" id="fDrMsgLimite" min="1" max="1000" value="100" onchange="onFiltroDrMsg('limite', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Ordenar por</label>
-              <select id="fDrMsgOrderBy" onchange="onFiltroDrMsg('order_by', this.value)">
-                <option value="id">Código</option>
-                <option value="fecha">Fecha</option>
-                <option value="medio">Medio</option>
-                <option value="destinatario">Destinatario</option>
-                <option value="destino">Destino</option>
-                <option value="asunto">Asunto</option>
-                <option value="estado">Estado</option>
-                <option value="resultado">Resultado</option>
-                <option value="enviado">Enviado</option>
-                <option value="demora">Demora</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Dirección</label>
-              <select id="fDrMsgDir" onchange="onFiltroDrMsg('dir', this.value)">
-                <option value="desc">Descendente</option>
-                <option value="asc">Ascendente</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrMsg()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrMsg()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrMsg()">Aplicar</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  $('#drMsgNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrMsg(null));
-  $('#drMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrMsg());
-  $('#drMsgRefrescarBtn').addEventListener('click', () => cargarDrMsg());
-
-  const inp = $('#drMsgSearch');
-  const clr = $('#drMsgSearchClear');
-  inp.value = drMsgFiltros.q || '';
-  clr.style.display = inp.value ? '' : 'none';
-  inp.addEventListener('input', () => {
-    clr.style.display = inp.value ? '' : 'none';
-    drMsgFiltros.q = inp.value.trim();
-    clearTimeout(drMsgBuscadorTimer);
-    drMsgBuscadorTimer = setTimeout(() => { cargarDrMsg(); refrescarBadgeFiltrosDrMsg(); }, 250);
-  });
-  clr.addEventListener('click', () => {
-    inp.value = '';
-    clr.style.display = 'none';
-    drMsgFiltros.q = '';
-    cargarDrMsg();
-    refrescarBadgeFiltrosDrMsg();
-  });
-
-  // Acciones del menú contextual
-  $('#drMsgCtxMenu').addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-action]');
-    if (!b) return;
-    const data = getCtxMenuData();
-    if (!data) return;
-    cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarDrMsg(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionDrMsg(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarDrMsg(data.id);
-  });
-
-  // Clic en fila → consultar; clic en hamburguesa → menú
-  $('#drMsgTbody').addEventListener('click', (ev) => {
-    const ham = ev.target.closest('[data-act="menu"]');
-    if (ham) {
-      ev.stopPropagation();
-      const id = Number(ham.dataset.id);
-      const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#drMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
-      return;
-    }
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    abrirConsultarDrMsg(Number(tr.dataset.id));
-  });
-  $('#drMsgTbody').addEventListener('contextmenu', (ev) => {
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    ev.preventDefault();
-    abrirCtxMenu($('#drMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
-  });
-
-  refrescarBadgeFiltrosDrMsg();
-  await cargarDrMsg();
-}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Mensajes');
-
-async function cargarDrMsg() {
-  const tbody = $('#drMsgTbody');
-  if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
-
-  const qs = new URLSearchParams();
-  Object.entries(drMsgFiltros).forEach(([k, v]) => {
-    if (v !== '' && v != null) qs.set(k, v);
-  });
-  try {
-    const data = await apiGet('api/datarocketmensajes.php?' + qs.toString());
-    pintarStatsDrMsg(data.stats);
-    pintarTablaDrMsg(data.items || []);
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
-  }
-}
-
-function pintarStatsDrMsg(s) {
-  const cards = $$('#drMsgStats .stat-card .stat-value');
-  if (cards.length < 3) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.enviados);
-  cards[2].textContent = fmtNum(s.con_error);
-}
-
-function pintarTablaDrMsg(rows) {
-  const tbody = $('#drMsgTbody');
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin mensajes.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map((m) => `
-    <tr data-id="${m.id}" class="row-clickable">
-      <td class="td-id">#${esc(m.id)}</td>
-      <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
-      <td>${drMsgMedioBadge(m.medio)}</td>
-      <td class="td-nombre">${esc(m.destinatario || '—')}</td>
-      <td style="font-family:monospace">${esc(m.destino || '—')}</td>
-      <td>${esc(m.asunto || '—')}</td>
-      <td>${drMsgEstadoBadge(m.estado)}</td>
-      <td>${drMsgResultadoBadge(m.resultado)}</td>
-      <td style="text-align:center">
-        <div class="actions" style="justify-content:center">
-          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
-            <i class="fa-solid fa-bars"></i>
-          </button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
-}
-
-// ---- Modal de Filtros ----
-function onFiltroDrMsg(key, value) {
-  if (['medio', 'estado', 'resultado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
-    drMsgFiltros[key] = value;
-  } else if (['codigo', 'proyecto', 'canal', 'campana', 'contacto'].includes(key)) {
-    const v = String(value).trim();
-    drMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
-  } else if (key === 'limite') {
-    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
-    drMsgFiltros.limite = n;
-  } else {
-    drMsgFiltros[key] = value;
-  }
-  refrescarBadgeFiltrosDrMsg();
-  cargarDrMsg();
-}
-
-function refrescarBadgeFiltrosDrMsg() {
-  const btn   = $('#drMsgFiltrosBtn');
-  const badge = $('#drMsgFiltrosBadge');
-  if (!btn || !badge) return;
-  let count = 0;
-  for (const k of Object.keys(drMsgFiltrosDefaults)) {
-    if (k === 'q') continue;
-    if (String(drMsgFiltros[k]) !== String(drMsgFiltrosDefaults[k])) count++;
-  }
-  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
-  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
-}
-
-function sincronizarControlesFiltrosDrMsg() {
-  const f = drMsgFiltros;
-  $('#fDrMsgCodigo').value    = f.codigo;
-  $('#fDrMsgMedio').value     = f.medio;
-  $('#fDrMsgProyecto').value  = f.proyecto;
-  $('#fDrMsgCanal').value     = f.canal;
-  $('#fDrMsgCampana').value   = f.campana;
-  $('#fDrMsgContacto').value  = f.contacto;
-  $('#fDrMsgEstado').value    = f.estado;
-  $('#fDrMsgResultado').value = f.resultado;
-  $('#fDrMsgDesde').value     = f.desde;
-  $('#fDrMsgHasta').value     = f.hasta;
-  $('#fDrMsgLimite').value    = f.limite;
-  $('#fDrMsgOrderBy').value   = f.order_by;
-  $('#fDrMsgDir').value       = f.dir;
-}
-
-function abrirModalFiltrosDrMsg() {
-  drMsgFiltrosSnapshot = { ...drMsgFiltros };
-  sincronizarControlesFiltrosDrMsg();
-  $('#filtrosDrMsgBackdrop').classList.add('open');
-}
-
-function cerrarModalFiltrosDrMsg() {
-  $('#filtrosDrMsgBackdrop').classList.remove('open');
-}
-
-function cancelarFiltrosDrMsg() {
-  if (drMsgFiltrosSnapshot) {
-    Object.assign(drMsgFiltros, drMsgFiltrosSnapshot);
-    refrescarBadgeFiltrosDrMsg();
-    cargarDrMsg();
-  }
-  cerrarModalFiltrosDrMsg();
-}
-
-function limpiarFiltrosDrMsg() {
-  Object.assign(drMsgFiltros, drMsgFiltrosDefaults);
-  drMsgFiltros.q = $('#drMsgSearch')?.value.trim() || '';
-  sincronizarControlesFiltrosDrMsg();
-  refrescarBadgeFiltrosDrMsg();
-  cargarDrMsg();
-}
-
-// Exponer para los onclick del HTML
-window.onFiltroDrMsg           = onFiltroDrMsg;
-window.cancelarFiltrosDrMsg    = cancelarFiltrosDrMsg;
-window.limpiarFiltrosDrMsg     = limpiarFiltrosDrMsg;
-window.cerrarModalFiltrosDrMsg = cerrarModalFiltrosDrMsg;
-
-// ---- Modal Consultar ----
-async function abrirConsultarDrMsg(id) {
-  openModal(`
-    <div class="modal" style="width:80vw;max-width:1200px">
-      <div class="modal-header">
-        <div class="modal-title">Mensaje <span class="modal-subtitle">#${id}</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
-    </div>
-  `);
-  $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrMsg(id); }
-  });
-
-  try {
-    const m = await apiGet(`api/datarocketmensajes.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaDrMsg(m);
-  } catch (e) {
-    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-  }
-}
-
-function renderConsultaDrMsg(m) {
-  const card = (label, value, full = false, isCode = false) => {
-    const empty = value == null || value === '';
-    const inner = empty ? 'Sin dato'
-                : isCode ? `<code>${esc(value)}</code>`
-                : esc(value);
-    return `
-      <div class="data-row${full ? ' full' : ''}">
-        <span class="data-label">${esc(label)}</span>
-        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
-      </div>`;
-  };
-
-  const seccion = (titulo) => `
-    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
-      ${esc(titulo)}
-    </div>`;
-
-  const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
-    ? (m.formato === 'H'
-        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
-        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
-    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
-
-  return `
-    <!-- Encabezado -->
-    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
-      <div>
-        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">${esc(m.destinatario || '—')}</span>
-          <span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(m.destino || '')}</span>
-        </div>
-        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
-        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)} · UUID <code>${esc(m.uuid || '—')}</code></div>
-      </div>
-      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-        <div>${drMsgMedioBadge(m.medio)}</div>
-        <div>${drMsgEstadoBadge(m.estado)} ${drMsgResultadoBadge(m.resultado)}</div>
-        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
-          <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
-          <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
-        </div>
-      </div>
-    </div>
-
-    ${seccion('Cuerpo del mensaje')}
-    ${cuerpoHtml}
-
-    ${seccion('Remitente y destinatario')}
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Remitente',    m.remitente)}
-      ${card('Remite',       m.remite, false, true)}
-      ${card('Destinatario', m.destinatario)}
-      ${card('Destino',      m.destino, false, true)}
-    </dl>
-
-    ${seccion('Contexto de envío')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Proyecto',    m.proyecto)}
-      ${card('Canal',       m.canal)}
-      ${card('Servicio',    m.servicio)}
-      ${card('Campaña',     m.campana)}
-      ${card('Plantilla',   m.plantilla)}
-      ${card('Contacto',    m.contacto)}
-      ${card('Suscripción', m.suscripcion)}
-      ${card('Prioridad',   DR_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
-      ${card('Formato',     DR_MSG_FORMATO_MAP[m.formato]     || m.formato)}
-    </dl>
-
-    ${seccion('Tiempos y resultado')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Fecha',        fmtFecha(m.fecha))}
-      ${card('Transmitido',  fmtFecha(m.transmitido))}
-      ${card('Enviado',      fmtFecha(m.enviado))}
-      ${card('Demora',       drMsgFmtDemora(m.demora))}
-      ${card('Estado',       m.estado)}
-      ${card('Resultado',    m.resultado)}
-    </dl>
-
-    ${seccion('Media y errores')}
-    <dl class="data-list" style="grid-template-columns:1fr">
-      ${card('Media',  m.media, true, true)}
-      ${card('Error',  m.error, true)}
-    </dl>
-  `;
-}
-
-// ---- Modal Alta / Edición ----
-async function abrirAltaEdicionDrMsg(id) {
-  const esEdicion = id != null;
-  openModal(`
-    <div class="modal modal-wide">
-      <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar mensaje <span class="modal-subtitle">#${id}</span>` : 'Nuevo mensaje'}</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formDrMsgHtml({})}
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
-      </div>
-    </div>
-  `);
-
-  if (esEdicion) {
-    try {
-      const m = await apiGet(`api/datarocketmensajes.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formDrMsgHtml(m);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
-  }
-
-  $('#modalRoot').addEventListener('click', async (ev) => {
-    const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarDrMsg(id, a);
-  });
-}
-
-function formDrMsgHtml(m) {
-  const v   = (k) => esc(m?.[k] ?? '');
-  const sel = (k, val) => (m?.[k] ?? '') === val ? 'selected' : '';
-  const dt  = (k) => {
-    const raw = m?.[k];
-    if (!raw) return '';
-    return esc(String(raw).replace(' ', 'T').slice(0, 16));
-  };
-  return `
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Fecha</label>
-        <input type="datetime-local" id="drmFecha" value="${dt('fecha')}">
-      </div>
-      <div class="form-group">
-        <label>Medio</label>
-        <select id="drmMedio">
-          <option value=""  ${sel('medio','')}>—</option>
-          <option value="C" ${sel('medio','C')}>Correo</option>
-          <option value="W" ${sel('medio','W')}>WhatsApp</option>
-          <option value="S" ${sel('medio','S')}>SMS</option>
-          <option value="T" ${sel('medio','T')}>Telegram</option>
-          <option value="P" ${sel('medio','P')}>Push</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Prioridad</label>
-        <select id="drmPrioridad">
-          <option value=""  ${sel('prioridad','')}>—</option>
-          <option value="A" ${sel('prioridad','A')}>Alta</option>
-          <option value="N" ${sel('prioridad','N')}>Normal</option>
-          <option value="B" ${sel('prioridad','B')}>Baja</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="drmProyecto" min="1" value="${v('proyecto')}">
-      </div>
-      <div class="form-group">
-        <label>Servicio (ID)</label>
-        <input type="number" id="drmServicio" min="1" value="${v('servicio')}">
-      </div>
-      <div class="form-group">
-        <label>Canal (ID)</label>
-        <input type="number" id="drmCanal" min="1" value="${v('canal')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Campaña (ID)</label>
-        <input type="number" id="drmCampana" min="1" value="${v('campana')}">
-      </div>
-      <div class="form-group">
-        <label>Plantilla (ID)</label>
-        <input type="number" id="drmPlantilla" min="1" value="${v('plantilla')}">
-      </div>
-      <div class="form-group">
-        <label>Suscripción (ID)</label>
-        <input type="number" id="drmSuscripcion" min="1" value="${v('suscripcion')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Contacto (ID)</label>
-      <input type="number" id="drmContacto" min="1" value="${v('contacto')}">
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Remitente</label>
-        <input type="text" id="drmRemitente" maxlength="255" value="${v('remitente')}">
-      </div>
-      <div class="form-group">
-        <label>Remite</label>
-        <input type="text" id="drmRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Destinatario</label>
-        <input type="text" id="drmDestinatario" maxlength="255" value="${v('destinatario')}">
-      </div>
-      <div class="form-group">
-        <label>Destino</label>
-        <input type="text" id="drmDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Asunto</label>
-      <input type="text" id="drmAsunto" maxlength="500" value="${v('asunto')}">
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Formato</label>
-        <select id="drmFormato">
-          <option value=""  ${sel('formato','')}>—</option>
-          <option value="T" ${sel('formato','T')}>Texto plano</option>
-          <option value="H" ${sel('formato','H')}>HTML</option>
-          <option value="M" ${sel('formato','M')}>Markdown</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Media (URL/JSON)</label>
-        <input type="text" id="drmMedia" maxlength="1000" value="${v('media')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Cuerpo</label>
-      <textarea id="drmCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="drmEstado">
-          <option value=""  ${sel('estado','')}>—</option>
-          <option value="P" ${sel('estado','P')}>Pendiente</option>
-          <option value="E" ${sel('estado','E')}>Enviado</option>
-          <option value="F" ${sel('estado','F')}>Fallado</option>
-          <option value="C" ${sel('estado','C')}>Cancelado</option>
-          <option value="R" ${sel('estado','R')}>Reintento</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Resultado</label>
-        <select id="drmResultado">
-          <option value=""  ${sel('resultado','')}>—</option>
-          <option value="O" ${sel('resultado','O')}>OK</option>
-          <option value="F" ${sel('resultado','F')}>Fallo</option>
-          <option value="P" ${sel('resultado','P')}>Pendiente</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Demora (seg.)</label>
-        <input type="number" id="drmDemora" min="0" value="${v('demora')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Error</label>
-      <textarea id="drmErrorTxt" rows="2" maxlength="1000">${v('error')}</textarea>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Transmitido</label>
-        <input type="datetime-local" id="drmTransmitido" value="${dt('transmitido')}">
-      </div>
-      <div class="form-group">
-        <label>Enviado</label>
-        <input type="datetime-local" id="drmEnviado" value="${dt('enviado')}">
-      </div>
-    </div>
-    <div class="field-error" id="drmFormError" style="display:none"></div>
-  `;
-}
-
-async function guardarDrMsg(id, btn) {
-  const err = $('#drmFormError');
-  err.style.display = 'none';
-
-  const payload = {
-    fecha:        $('#drmFecha').value || null,
-    medio:        $('#drmMedio').value,
-    prioridad:    $('#drmPrioridad').value,
-    proyecto:     $('#drmProyecto').value,
-    servicio:     $('#drmServicio').value,
-    canal:        $('#drmCanal').value,
-    campana:      $('#drmCampana').value,
-    plantilla:    $('#drmPlantilla').value,
-    suscripcion:  $('#drmSuscripcion').value,
-    contacto:     $('#drmContacto').value,
-    remitente:    $('#drmRemitente').value.trim(),
-    remite:       $('#drmRemite').value.trim(),
-    destinatario: $('#drmDestinatario').value.trim(),
-    destino:      $('#drmDestino').value.trim(),
-    asunto:       $('#drmAsunto').value.trim(),
-    formato:      $('#drmFormato').value,
-    media:        $('#drmMedia').value.trim(),
-    cuerpo:       $('#drmCuerpo').value,
-    estado:       $('#drmEstado').value,
-    resultado:    $('#drmResultado').value,
-    demora:       $('#drmDemora').value,
-    error:        $('#drmErrorTxt').value,
-    transmitido:  $('#drmTransmitido').value || null,
-    enviado:      $('#drmEnviado').value || null,
-  };
-
-  btn.disabled = true;
-  try {
-    if (id == null) {
-      await apiSend('api/datarocketmensajes.php', 'POST', payload);
-      toast('Mensaje creado.');
-    } else {
-      await apiSend(`api/datarocketmensajes.php?id=${id}`, 'PUT', payload);
-      toast('Mensaje actualizado.');
-    }
-    closeModal();
-    cargarDrMsg();
-  } catch (e) {
-    err.textContent = e.message;
-    err.style.display = '';
-    btn.disabled = false;
-  }
-}
-
-async function eliminarDrMsg(id) {
-  const ok = await confirmar({
-    title: 'Eliminar mensaje',
-    message: `Se eliminará el mensaje #${id}. Esta acción no se puede deshacer.`,
-    confirmText: 'Eliminar',
-  });
-  if (!ok) return;
-  try {
-    await apiSend(`api/datarocketmensajes.php?id=${id}`, 'DELETE');
-    toast('Mensaje eliminado.');
-    cargarDrMsg();
   } catch (e) {
     toast(e.message, { error: true });
   }
@@ -20294,21 +19468,46 @@ function renderConsultaDrInt(a) {
       </div>`;
   };
 
-  const contactoTxt = a.contacto_nombre
-    ? `${a.contacto_nombre} (#${a.contacto_id})`
-    : `#${a.contacto_id}`;
-  const tipoInfo    = DR_INT_TIPO_MAP[a.tipo];
-  const tipoTxt     = tipoInfo ? tipoInfo.label : (a.tipo || '—');
+  // Variante con HTML crudo (no escapa el value) — usada para renderizar
+  // enlaces a los modales de Consultar contacto / mensaje.
+  const cardHtml = (label, valueHtml, full = false) => `
+    <div class="data-row${full ? ' full' : ''}">
+      <span class="data-label">${esc(label)}</span>
+      <span class="data-value">${valueHtml}</span>
+    </div>`;
+
+  const linkStyle = 'color:var(--primary);cursor:pointer;text-decoration:underline';
+
+  // Contacto: nombre clickeable que abre el modal de Consultar contacto.
+  // Si no hay nombre mostramos "#id" y linkeamos igual.
+  const contactoNombre = a.contacto_nombre || `#${a.contacto_id}`;
+  const contactoHtml   = `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); abrirConsultarDrCt(${Number(a.contacto_id)})">${esc(contactoNombre)}</a>`
+                       + (a.contacto_nombre ? ` <span class="muted">(#${esc(a.contacto_id)})</span>` : '');
+
+  // Mensaje: "#id" clickeable que abre el modal de Consultar mensaje AWS o
+  // Evolution segun el `origen`. Si el origen es desconocido o no hay
+  // mensaje_id, cae al render read-only sin link.
+  const abridoresMsg = {
+    aws_mensajes:       'abrirConsultarAwsMsg',
+    evolution_mensajes: 'abrirConsultarEvoMsg',
+  };
+  const abridor = abridoresMsg[a.origen];
+  const mensajeHtml = (a.mensaje_id != null && abridor)
+    ? `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); ${abridor}(${Number(a.mensaje_id)})">#${esc(a.mensaje_id)}</a>`
+    : (a.mensaje_id != null ? `#${esc(a.mensaje_id)}` : '<span class="muted">Sin dato</span>');
+
+  const tipoInfo = DR_INT_TIPO_MAP[a.tipo];
+  const tipoTxt  = tipoInfo ? tipoInfo.label : (a.tipo || '—');
 
   return `
     <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
       ${card('Código',      '#' + a.id)}
       ${card('Fecha',       fmtFechaLarga(a.fecha))}
-      ${card('Contacto',    contactoTxt)}
+      ${cardHtml('Contacto', contactoHtml)}
       ${card('Correo',      a.contacto_correo)}
       ${card('Tipo',        tipoTxt)}
       ${card('Origen',      a.origen, false, true)}
-      ${card('Mensaje ID',  a.mensaje_id != null ? '#' + a.mensaje_id : null)}
+      ${cardHtml('Mensaje', mensajeHtml)}
       ${card('Descripción', a.descripcion, true)}
     </dl>
   `;
@@ -22470,7 +21669,7 @@ let evoMsgBuscadorTimer   = null;
 let evoMsgFiltrosSnapshot = null;
 
 // Alineado con las filas seedeadas en `estados` (campo=evolution_mensaje_formato)
-// y con el switch de `evolutionMensajeEnviar` en cloud/jobs/datarocket_mensajes_enviar.php.
+// y con el switch de `evolutionMensajeEnviar` en cloud/jobs/evolution_mensajes_enviar.php.
 // Ver migration 20260724_2300.
 const EVO_MSG_FORMATO_MAP = {
   texto:     'Texto',
@@ -23048,6 +22247,7 @@ function renderConsultaEvoMsg(m) {
         <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
         ${m.contacto_id ? `<div style="font-size:.75rem;color:var(--muted);margin-top:4px"><i class="fa-solid fa-address-card" style="opacity:.7;margin-right:4px"></i>Contacto: ${esc(m.contacto_nombre || m.contacto_celular || 'sin nombre')} <span style="opacity:.7">(#${esc(m.contacto_id)})</span></div>` : ''}
+        ${m.uuid ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all"><span>uuid:</span> ${esc(m.uuid)}</div>` : ''}
       </div>
       <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
         <div>${evoMsgEstadoBadge(m.estado)}</div>
@@ -24697,6 +23897,618 @@ async function eliminarEvoCt(id) {
     await apiSend(`api/evolutioncontactos.php?id=${id}`, 'DELETE');
     toast('Vetado eliminado.');
     cargarEvoCt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Telegram (landing) -------------------------
+route('/telegram', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Telegram</div>
+      <div class="page-subtitle">Motor de Telegram: bots dados de alta y mensajes enviados.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/telegrambots'">
+        <span class="tile-icon">🤖</span>
+        <span class="tile-title">Bots</span>
+        <span class="tile-desc">Los bots de Telegram dados de alta en @BotFather con su token, chat destino por defecto y estado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/telegrammensajes'">
+        <span class="tile-icon">✉️</span>
+        <span class="tile-title">Mensajes</span>
+        <span class="tile-desc">Cada envío individual procesado por Telegram, con destinatario, cuerpo, estado y tiempo de entrega.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://t.me/BotFather', '_blank', 'noopener')">
+        <span class="tile-icon">🔗</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre @BotFather en una pestaña nueva para dar de alta o administrar bots.</span>
+      </button>
+    </div>
+  `;
+}, 'Telegram');
+
+// ------------------------- Vista: Telegram > Mensajes (placeholder) -------------------------
+// Preparada para cuando se implemente el ABM completo (motor de envio +
+// ABM tipo evolutionmensajes). La ruta y el permiso ya existen para que el
+// permiso se pueda asignar y el sidebar/hub no rompa.
+route('/telegrammensajes', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Telegram" onclick="location.hash='#/telegram'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">✉️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los mensajes de Telegram son cada envío individual procesado por un bot, con destinatario, cuerpo, estado y tiempo de entrega. El ABM completo estará disponible en una próxima versión.
+          </div>
+        </div>
+      </div>
+      <div class="table-empty" style="padding:60px 20px;text-align:center">
+        <div style="font-size:2.4rem;margin-bottom:8px">🚧</div>
+        <div style="font-weight:600;margin-bottom:4px">Próximamente</div>
+        <div style="color:var(--muted);font-size:.88rem">
+          La tabla <code>telegram_mensajes</code> ya está creada. El ABM del listado se agregará junto con el motor de envío.
+        </div>
+      </div>
+    </div>
+  `;
+}, 'Telegram &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Mensajes');
+
+// ------------------------- Vista: Telegram > Bots (ABM) -------------------------
+const tgBotFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', habilitado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const tgBotFiltros = { ...tgBotFiltrosDefaults };
+let tgBotBuscadorTimer   = null;
+let tgBotFiltrosSnapshot = null;
+let tgBotCache           = []; // ultima respuesta del listado, para lookup del ctx-menu
+
+function tgBotHabilitadoBadge(h) {
+  if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
+  if (h === '0') return `<span class="badge badge-danger">Deshabilitado</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+function tgBotHabilitadoDot(h) {
+  const color = h === '1' ? '#22c55e' : h === '0' ? '#ef4444' : '#6b7280';
+  const title = h === '1' ? 'Habilitado' : h === '0' ? 'Deshabilitado' : 'Sin definir';
+  return `<span title="${title}" aria-label="${title}"
+                style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${color}"></span>`;
+}
+
+route('/telegrambots', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Telegram" onclick="location.hash='#/telegram'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🤖</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los bots de Telegram son cada bot dado de alta en @BotFather, con su token, chat destino por defecto y estado de habilitación para el motor de envío.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="tgBotStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Habilitados</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="tgBotSearch"
+                   placeholder="🔍 Buscar nombre, username, token o chat_id…">
+            <button class="search-clear" id="tgBotSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="tgBotFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="tgBotFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="tgBotRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="tgBotNuevoBtn">+ Nuevo bot</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <!-- Columna "Código" oculta a proposito: el id sigue disponible
+                   en el filtro por Codigo y en el header del modal Consultar. -->
+              <th>Nombre</th>
+              <th>Username</th>
+              <th>Chat ID</th>
+              <th>Proyecto</th>
+              <th>Actualizado</th>
+              <th style="text-align:center">Habilitado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="tgBotTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tgBotCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="toggle-habilitado" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Deshabilitar</span>
+      </button>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosTgBotBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosTgBot()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosTgBot()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fTgBotCodigo" min="1" placeholder="ID …" oninput="onFiltroTgBot('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fTgBotProyecto" min="1" oninput="onFiltroTgBot('proyecto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Habilitado</label>
+              <select id="fTgBotHabilitado" onchange="onFiltroTgBot('habilitado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Habilitados</option>
+                <option value="0">Deshabilitados</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fTgBotLimite" min="1" max="1000" value="100" onchange="onFiltroTgBot('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fTgBotOrderBy" onchange="onFiltroTgBot('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="username">Username</option>
+                <option value="proyecto">Proyecto</option>
+                <option value="habilitado">Habilitado</option>
+                <option value="actualizado">Actualizado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fTgBotDir" onchange="onFiltroTgBot('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosTgBot()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosTgBot()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosTgBot()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#tgBotNuevoBtn').addEventListener('click', () => abrirAltaEdicionTgBot(null));
+  $('#tgBotFiltrosBtn').addEventListener('click', () => abrirModalFiltrosTgBot());
+  $('#tgBotRefrescarBtn').addEventListener('click', () => cargarTgBot());
+
+  const inp = $('#tgBotSearch');
+  const clr = $('#tgBotSearchClear');
+  inp.value = tgBotFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    tgBotFiltros.q = inp.value.trim();
+    clearTimeout(tgBotBuscadorTimer);
+    tgBotBuscadorTimer = setTimeout(() => { cargarTgBot(); refrescarBadgeFiltrosTgBot(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    tgBotFiltros.q = '';
+    cargarTgBot();
+    refrescarBadgeFiltrosTgBot();
+  });
+
+  $('#tgBotCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')         abrirConsultarTgBot(data.id);
+    if (b.dataset.action === 'toggle-habilitado') toggleHabilitadoTgBot(data.id);
+    if (b.dataset.action === 'editar')            abrirAltaEdicionTgBot(data.id);
+    if (b.dataset.action === 'eliminar')          eliminarTgBot(data.id);
+  });
+
+  $('#tgBotTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirMenuContextoTgBot(id, r.right - 190, r.bottom + 4);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarTgBot(Number(tr.dataset.id));
+  });
+  $('#tgBotTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirMenuContextoTgBot(Number(tr.dataset.id), ev.clientX, ev.clientY);
+  });
+
+  refrescarBadgeFiltrosTgBot();
+  await cargarTgBot();
+}, 'Telegram &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Bots');
+
+async function cargarTgBot() {
+  const tbody = $('#tgBotTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(tgBotFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/telegrambots.php?' + qs.toString());
+    tgBotCache = data.items || [];
+    pintarStatsTgBot(data.stats);
+    pintarTablaTgBot(tgBotCache);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsTgBot(s) {
+  const cards = $$('#tgBotStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.habilitados);
+}
+
+function pintarTablaTgBot(rows) {
+  const tbody = $('#tgBotTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin bots.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td style="font-family:monospace">${c.username ? '@' + esc(c.username) : '—'}</td>
+      <td style="font-family:monospace">${esc(c.chat_id || '—')}</td>
+      <td>${esc(c.proyecto ?? '—')}</td>
+      <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
+      <td style="text-align:center">${tgBotHabilitadoDot(c.habilitado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroTgBot(key, value) {
+  if (['habilitado', 'order_by', 'dir'].includes(key)) {
+    tgBotFiltros[key] = value;
+  } else if (['codigo', 'proyecto'].includes(key)) {
+    const v = String(value).trim();
+    tgBotFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    tgBotFiltros.limite = n;
+  } else {
+    tgBotFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosTgBot();
+  cargarTgBot();
+}
+
+function refrescarBadgeFiltrosTgBot() {
+  const btn   = $('#tgBotFiltrosBtn');
+  const badge = $('#tgBotFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(tgBotFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(tgBotFiltros[k]) !== String(tgBotFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosTgBot() {
+  const f = tgBotFiltros;
+  $('#fTgBotCodigo').value     = f.codigo;
+  $('#fTgBotProyecto').value   = f.proyecto;
+  $('#fTgBotHabilitado').value = f.habilitado;
+  $('#fTgBotLimite').value     = f.limite;
+  $('#fTgBotOrderBy').value    = f.order_by;
+  $('#fTgBotDir').value        = f.dir;
+}
+
+function abrirModalFiltrosTgBot() {
+  tgBotFiltrosSnapshot = { ...tgBotFiltros };
+  sincronizarControlesFiltrosTgBot();
+  $('#filtrosTgBotBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosTgBot() { $('#filtrosTgBotBackdrop').classList.remove('open'); }
+function cancelarFiltrosTgBot() {
+  if (tgBotFiltrosSnapshot) {
+    Object.assign(tgBotFiltros, tgBotFiltrosSnapshot);
+    refrescarBadgeFiltrosTgBot();
+    cargarTgBot();
+  }
+  cerrarModalFiltrosTgBot();
+}
+function limpiarFiltrosTgBot() {
+  Object.assign(tgBotFiltros, tgBotFiltrosDefaults);
+  tgBotFiltros.q = $('#tgBotSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosTgBot();
+  refrescarBadgeFiltrosTgBot();
+  cargarTgBot();
+}
+window.onFiltroTgBot           = onFiltroTgBot;
+window.cancelarFiltrosTgBot    = cancelarFiltrosTgBot;
+window.limpiarFiltrosTgBot     = limpiarFiltrosTgBot;
+window.cerrarModalFiltrosTgBot = cerrarModalFiltrosTgBot;
+
+async function abrirConsultarTgBot(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:900px">
+      <div class="modal-header">
+        <div class="modal-title">Bot de Telegram <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionTgBot(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/telegrambots.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaTgBot(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaTgBot(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(c.id)} · Slug <code>${esc(c.slug || '—')}</code>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${tgBotHabilitadoBadge(c.habilitado)}
+      </div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',          c.nombre)}
+      ${card('Proyecto',        c.proyecto)}
+      ${card('Username',        c.username ? '@' + c.username : null, false, true)}
+      ${card('Chat ID destino', c.chat_id, false, true)}
+      ${card('Token',           c.token ? '••••••••' : null, true, true)}
+      ${card('Actualizado',     c.actualizado)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionTgBot(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar bot <span class="modal-subtitle">#${id}</span>` : 'Nuevo bot'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${esEdicion
+          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
+          : formTgBotHtml({})}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  if (esEdicion) {
+    try {
+      const c = await apiGet(`api/telegrambots.php?id=${id}`);
+      $('#modalRoot .modal-body').innerHTML = formTgBotHtml(c);
+    } catch (e) {
+      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarTgBot(id, a);
+  });
+}
+
+function formTgBotHtml(c) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="tgBotNombre" maxlength="255" value="${v('nombre')}"
+               placeholder="ej. Bot de soporte">
+      </div>
+      <div class="form-group">
+        <label>Proyecto (ID)</label>
+        <input type="number" id="tgBotProyecto" min="1" value="${v('proyecto')}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="tgBotUsername" maxlength="100" value="${v('username')}"
+               placeholder="mi_bot (sin @)" style="font-family:monospace" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Chat ID destino por defecto</label>
+        <input type="text" id="tgBotChatId" maxlength="50" value="${v('chat_id')}"
+               placeholder="ej. 123456789 o -1001234567890" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Token (BotFather)</label>
+      <input type="text" id="tgBotToken" maxlength="255" value="${v('token')}"
+             placeholder="123456:AAE…" style="font-family:monospace" autocomplete="off">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Habilitado</label>
+        <select id="tgBotHabilitado">
+          <option value=""  ${sel('habilitado','')}>—</option>
+          <option value="1" ${sel('habilitado','1')}>Habilitado</option>
+          <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
+        </select>
+      </div>
+    </div>
+    <div class="field-error" id="tgBotFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarTgBot(id, btn) {
+  const err = $('#tgBotFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:     $('#tgBotNombre').value.trim(),
+    proyecto:   $('#tgBotProyecto').value,
+    username:   $('#tgBotUsername').value.trim(),
+    token:      $('#tgBotToken').value.trim(),
+    chat_id:    $('#tgBotChatId').value.trim(),
+    habilitado: $('#tgBotHabilitado').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/telegrambots.php', 'POST', payload);
+      toast('Bot creado.');
+    } else {
+      await apiSend(`api/telegrambots.php?id=${id}`, 'PUT', payload);
+      toast('Bot actualizado.');
+    }
+    closeModal();
+    cargarTgBot();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarTgBot(id) {
+  const ok = await confirmar({
+    title: 'Eliminar bot',
+    message: `Se eliminará el bot #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/telegrambots.php?id=${id}`, 'DELETE');
+    toast('Bot eliminado.');
+    cargarTgBot();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Abre el menu contextual actualizando el label del toggle habilitar/deshabilitar
+// segun el estado actual de la fila.
+function abrirMenuContextoTgBot(id, x, y) {
+  const menu = $('#tgBotCtxMenu');
+  if (!menu) return;
+  const c   = tgBotCache.find((r) => Number(r.id) === Number(id));
+  const lbl = menu.querySelector('[data-action="toggle-habilitado"] [data-label]');
+  if (lbl) lbl.textContent = (c && c.habilitado === '1') ? 'Deshabilitar' : 'Habilitar';
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+async function toggleHabilitadoTgBot(id) {
+  try {
+    const c = await apiGet(`api/telegrambots.php?id=${id}`);
+    const nuevo = c.habilitado === '1' ? '0' : '1';
+    await apiSend(`api/telegrambots.php?id=${id}`, 'PUT', { ...c, habilitado: nuevo });
+    toast(nuevo === '1' ? 'Bot habilitado.' : 'Bot deshabilitado.');
+    cargarTgBot();
   } catch (e) {
     toast(e.message, { error: true });
   }

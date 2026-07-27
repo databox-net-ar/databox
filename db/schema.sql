@@ -1950,6 +1950,7 @@ CREATE TABLE `evolutionmensajes`  (
 DROP TABLE IF EXISTS `evolution_mensajes`;
 CREATE TABLE `evolution_mensajes`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `uuid` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `fecha` datetime(0) NULL DEFAULT NULL,
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `canal_id` int(11) NULL DEFAULT NULL,
@@ -2779,6 +2780,61 @@ CREATE TABLE `whapimensajes`  (
   `demora` int(11) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 260991 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for telegram_bots
+-- ----------------------------
+DROP TABLE IF EXISTS `telegram_bots`;
+CREATE TABLE `telegram_bots`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `slug` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `proyecto` int(11) NULL DEFAULT NULL,
+  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `username` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `token` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `chat_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `habilitado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `actualizado` datetime(0) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_telegram_bots_proyecto`(`proyecto`) USING BTREE,
+  INDEX `idx_telegram_bots_habilitado`(`habilitado`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for telegram_mensajes
+-- ----------------------------
+DROP TABLE IF EXISTS `telegram_mensajes`;
+CREATE TABLE `telegram_mensajes`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `uuid` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `fecha` datetime(0) NULL DEFAULT NULL,
+  `proyecto_id` int(11) NULL DEFAULT NULL,
+  `canal_id` int(11) NULL DEFAULT NULL,
+  `plantilla_id` int(11) NULL DEFAULT NULL,
+  `contacto_id` int(11) NULL DEFAULT NULL,
+  `remitente` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `remite` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `destinatario` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `destino` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `prioridad` tinyint(3) UNSIGNED NULL DEFAULT NULL,
+  `asunto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cuerpo` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `formato` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `adjunto` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `tags` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `estado` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `error` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `encolado` datetime(0) NULL DEFAULT NULL,
+  `programado` datetime NULL DEFAULT NULL,
+  `enviado` datetime(0) NULL DEFAULT NULL,
+  `demora` int(11) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_telegram_mensajes_fecha`(`fecha`) USING BTREE,
+  INDEX `idx_telegram_mensajes_proyecto`(`proyecto_id`) USING BTREE,
+  INDEX `idx_telegram_mensajes_canal`(`canal_id`) USING BTREE,
+  INDEX `idx_telegram_mensajes_estado`(`estado`) USING BTREE,
+  INDEX `idx_telegram_mensajes_uuid`(`uuid`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for widget029
