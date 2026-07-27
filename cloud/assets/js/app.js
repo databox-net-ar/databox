@@ -20110,7 +20110,6 @@ route('/datainfraendpoints', async (mount) => {
               ${thOrdenable('id',               'Código',      'width:80px')}
               ${thOrdenable('nombre',           'Nombre')}
               ${thOrdenable('metodo',           'Método',      'width:90px')}
-              ${thOrdenable('url',              'URL')}
               ${thOrdenable('ultimo_estado',    'Estado',      'width:110px')}
               ${thOrdenable('ultimo_codigo',    'HTTP',        'width:80px;text-align:center')}
               ${thOrdenable('ultimo_tiempo_ms', 'Tiempo',      'width:100px;text-align:right')}
@@ -20120,7 +20119,7 @@ route('/datainfraendpoints', async (mount) => {
             </tr>
           </thead>
           <tbody id="diepTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -20376,7 +20375,7 @@ function renderDiep() {
   if (!tbody) return;
   actualizarSortIndicadores($('#diepThead'), { order_by: diepFiltroOrden, dir: diepFiltroDir });
   if (!diepItems.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin endpoints registrados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin endpoints registrados.</td></tr>`;
     return;
   }
 
@@ -20387,7 +20386,7 @@ function renderDiep() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -20400,13 +20399,15 @@ function renderDiep() {
     } else if (e.ultimo_estado === 'error' || e.ultimo_estado === 'timeout') {
       rowStyle = ' style="background:rgba(230,42,42,.12)"';
     }
-    const urlCorta = e.url && e.url.length > 60 ? e.url.substring(0, 57) + '…' : (e.url || '—');
+    const urlCorta = e.url && e.url.length > 80 ? e.url.substring(0, 77) + '…' : (e.url || '');
+    const urlLinea = urlCorta
+      ? `<div style="font-family:monospace;font-size:.72rem;color:var(--muted);margin-top:2px;font-weight:400" title="${esc(e.url || '')}">${esc(urlCorta)}</div>`
+      : '';
     return `
     <tr data-id="${e.id}" data-activo="${e.activo}" class="row-clickable"${rowStyle}>
       <td><code style="font-size:.82rem">${e.id}</code></td>
-      <td style="font-weight:600">${esc(e.nombre || '—')}</td>
+      <td style="font-weight:600">${esc(e.nombre || '—')}${urlLinea}</td>
       <td>${diepMetodoBadge(e.metodo)}</td>
-      <td style="font-family:monospace;font-size:.82rem;color:var(--muted)" title="${esc(e.url || '')}">${esc(urlCorta)}</td>
       <td>${diepEstadoBadge(e.ultimo_estado)}</td>
       <td style="text-align:center">${diepFmtCodigo(e.ultimo_codigo)}</td>
       <td style="text-align:right;font-family:monospace;font-size:.82rem">${esc(diepFmtTiempo(e.ultimo_tiempo_ms))}</td>
