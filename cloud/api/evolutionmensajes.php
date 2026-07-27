@@ -14,9 +14,9 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/evolution_mensajes.php';
 
-const EVO_MSG_COLS = "id, fecha, proyecto_id, canal_id, plantilla_id, remitente, remite,
-                      destinatario, destino, prioridad, asunto, cuerpo,
-                      formato, adjunto, tags, estado, error,
+const EVO_MSG_COLS = "id, fecha, proyecto_id, canal_id, plantilla_id, contacto_id,
+                      remitente, remite, destinatario, destino, prioridad,
+                      asunto, cuerpo, formato, adjunto, tags, estado, error,
                       encolado, programado, enviado, demora";
 
 header('Content-Type: application/json; charset=utf-8');
@@ -164,13 +164,16 @@ function handleGetOne(PDO $pdo, int $id): void {
     ));
     $stmt = $pdo->prepare("
         SELECT {$qualified},
-               pr.nombre AS proyecto_nombre,
-               ec.nombre AS canal_nombre,
-               dp.nombre AS plantilla_nombre
+               pr.nombre  AS proyecto_nombre,
+               ec.nombre  AS canal_nombre,
+               dp.nombre  AS plantilla_nombre,
+               dc.nombre  AS contacto_nombre,
+               dc.celular AS contacto_celular
         FROM evolution_mensajes em
         LEFT JOIN proyectos             pr ON pr.id = em.proyecto_id
         LEFT JOIN evolution_canales     ec ON ec.id = em.canal_id
         LEFT JOIN datarocket_plantillas dp ON dp.id = em.plantilla_id
+        LEFT JOIN datarocket_contactos  dc ON dc.id = em.contacto_id
         WHERE em.id = :id
     ");
     $stmt->execute([':id' => $id]);

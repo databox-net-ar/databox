@@ -339,6 +339,7 @@ const ROUTE_PERMS = {
   '/datacountproveedores':     { perm:   'datacount.proveedores.consultar' },
 
   '/datarocket':               { prefix: 'datarocket.' },
+  '/datarocketinteracciones':    { perm:   'datarocket.interacciones.consultar' },
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
   '/datarocketmensajes':       { perm:   'datarocket.mensajes.consultar' },
   '/datarocketplantillas':     { perm:   'sistemas.datarocket.plantillas.consultar' },
@@ -6678,6 +6679,7 @@ function renderConsultaAwsMsg(m) {
         </div>
         <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
+        ${m.contacto_id ? `<div style="font-size:.75rem;color:var(--muted);margin-top:4px"><i class="fa-solid fa-address-card" style="opacity:.7;margin-right:4px"></i>Contacto: ${esc(m.contacto_nombre || m.contacto_correo || 'sin nombre')} <span style="opacity:.7">(#${esc(m.contacto_id)})</span></div>` : ''}
         ${m.uuid ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all"><span>uuid:</span> ${esc(m.uuid)}</div>` : ''}
       </div>
       <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
@@ -17367,6 +17369,11 @@ route('/datarocket', async (mount) => {
         <span class="tile-title">Contactos</span>
         <span class="tile-desc">Base de contactos destino con nombre, canal, teléfono, email y estado.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketinteracciones'">
+        <span class="tile-icon">💬</span>
+        <span class="tile-title">Interacciones</span>
+        <span class="tile-desc">Historial de interacciones sobre cada contacto: correos y whatsapps enviados y otros eventos registrados por las APIs de envío.</span>
+      </button>
     </div>
   `;
 }, 'Datarocket');
@@ -19032,7 +19039,8 @@ async function eliminarDrMsg(id) {
 // ------------------------- Vista: Datarocket > Contactos (ABM) -------------------------
 const drCtFiltrosDefaults = {
   q: '', codigo: '', estado: '', verificacion: '', genero: '',
-  origen: '', pais: '', provincia: '', desde: '', hasta: '',
+  origen: '', pais: '', provincia: '', correo: '', celular: '',
+  desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const drCtFiltros = { ...drCtFiltrosDefaults };
@@ -19110,9 +19118,8 @@ route('/datarocketcontactos', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Nombre</th>
-              <th>Empresa</th>
               <th>Correo</th>
-              <th>Teléfono</th>
+              <th>Celular</th>
               <th>País</th>
               <th>Estado</th>
               <th>Verificación</th>
@@ -19120,7 +19127,7 @@ route('/datarocketcontactos', async (mount) => {
             </tr>
           </thead>
           <tbody id="drCtTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -19187,6 +19194,18 @@ route('/datarocketcontactos', async (mount) => {
             <div class="form-group">
               <label>Provincia</label>
               <input type="text" id="fDrCtProvincia" maxlength="255" oninput="onFiltroDrCt('provincia', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Correo</label>
+              <input type="text" id="fDrCtCorreo" maxlength="255" placeholder="ej. @gmail.com"
+                     oninput="onFiltroDrCt('correo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Celular</label>
+              <input type="text" id="fDrCtCelular" maxlength="255" placeholder="ej. 11 5555…"
+                     oninput="onFiltroDrCt('celular', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -19298,7 +19317,7 @@ route('/datarocketcontactos', async (mount) => {
 async function cargarDrCt() {
   const tbody = $('#drCtTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(drCtFiltros).forEach(([k, v]) => {
@@ -19309,7 +19328,7 @@ async function cargarDrCt() {
     pintarStatsDrCt(data.stats);
     pintarTablaDrCt(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -19324,16 +19343,15 @@ function pintarStatsDrCt(s) {
 function pintarTablaDrCt(rows) {
   const tbody = $('#drCtTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin contactos.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin contactos.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
     <tr data-id="${c.id}" class="row-clickable">
       <td class="td-id">#${esc(c.id)}</td>
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
-      <td>${esc(c.empresa || '—')}</td>
       <td style="font-family:monospace">${esc(c.correo || '—')}</td>
-      <td style="font-family:monospace">${esc(c.telefono || c.celular || c.whatsapp || '—')}</td>
+      <td style="font-family:monospace">${esc(c.celular || '—')}</td>
       <td>${esc(c.pais || '—')}</td>
       <td>${drCtEstadoBadge(c.estado)}</td>
       <td>${drCtVerificacionBadge(c.verificacion)}</td>
@@ -19350,7 +19368,7 @@ function pintarTablaDrCt(rows) {
 
 function onFiltroDrCt(key, value) {
   if (['estado', 'verificacion', 'genero', 'origen', 'pais', 'provincia',
-       'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+       'correo', 'celular', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drCtFiltros[key] = value;
   } else if (key === 'codigo') {
     const v = String(value).trim();
@@ -19387,6 +19405,8 @@ function sincronizarControlesFiltrosDrCt() {
   $('#fDrCtGenero').value       = f.genero;
   $('#fDrCtPais').value         = f.pais;
   $('#fDrCtProvincia').value    = f.provincia;
+  $('#fDrCtCorreo').value       = f.correo;
+  $('#fDrCtCelular').value      = f.celular;
   $('#fDrCtDesde').value        = f.desde;
   $('#fDrCtHasta').value        = f.hasta;
   $('#fDrCtLimite').value       = f.limite;
@@ -19852,6 +19872,459 @@ async function eliminarDrCt(id) {
     await apiSend(`api/datarocketcontactos.php?id=${id}`, 'DELETE');
     toast('Contacto eliminado.');
     cargarDrCt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datarocket > Interacciones (read-only ABM) -------------------------
+// Historial de interacciones sobre cada contacto Datarocket. Las altas
+// las escriben las APIs de envio (aws_mensajes / evolution_mensajes) — el
+// panel es solo lectura: no hay "+ Nueva" ni "Editar". Solo Consultar y
+// Eliminar. `mensaje_id` + `origen` forman una asociacion polimorfica al
+// mensaje que origino la interaccion (origen ∈ {'aws_mensajes',
+// 'evolution_mensajes'}).
+const drIntFiltrosDefaults = {
+  q: '', codigo: '', contacto_id: '', mensaje_id: '', tipo: '', origen: '',
+  desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const drIntFiltros = { ...drIntFiltrosDefaults };
+let drIntBuscadorTimer   = null;
+let drIntFiltrosSnapshot = null;
+
+const DR_INT_TIPO_MAP = {
+  correo_enviado:   { label: 'Correo enviado',   icon: 'fa-envelope',      cls: 'badge-info' },
+  correo_abierto:   { label: 'Correo abierto',   icon: 'fa-envelope-open', cls: 'badge-success' },
+  whatsapp_enviado: { label: 'WhatsApp enviado', icon: 'fa-whatsapp',      cls: 'badge-info' },
+  sms_enviado:      { label: 'SMS enviado',      icon: 'fa-comment-sms',   cls: 'badge-info' },
+  link_clickeado:   { label: 'Link clickeado',   icon: 'fa-link',          cls: 'badge-success' },
+};
+
+function drIntTipoBadge(t) {
+  if (t == null || t === '') return `<span class="badge badge-info">—</span>`;
+  const info = DR_INT_TIPO_MAP[t];
+  if (!info) return `<span class="badge badge-info">${esc(t)}</span>`;
+  return `<span class="badge ${info.cls}"><i class="fa-solid ${info.icon}"></i> ${esc(info.label)}</span>`;
+}
+
+route('/datarocketinteracciones', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">💬</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las interacciones de Datarocket son los eventos registrados
+            automáticamente por las APIs de envío sobre cada contacto —correos y
+            whatsapps enviados, aperturas y otros—, con su tipo, mensaje asociado
+            y fecha.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drIntStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Contactos únicos</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Correos enviados</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drIntSearch"
+                   placeholder="🔍 Buscar por contacto, correo o descripción…">
+            <button class="search-clear" id="drIntSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drIntFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drIntFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drIntRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Contacto</th>
+              <th>Tipo</th>
+              <th>Origen</th>
+              <th>Descripción</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drIntTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección (sin Editar; las interacciones no se editan) -->
+    <div id="drIntCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros -->
+    <div class="modal-backdrop" id="filtrosDrIntBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrInt()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrInt()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrIntCodigo" min="1" placeholder="ID …" oninput="onFiltroDrInt('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Tipo</label>
+              <select id="fDrIntTipo" onchange="onFiltroDrInt('tipo', this.value)">
+                <option value="">— Todos —</option>
+                <option value="correo_enviado">Correo enviado</option>
+                <option value="correo_abierto">Correo abierto</option>
+                <option value="whatsapp_enviado">WhatsApp enviado</option>
+                <option value="sms_enviado">SMS enviado</option>
+                <option value="link_clickeado">Link clickeado</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Contacto (ID)</label>
+              <input type="number" id="fDrIntContacto" min="1" oninput="onFiltroDrInt('contacto_id', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Mensaje (ID)</label>
+              <input type="number" id="fDrIntMensaje" min="1" oninput="onFiltroDrInt('mensaje_id', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Origen</label>
+              <input type="text" id="fDrIntOrigen" placeholder="ej. aws_mensajes" oninput="onFiltroDrInt('origen', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fDrIntDesde" onchange="onFiltroDrInt('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fDrIntHasta" onchange="onFiltroDrInt('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrIntLimite" min="1" max="1000" value="100" onchange="onFiltroDrInt('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrIntOrderBy" onchange="onFiltroDrInt('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="contacto_id">Contacto</option>
+                <option value="tipo">Tipo</option>
+                <option value="origen">Origen</option>
+                <option value="mensaje_id">Mensaje</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrIntDir" onchange="onFiltroDrInt('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrInt()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrInt()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrInt()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#drIntFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrInt());
+  $('#drIntRefrescarBtn').addEventListener('click', () => cargarDrInt());
+
+  const inp = $('#drIntSearch');
+  const clr = $('#drIntSearchClear');
+  inp.value = drIntFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drIntFiltros.q = inp.value.trim();
+    clearTimeout(drIntBuscadorTimer);
+    drIntBuscadorTimer = setTimeout(() => { cargarDrInt(); refrescarBadgeFiltrosDrInt(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    drIntFiltros.q = '';
+    cargarDrInt();
+    refrescarBadgeFiltrosDrInt();
+  });
+
+  // Acciones del menú contextual
+  $('#drIntCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarDrInt(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDrInt(data.id);
+  });
+
+  // Clic en fila → consultar; clic en hamburguesa → menú
+  $('#drIntTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#drIntCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDrInt(Number(tr.dataset.id));
+  });
+  $('#drIntTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#drIntCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDrInt();
+  await cargarDrInt();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Interacciones');
+
+async function cargarDrInt() {
+  const tbody = $('#drIntTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(drIntFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/datarocketinteracciones.php?' + qs.toString());
+    pintarStatsDrInt(data.stats);
+    pintarTablaDrInt(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDrInt(s) {
+  const cards = $$('#drIntStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.contactos);
+  cards[2].textContent = fmtNum(s.correos);
+}
+
+function pintarTablaDrInt(rows) {
+  const tbody = $('#drIntTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin interacciones.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((a) => {
+    const contactoTxt = a.contacto_nombre
+      ? `${esc(a.contacto_nombre)} <span style="color:var(--muted)">#${esc(a.contacto_id)}</span>`
+      : `#${esc(a.contacto_id)}`;
+    return `
+    <tr data-id="${a.id}" class="row-clickable">
+      <td class="td-id">#${esc(a.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(a.fecha))}</td>
+      <td>${contactoTxt}</td>
+      <td>${drIntTipoBadge(a.tipo)}</td>
+      <td>${a.origen ? `<code>${esc(a.origen)}</code>` : '—'}</td>
+      <td>${esc(a.descripcion || '—')}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${a.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+// ---- Modal de Filtros ----
+function onFiltroDrInt(key, value) {
+  if (['tipo', 'origen', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    drIntFiltros[key] = value;
+  } else if (['codigo', 'contacto_id', 'mensaje_id'].includes(key)) {
+    const v = String(value).trim();
+    drIntFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    drIntFiltros.limite = n;
+  } else {
+    drIntFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDrInt();
+  cargarDrInt();
+}
+
+function refrescarBadgeFiltrosDrInt() {
+  const btn   = $('#drIntFiltrosBtn');
+  const badge = $('#drIntFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(drIntFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(drIntFiltros[k]) !== String(drIntFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDrInt() {
+  const f = drIntFiltros;
+  $('#fDrIntCodigo').value   = f.codigo;
+  $('#fDrIntTipo').value     = f.tipo;
+  $('#fDrIntContacto').value = f.contacto_id;
+  $('#fDrIntMensaje').value  = f.mensaje_id;
+  $('#fDrIntOrigen').value   = f.origen;
+  $('#fDrIntDesde').value    = f.desde;
+  $('#fDrIntHasta').value    = f.hasta;
+  $('#fDrIntLimite').value   = f.limite;
+  $('#fDrIntOrderBy').value  = f.order_by;
+  $('#fDrIntDir').value      = f.dir;
+}
+
+function abrirModalFiltrosDrInt() {
+  drIntFiltrosSnapshot = { ...drIntFiltros };
+  sincronizarControlesFiltrosDrInt();
+  $('#filtrosDrIntBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDrInt() {
+  $('#filtrosDrIntBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDrInt() {
+  if (drIntFiltrosSnapshot) {
+    Object.assign(drIntFiltros, drIntFiltrosSnapshot);
+    refrescarBadgeFiltrosDrInt();
+    cargarDrInt();
+  }
+  cerrarModalFiltrosDrInt();
+}
+
+function limpiarFiltrosDrInt() {
+  Object.assign(drIntFiltros, drIntFiltrosDefaults);
+  drIntFiltros.q = $('#drIntSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDrInt();
+  refrescarBadgeFiltrosDrInt();
+  cargarDrInt();
+}
+
+// Exponer para los onclick del HTML
+window.onFiltroDrInt           = onFiltroDrInt;
+window.cancelarFiltrosDrInt    = cancelarFiltrosDrInt;
+window.limpiarFiltrosDrInt     = limpiarFiltrosDrInt;
+window.cerrarModalFiltrosDrInt = cerrarModalFiltrosDrInt;
+
+// ---- Modal Consultar (sin botón Editar; las interacciones no se editan) ----
+async function abrirConsultarDrInt(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:800px">
+      <div class="modal-header">
+        <div class="modal-title">Interacción <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+
+  try {
+    const a = await apiGet(`api/datarocketinteracciones.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrInt(a);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDrInt(a) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const contactoTxt = a.contacto_nombre
+    ? `${a.contacto_nombre} (#${a.contacto_id})`
+    : `#${a.contacto_id}`;
+  const tipoInfo    = DR_INT_TIPO_MAP[a.tipo];
+  const tipoTxt     = tipoInfo ? tipoInfo.label : (a.tipo || '—');
+
+  return `
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Código',      '#' + a.id)}
+      ${card('Fecha',       fmtFechaLarga(a.fecha))}
+      ${card('Contacto',    contactoTxt)}
+      ${card('Correo',      a.contacto_correo)}
+      ${card('Tipo',        tipoTxt)}
+      ${card('Origen',      a.origen, false, true)}
+      ${card('Mensaje ID',  a.mensaje_id != null ? '#' + a.mensaje_id : null)}
+      ${card('Descripción', a.descripcion, true)}
+    </dl>
+  `;
+}
+
+async function eliminarDrInt(id) {
+  const ok = await confirmar({
+    title: 'Eliminar interacción',
+    message: `Se eliminará la interacción #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datarocketinteracciones.php?id=${id}`, 'DELETE');
+    toast('Interacción eliminada.');
+    cargarDrInt();
   } catch (e) {
     toast(e.message, { error: true });
   }
@@ -22574,6 +23047,7 @@ function renderConsultaEvoMsg(m) {
         </div>
         <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
+        ${m.contacto_id ? `<div style="font-size:.75rem;color:var(--muted);margin-top:4px"><i class="fa-solid fa-address-card" style="opacity:.7;margin-right:4px"></i>Contacto: ${esc(m.contacto_nombre || m.contacto_celular || 'sin nombre')} <span style="opacity:.7">(#${esc(m.contacto_id)})</span></div>` : ''}
       </div>
       <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
         <div>${evoMsgEstadoBadge(m.estado)}</div>

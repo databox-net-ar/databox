@@ -57,6 +57,8 @@ function handleList(PDO $pdo, array $q): void {
     $origen       = trim((string)($q['origen']       ?? ''));
     $pais         = trim((string)($q['pais']         ?? ''));
     $provincia    = trim((string)($q['provincia']    ?? ''));
+    $correo       = trim((string)($q['correo']       ?? ''));
+    $celular      = trim((string)($q['celular']      ?? ''));
     $desde        = trim((string)($q['desde']        ?? ''));
     $hasta        = trim((string)($q['hasta']        ?? ''));
     $search       = trim((string)($q['q']            ?? ''));
@@ -82,6 +84,8 @@ function handleList(PDO $pdo, array $q): void {
     if ($origen       !== '')   { $where[] = 'origen = :origen';                 $params[':origen']       = $origen; }
     if ($pais         !== '')   { $where[] = 'pais = :pais';                     $params[':pais']         = $pais; }
     if ($provincia    !== '')   { $where[] = 'provincia = :provincia';           $params[':provincia']    = $provincia; }
+    if ($correo       !== '')   { $where[] = 'correo LIKE :correo';              $params[':correo']       = '%' . $correo . '%'; }
+    if ($celular      !== '')   { $where[] = 'celular LIKE :celular';            $params[':celular']      = '%' . $celular . '%'; }
     if ($desde        !== '')   { $where[] = 'registrado >= :desde';             $params[':desde']        = $desde . ' 00:00:00'; }
     if ($hasta        !== '')   { $where[] = 'registrado <= :hasta';             $params[':hasta']        = $hasta . ' 23:59:59'; }
 
@@ -157,6 +161,17 @@ function nullableInt(mixed $v): ?int {
     return (int)$v;
 }
 
+// Normaliza telefonos: elimina cualquier caracter que no sea digito
+// (espacios, guiones, parentesis, '+', etc.). Si queda vacio -> NULL.
+// Aplica a telefono, celular y whatsapp — misma regla que el endpoint v4
+// (api/v4/datarocket/contactos.php) para que ambos escriban comparable.
+function digitsOnly(mixed $v): ?string {
+    $s = nullableStr($v);
+    if ($s === null) return null;
+    $s = preg_replace('/\D+/', '', $s);
+    return $s === '' ? null : substr($s, 0, 255);
+}
+
 function nullableDateTime(mixed $v): ?string {
     $s = nullableStr($v);
     if ($s === null) return null;
@@ -185,9 +200,9 @@ function sanitizePayload(array $in): array {
         'localidad'     => nullableStr($in['localidad']     ?? null, 255),
         'provincia'     => nullableStr($in['provincia']     ?? null, 255),
         'pais'          => nullableStr($in['pais']          ?? null, 255),
-        'telefono'      => nullableStr($in['telefono']      ?? null, 255),
-        'celular'       => nullableStr($in['celular']       ?? null, 255),
-        'whatsapp'      => nullableStr($in['whatsapp']      ?? null, 255),
+        'telefono'      => digitsOnly($in['telefono']      ?? null),
+        'celular'       => digitsOnly($in['celular']       ?? null),
+        'whatsapp'      => digitsOnly($in['whatsapp']      ?? null),
         'correo'        => nullableStr($in['correo']        ?? null, 255),
         'web'           => nullableStr($in['web']           ?? null, 255),
         'facebook'      => nullableStr($in['facebook']      ?? null, 255),

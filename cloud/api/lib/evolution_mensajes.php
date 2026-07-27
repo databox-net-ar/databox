@@ -18,6 +18,7 @@
 //        del propio cron lo baja a '0' cuando la cola queda vacia)
 
 require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/datarocket_interacciones.php';
 
 // Mapa columna -> regla del sanitizador. Reusado por sanitizeEvoMsgPayload
 // (INSERT completo) y sanitizeEvoMsgPartialPayload (UPDATE parcial).
@@ -26,6 +27,7 @@ const EVO_MSG_SANITIZERS = [
     'proyecto_id'  => 'int',
     'canal_id'     => 'int',
     'plantilla_id' => 'int',
+    'contacto_id'  => 'int',
     'remitente'    => 'str:255',
     'remite'       => 'str:255',
     'destinatario' => 'str:255',
@@ -99,14 +101,24 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
     if ($p['formato']    === null) $p['formato']    = 'texto';
     if ($p['prioridad']  === null) $p['prioridad']  = 3;
 
+    // Resolucion de contacto_id a partir del destino (celular): buscamos en
+    // `datarocket_contactos.celular` y, si no existe, damos de alta el contacto
+    // antes de insertar el mensaje. Si el caller ya paso un contacto_id
+    // explicito lo respetamos. Mirror del comportamiento del canalizador AWS
+    // (cloud/api/lib/aws_mensajes.php::resolverContactoIdAws) — misma logica,
+    // otro campo de match.
+    if ($p['contacto_id'] === null) {
+        $p['contacto_id'] = resolverContactoIdEvolution($pdo, $p['destino'], $p['destinatario']);
+    }
+
     $sql = "
         INSERT INTO evolution_mensajes
-            (fecha, proyecto_id, canal_id, plantilla_id, remitente, remite,
-             destinatario, destino, prioridad, asunto, cuerpo, formato,
+            (fecha, proyecto_id, canal_id, plantilla_id, contacto_id, remitente,
+             remite, destinatario, destino, prioridad, asunto, cuerpo, formato,
              adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
-            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :remitente, :remite,
-             :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
+            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :contacto_id, :remitente,
+             :remite, :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
     $stmt = $pdo->prepare($sql);
@@ -115,6 +127,7 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
         ':proyecto_id'  => $p['proyecto_id'],
         ':canal_id'     => $p['canal_id'],
         ':plantilla_id' => $p['plantilla_id'],
+        ':contacto_id'  => $p['contacto_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
@@ -133,6 +146,19 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
         ':demora'       => $p['demora'],
     ]);
     $id = (int)$pdo->lastInsertId();
+
+    // Registrar la interaccion en el historial del contacto. Best-effort:
+    // si falla no tira, el mensaje ya quedo en la cola. Ver
+    // cloud/api/lib/datarocket_interacciones.php.
+    registrarInteraccionMensaje(
+        $pdo,
+        $p['contacto_id'],
+        'whatsapp_enviado',
+        'evolution_mensajes',
+        $id,
+        $p['cuerpo'] ?? $p['destino'],
+        $p['fecha']
+    );
 
     // Wake-on-demand: si el mensaje quedo pendiente (99% de los casos al
     // encolar), avisar al cron worker. Idempotente — si ya vale '1' el UPDATE
@@ -247,6 +273,66 @@ function aplicarPlantillaEvoMsg(PDO $pdo, array $in): array {
     }
     unset($in['variables']);
     return $in;
+}
+
+/**
+ * Resuelve el `contacto_id` de `evolution_mensajes` a partir del `destino`
+ * (celular) del mensaje: si el numero ya existe en
+ * `datarocket_contactos.celular` devuelve su id; si no, lo da de alta primero
+ * y devuelve el id recien insertado.
+ *
+ * Reglas:
+ *   - Si `destino` esta vacio devuelve null (mensajes sin destino ya los
+ *     rechaza la validacion de obligatorios).
+ *   - Match PARCIAL por los ultimos 10 digitos: se quita todo lo que no sea
+ *     digito 0-9 tanto en el `destino` entrante como en cada `celular`
+ *     almacenado, y se comparan los ultimos 10 digitos de ambos. Asi los
+ *     mismos digitos con distinto formato (con/sin `+`, prefijo de pais,
+ *     guiones, espacios, parentesis) matchean con el contacto ya existente.
+ *   - Al dar de alta un contacto nuevo se guarda el `destino` tal como llego
+ *     (sin normalizar) — la normalizacion contra el prefijo del canal la
+ *     resuelve el sender (normalizarDestinoEvolution en
+ *     cloud/api/lib/mensajes_enviar.php). Origen = 'evolution_mensajes' para
+ *     distinguir en el ABM los contactos que crea el canalizador de los que
+ *     carga el operador a mano.
+ *
+ * Mirror estructural de resolverContactoIdAws() en cloud/api/lib/aws_mensajes.php.
+ */
+function resolverContactoIdEvolution(PDO $pdo, ?string $destino, ?string $destinatario): ?int {
+    if ($destino === null) return null;
+    $celular = trim($destino);
+    if ($celular === '') return null;
+
+    // Comparacion parcial: nos quedamos con los digitos de `$destino` y
+    // matcheamos por los ultimos 10 contra los ultimos 10 digitos de cada
+    // `celular` almacenado (usando REGEXP_REPLACE — soportado por MySQL 8.0+
+    // y MariaDB 10.0.5+, ambos entornos del stack).
+    $digitos   = preg_replace('/\D/', '', $celular);
+    $ultimos10 = $digitos !== '' ? substr($digitos, -10) : '';
+    if ($ultimos10 !== '') {
+        $st = $pdo->prepare(
+            "SELECT id FROM datarocket_contactos
+              WHERE RIGHT(REGEXP_REPLACE(celular, '[^0-9]', ''), 10) = :u
+              LIMIT 1"
+        );
+        $st->execute([':u' => $ultimos10]);
+        $id = $st->fetchColumn();
+        if ($id !== false) return (int)$id;
+    }
+
+    $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+             ->format('Y-m-d H:i:s');
+    $ins = $pdo->prepare("
+        INSERT INTO datarocket_contactos (uuid, origen, nombre, celular, registrado)
+        VALUES (:uuid, 'evolution_mensajes', :nombre, :celular, :registrado)
+    ");
+    $ins->execute([
+        ':uuid'       => bin2hex(random_bytes(16)),
+        ':nombre'     => trim((string)($destinatario ?? '')),
+        ':celular'    => $celular,
+        ':registrado' => $ahora,
+    ]);
+    return (int)$pdo->lastInsertId();
 }
 
 // Resuelve `proyecto_slug` / `canal_slug` / `plantilla_slug` a sus ids

@@ -72,6 +72,19 @@ function requireApp(): array {
     return $app;
 }
 
+// Etiquetas de estado alineadas con la tabla `estados` (evolution_mensaje_estado).
+// Solo se usan para el campo `estado_label` de conveniencia — la fuente de
+// verdad del valor sigue siendo `evolution_mensajes.estado` (varchar 20).
+// Se declara aca (antes del dispatcher) porque `const` a nivel de archivo
+// se registra cuando la ejecucion pasa por esa linea, no al compilar.
+const EVO_MSG_ESTADO_LABEL = [
+    'pendiente' => 'Pendiente',
+    'enviando'  => 'Enviando',
+    'enviado'   => 'Enviado',
+    'anulado'   => 'Anulado',
+    'error'     => 'Error',
+];
+
 // ---------------------------------------------------------------------------
 // Ruteo
 // ---------------------------------------------------------------------------
@@ -130,17 +143,6 @@ function handleEnqueue(array $in): void {
 // ---------------------------------------------------------------------------
 // GET /v4/evolution/mensajes?id=N  -> consultar estado
 // ---------------------------------------------------------------------------
-
-// Etiquetas de estado alineadas con la tabla `estados` (evolution_mensaje_estado).
-// Solo se usan para el campo `estado_label` de conveniencia — la fuente de
-// verdad del valor sigue siendo `evolution_mensajes.estado` (varchar 20).
-const EVO_MSG_ESTADO_LABEL = [
-    'pendiente' => 'Pendiente',
-    'enviando'  => 'Enviando',
-    'enviado'   => 'Enviado',
-    'anulado'   => 'Anulado',
-    'error'     => 'Error',
-];
 
 function handleStatus(int $id): void {
     $pdo = db();

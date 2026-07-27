@@ -16,6 +16,7 @@
 //        propio cron lo baja a '0' cuando la cola queda vacia)
 
 require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/datarocket_interacciones.php';
 
 // Mapa columna -> regla del sanitizador. Reusado por sanitizeAwsMsgPayload.
 // (No hay variante partial: los mensajes encolados no se editan.)
@@ -25,6 +26,7 @@ const AWS_MSG_SANITIZERS = [
     'proyecto_id'  => 'int',
     'canal_id'     => 'int',
     'plantilla_id' => 'int',
+    'contacto_id'  => 'int',
     'remitente'    => 'str:255',
     'remite'       => 'str:255',
     'destinatario' => 'str:255',
@@ -102,14 +104,23 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
     if ($p['encolado'] === null) $p['encolado'] = $p['fecha'];
     if ($p['estado']   === null) $p['estado']   = 'pendiente';
 
+    // Resolucion de contacto_id a partir del destino: buscamos en
+    // `datarocket_contactos.correo` y, si no existe, damos de alta el contacto
+    // antes de insertar el mensaje. Si el caller ya paso un contacto_id
+    // explicito lo respetamos (por ejemplo, un futuro flujo que ya lo tenga
+    // resuelto no paga el lookup de nuevo).
+    if ($p['contacto_id'] === null) {
+        $p['contacto_id'] = resolverContactoIdAws($pdo, $p['destino'], $p['destinatario']);
+    }
+
     $sql = "
         INSERT INTO aws_mensajes
-            (fecha, proyecto_id, canal_id, plantilla_id, remitente, remite,
-             destinatario, destino, prioridad, asunto, cuerpo, formato,
+            (fecha, proyecto_id, canal_id, plantilla_id, contacto_id, remitente,
+             remite, destinatario, destino, prioridad, asunto, cuerpo, formato,
              adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
-            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :remitente, :remite,
-             :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
+            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :contacto_id, :remitente,
+             :remite, :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
     $stmt = $pdo->prepare($sql);
@@ -118,6 +129,7 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
         ':proyecto_id'  => $p['proyecto_id'],
         ':canal_id'     => $p['canal_id'],
         ':plantilla_id' => $p['plantilla_id'],
+        ':contacto_id'  => $p['contacto_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
@@ -136,6 +148,19 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
         ':demora'       => $p['demora'],
     ]);
     $id = (int)$pdo->lastInsertId();
+
+    // Registrar la interaccion en el historial del contacto. Best-effort:
+    // si falla no tira, el mensaje ya quedo en la cola. Ver
+    // cloud/api/lib/datarocket_interacciones.php.
+    registrarInteraccionMensaje(
+        $pdo,
+        $p['contacto_id'],
+        'correo_enviado',
+        'aws_mensajes',
+        $id,
+        $p['asunto'] ?? $p['destino'],
+        $p['fecha']
+    );
 
     // Wake-on-demand: si el mensaje quedo pendiente (99% de los casos al
     // encolar), avisar al cron worker. Idempotente — si ya vale '1' el UPDATE
@@ -226,6 +251,50 @@ function aplicarPlantillaAws(PDO $pdo, array $in): array {
     $in['formato']   = $formato;
     $in['adjunto']   = $tpl['adjunto'];
     return $in;
+}
+
+/**
+ * Resuelve el `contacto_id` de `aws_mensajes` a partir del `destino` del
+ * mensaje: si el correo ya existe en `datarocket_contactos.correo` devuelve
+ * su id; si no, lo da de alta primero y devuelve el id recien insertado.
+ *
+ * Reglas:
+ *   - Si `destino` esta vacio devuelve null (mensajes sin destino quedan sin
+ *     contacto asociado; la validacion de obligatorios ya los rechaza antes).
+ *   - Si `destino` trae varios correos separados por coma (envio masivo a un
+ *     grupo), toma el primero — un mensaje solo puede apuntar a un contacto.
+ *   - El lookup es case-insensitive porque `datarocket_contactos.correo` usa
+ *     `utf8mb4_general_ci`.
+ *   - Al dar de alta un contacto nuevo usamos `origen = 'aws_mensajes'` para
+ *     poder distinguir en el ABM los contactos creados automaticamente por
+ *     el canalizador de envios de los que carga el operador a mano o los que
+ *     importan otros sistemas.
+ */
+function resolverContactoIdAws(PDO $pdo, ?string $destino, ?string $destinatario): ?int {
+    if ($destino === null) return null;
+    $emails = array_values(array_filter(array_map('trim', explode(',', $destino))));
+    if (!$emails) return null;
+    $correo = $emails[0];
+    if ($correo === '') return null;
+
+    $st = $pdo->prepare("SELECT id FROM datarocket_contactos WHERE correo = :c LIMIT 1");
+    $st->execute([':c' => $correo]);
+    $id = $st->fetchColumn();
+    if ($id !== false) return (int)$id;
+
+    $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+             ->format('Y-m-d H:i:s');
+    $ins = $pdo->prepare("
+        INSERT INTO datarocket_contactos (uuid, origen, nombre, correo, registrado)
+        VALUES (:uuid, 'aws_mensajes', :nombre, :correo, :registrado)
+    ");
+    $ins->execute([
+        ':uuid'       => bin2hex(random_bytes(16)),
+        ':nombre'     => trim((string)($destinatario ?? '')),
+        ':correo'     => $correo,
+        ':registrado' => $ahora,
+    ]);
+    return (int)$pdo->lastInsertId();
 }
 
 // Resuelve `proyecto_slug` / `canal_slug` / `plantilla_slug` a sus ids

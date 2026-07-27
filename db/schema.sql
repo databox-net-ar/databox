@@ -192,6 +192,7 @@ CREATE TABLE `aws_mensajes`  (
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `canal_id` int(11) NULL DEFAULT NULL,
   `plantilla_id` int(11) NULL DEFAULT NULL,
+  `contacto_id` int(11) NULL DEFAULT NULL,
   `remitente` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `remite` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `destinatario` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -1379,6 +1380,38 @@ CREATE TABLE `datarocket_contactos`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 148287 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for datarocket_interacciones
+-- ----------------------------
+-- Historial de interacciones sobre cada contacto de Datarocket. Cada
+-- fila registra que "algo" (tipicamente el envio de un correo o un
+-- whatsapp) sucedio sobre un `contacto_id` en la `fecha` indicada. La
+-- escribe el canalizador que encola el mensaje (aws / evolution), NO
+-- la UI: el ABM cloud es de solo lectura (sin agregar / editar; solo
+-- eliminar).
+--   * `tipo` es un codigo corto (ej. 'correo_enviado') — la UI lo mapea
+--     a etiqueta legible. Se deja VARCHAR(30) para sumar variantes
+--     ('whatsapp_enviado', 'correo_abierto', etc.) sin migrar.
+--   * `mensaje_id` + `origen` son una asociacion POLIMORFICA al mensaje
+--     que origino la interaccion. `mensaje_id` guarda el ID y `origen`
+--     indica en que tabla buscarlo. Hoy los unicos dos valores validos
+--     de `origen` son 'aws_mensajes' y 'evolution_mensajes'. Ambas
+--     columnas son NULLABLE para permitir interacciones sin mensaje.
+DROP TABLE IF EXISTS `datarocket_interacciones`;
+CREATE TABLE `datarocket_interacciones`  (
+  `id`          int(11)      NOT NULL AUTO_INCREMENT,
+  `fecha`       datetime     NOT NULL,
+  `contacto_id` int(11)      NOT NULL,
+  `tipo`        varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'correo_enviado',
+  `origen`      varchar(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `mensaje_id`  int(11)      NULL DEFAULT NULL,
+  `descripcion` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_dri_contacto_fecha`(`contacto_id`, `fecha`) USING BTREE,
+  INDEX `idx_dri_fecha`(`fecha`) USING BTREE,
+  INDEX `idx_dri_tipo`(`tipo`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for datainfra_dominios
 -- ----------------------------
 -- Catalogo de dominios DNS administrados por Databox. Pertenece al modulo
@@ -1921,6 +1954,7 @@ CREATE TABLE `evolution_mensajes`  (
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `canal_id` int(11) NULL DEFAULT NULL,
   `plantilla_id` int(11) NULL DEFAULT NULL,
+  `contacto_id` int(11) NULL DEFAULT NULL,
   `remitente` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `remite` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `destinatario` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,

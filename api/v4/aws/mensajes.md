@@ -1,5 +1,7 @@
 # `/v4/aws/mensajes`
 
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/aws/mensajes.md>
+
 Microservicio de ingesta y consulta de estado de mensajes **AWS SES**
 (correo masivo transaccional). Un unico archivo `.php`
 ([mensajes.php](mensajes.php)) que sirve todos los verbos HTTP del
