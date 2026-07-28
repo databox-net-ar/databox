@@ -8,14 +8,18 @@
 --   pequenas al lado del nombre.
 --
 -- Formato:
---   Se guarda como JSON array de strings (ej: `["logistica","cliente-x"]`)
---   dentro de un VARCHAR(500). Se eligio VARCHAR (no JSON) para maxima
---   compatibilidad entre MySQL 8 y MariaDB 10.11 y porque no se necesita
---   indexar / filtrar por tag desde SQL — el backend decodifica y expone
---   el array en la respuesta JSON del ABM.
+--   Se guarda como CSV plano de strings (ej: `logistica,cliente-x`) dentro
+--   de un VARCHAR(500), sin comillas ni corchetes, para que la columna sea
+--   legible / editable desde cualquier cliente SQL. La coma es reservada
+--   como separador: el editor de tags del ABM (frontend) usa Enter/coma
+--   para confirmar el tag actual y el normalizador backend splitea por coma
+--   como red de seguridad. La API HTTP sigue exponiendo/consumiendo el
+--   array (`tags: ["logistica","cliente-x"]`) — la traduccion CSV<->array
+--   la hacen los helpers *DecodeTags/*EncodeTags de cada endpoint.
 --
 --   NULL o "" = sin tags. 500 chars alcanzan para ~15 tags cortos y es un
---   tope duro; el backend valida ademas la cantidad y el largo por tag.
+--   tope duro; el backend valida ademas la cantidad (max 20) y el largo
+--   por tag (max 50 chars).
 --
 -- Compatible con MySQL 8 (dev) y MariaDB 10.11 (prod): se usa el patron
 -- information_schema + PREPARE/EXECUTE porque MySQL 8 no soporta la sintaxis

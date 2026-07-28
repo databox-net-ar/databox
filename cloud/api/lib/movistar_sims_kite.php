@@ -153,23 +153,50 @@ function kiteChangeLifeCycle(array $cfg, string $icc, string $target): array {
  * Recorre todo el inventario de Kite paginando de a `maxBatchSize` (max 1000).
  * Rate limit: getSubscriptions esta topeado en 4 TPS -> minimo 250ms entre
  * requests. Se hace un usleep entre paginas para no caer en el error POL 1005.
+ *
+ * Sync en una unica fase (bulk): getSubscriptions paginado trae todos los
+ * campos "de peso" (nombre/customField1, MSISDN, IMEI, estado, GPRS, LTE,
+ * consumo, limite).
+ *
+ * `ultimo_trafico` se DERIVA del delta de `consumo_datos` — la API v13/r12
+ * de Kite (confirmado con la doc SC-API3-CU) NO expone la fecha del ultimo
+ * trafico de datos: el campo `lastTrafficDate` aparece solo en el changelog
+ * de v5.0.0 pero no en la respuesta actual. Estrategia:
+ *   - SIM existente: si el `consumo_datos` que trae Kite difiere del que
+ *     tiene la BD -> hubo actividad entre esta corrida y la anterior ->
+ *     `ultimo_trafico = NOW()`.
+ *   - SIM existente sin cambio: se preserva el valor previo.
+ *   - SIM nueva (INSERT): `ultimo_trafico = NULL` (no hay base para comparar);
+ *     se completa en la primer sync posterior en que se detecte un delta.
+ *
+ * Caveat: el reset mensual del contador (por ej. "500 MB" -> "0 MB") tambien
+ * cuenta como delta y marca `ultimo_trafico`. Es un falso positivo mensual,
+ * preferible a perder los positivos verdaderos.
  */
-function kiteSyncSims(array $cfg, PDO $pdo): array {
+function kiteSyncSims(array $cfg, PDO $pdo, ?callable $emit = null): array {
+    @set_time_limit(0);
+
+    // $emit(string $tipo, string $mensaje, array $extra = []) — opcional.
+    // Tipos: 'info' (fases), 'ok' (progreso positivo), 'warn', 'error'.
+    // Si no se pasa, la funcion es no-op y no cambia nada del comportamiento.
+    $log = $emit ?? static function (): void {};
+
     $batch    = 1000;
-    $delayUs  = 260_000; // 260ms > 250ms (4 TPS), con margen
+    $delayUs  = 260_000; // 260ms > 250ms (4 TPS), con margen entre paginas
 
-    $fetched      = 0;
-    $insertados   = 0;
-    $actualizados = 0;
-    $paginas      = 0;
+    $fetched         = 0;
+    $insertados      = 0;
+    $actualizados    = 0;
+    $con_trafico     = 0;   // SIMs cuyo consumo cambio -> ultimo_trafico marcado
+    $paginas         = 0;
 
-    $lookup = $pdo->prepare("SELECT id FROM movistar_sims WHERE icc = :icc");
+    // Traemos consumo previo Y timestamp previo. El timestamp se preserva
+    // cuando no hay delta (para no perder la ultima fecha buena).
+    $lookup = $pdo->prepare("SELECT consumo_datos, ultimo_trafico FROM movistar_sims WHERE icc = :icc");
     // `nombre` NO se toca: es editable en el ABM y el sync no debe pisarlo.
     // El customField1 de Kite va a `alias` (columna dedicada).
-    // `ultimo_trafico` = fecha absoluta del ultimo trafico detectado por Kite
-    // para esa SIM (NULL si Kite no la reporta). Los "N dias sin trafico" se
-    // calculan al vuelo con DATEDIFF(NOW(), ultimo_trafico) en la consulta de
-    // presentacion, no se persisten.
+    // `ultimo_trafico` se pasa como parametro calculado por el caller (NOW si
+    // hubo delta, valor previo si no).
     $upsert = $pdo->prepare("
         INSERT INTO movistar_sims
             (alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, actualizado, ultimo_trafico)
@@ -186,40 +213,70 @@ function kiteSyncSims(array $cfg, PDO $pdo): array {
             imei           = VALUES(imei),
             msisdn         = VALUES(msisdn),
             actualizado    = VALUES(actualizado),
-            ultimo_trafico = COALESCE(VALUES(ultimo_trafico), ultimo_trafico)
+            ultimo_trafico = VALUES(ultimo_trafico)
     ");
 
+    // -----------------------------------------------------------------------
+    // Bulk paginado
+    // -----------------------------------------------------------------------
+    $log('info', 'Descargando inventario de Kite (paginado, 1000 SIMs/pagina)...');
     for ($startIndex = 0; ; $startIndex += $batch) {
         $path = "/services/REST/GlobalM2M/Inventory/v13/r12/sim"
               . "?maxBatchSize={$batch}&startIndex={$startIndex}";
 
         if ($paginas > 0) usleep($delayUs); // no dormir antes de la primer request
 
-        $resp = kiteGet($cfg, $path);
+        try {
+            $resp = kiteGet($cfg, $path);
+        } catch (Throwable $e) {
+            $log('error', "Kite fallo al traer pagina " . ($paginas + 1) . ": " . $e->getMessage());
+            throw $e;
+        }
         $paginas++;
         $sims = $resp['subscriptionData'] ?? [];
         if (empty($sims)) break;
 
+        $pagIns = 0; $pagAct = 0; $pagSkip = 0; $pagTraf = 0;
         foreach ($sims as $s) {
             $p = mapKiteSim($s);
-            if ($p[':icc'] === null) continue; // sin ICC no se puede upsertar
+            if ($p[':icc'] === null) { $pagSkip++; continue; } // sin ICC no se puede upsertar
 
+            // Derivar ultimo_trafico por delta de consumo.
             $lookup->execute([':icc' => $p[':icc']]);
-            $existente = (bool) $lookup->fetchColumn();
+            $prev = $lookup->fetch(PDO::FETCH_ASSOC);
+            $existente = $prev !== false;
+            if ($existente) {
+                $prevConsumo = (string) ($prev['consumo_datos'] ?? '');
+                $nuevoConsumo = (string) ($p[':consumo_datos'] ?? '');
+                if ($nuevoConsumo !== $prevConsumo) {
+                    $p[':ultimo_trafico'] = date('Y-m-d H:i:s'); // hubo actividad
+                    $con_trafico++; $pagTraf++;
+                } else {
+                    $p[':ultimo_trafico'] = $prev['ultimo_trafico']; // preservar
+                }
+            } else {
+                $p[':ultimo_trafico'] = null; // nueva: sin base para comparar
+            }
 
             $upsert->execute($p);
-            if ($existente) $actualizados++; else $insertados++;
+            if ($existente) { $actualizados++; $pagAct++; } else { $insertados++; $pagIns++; }
             $fetched++;
         }
+
+        $msg = "Pagina {$paginas}: {$pagIns} nuevas, {$pagAct} actualizadas, {$pagTraf} con trafico nuevo"
+             . ($pagSkip > 0 ? ", {$pagSkip} sin ICC (omitidas)" : '');
+        $log($pagSkip > 0 ? 'warn' : 'ok', $msg);
 
         // Si Kite devolvio menos que el batch, era la ultima pagina.
         if (count($sims) < $batch) break;
     }
+    $log('info', "Listo: {$fetched} SIMs upsertadas ({$insertados} nuevas, {$actualizados} actualizadas, {$con_trafico} con trafico nuevo) en {$paginas} paginas.");
 
     return [
         'fetched'      => $fetched,
         'insertados'   => $insertados,
         'actualizados' => $actualizados,
+        'con_trafico'  => $con_trafico,
         'paginas'      => $paginas,
         'ultima_sync'  => date('Y-m-d H:i:s'),
     ];
@@ -232,7 +289,11 @@ function kiteSyncSims(array $cfg, PDO $pdo): array {
 function mapKiteSim(array $s): array {
     $icc    = trim((string)($s['icc']    ?? ''));
     $msisdn = trim((string)($s['msisdn'] ?? ''));
-    $imei   = trim((string)($s['imeiLock'] ?? ''));
+    // Kite expone dos campos distintos: `imei` es el IMEI real del dispositivo
+    // que actualmente esta conectado a la SIM, `imeiLock` es una restriccion
+    // opcional (IMEI al que la SIM esta lockeada) que suele venir vacia.
+    // Nosotros persistimos el primero.
+    $imei   = trim((string)($s['imei'] ?? ''));
     $estado = trim((string)($s['lifeCycleStatus'] ?? ''));
 
     // alias: customField1 de Kite (editable en el portal). Antes se mapeaba
@@ -278,22 +339,6 @@ function mapKiteSim(array $s): array {
     }
     $usedMB = $usedRaw !== null ? (int) round(((int)$usedRaw) / 1024 / 1024) . ' MB' : null;
 
-    // Ultimo trafico: Kite reporta la fecha del ultimo evento de datos en
-    // distintos nombres segun la version del endpoint / el tenant. Probamos
-    // los mas frecuentes en orden y nos quedamos con el primero parseable.
-    // Devolvemos NULL si ninguno matchea — el UPSERT preserva el valor previo
-    // con COALESCE, asi una respuesta parcial no borra el dato bueno.
-    $ultimoTrafico = firstDateTime($s, [
-        ['gprsStatus', 'lastDataAccessTS'],
-        ['gprsStatus', 'lastConnectionDate'],
-        ['gprsStatus', 'lastDataUsageDate'],
-        ['gprsStatus', 'lastUsageDate'],
-        ['lastDataUsageDate'],
-        ['lastConnectionDate'],
-        ['lastUsageDate'],
-        ['lastActivityDate'],
-    ]);
-
     return [
         ':alias'          => $alias,
         ':linea'          => $linea,
@@ -305,44 +350,6 @@ function mapKiteSim(array $s): array {
         ':consumo_datos'  => $usedMB,
         ':imei'           => $imei   !== '' ? $imei   : null,
         ':msisdn'         => $msisdn !== '' ? $msisdn : null,
-        ':ultimo_trafico' => $ultimoTrafico,
+        // :ultimo_trafico lo calcula el caller (kiteSyncSims) por delta de consumo.
     ];
-}
-
-/**
- * Recorre `$paths` (cada uno es una lista de claves anidadas dentro de $data)
- * y devuelve el primer valor no vacio parseable a fecha, formateado como
- * `Y-m-d H:i:s` en la zona horaria del servidor. Devuelve NULL si ninguno
- * matchea. Acepta ISO8601 (`2026-07-28T14:23:45Z`, `...+00:00`), `Y-m-d H:i:s`
- * y epoch en segundos o milisegundos.
- */
-function firstDateTime(array $data, array $paths): ?string {
-    foreach ($paths as $path) {
-        $ref = $data;
-        foreach ($path as $key) {
-            if (!is_array($ref) || !array_key_exists($key, $ref)) { $ref = null; break; }
-            $ref = $ref[$key];
-        }
-        if ($ref === null || $ref === '' || $ref === false) continue;
-
-        $s = null;
-        if (is_numeric($ref)) {
-            // Epoch: si tiene 13 digitos, esta en milisegundos.
-            $n = (int) $ref;
-            if ($n > 100_000_000_000) $n = (int) round($n / 1000);
-            try {
-                $s = (new DateTimeImmutable('@' . $n))
-                    ->setTimezone(new DateTimeZone(date_default_timezone_get()))
-                    ->format('Y-m-d H:i:s');
-            } catch (Throwable $e) { $s = null; }
-        } else {
-            try {
-                $s = (new DateTimeImmutable((string)$ref))
-                    ->setTimezone(new DateTimeZone(date_default_timezone_get()))
-                    ->format('Y-m-d H:i:s');
-            } catch (Throwable $e) { $s = null; }
-        }
-        if ($s !== null) return $s;
-    }
-    return null;
 }

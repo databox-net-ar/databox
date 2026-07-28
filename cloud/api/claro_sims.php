@@ -12,7 +12,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const CSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado, ultimo_trafico";
+const CSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado, ultimo_trafico, tags";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -48,6 +48,7 @@ try {
 function handleList(PDO $pdo, array $q): void {
     $codigo = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
     $estado = trim((string)($q['estado'] ?? ''));
+    $imei   = trim((string)($q['imei']   ?? ''));
     $enUso  = trim((string)($q['en_uso'] ?? ''));
     $search = trim((string)($q['q']      ?? ''));
 
@@ -66,6 +67,7 @@ function handleList(PDO $pdo, array $q): void {
         'nombre'         => 'nombre',
         'linea'          => 'linea',
         'icc'            => 'icc',
+        'imei'           => 'imei',
         'estado'         => 'estado',
         'msisdn'         => 'msisdn',
         'actualizado'    => 'actualizado',
@@ -82,6 +84,7 @@ function handleList(PDO $pdo, array $q): void {
 
     if ($codigo !== null) { $where[] = 'id = :codigo';       $params[':codigo'] = $codigo; }
     if ($estado !== '')   { $where[] = 'estado = :estado';   $params[':estado'] = $estado; }
+    if ($imei   !== '')   { $where[] = 'imei LIKE :imei';    $params[':imei']   = "%{$imei}%"; }
 
     // en_uso admite: 'si' | 'no' | 'null' (sin definir) | '' (todos).
     if ($enUso === 'null')          { $where[] = "(en_uso IS NULL OR en_uso = '')"; }
@@ -90,12 +93,15 @@ function handleList(PDO $pdo, array $q): void {
     if ($search !== '') {
         // PDO con ATTR_EMULATE_PREPARES=false no permite reusar el mismo
         // placeholder para varias columnas — hay que bindear uno por columna.
-        $where[] = '(nombre LIKE :s_nombre OR alias LIKE :s_alias OR linea LIKE :s_linea OR icc LIKE :s_icc)';
+        // `tags` es un JSON array serializado (["a","b"]); un LIKE sobre el
+        // string crudo es suficiente para el buscador rapido.
+        $where[] = '(nombre LIKE :s_nombre OR alias LIKE :s_alias OR linea LIKE :s_linea OR icc LIKE :s_icc OR tags LIKE :s_tags)';
         $like = "%{$search}%";
         $params[':s_nombre'] = $like;
         $params[':s_alias']  = $like;
         $params[':s_linea']  = $like;
         $params[':s_icc']    = $like;
+        $params[':s_tags']   = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
@@ -105,6 +111,7 @@ function handleList(PDO $pdo, array $q): void {
             COUNT(*)                                                                  AS total,
             SUM(CASE WHEN LOWER(estado) IN ('activada','activa','active') THEN 1 END) AS activas,
             SUM(CASE WHEN estado IS NULL OR estado = '' THEN 1 END)                   AS sin_estado,
+            SUM(CASE WHEN en_uso = 'si' THEN 1 END)                                   AS en_uso,
             MAX(actualizado)                                                          AS ultima_sync
         FROM claro_sims
     ")->fetch();
@@ -119,12 +126,15 @@ function handleList(PDO $pdo, array $q): void {
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
+    foreach ($rows as &$row) $row['tags'] = csimDecodeTags($row['tags'] ?? null);
+    unset($row);
 
     jsonOk([
         'stats' => [
             'total'       => (int)($stats['total']      ?? 0),
             'activas'     => (int)($stats['activas']    ?? 0),
             'sin_estado'  => (int)($stats['sin_estado'] ?? 0),
+            'en_uso'      => (int)($stats['en_uso']     ?? 0),
             'ultima_sync' => $stats['ultima_sync']      ?? null,
         ],
         'items' => $rows,
@@ -136,7 +146,58 @@ function handleGetOne(PDO $pdo, int $id): void {
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('SIM no encontrada', 404);
+    $row['tags'] = csimDecodeTags($row['tags'] ?? null);
     jsonOk($row);
+}
+
+// `tags` se persiste como CSV plano en VARCHAR(500): `etiqueta1,etiqueta2,...`,
+// sin comillas ni corchetes, para que la columna sea legible desde cualquier
+// cliente SQL. La API sigue exponiendo/consumiendo el array de strings (mas
+// natural para el frontend, que renderiza pills). Estos helpers traducen entre
+// ambas representaciones. La coma es reservada como separador — el editor de
+// tags del frontend ya la usa como "confirmar tag actual", y el normalizador
+// backend divide por coma como red de seguridad si llegase colada.
+function csimDecodeTags(?string $raw): array {
+    if ($raw === null || $raw === '') return [];
+    // Compat con filas guardadas antes del cambio (JSON array).
+    $arr = str_starts_with(ltrim($raw), '[')
+        ? (json_decode($raw, true) ?: [])
+        : explode(',', $raw);
+    $out = [];
+    foreach ($arr as $t) {
+        if (!is_string($t)) continue;
+        $t = trim($t);
+        if ($t === '' || in_array($t, $out, true)) continue;
+        $out[] = $t;
+    }
+    return $out;
+}
+
+// Normaliza el array de tags recibido en el payload y lo devuelve listo para
+// guardar. Limpia (trim + colapso de whitespace), deduplica, splitea internos
+// por coma (por si un item trae varios pegados), tope de 20 tags y 50 chars
+// por tag. Devuelve false si el tipo es invalido, null si no se mando el
+// campo, o el array normalizado (posiblemente vacio).
+function csimNormalizeTags(mixed $in): array|false|null {
+    if ($in === null) return null;
+    if (!is_array($in)) return false;
+    $out = [];
+    foreach ($in as $raw) {
+        if (!is_string($raw)) continue;
+        foreach (explode(',', $raw) as $t) {
+            $t = preg_replace('/\s+/u', ' ', trim($t));
+            if ($t === '') continue;
+            if (mb_strlen($t) > 50) $t = mb_substr($t, 0, 50);
+            if (in_array($t, $out, true)) continue;
+            $out[] = $t;
+            if (count($out) >= 20) break 2;
+        }
+    }
+    return $out;
+}
+function csimEncodeTags(array $tags): ?string {
+    if (!$tags) return null;
+    return implode(',', $tags);
 }
 
 // ----------------------------------------------------------------------------
@@ -168,12 +229,16 @@ function sanitizePayload(array $in): array {
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
 
+    $tagsNorm = csimNormalizeTags($in['tags'] ?? null);
+    if ($tagsNorm === false) jsonError("'tags' debe ser un array de strings", 422);
+    $tagsJson = $tagsNorm !== null ? csimEncodeTags($tagsNorm) : null;
+
     try {
         $sql = "
             INSERT INTO claro_sims
-                (nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn)
+                (nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn, tags)
             VALUES
-                (:nombre, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :imei, :msisdn)
+                (:nombre, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :imei, :msisdn, :tags)
         ";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
@@ -186,6 +251,7 @@ function handleCreate(PDO $pdo, array $in): void {
             ':limite_datos' => $p['limite_datos'],
             ':imei'         => $p['imei'],
             ':msisdn'       => $p['msisdn'],
+            ':tags'         => $tagsJson,
         ]);
     } catch (PDOException $e) {
         if (($e->errorInfo[1] ?? 0) === 1062) jsonError('Ya existe una SIM con ese ICC', 409);
@@ -203,6 +269,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     // Update parcial: solo se tocan las columnas presentes en el payload.
     // Campos editables desde el ABM:
     //   - `nombre`  -> modal Editar
+    //   - `tags`    -> modal Editar (input tipo pills, se serializa como JSON)
     //   - `en_uso`  -> menu contextual del listado ('si' | 'no' | null)
     // El resto (alias, linea, icc, estado*, limite_datos, consumo_datos, imei,
     // msisdn) lo sobreescribe el sync de openclaw y no se acepta aca.
@@ -212,6 +279,12 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (array_key_exists('nombre', $in)) {
         $sets[] = 'nombre = :nombre';
         $params[':nombre'] = nullableStr($in['nombre'], 255);
+    }
+    if (array_key_exists('tags', $in)) {
+        $tagsNorm = csimNormalizeTags($in['tags']);
+        if ($tagsNorm === false) jsonError("'tags' debe ser un array de strings", 422);
+        $sets[] = 'tags = :tags';
+        $params[':tags'] = $tagsNorm !== null ? csimEncodeTags($tagsNorm) : null;
     }
     if (array_key_exists('en_uso', $in)) {
         $v = $in['en_uso'];

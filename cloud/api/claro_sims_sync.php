@@ -122,23 +122,34 @@ function importClaroSimsCsv(PDO $pdo, array $csv): array {
     $fetched      = 0;
     $insertados   = 0;
     $actualizados = 0;
+    $con_trafico  = 0;   // SIMs cuyo consumo cambio -> ultimo_trafico marcado
     $sinIcc       = 0;
 
-    $lookup = $pdo->prepare("SELECT id FROM claro_sims WHERE icc = :icc");
+    // El portal de Claro (iotgestion) no expone la fecha del ultimo trafico
+    // por linea, asi que la DERIVAMOS del delta de `consumo_datos` entre esta
+    // corrida y la anterior. Reglas:
+    //   - SIM existente con consumo distinto al previo -> ultimo_trafico = NOW().
+    //   - SIM existente sin cambio -> preservamos el valor previo.
+    //   - SIM nueva -> ultimo_trafico = NULL (no hay base para comparar).
+    // Caveat: el reset del contador (por ej. "500 MB" -> "0 MB" a fin de ciclo)
+    // tambien cuenta como delta y marca `ultimo_trafico`. Preferimos ese falso
+    // positivo mensual a perder los positivos verdaderos.
+    $lookup = $pdo->prepare("SELECT consumo_datos, ultimo_trafico FROM claro_sims WHERE icc = :icc");
     // UPSERT: solo los campos que openclaw provee. `nombre`, `alias`, `imei`,
     // `limite_datos`, `estado_gprs` y `estado_lte` quedan intactos en el
     // UPDATE para no pisar ediciones manuales del ABM.
     $upsert = $pdo->prepare("
         INSERT INTO claro_sims
-            (linea, icc, estado, consumo_datos, msisdn, actualizado)
+            (linea, icc, estado, consumo_datos, msisdn, actualizado, ultimo_trafico)
         VALUES
-            (:linea, :icc, :estado, :consumo_datos, :msisdn, NOW())
+            (:linea, :icc, :estado, :consumo_datos, :msisdn, NOW(), :ultimo_trafico)
         ON DUPLICATE KEY UPDATE
-            linea         = VALUES(linea),
-            estado        = VALUES(estado),
-            consumo_datos = VALUES(consumo_datos),
-            msisdn        = VALUES(msisdn),
-            actualizado   = VALUES(actualizado)
+            linea          = VALUES(linea),
+            estado         = VALUES(estado),
+            consumo_datos  = VALUES(consumo_datos),
+            msisdn         = VALUES(msisdn),
+            actualizado    = VALUES(actualizado),
+            ultimo_trafico = VALUES(ultimo_trafico)
     ");
 
     foreach ($rows as $row) {
@@ -146,7 +157,20 @@ function importClaroSimsCsv(PDO $pdo, array $csv): array {
         if ($p[':icc'] === null) { $sinIcc++; continue; }
 
         $lookup->execute([':icc' => $p[':icc']]);
-        $existente = (bool) $lookup->fetchColumn();
+        $prev = $lookup->fetch(PDO::FETCH_ASSOC);
+        $existente = $prev !== false;
+        if ($existente) {
+            $prevConsumo  = (string) ($prev['consumo_datos'] ?? '');
+            $nuevoConsumo = (string) ($p[':consumo_datos'] ?? '');
+            if ($nuevoConsumo !== $prevConsumo) {
+                $p[':ultimo_trafico'] = date('Y-m-d H:i:s');
+                $con_trafico++;
+            } else {
+                $p[':ultimo_trafico'] = $prev['ultimo_trafico'];
+            }
+        } else {
+            $p[':ultimo_trafico'] = null;
+        }
 
         $upsert->execute($p);
         if ($existente) $actualizados++; else $insertados++;
@@ -157,6 +181,7 @@ function importClaroSimsCsv(PDO $pdo, array $csv): array {
         'fetched'      => $fetched,
         'insertados'   => $insertados,
         'actualizados' => $actualizados,
+        'con_trafico'  => $con_trafico,
         'sin_icc'      => $sinIcc,
         'filas_csv'    => count($rows),
         'ultima_sync'  => date('Y-m-d H:i:s'),

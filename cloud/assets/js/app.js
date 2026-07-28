@@ -132,6 +132,90 @@ function slugificarConPuntos(txt) {
     .replace(/\.+$/, '');
 }
 
+// Etiquetas (tags): pills chicas de solo lectura para listados y modales
+// Consultar. `compact` = fuente extra chica pensada para no romper la altura
+// de fila cuando se muestran debajo del nombre. Devuelve '' si el array es
+// vacio (para poder concatenar sin condicionales).
+function renderTagsPills(tags, { compact = true } = {}) {
+  if (!Array.isArray(tags) || tags.length === 0) return '';
+  const fs  = compact ? '.68rem' : '.78rem';
+  const pad = compact ? '1px 7px' : '2px 9px';
+  const gap = compact ? '3px'     : '5px';
+  const mt  = compact ? '3px'     : '4px';
+  const pill = (t) => `<span style="display:inline-block;padding:${pad};background:color-mix(in srgb, var(--primary) 22%, transparent);color:var(--text);border:1px solid color-mix(in srgb, var(--primary) 40%, transparent);border-radius:999px;font-size:${fs};line-height:1.2;white-space:nowrap">${esc(t)}</span>`;
+  return `<div style="display:flex;flex-wrap:wrap;gap:${gap};margin-top:${mt}">${tags.map(pill).join('')}</div>`;
+}
+
+// Editor de tags tipo "chips" para modales de edicion. Renderiza dentro de
+// `container` (elemento DOM) un input inline con las pills ya cargadas de
+// `initialTags`. Reglas:
+//   - Enter o coma = confirma el texto actual como nueva pill
+//   - Backspace con el input vacio = borra la ultima pill
+//   - Click en la "×" de una pill = la quita
+//   - Blur con texto sin confirmar = lo confirma igual (para no perder input)
+//   - Tope de 20 tags, 50 chars por tag, colapsado de espacios y dedup
+// Devuelve `{ getTags(): string[] }` que el caller invoca al momento de
+// armar el payload del PUT.
+function attachTagsEditor(container, initialTags) {
+  const state = { tags: (Array.isArray(initialTags) ? initialTags : []).slice(0, 20) };
+  container.innerHTML = `
+    <div data-slot="wrap" style="display:flex;flex-wrap:wrap;gap:6px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);min-height:38px;align-items:center;cursor:text">
+      <span data-slot="pills" style="display:contents"></span>
+      <input type="text" data-slot="input" placeholder="Escribí y Enter para agregar…"
+             style="flex:1;min-width:140px;border:0;background:transparent;color:var(--text);outline:none;font-size:.9rem;padding:2px 4px">
+    </div>
+    <div style="font-size:.72rem;color:var(--muted);margin-top:4px">
+      Máx. 20 etiquetas · Enter o coma agrega · Backspace borra la última
+    </div>
+  `;
+  const wrap  = container.querySelector('[data-slot="wrap"]');
+  const pills = container.querySelector('[data-slot="pills"]');
+  const input = container.querySelector('[data-slot="input"]');
+
+  const pintar = () => {
+    pills.innerHTML = state.tags.map((t, i) => `
+      <span style="display:inline-flex;align-items:center;gap:2px;padding:2px 4px 2px 10px;background:color-mix(in srgb, var(--primary) 22%, transparent);color:var(--text);border:1px solid color-mix(in srgb, var(--primary) 40%, transparent);border-radius:999px;font-size:.78rem;line-height:1.2;white-space:nowrap">
+        ${esc(t)}
+        <button type="button" data-remove="${i}" title="Quitar" style="border:0;background:transparent;color:inherit;cursor:pointer;font-size:1rem;line-height:1;padding:0 4px">×</button>
+      </span>
+    `).join('');
+  };
+
+  const agregar = (raw) => {
+    const t = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 50);
+    if (!t) return;
+    if (state.tags.includes(t)) return;
+    if (state.tags.length >= 20) return;
+    state.tags.push(t);
+    pintar();
+  };
+
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' || ev.key === ',') {
+      ev.preventDefault();
+      agregar(input.value);
+      input.value = '';
+    } else if (ev.key === 'Backspace' && input.value === '' && state.tags.length) {
+      ev.preventDefault();
+      state.tags.pop();
+      pintar();
+    }
+  });
+  input.addEventListener('blur', () => {
+    if (input.value.trim() !== '') { agregar(input.value); input.value = ''; }
+  });
+  pills.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-remove]');
+    if (!b) return;
+    state.tags.splice(Number(b.dataset.remove), 1);
+    pintar();
+  });
+  wrap.addEventListener('click', (ev) => { if (ev.target === wrap) input.focus(); });
+
+  pintar();
+  return { getTags: () => state.tags.slice() };
+}
+
 async function apiGet(url) {
   const r = await fetch(url, { credentials: 'same-origin' });
   if (r.status === 401) { handleSessionExpired(); throw new Error('Sesión expirada'); }
@@ -25517,28 +25601,29 @@ route('/movistar', async (mount) => {
 
 // ------------------------- Vista: Movistar > SIMs (ABM) -------------------------
 const msimFiltrosDefaults = {
-  q: '', codigo: '', nombre: '', linea: '', estado: '', en_uso: '',
+  q: '', codigo: '', nombre: '', linea: '', imei: '', estado: '', en_uso: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const msimFiltros = { ...msimFiltrosDefaults };
 let msimBuscadorTimer   = null;
 let msimFiltrosSnapshot = null;
+// Instancia del tags editor del modal Editar Movistar. Se setea en
+// abrirAltaEdicionMsim (uno por apertura de modal) y se consume en guardarMsim.
+let msimTagsEditor      = null;
 // Cache de los estados distintos actualmente presentes en la BD. Se refresca
 // con cada corrida de `cargarMsim` (viene en `stats.estados`) y se usa para
 // poblar el <select> de estado del modal de Filtros.
 let msimEstadosCache    = [];
 
 function msimFmtEstado(v) {
-  if (v == null || v === '') return `<span class="badge badge-info">—</span>`;
+  if (v == null || v === '') return `<span class="badge badge-muted">—</span>`;
   const s   = String(v).toLowerCase();
-  const map = {
-    activada: 'badge-success', activa: 'badge-success', active: 'badge-success',
-    suspendida: 'badge-warn',  suspended: 'badge-warn',
-    baja: 'badge-danger',      terminada: 'badge-danger', terminated: 'badge-danger',
-    inventario: 'badge-info',  inventory: 'badge-info',
-  };
-  const cls = map[s] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(v)}</span>`;
+  // Solo dos estados destacados: `active` (verde) y `deactivated` (rojo).
+  // Cualquier otro estado que devuelva Kite (SUSPENDED, INVENTORY, TEST,
+  // TERMINATED, etc.) se muestra en gris para no distraer.
+  if (s === 'active'      || s === 'activa'      || s === 'activada')      return `<span class="badge badge-success">${esc(v)}</span>`;
+  if (s === 'deactivated' || s === 'desactivada' || s === 'desactivado')   return `<span class="badge badge-danger">${esc(v)}</span>`;
+  return `<span class="badge badge-muted">${esc(v)}</span>`;
 }
 
 // Circulo indicador para la columna "En uso" del listado de SIMs (Movistar y
@@ -25573,9 +25658,9 @@ route('/movistar_sims', async (mount) => {
       </div>
 
       <div class="stats-bar" id="msimStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" data-slot="total">—</span></div>
+        <div class="stat-card"><span class="stat-label">En uso</span><span class="stat-value" data-slot="en_uso">—</span></div>
         <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value" data-slot="activas">—</span></div>
-        <div class="stat-card"><span class="stat-label">Sin estado</span><span class="stat-value" data-slot="sin_estado">—</span></div>
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" data-slot="total">—</span></div>
         <div class="stat-card"><span class="stat-label">Última sync</span><span class="stat-value" data-slot="ultima_sync">—</span></div>
       </div>
 
@@ -25583,7 +25668,7 @@ route('/movistar_sims', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="msimSearch"
-                   placeholder="🔍 Buscar nombre, línea, ICC, IMEI o MSISDN…">
+                   placeholder="🔍 Buscar nombre, línea, ICC o tag…">
             <button class="search-clear" id="msimSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="msimFiltrosBtn" title="Filtros">
@@ -25607,6 +25692,7 @@ route('/movistar_sims', async (mount) => {
               ${thOrdenable('nombre',        'Nombre')}
               ${thOrdenable('linea',         'Línea')}
               <th style="width:180px">ICC</th>
+              ${thOrdenable('imei',          'IMEI', 'width:160px')}
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
               ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
@@ -25616,7 +25702,7 @@ route('/movistar_sims', async (mount) => {
             </tr>
           </thead>
           <tbody id="msimTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -25680,6 +25766,10 @@ route('/movistar_sims', async (mount) => {
           </div>
           <div class="form-row">
             <div class="form-group">
+              <label>IMEI</label>
+              <input type="text" id="fMsimImei" placeholder="Contiene…" oninput="onFiltroMsim('imei', this.value)" style="font-family:monospace">
+            </div>
+            <div class="form-group">
               <label>En uso</label>
               <select id="fMsimEnUso" onchange="onFiltroMsim('en_uso', this.value)">
                 <option value="">Todas</option>
@@ -25701,6 +25791,7 @@ route('/movistar_sims', async (mount) => {
                 <option value="nombre">Nombre</option>
                 <option value="linea">Línea</option>
                 <option value="icc">ICC</option>
+                <option value="imei">IMEI</option>
                 <option value="estado">Estado</option>
                 <option value="limite_datos">Límite datos</option>
                 <option value="consumo_datos">Consumo datos</option>
@@ -25813,7 +25904,7 @@ route('/movistar_sims', async (mount) => {
 async function cargarMsim() {
   const tbody = $('#msimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(msimFiltros).forEach(([k, v]) => {
@@ -25825,7 +25916,7 @@ async function cargarMsim() {
     pintarStatsMsim(data.stats);
     pintarTablaMsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -25834,9 +25925,9 @@ function pintarStatsMsim(s) {
     const el = document.querySelector(`#msimStats [data-slot="${name}"]`);
     if (el) el.textContent = val;
   };
-  setSlot('total',      fmtNum(s?.total      ?? 0));
+  setSlot('en_uso',     fmtNum(s?.en_uso     ?? 0));
   setSlot('activas',    fmtNum(s?.activas    ?? 0));
-  setSlot('sin_estado', fmtNum(s?.sin_estado ?? 0));
+  setSlot('total',      fmtNum(s?.total      ?? 0));
   setSlot('ultima_sync', s?.ultima_sync ? fmtHaceLargo(s.ultima_sync) : '—');
   actualizarSortIndicadores($('#msimThead'), msimFiltros);
   if (Array.isArray(s?.estados)) msimEstadosCache = s.estados;
@@ -25845,15 +25936,16 @@ function pintarStatsMsim(s) {
 function pintarTablaMsim(rows) {
   const tbody = $('#msimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
-      <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}</td>
+      <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}${renderTagsPills(r.tags)}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(r.imei || '—')}</td>
       <td>${msimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
@@ -25904,6 +25996,7 @@ function sincronizarControlesFiltrosMsim() {
   $('#fMsimCodigo').value  = f.codigo;
   $('#fMsimNombre').value  = f.nombre;
   $('#fMsimLinea').value   = f.linea;
+  $('#fMsimImei').value    = f.imei;
   $('#fMsimEnUso').value   = f.en_uso;
   $('#fMsimLimite').value  = f.limite;
   $('#fMsimOrderBy').value = f.order_by;
@@ -25947,25 +26040,149 @@ window.cancelarFiltrosMsim    = cancelarFiltrosMsim;
 window.limpiarFiltrosMsim     = limpiarFiltrosMsim;
 window.cerrarModalFiltrosMsim = cerrarModalFiltrosMsim;
 
+// Sincroniza el inventario Movistar contra Kite. Abre un modal con consola de
+// log en vivo (backend streamea linea por linea, formato JSON, cierre con
+// `___END___ <resumen>`). Si termina sin errores, el modal se autocierra
+// tras un instante y se refresca el listado. Si hubo cualquier error, el
+// modal queda abierto con las lineas en rojo para que el usuario las lea.
 async function sincronizarMsim() {
-  const btn = $('#msimMenuBtn');
-  const html = btn ? btn.innerHTML : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px"></div>`;
-  }
+  openModal(`
+    <div class="modal" style="width:min(820px,90vw)">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-cloud-arrow-down"></i>
+          Sincronizar SIMs Movistar
+          <span id="msimSyncBadge" class="badge badge-info" style="margin-left:8px">En curso…</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="msimSyncLog" style="background:#0b1220;color:#d1d5db;border:1px solid var(--border);border-radius:8px;padding:12px;height:360px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;white-space:pre-wrap;margin:0"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close" disabled>Cerrar</button>
+      </div>
+    </div>
+  `);
+
+  const cerrarBtn = $('#modalRoot [data-act="close"].btn-ghost');
+  const closeXBtn = $('#modalRoot .btn-icon-sm[data-act="close"]');
+  // Mientras corre el sync bloqueamos el cierre para evitar que el usuario
+  // corte el request a mitad. Cuando termina, se habilita.
+  if (closeXBtn) closeXBtn.disabled = true;
+  $('#modalRoot').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-act="close"]');
+    if (b && !b.disabled) closeModal();
+  });
+
+  const pre    = document.getElementById('msimSyncLog');
+  const badge  = document.getElementById('msimSyncBadge');
+  const setEstado = (cls, txt) => {
+    if (!badge) return;
+    badge.className   = `badge ${cls}`;
+    badge.textContent = txt;
+  };
+  // Cada evento del backend es una linea JSON {tipo, mensaje}. Colorizamos por
+  // tipo: error rojo, warn ambar, ok verde suave, info neutro.
+  const colorPorTipo = {
+    error: '#f87171',
+    warn:  '#fbbf24',
+    ok:    '#86efac',
+    info:  '#d1d5db',
+  };
+  const append = (tipo, mensaje) => {
+    if (!pre) return;
+    const color = colorPorTipo[tipo] || colorPorTipo.info;
+    const linea = document.createElement('div');
+    linea.style.color = color;
+    if (tipo === 'error') linea.style.fontWeight = '600';
+    const prefijo = tipo === 'error' ? '✖ ' : tipo === 'warn' ? '⚠ ' : tipo === 'ok' ? '✓ ' : '· ';
+    linea.textContent = prefijo + mensaje;
+    pre.appendChild(linea);
+    pre.scrollTop = pre.scrollHeight;
+  };
+
+  let hayErrores = false;
+
   try {
-    const r = await apiSend('api/movistar_sims_sync.php', 'POST', {});
-    const ins = r?.insertados ?? 0, act = r?.actualizados ?? 0, tot = r?.fetched ?? 0;
-    toast(`Kite: ${tot} SIMs (${ins} nuevas, ${act} actualizadas).`);
-    cargarMsim();
-  } catch (e) {
-    toast(e.message || 'Sync de Kite pendiente de implementación.', { error: true });
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = html;
+    const r = await fetch('api/movistar_sims_sync.php?stream=1', {
+      method:      'POST',
+      credentials: 'same-origin',
+    });
+    if (r.status === 401) { handleSessionExpired(); return; }
+    if (!r.ok && r.status !== 200) {
+      append('error', `HTTP ${r.status} ${r.statusText}`);
+      setEstado('badge-danger', 'Error');
+      hayErrores = true;
+    } else {
+      const reader  = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer  = '';
+      let resumen = null;
+      const procesarLinea = (linea) => {
+        if (linea === '') return;
+        if (linea.startsWith('___END___ ')) {
+          try { resumen = JSON.parse(linea.slice(10)); }
+          catch (_) { resumen = { ok: false, error: 'Respuesta final inválida.' }; }
+          return;
+        }
+        try {
+          const ev = JSON.parse(linea);
+          if (ev.tipo === 'error') hayErrores = true;
+          append(ev.tipo || 'info', ev.mensaje || linea);
+        } catch (_) {
+          // Linea no JSON (raro) — la mostramos tal cual como info.
+          append('info', linea);
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          procesarLinea(buffer.slice(0, nl));
+          buffer = buffer.slice(nl + 1);
+        }
+      }
+      if (buffer !== '') procesarLinea(buffer);
+
+      if (!resumen) {
+        setEstado('badge-danger', 'Error');
+        append('error', 'El servidor cerró la conexión sin enviar resumen.');
+        hayErrores = true;
+      } else if (!resumen.ok) {
+        setEstado('badge-danger', 'Error');
+        hayErrores = true;
+      } else if ((resumen.errores || 0) > 0) {
+        setEstado('badge-warn', `Con avisos (${resumen.errores})`);
+        hayErrores = true;
+      } else {
+        setEstado('badge-success', 'OK');
+      }
     }
+  } catch (err) {
+    setEstado('badge-danger', 'Error de red');
+    append('error', 'Error de red: ' + (err.message || err));
+    hayErrores = true;
+  }
+
+  // Rehabilitar cierre en cualquier caso.
+  if (cerrarBtn) cerrarBtn.disabled = false;
+  if (closeXBtn) closeXBtn.disabled = false;
+
+  // Refrescar listado siempre (aunque haya errores parciales suele haber
+  // filas actualizadas).
+  cargarMsim();
+
+  // Autocierre solo si no hubo NINGUN error. Delay corto para que el usuario
+  // alcance a leer el resumen final antes de que desaparezca.
+  if (!hayErrores) {
+    setTimeout(() => {
+      // No cerrar si el usuario ya abrio otra cosa encima.
+      if (document.getElementById('msimSyncLog')) closeModal();
+    }, 1500);
   }
 }
 
@@ -26037,16 +26254,22 @@ function pintarConsultarMsimGeneral(r) {
       ${card('Línea',          esc(r.linea  || '—'))}
       ${card('MSISDN',         esc(r.msisdn || '—'))}
       ${card('ICC',            esc(r.icc    || '—'))}
+      ${card('IMEI',           esc(r.imei   || '—'))}
       ${card('Estado',         est)}
       ${card('Estado GPRS',    gprs)}
       ${card('Estado LTE',     lte)}
       ${card('Límite datos',   esc(r.limite_datos  || '—'))}
       ${card('Consumo datos',  esc(r.consumo_datos || '—'))}
       ${card('Último tráfico', trafHtml)}
-      ${card('IMEI',           esc(r.imei   || '—'))}
       ${card('En uso',         `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
       ${card('Última sync',    esc(sync))}
     </div>
+    ${Array.isArray(r.tags) && r.tags.length ? `
+      <div style="margin-top:14px;padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px">
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">Etiquetas</div>
+        ${renderTagsPills(r.tags, { compact: false })}
+      </div>
+    ` : ''}
   `;
 }
 
@@ -26126,9 +26349,11 @@ async function abrirAltaEdicionMsim(id) {
     </div>
   `);
 
+  msimTagsEditor = null;
   try {
     const r = await apiGet(`api/movistar_sims.php?id=${id}`);
     $('#modalRoot .modal-body').innerHTML = formMsimHtml(r);
+    msimTagsEditor = attachTagsEditor($('#msimTagsHost'), r.tags || []);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -26148,6 +26373,10 @@ function formMsimHtml(r) {
       <label>Nombre</label>
       <input type="text" id="msimNombre" maxlength="255" value="${v('nombre')}" autofocus>
     </div>
+    <div class="form-group">
+      <label>Etiquetas</label>
+      <div id="msimTagsHost"></div>
+    </div>
     <div style="font-size:.82rem;color:var(--muted);margin-top:6px">
       El resto de los datos de la SIM se actualiza automaticamente desde Kite Platform en cada sincronizacion.
     </div>
@@ -26161,6 +26390,7 @@ async function guardarMsim(id, btn) {
 
   const payload = {
     nombre: $('#msimNombre').value.trim() || null,
+    tags:   msimTagsEditor ? msimTagsEditor.getTags() : [],
   };
 
   btn.disabled = true;
@@ -26602,24 +26832,25 @@ route('/anthropic', async (mount) => {
 
 // ------------------------- Vista: Claro > SIMs (ABM) -------------------------
 const csimFiltrosDefaults = {
-  q: '', codigo: '', estado: '', en_uso: '',
+  q: '', codigo: '', imei: '', estado: '', en_uso: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const csimFiltros = { ...csimFiltrosDefaults };
 let csimBuscadorTimer   = null;
 let csimFiltrosSnapshot = null;
+// Instancia del tags editor del modal Editar Claro. Se setea en
+// abrirAltaEdicionCsim (uno por apertura de modal) y se consume en guardarCsim.
+let csimTagsEditor      = null;
 
 function csimFmtEstado(v) {
-  if (v == null || v === '') return `<span class="badge badge-info">—</span>`;
+  if (v == null || v === '') return `<span class="badge badge-muted">—</span>`;
   const s   = String(v).toLowerCase();
-  const map = {
-    activada: 'badge-success', activa: 'badge-success', active: 'badge-success',
-    suspendida: 'badge-warn',  suspended: 'badge-warn',
-    baja: 'badge-danger',      terminada: 'badge-danger', terminated: 'badge-danger',
-    inventario: 'badge-info',  inventory: 'badge-info',
-  };
-  const cls = map[s] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(v)}</span>`;
+  // Solo dos estados destacados: `activo` (verde) y `desactivado` (rojo).
+  // Cualquier otro estado (SUSPENDIDO, INVENTARIO, TEST, RETIRADO, BAJA, etc.)
+  // se muestra en gris para no distraer.
+  if (s === 'activo'      || s === 'activa'      || s === 'activada' || s === 'active')      return `<span class="badge badge-success">${esc(v)}</span>`;
+  if (s === 'desactivado' || s === 'desactivada' || s === 'deactivated')                     return `<span class="badge badge-danger">${esc(v)}</span>`;
+  return `<span class="badge badge-muted">${esc(v)}</span>`;
 }
 
 route('/claro_sims', async (mount) => {
@@ -26642,9 +26873,9 @@ route('/claro_sims', async (mount) => {
       </div>
 
       <div class="stats-bar" id="csimStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" data-slot="total">—</span></div>
+        <div class="stat-card"><span class="stat-label">En uso</span><span class="stat-value" data-slot="en_uso">—</span></div>
         <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value" data-slot="activas">—</span></div>
-        <div class="stat-card"><span class="stat-label">Sin estado</span><span class="stat-value" data-slot="sin_estado">—</span></div>
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" data-slot="total">—</span></div>
         <div class="stat-card"><span class="stat-label">Última sync</span><span class="stat-value" data-slot="ultima_sync">—</span></div>
       </div>
 
@@ -26652,7 +26883,7 @@ route('/claro_sims', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="csimSearch"
-                   placeholder="🔍 Buscar nombre, línea, ICC, IMEI o MSISDN…">
+                   placeholder="🔍 Buscar nombre, línea, ICC o tag…">
             <button class="search-clear" id="csimSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="csimFiltrosBtn" title="Filtros">
@@ -26682,6 +26913,7 @@ route('/claro_sims', async (mount) => {
               ${thOrdenable('nombre',        'Nombre')}
               ${thOrdenable('linea',         'Línea')}
               <th style="width:180px">ICC</th>
+              ${thOrdenable('imei',          'IMEI', 'width:160px')}
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
               ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
@@ -26691,7 +26923,7 @@ route('/claro_sims', async (mount) => {
             </tr>
           </thead>
           <tbody id="csimTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -26737,6 +26969,10 @@ route('/claro_sims', async (mount) => {
           </div>
           <div class="form-row">
             <div class="form-group">
+              <label>IMEI</label>
+              <input type="text" id="fCsimImei" placeholder="Contiene…" oninput="onFiltroCsim('imei', this.value)" style="font-family:monospace">
+            </div>
+            <div class="form-group">
               <label>En uso</label>
               <select id="fCsimEnUso" onchange="onFiltroCsim('en_uso', this.value)">
                 <option value="">Todas</option>
@@ -26758,6 +26994,7 @@ route('/claro_sims', async (mount) => {
                 <option value="nombre">Nombre</option>
                 <option value="linea">Línea</option>
                 <option value="icc">ICC</option>
+                <option value="imei">IMEI</option>
                 <option value="estado">Estado</option>
                 <option value="limite_datos">Límite datos</option>
                 <option value="consumo_datos">Consumo datos</option>
@@ -26870,7 +27107,7 @@ route('/claro_sims', async (mount) => {
 async function cargarCsim() {
   const tbody = $('#csimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(csimFiltros).forEach(([k, v]) => {
@@ -26882,7 +27119,7 @@ async function cargarCsim() {
     pintarStatsCsim(data.stats);
     pintarTablaCsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -26891,9 +27128,9 @@ function pintarStatsCsim(s) {
     const el = document.querySelector(`#csimStats [data-slot="${name}"]`);
     if (el) el.textContent = val;
   };
-  setSlot('total',      fmtNum(s?.total      ?? 0));
+  setSlot('en_uso',     fmtNum(s?.en_uso     ?? 0));
   setSlot('activas',    fmtNum(s?.activas    ?? 0));
-  setSlot('sin_estado', fmtNum(s?.sin_estado ?? 0));
+  setSlot('total',      fmtNum(s?.total      ?? 0));
   setSlot('ultima_sync', s?.ultima_sync ? fmtHaceLargo(s.ultima_sync) : '—');
   actualizarSortIndicadores($('#csimThead'), csimFiltros);
 }
@@ -26901,15 +27138,16 @@ function pintarStatsCsim(s) {
 function pintarTablaCsim(rows) {
   const tbody = $('#csimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
-      <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}</td>
+      <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}${renderTagsPills(r.tags)}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
+      <td style="font-family:monospace;white-space:nowrap">${esc(r.imei || '—')}</td>
       <td>${csimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
@@ -26959,6 +27197,7 @@ function sincronizarControlesFiltrosCsim() {
   const f = csimFiltros;
   $('#fCsimCodigo').value  = f.codigo;
   $('#fCsimEstado').value  = f.estado;
+  $('#fCsimImei').value    = f.imei;
   $('#fCsimEnUso').value   = f.en_uso;
   $('#fCsimLimite').value  = f.limite;
   $('#fCsimOrderBy').value = f.order_by;
@@ -27180,16 +27419,22 @@ function pintarConsultarCsimGeneral(r) {
       ${card('Línea',          esc(r.linea  || '—'))}
       ${card('MSISDN',         esc(r.msisdn || '—'))}
       ${card('ICC',            esc(r.icc    || '—'))}
+      ${card('IMEI',           esc(r.imei   || '—'))}
       ${card('Estado',         est)}
       ${card('Estado GPRS',    gprs)}
       ${card('Estado LTE',     lte)}
       ${card('Límite datos',   esc(r.limite_datos  || '—'))}
       ${card('Consumo datos',  esc(r.consumo_datos || '—'))}
       ${card('Último tráfico', trafHtml)}
-      ${card('IMEI',           esc(r.imei   || '—'))}
       ${card('En uso',         `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
       ${card('Última sync',    esc(sync))}
     </div>
+    ${Array.isArray(r.tags) && r.tags.length ? `
+      <div style="margin-top:14px;padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px">
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">Etiquetas</div>
+        ${renderTagsPills(r.tags, { compact: false })}
+      </div>
+    ` : ''}
   `;
 }
 
@@ -27237,9 +27482,11 @@ async function abrirAltaEdicionCsim(id) {
     </div>
   `);
 
+  csimTagsEditor = null;
   try {
     const r = await apiGet(`api/claro_sims.php?id=${id}`);
     $('#modalRoot .modal-body').innerHTML = formCsimHtml(r);
+    csimTagsEditor = attachTagsEditor($('#csimTagsHost'), r.tags || []);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -27259,6 +27506,10 @@ function formCsimHtml(r) {
       <label>Nombre</label>
       <input type="text" id="csimNombre" maxlength="255" value="${v('nombre')}" autofocus>
     </div>
+    <div class="form-group">
+      <label>Etiquetas</label>
+      <div id="csimTagsHost"></div>
+    </div>
     <div style="font-size:.82rem;color:var(--muted);margin-top:6px">
       El resto de los datos de la SIM se actualiza automaticamente desde el portal de Claro en cada sincronizacion.
     </div>
@@ -27272,6 +27523,7 @@ async function guardarCsim(id, btn) {
 
   const payload = {
     nombre: $('#csimNombre').value.trim() || null,
+    tags:   csimTagsEditor ? csimTagsEditor.getTags() : [],
   };
 
   btn.disabled = true;

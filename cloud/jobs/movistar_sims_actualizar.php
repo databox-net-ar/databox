@@ -36,10 +36,11 @@ try {
     $stats['duracion_ms'] = (int) round((microtime(true) - $t0) * 1000);
 
     $resumen = sprintf(
-        '%d SIMs (%d nuevas, %d actualizadas) en %d paginas — %d ms',
+        '%d SIMs (%d nuevas, %d actualizadas, %d con trafico nuevo) en %d paginas — %d ms',
         (int)$stats['fetched'],
         (int)$stats['insertados'],
         (int)$stats['actualizados'],
+        (int)$stats['con_trafico'],
         (int)$stats['paginas'],
         (int)$stats['duracion_ms']
     );
