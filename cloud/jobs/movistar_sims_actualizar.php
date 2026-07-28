@@ -1,12 +1,12 @@
 <?php
 /**
- * cloud/jobs/movistarsims_actualizar.php
+ * cloud/jobs/movistar_sims_actualizar.php
  * Sincroniza el inventario de SIMs Movistar contra Kite Platform (mTLS) y
- * hace UPSERT sobre la tabla `movistarsims`. Es el equivalente automatico
+ * hace UPSERT sobre la tabla `movistar_sims`. Es el equivalente automatico
  * al boton "Sincronizar" del ABM de SIMs Movistar (que llama a
- * POST api/movistarsims_sync.php).
+ * POST api/movistar_sims_sync.php).
  *
- * Reutiliza el mismo nucleo que el endpoint: api/lib/movistarsims_kite.php.
+ * Reutiliza el mismo nucleo que el endpoint: api/lib/movistar_sims_kite.php.
  *
  * Deja un unico suceso al terminar:
  *   - tipo=info   : Kite respondio OK, upsert completo.
@@ -16,13 +16,13 @@
  *   KITE_API_HOST, KITE_API_PORT, KITE_CERT_PATH, KITE_KEY_PATH, KITE_CERT_PASS.
  *
  * Se registra desde el Programador de tareas (tabla `tareas`) apuntando
- * `script` = "movistarsims_actualizar".
+ * `script` = "movistar_sims_actualizar".
  */
 
 require_once __DIR__ . '/_bootstrap.php';
-require_once __DIR__ . '/../api/lib/movistarsims_kite.php';
+require_once __DIR__ . '/../api/lib/movistar_sims_kite.php';
 
-$ORIGEN_SUCESO = 'cron/movistarsims_actualizar';
+$ORIGEN_SUCESO = 'cron/movistar_sims_actualizar';
 
 try {
     $pdo = db();

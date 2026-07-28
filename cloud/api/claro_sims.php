@@ -1,18 +1,18 @@
 <?php
-// api/clarosims.php
+// api/claro_sims.php
 // ABM del catalogo de SIMs M2M administradas via Autogestion Empresas (Claro).
-// Lee/escribe sobre la tabla `clarosims` definida en db/schema.sql.
-//   GET    api/clarosims.php          -> listado con filtros (query string)
-//   GET    api/clarosims.php?id=N     -> registro individual
-//   POST   api/clarosims.php          -> alta (JSON body)
-//   PUT    api/clarosims.php?id=N     -> modificacion (JSON body)
-//   DELETE api/clarosims.php?id=N     -> baja
+// Lee/escribe sobre la tabla `claro_sims` definida en db/schema.sql.
+//   GET    api/claro_sims.php          -> listado con filtros (query string)
+//   GET    api/claro_sims.php?id=N     -> registro individual
+//   POST   api/claro_sims.php          -> alta (JSON body)
+//   PUT    api/claro_sims.php?id=N     -> modificacion (JSON body)
+//   DELETE api/claro_sims.php?id=N     -> baja
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const CSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado";
+const CSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado, ultimo_trafico";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -62,15 +62,16 @@ function handleList(PDO $pdo, array $q): void {
     // a UNSIGNED para tener sort numerico. REGEXP_REPLACE existe en MySQL 8
     // y MariaDB 10.11 (los dos entornos del proyecto).
     $orderMap = [
-        'id'            => 'id',
-        'nombre'        => 'nombre',
-        'linea'         => 'linea',
-        'icc'           => 'icc',
-        'estado'        => 'estado',
-        'msisdn'        => 'msisdn',
-        'actualizado'   => 'actualizado',
-        'limite_datos'  => "CAST(REGEXP_REPLACE(COALESCE(limite_datos,  ''), '[^0-9]', '') AS UNSIGNED)",
-        'consumo_datos' => "CAST(REGEXP_REPLACE(COALESCE(consumo_datos, ''), '[^0-9]', '') AS UNSIGNED)",
+        'id'             => 'id',
+        'nombre'         => 'nombre',
+        'linea'          => 'linea',
+        'icc'            => 'icc',
+        'estado'         => 'estado',
+        'msisdn'         => 'msisdn',
+        'actualizado'    => 'actualizado',
+        'ultimo_trafico' => 'ultimo_trafico',
+        'limite_datos'   => "CAST(REGEXP_REPLACE(COALESCE(limite_datos,  ''), '[^0-9]', '') AS UNSIGNED)",
+        'consumo_datos'  => "CAST(REGEXP_REPLACE(COALESCE(consumo_datos, ''), '[^0-9]', '') AS UNSIGNED)",
     ];
     if (!isset($orderMap[$orderBy])) $orderBy = 'id';
     $orderExpr = $orderMap[$orderBy];
@@ -105,12 +106,12 @@ function handleList(PDO $pdo, array $q): void {
             SUM(CASE WHEN LOWER(estado) IN ('activada','activa','active') THEN 1 END) AS activas,
             SUM(CASE WHEN estado IS NULL OR estado = '' THEN 1 END)                   AS sin_estado,
             MAX(actualizado)                                                          AS ultima_sync
-        FROM clarosims
+        FROM claro_sims
     ")->fetch();
 
     $sql = "
         SELECT " . CSIM_COLS . "
-        FROM clarosims
+        FROM claro_sims
         {$sqlWhere}
         ORDER BY {$orderExpr} {$dirSql}
         LIMIT {$limite}
@@ -131,7 +132,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . CSIM_COLS . " FROM clarosims WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . CSIM_COLS . " FROM claro_sims WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('SIM no encontrada', 404);
@@ -169,7 +170,7 @@ function handleCreate(PDO $pdo, array $in): void {
 
     try {
         $sql = "
-            INSERT INTO clarosims
+            INSERT INTO claro_sims
                 (nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn)
             VALUES
                 (:nombre, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :imei, :msisdn)
@@ -195,7 +196,7 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM clarosims WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM claro_sims WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('SIM no encontrada', 404);
 
@@ -222,7 +223,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     }
 
     if ($sets) {
-        $sql  = 'UPDATE clarosims SET ' . implode(', ', $sets) . ' WHERE id = :id';
+        $sql  = 'UPDATE claro_sims SET ' . implode(', ', $sets) . ' WHERE id = :id';
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
     }
@@ -231,7 +232,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM clarosims WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM claro_sims WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('SIM no encontrada', 404);
     jsonOk(['id' => $id]);

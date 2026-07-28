@@ -2307,10 +2307,10 @@ CREATE TABLE `migraciones`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for clarosims
+-- Table structure for claro_sims
 -- ----------------------------
-DROP TABLE IF EXISTS `clarosims`;
-CREATE TABLE `clarosims`  (
+DROP TABLE IF EXISTS `claro_sims`;
+CREATE TABLE `claro_sims`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `alias` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -2325,15 +2325,17 @@ CREATE TABLE `clarosims`  (
   `msisdn` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `en_uso` varchar(2) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `actualizado` datetime(0) NULL DEFAULT NULL,
+  `ultimo_trafico` datetime(0) NULL DEFAULT NULL,
+  `tags` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_clarosims_icc`(`icc`) USING BTREE
+  UNIQUE INDEX `uk_claro_sims_icc`(`icc`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for movistarsims
+-- Table structure for movistar_sims
 -- ----------------------------
-DROP TABLE IF EXISTS `movistarsims`;
-CREATE TABLE `movistarsims`  (
+DROP TABLE IF EXISTS `movistar_sims`;
+CREATE TABLE `movistar_sims`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `alias` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -2348,8 +2350,10 @@ CREATE TABLE `movistarsims`  (
   `msisdn` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `en_uso` varchar(2) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `actualizado` datetime(0) NULL DEFAULT NULL,
+  `ultimo_trafico` datetime(0) NULL DEFAULT NULL,
+  `tags` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_movistarsims_icc`(`icc`) USING BTREE
+  UNIQUE INDEX `uk_movistar_sims_icc`(`icc`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

@@ -1,19 +1,19 @@
 <?php
-// api/movistarsims_lifecycle.php
+// api/movistar_sims_lifecycle.php
 // Cambia el ciclo de vida ("estado") de una SIM Movistar en Kite Platform.
 // Se usa desde la pestania "Estado" del modal Consultar de la SIM.
 //
 // Consume:
-//   POST api/movistarsims_lifecycle.php
-//   Body JSON: {"id": <movistarsims.id>, "target": "ACTIVE"|"DEACTIVATED"}
+//   POST api/movistar_sims_lifecycle.php
+//   Body JSON: {"id": <movistar_sims.id>, "target": "ACTIVE"|"DEACTIVATED"}
 //
 // Flujo:
 //   1. Chequea permiso `plataformas.movistar.sims.editar`.
-//   2. Lee el ICC de la fila `movistarsims.id`.
+//   2. Lee el ICC de la fila `movistar_sims.id`.
 //   3. Llama a Kite (mTLS) para pedir el cambio de lifeCycleStatus.
 //   4. Devuelve el JSON crudo de Kite (o {} si Kite responde 204).
 //
-// El estado local (`movistarsims.estado`) NO se actualiza aca — el cambio
+// El estado local (`movistar_sims.estado`) NO se actualiza aca — el cambio
 // en Kite suele ser asincronico (Kite devuelve un requestId y el cambio se
 // refleja en el getSubscriptions varios segundos despues). La proxima
 // corrida del sync trae el estado real.
@@ -26,7 +26,7 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
-require_once __DIR__ . '/lib/movistarsims_kite.php';
+require_once __DIR__ . '/lib/movistar_sims_kite.php';
 require_once __DIR__ . '/lib/sucesos.php';
 
 header('Content-Type: application/json; charset=utf-8');
@@ -52,7 +52,7 @@ try {
     }
 
     $pdo  = db();
-    $stmt = $pdo->prepare('SELECT icc, linea, nombre FROM movistarsims WHERE id = :id');
+    $stmt = $pdo->prepare('SELECT icc, linea, nombre FROM movistar_sims WHERE id = :id');
     $stmt->execute([':id' => $id]);
     $sim = $stmt->fetch();
     $icc = (string) ($sim['icc'] ?? '');
@@ -69,12 +69,12 @@ try {
         $cfg  = kiteConfig();
         $resp = kiteChangeLifeCycle($cfg, $icc, $target);
     } catch (Throwable $eKite) {
-        registrarSuceso($pdo, 'movistarsims', 'error',
+        registrarSuceso($pdo, 'movistar_sims', 'error',
             "{$accion} SIM #{$id} \"{$etiqueta}\" (ICC {$icc}) fallo en Kite: " . $eKite->getMessage());
         throw $eKite;
     }
 
-    registrarSuceso($pdo, 'movistarsims', 'info',
+    registrarSuceso($pdo, 'movistar_sims', 'info',
         "{$accion} SIM #{$id} \"{$etiqueta}\" (ICC {$icc}) enviada a Kite Platform.");
 
     jsonOk([

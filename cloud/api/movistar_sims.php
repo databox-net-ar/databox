@@ -1,18 +1,18 @@
 <?php
-// api/movistarsims.php
+// api/movistar_sims.php
 // ABM del catalogo de SIMs M2M administradas via Kite Platform (Movistar).
-// Lee/escribe sobre la tabla `movistarsims` definida en db/schema.sql.
-//   GET    api/movistarsims.php          -> listado con filtros (query string)
-//   GET    api/movistarsims.php?id=N     -> registro individual
-//   POST   api/movistarsims.php          -> alta (JSON body)
-//   PUT    api/movistarsims.php?id=N     -> modificacion (JSON body)
-//   DELETE api/movistarsims.php?id=N     -> baja
+// Lee/escribe sobre la tabla `movistar_sims` definida en db/schema.sql.
+//   GET    api/movistar_sims.php          -> listado con filtros (query string)
+//   GET    api/movistar_sims.php?id=N     -> registro individual
+//   POST   api/movistar_sims.php          -> alta (JSON body)
+//   PUT    api/movistar_sims.php?id=N     -> modificacion (JSON body)
+//   DELETE api/movistar_sims.php?id=N     -> baja
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const MSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado";
+const MSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado, ultimo_trafico, tags";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -64,15 +64,16 @@ function handleList(PDO $pdo, array $q): void {
     // a UNSIGNED para tener sort numerico. REGEXP_REPLACE existe en MySQL 8
     // y MariaDB 10.11 (los dos entornos del proyecto).
     $orderMap = [
-        'id'            => 'id',
-        'nombre'        => 'nombre',
-        'linea'         => 'linea',
-        'icc'           => 'icc',
-        'estado'        => 'estado',
-        'msisdn'        => 'msisdn',
-        'actualizado'   => 'actualizado',
-        'limite_datos'  => "CAST(REGEXP_REPLACE(COALESCE(limite_datos,  ''), '[^0-9]', '') AS UNSIGNED)",
-        'consumo_datos' => "CAST(REGEXP_REPLACE(COALESCE(consumo_datos, ''), '[^0-9]', '') AS UNSIGNED)",
+        'id'             => 'id',
+        'nombre'         => 'nombre',
+        'linea'          => 'linea',
+        'icc'            => 'icc',
+        'estado'         => 'estado',
+        'msisdn'         => 'msisdn',
+        'actualizado'    => 'actualizado',
+        'ultimo_trafico' => 'ultimo_trafico',
+        'limite_datos'   => "CAST(REGEXP_REPLACE(COALESCE(limite_datos,  ''), '[^0-9]', '') AS UNSIGNED)",
+        'consumo_datos'  => "CAST(REGEXP_REPLACE(COALESCE(consumo_datos, ''), '[^0-9]', '') AS UNSIGNED)",
     ];
     if (!isset($orderMap[$orderBy])) $orderBy = 'id';
     $orderExpr = $orderMap[$orderBy];
@@ -109,7 +110,7 @@ function handleList(PDO $pdo, array $q): void {
             SUM(CASE WHEN LOWER(estado) IN ('activada','activa','active') THEN 1 END) AS activas,
             SUM(CASE WHEN estado IS NULL OR estado = '' THEN 1 END)                   AS sin_estado,
             MAX(actualizado)                                                          AS ultima_sync
-        FROM movistarsims
+        FROM movistar_sims
     ")->fetch();
 
     // Lista de estados distintos que hoy tienen las SIMs, para poblar el
@@ -118,14 +119,14 @@ function handleList(PDO $pdo, array $q): void {
     // exacta que devuelve Kite).
     $estados = $pdo->query("
         SELECT DISTINCT estado
-        FROM movistarsims
+        FROM movistar_sims
         WHERE estado IS NOT NULL AND estado <> ''
         ORDER BY estado
     ")->fetchAll(PDO::FETCH_COLUMN);
 
     $sql = "
         SELECT " . MSIM_COLS . "
-        FROM movistarsims
+        FROM movistar_sims
         {$sqlWhere}
         ORDER BY {$orderExpr} {$dirSql}
         LIMIT {$limite}
@@ -147,7 +148,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . MSIM_COLS . " FROM movistarsims WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . MSIM_COLS . " FROM movistar_sims WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('SIM no encontrada', 404);
@@ -185,7 +186,7 @@ function handleCreate(PDO $pdo, array $in): void {
 
     try {
         $sql = "
-            INSERT INTO movistarsims
+            INSERT INTO movistar_sims
                 (nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn)
             VALUES
                 (:nombre, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :imei, :msisdn)
@@ -211,7 +212,7 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM movistarsims WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM movistar_sims WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('SIM no encontrada', 404);
 
@@ -238,7 +239,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     }
 
     if ($sets) {
-        $sql  = 'UPDATE movistarsims SET ' . implode(', ', $sets) . ' WHERE id = :id';
+        $sql  = 'UPDATE movistar_sims SET ' . implode(', ', $sets) . ' WHERE id = :id';
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
     }
@@ -247,7 +248,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM movistarsims WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM movistar_sims WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('SIM no encontrada', 404);
     jsonOk(['id' => $id]);

@@ -380,10 +380,10 @@ const ROUTE_PERMS = {
   '/dolarhoycotizaciones':     { perm:   'plataformas.dolarhoy.cotizaciones.consultar' },
 
   '/movistar':                 { prefix: 'plataformas.movistar.' },
-  '/movistarsims':             { perm:   'plataformas.movistar.sims.consultar' },
+  '/movistar_sims':             { perm:   'plataformas.movistar.sims.consultar' },
 
   '/claro':                    { prefix: 'plataformas.claro.' },
-  '/clarosims':                { perm:   'plataformas.claro.sims.consultar' },
+  '/claro_sims':                { perm:   'plataformas.claro.sims.consultar' },
 
   '/openai':                   { prefix: 'plataformas.openai.' },
   '/openaiconsumos':           { perm:   'plataformas.openai.consumos.consultar' },
@@ -23931,10 +23931,65 @@ route('/telegram', async (mount) => {
   `;
 }, 'Telegram');
 
-// ------------------------- Vista: Telegram > Mensajes (placeholder) -------------------------
-// Preparada para cuando se implemente el ABM completo (motor de envio +
-// ABM tipo evolutionmensajes). La ruta y el permiso ya existen para que el
-// permiso se pueda asignar y el sidebar/hub no rompa.
+// ------------------------- Vista: Telegram > Mensajes (ABM) -------------------------
+// A diferencia de Evolution, los mensajes de Telegram salen SINCRONOS en el
+// POST: no hay cola, no hay motor, no hay "Enviar ahora" ni "Anular". El
+// endpoint devuelve el resultado real (enviado / error) al toque.
+const tgMsgFiltrosDefaults = {
+  q: '', codigo: '', proyecto_id: '', canal_id: '', plantilla_id: '',
+  estado: '', desde: '', hasta: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const tgMsgFiltros = { ...tgMsgFiltrosDefaults };
+let tgMsgBuscadorTimer   = null;
+let tgMsgFiltrosSnapshot = null;
+
+// Espejo del catalogo de formatos usado por evolution -- se mantiene por
+// compatibilidad con la columna `formato` de telegram_mensajes, aunque en
+// Telegram solo se usa 'texto' (para 'imagen' se detecta por URL en `adjunto`).
+const TG_MSG_FORMATO_MAP = {
+  texto:     'Texto',
+  imagen:    'Imagen',
+  video:     'Video',
+  audio:     'Audio',
+  ubicacion: 'Ubicación',
+};
+const TG_MSG_PRIORIDAD_MAP = {
+  1: 'Muy baja',
+  2: 'Baja',
+  3: 'Media',
+  4: 'Alta',
+  5: 'Muy Alta',
+};
+
+// telegram_mensajes.estado (varchar 20). Solo 3 valores posibles vs los 5 de
+// evolution: no hay 'pendiente' (no hay cola) ni 'anulado' (no hay ventana
+// para anular -- es sincrono).
+const TG_MSG_ESTADO_LABEL_MAP = {
+  enviando: 'Enviando',
+  enviado:  'Enviado',
+  error:    'Error',
+};
+const TG_MSG_ESTADO_COLOR_MAP = {
+  enviando: 'badge-info',
+  enviado:  'badge-success',
+  error:    'badge-danger',
+};
+
+function tgMsgEstadoBadge(e) {
+  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
+  const cls = TG_MSG_ESTADO_COLOR_MAP[e] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(TG_MSG_ESTADO_LABEL_MAP[e] || e)}</span>`;
+}
+
+function tgMsgFmtDemora(seg) {
+  if (seg == null || seg === '' || isNaN(Number(seg))) return '—';
+  const n = Number(seg);
+  if (n < 60)    return `${n}s`;
+  if (n < 3600)  return `${Math.round(n / 60)}m`;
+  return `${(n / 3600).toFixed(1)}h`;
+}
+
 route('/telegrammensajes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
@@ -23946,20 +24001,808 @@ route('/telegrammensajes', async (mount) => {
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
           <div style="font-size:1.6rem;line-height:1">✉️</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los mensajes de Telegram son cada envío individual procesado por un bot, con destinatario, cuerpo, estado y tiempo de entrega. El ABM completo estará disponible en una próxima versión.
+            Los mensajes de Telegram son cada envío individual que un bot procesa contra la Bot API — con destinatario, cuerpo, estado y tiempo de entrega. Salen <strong>al toque</strong> (no hay cola): al crear uno, el resultado queda registrado inmediatamente.
           </div>
         </div>
       </div>
-      <div class="table-empty" style="padding:60px 20px;text-align:center">
-        <div style="font-size:2.4rem;margin-bottom:8px">🚧</div>
-        <div style="font-weight:600;margin-bottom:4px">Próximamente</div>
-        <div style="color:var(--muted);font-size:.88rem">
-          La tabla <code>telegram_mensajes</code> ya está creada. El ABM del listado se agregará junto con el motor de envío.
+
+      <div class="stats-bar" id="tgMsgStats">
+        <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value" id="tgMsgStatEnviados">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value" id="tgMsgStatConError">—</span></div>
+        <div class="stat-card"><span class="stat-label">Enviando</span><span class="stat-value" id="tgMsgStatEnviando">—</span></div>
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" id="tgMsgStatTotal">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="tgMsgSearch"
+                   placeholder="🔍 Buscar destinatario, destino, asunto o tags…">
+            <button class="search-clear" id="tgMsgSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="tgMsgFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="tgMsgFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="tgMsgRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="tgMsgNuevoBtn">+ Nuevo mensaje</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Fecha</th>
+              <th>Bot</th>
+              <th>Destino</th>
+              <th style="width:30%;max-width:30%">Cuerpo</th>
+              <th>Estado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="tgMsgTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tgMsgCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="clonar" role="menuitem">
+        <i class="fa-solid fa-clone"></i><span>Clonar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosTgMsgBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosTgMsg()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosTgMsg()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fTgMsgCodigo" min="1" placeholder="ID …" oninput="onFiltroTgMsg('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select id="fTgMsgEstado" onchange="onFiltroTgMsg('estado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="enviado">Enviado</option>
+                <option value="error">Error</option>
+                <option value="enviando">Enviando</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fTgMsgProyecto" onchange="onFiltroTgMsg('proyecto_id', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Plantilla</label>
+              <select id="fTgMsgPlantilla" onchange="onFiltroTgMsg('plantilla_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Bot</label>
+              <select id="fTgMsgCanal" onchange="onFiltroTgMsg('canal_id', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fTgMsgDesde" onchange="onFiltroTgMsg('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fTgMsgHasta" onchange="onFiltroTgMsg('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fTgMsgLimite" min="1" max="1000" value="100" onchange="onFiltroTgMsg('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fTgMsgOrderBy" onchange="onFiltroTgMsg('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="fecha">Fecha</option>
+                <option value="destino">Destino</option>
+                <option value="estado">Estado</option>
+                <option value="demora">Demora</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fTgMsgDir" onchange="onFiltroTgMsg('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosTgMsg()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosTgMsg()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosTgMsg()">Aplicar</button>
         </div>
       </div>
     </div>
   `;
+
+  $('#tgMsgNuevoBtn').addEventListener('click', () => abrirAltaTgMsg());
+  $('#tgMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosTgMsg());
+  $('#tgMsgRefrescarBtn').addEventListener('click', () => cargarTgMsg());
+
+  const inp = $('#tgMsgSearch');
+  const clr = $('#tgMsgSearchClear');
+  inp.value = tgMsgFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    tgMsgFiltros.q = inp.value.trim();
+    clearTimeout(tgMsgBuscadorTimer);
+    tgMsgBuscadorTimer = setTimeout(() => { cargarTgMsg(); refrescarBadgeFiltrosTgMsg(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    tgMsgFiltros.q = '';
+    cargarTgMsg();
+    refrescarBadgeFiltrosTgMsg();
+  });
+
+  $('#tgMsgCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarTgMsg(data.id);
+    if (b.dataset.action === 'clonar')    abrirAltaTgMsg({ clonarDeId: data.id });
+    if (b.dataset.action === 'eliminar')  eliminarTgMsg(data.id);
+  });
+
+  $('#tgMsgTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#tgMsgCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarTgMsg(Number(tr.dataset.id));
+  });
+  $('#tgMsgTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#tgMsgCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosTgMsg();
+  await cargarTgMsg();
 }, 'Telegram &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Mensajes');
+
+async function cargarTgMsg() {
+  const tbody = $('#tgMsgTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(tgMsgFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/telegrammensajes.php?' + qs.toString());
+    pintarStatsTgMsg(data.stats);
+    pintarTablaTgMsg(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsTgMsg(s) {
+  const enviadosEl = $('#tgMsgStatEnviados');
+  if (enviadosEl) enviadosEl.textContent = fmtNum(s.enviados);
+  const conErrorEl = $('#tgMsgStatConError');
+  if (conErrorEl) conErrorEl.textContent = fmtNum(s.con_error);
+  const enviandoEl = $('#tgMsgStatEnviando');
+  if (enviandoEl) enviandoEl.textContent = fmtNum(s.enviando);
+  const totalEl = $('#tgMsgStatTotal');
+  if (totalEl) totalEl.textContent = fmtNum(s.total);
+}
+
+function pintarTablaTgMsg(rows) {
+  const tbody = $('#tgMsgTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin mensajes.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((m) => `
+    <tr data-id="${m.id}" data-estado="${esc(m.estado || '')}" class="row-clickable">
+      <td class="td-id">#${esc(m.id)}</td>
+      <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
+      <td class="td-nombre">
+        ${esc(m.canal_nombre || '—')}
+        ${m.canal_username ? `<div style="font-size:.7rem;color:var(--muted);font-family:monospace">@${esc(m.canal_username)}</div>` : ''}
+      </td>
+      <td style="font-family:monospace">
+        ${m.destinatario ? `<div style="font-size:.72rem;color:var(--muted);font-family:var(--font-sans, sans-serif);line-height:1.2">${esc(m.destinatario)}</div>` : ''}
+        <div>${esc(m.destino || '—')}</div>
+      </td>
+      <td style="max-width:0">
+        ${m.asunto ? `<div style="font-size:.72rem;color:var(--muted);line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.asunto)}">${esc(m.asunto)}</div>` : ''}
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.cuerpo || '')}">${esc(m.cuerpo || '—')}</div>
+      </td>
+      <td>${tgMsgEstadoBadge(m.estado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroTgMsg(key, value) {
+  if (['estado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+    tgMsgFiltros[key] = value;
+  } else if (['codigo', 'proyecto_id', 'canal_id', 'plantilla_id'].includes(key)) {
+    const v = String(value).trim();
+    tgMsgFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    tgMsgFiltros.limite = n;
+  } else {
+    tgMsgFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosTgMsg();
+  cargarTgMsg();
+}
+
+function refrescarBadgeFiltrosTgMsg() {
+  const btn   = $('#tgMsgFiltrosBtn');
+  const badge = $('#tgMsgFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(tgMsgFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(tgMsgFiltros[k]) !== String(tgMsgFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosTgMsg() {
+  const f = tgMsgFiltros;
+  $('#fTgMsgCodigo').value    = f.codigo;
+  $('#fTgMsgEstado').value    = f.estado;
+  $('#fTgMsgProyecto').value  = f.proyecto_id;
+  $('#fTgMsgCanal').value     = f.canal_id;
+  $('#fTgMsgPlantilla').value = f.plantilla_id;
+  $('#fTgMsgDesde').value     = f.desde;
+  $('#fTgMsgHasta').value     = f.hasta;
+  $('#fTgMsgLimite').value    = f.limite;
+  $('#fTgMsgOrderBy').value   = f.order_by;
+  $('#fTgMsgDir').value       = f.dir;
+}
+
+async function abrirModalFiltrosTgMsg() {
+  tgMsgFiltrosSnapshot = { ...tgMsgFiltros };
+  try {
+    await poblarSelectsFiltrosTgMsg();
+  } catch (e) {
+    console.warn('Filtros TgMsg: no se pudieron cargar los lookups', e);
+  }
+  sincronizarControlesFiltrosTgMsg();
+  $('#filtrosTgMsgBackdrop').classList.add('open');
+}
+
+async function poblarSelectsFiltrosTgMsg() {
+  const lookups = await ensureTgMsgLookups();
+  const opt = (v, label) => `<option value="${esc(v)}">${esc(label)}</option>`;
+  const mapItems = (items, todos) =>
+    (todos ? `<option value="">${todos}</option>` : '') +
+    (items ?? []).map(x => opt(x.id, x.nombre || ('#' + x.id))).join('');
+  const $proy = $('#fTgMsgProyecto');
+  const $pl   = $('#fTgMsgPlantilla');
+  const $can  = $('#fTgMsgCanal');
+  if ($proy) $proy.innerHTML = mapItems(lookups?.proyectos,  '— Todos —');
+  if ($pl)   $pl.innerHTML   = mapItems(lookups?.plantillas, '— Todas —');
+  if ($can)  $can.innerHTML  = mapItems(lookups?.canales,    '— Todos —');
+}
+function cerrarModalFiltrosTgMsg() { $('#filtrosTgMsgBackdrop').classList.remove('open'); }
+function cancelarFiltrosTgMsg() {
+  if (tgMsgFiltrosSnapshot) {
+    Object.assign(tgMsgFiltros, tgMsgFiltrosSnapshot);
+    refrescarBadgeFiltrosTgMsg();
+    cargarTgMsg();
+  }
+  cerrarModalFiltrosTgMsg();
+}
+function limpiarFiltrosTgMsg() {
+  Object.assign(tgMsgFiltros, tgMsgFiltrosDefaults);
+  tgMsgFiltros.q = $('#tgMsgSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosTgMsg();
+  refrescarBadgeFiltrosTgMsg();
+  cargarTgMsg();
+}
+window.onFiltroTgMsg           = onFiltroTgMsg;
+window.cancelarFiltrosTgMsg    = cancelarFiltrosTgMsg;
+window.limpiarFiltrosTgMsg     = limpiarFiltrosTgMsg;
+window.cerrarModalFiltrosTgMsg = cerrarModalFiltrosTgMsg;
+
+async function abrirConsultarTgMsg(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:1200px">
+      <div class="modal-header">
+        <div class="modal-title">Mensaje Telegram <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+
+    const tabBtn = ev.target.closest('[data-tab]');
+    if (tabBtn) {
+      const target = tabBtn.dataset.tab;
+      $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+      $$('#modalRoot .modal-tabpanel').forEach((p) => p.hidden = p.dataset.panel !== target);
+    }
+  });
+
+  try {
+    const m = await apiGet(`api/telegrammensajes.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaTgMsg(m);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaTgMsg(m) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  const seccion = (titulo) => `
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
+      ${esc(titulo)}
+    </div>`;
+
+  const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
+    ? `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`
+    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
+
+  const canalHuman = m.canal_nombre
+    ? (m.canal_username ? `${m.canal_nombre} (@${m.canal_username})` : m.canal_nombre)
+    : (m.canal_id ? '#' + m.canal_id : null);
+
+  return `
+    <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:1.3rem;font-weight:700">${esc(m.destinatario || m.destino || '—')}</span>
+          ${m.destinatario ? `<span style="font-family:monospace;font-size:.95rem;color:var(--muted)">${esc(m.destino || '')}</span>` : ''}
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
+        ${m.uuid ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all"><span>uuid:</span> ${esc(m.uuid)}</div>` : ''}
+      </div>
+      <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div>${tgMsgEstadoBadge(m.estado)}</div>
+        <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
+          <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
+          <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
+          <div><span style="color:var(--muted)">Demora:</span> ${esc(tgMsgFmtDemora(m.demora))}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-tabs">
+      <button type="button" class="modal-tab active" data-tab="general">General</button>
+      <button type="button" class="modal-tab"        data-tab="cuerpo">Cuerpo</button>
+      <button type="button" class="modal-tab"        data-tab="detalles">Detalles</button>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="general">
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Remitente',    m.remitente)}
+        ${card('Remite',       m.remite, false, true)}
+        ${card('Destinatario', m.destinatario)}
+        ${card('Destino (chat_id)', m.destino, false, true)}
+      </dl>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="cuerpo" hidden>
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Asunto', m.asunto, true)}
+      </dl>
+
+      ${seccion('Cuerpo del mensaje')}
+      ${cuerpoHtml}
+
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Adjunto', m.adjunto, true, true)}
+      </dl>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="detalles" hidden>
+      ${seccion('Contexto de envío')}
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Proyecto',   m.proyecto_nombre  ?? m.proyecto_id)}
+        ${card('Plantilla',  m.plantilla_nombre ?? m.plantilla_id)}
+        ${card('Bot',        canalHuman)}
+        ${card('Prioridad',  TG_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
+        ${card('Formato',    TG_MSG_FORMATO_MAP[m.formato]     || m.formato)}
+        ${card('Tags',       m.tags)}
+      </dl>
+
+      ${seccion('Tiempos y resultado')}
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Fecha',    fmtFecha(m.fecha))}
+        ${card('Enviado',  fmtFecha(m.enviado))}
+        ${card('Demora',   tgMsgFmtDemora(m.demora))}
+        ${card('Estado',   TG_MSG_ESTADO_LABEL_MAP[m.estado] || m.estado)}
+      </dl>
+
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${card('Error', m.error, true)}
+      </dl>
+    </div>
+  `;
+}
+
+let tgMsgLookupsCache = null;
+async function ensureTgMsgLookups() {
+  if (tgMsgLookupsCache) return tgMsgLookupsCache;
+  tgMsgLookupsCache = await apiGet('api/telegrammensajes.php?lookups=1');
+  return tgMsgLookupsCache;
+}
+
+// <option>s del select Plantilla filtradas al proyecto elegido. Mismo pattern
+// que evolution (cascada Proyecto -> Plantilla), pero contra el catalogo
+// completo de datarocket_plantillas (sin filtro medio='W').
+function tgMsgPlantillaOptionsHtml(plantillas, proyectoId, selected) {
+  const list = (proyectoId === '' || proyectoId == null)
+    ? []
+    : (plantillas ?? []).filter(x => String(x.proyecto_id) === String(proyectoId));
+  const cur = selected == null ? '' : String(selected);
+  const known = new Set(list.map(x => String(x.id)));
+  let extra = '';
+  if (cur !== '' && !known.has(cur)) {
+    const full = (plantillas ?? []).find(x => String(x.id) === cur);
+    const label = full
+      ? `${esc(full.nombre || ('#' + full.id))} (de otro proyecto)`
+      : `#${esc(cur)} (fuera del catálogo)`;
+    extra = `<option value="${esc(cur)}" selected>${label}</option>`;
+  }
+  const rows = list.map(x => {
+    const s = cur === String(x.id) ? 'selected' : '';
+    return `<option value="${x.id}" ${s}>${esc(x.nombre || ('#' + x.id))}</option>`;
+  }).join('');
+  return `<option value="">—</option>${extra}${rows}`;
+}
+
+async function abrirAltaTgMsg(opciones = {}) {
+  // Solo Alta (no hay edicion -- ya se envio). Si `clonarDeId` esta seteado,
+  // precarga con los datos del mensaje fuente (descartando columnas
+  // system-managed que el servidor regenera).
+  const clonarDeId = opciones.clonarDeId ?? null;
+  const esClonar   = clonarDeId != null;
+
+  const tituloModal = esClonar
+    ? `Nuevo mensaje <span class="modal-subtitle">(clonado de #${clonarDeId})</span>`
+    : 'Nuevo mensaje';
+
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${tituloModal}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Enviar</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const [m, lookups] = await Promise.all([
+      esClonar ? apiGet(`api/telegrammensajes.php?id=${clonarDeId}`) : Promise.resolve({}),
+      ensureTgMsgLookups(),
+    ]);
+
+    if (esClonar) {
+      delete m.id;
+      delete m.fecha;
+      delete m.estado;
+      delete m.encolado;
+      delete m.programado;
+      delete m.enviado;
+      delete m.demora;
+      delete m.error;
+      delete m.uuid;
+    }
+
+    $('#modalRoot .modal-body').innerHTML = formTgMsgHtml(m, lookups);
+
+    // Cascada Proyecto -> Plantilla.
+    const $proy = $('#tgProyecto');
+    const $pl   = $('#tgPlantilla');
+    if ($proy && $pl) {
+      $proy.addEventListener('change', () => {
+        $pl.innerHTML = tgMsgPlantillaOptionsHtml(lookups?.plantillas, $proy.value, '');
+      });
+    }
+
+    // Autopoblar Destino con chat_id default del bot al elegir uno. Solo
+    // pisa si el campo esta vacio: si el operador ya tipeo algo, respeta.
+    const $can = $('#tgCanal');
+    const $dst = $('#tgDestino');
+    if ($can && $dst) {
+      $can.addEventListener('change', () => {
+        const canId = $can.value;
+        if (!canId) return;
+        const bot = (lookups?.canales ?? []).find(x => String(x.id) === String(canId));
+        if (bot && bot.chat_id && !$dst.value.trim()) {
+          $dst.value = bot.chat_id;
+        }
+      });
+    }
+
+    // Autofill de plantilla -> form (mismo pattern que evolution).
+    if ($pl) {
+      $pl.addEventListener('change', () => {
+        const plId = $pl.value;
+        if (!plId) return;
+        const p = (lookups?.plantillas ?? []).find(x => String(x.id) === String(plId));
+        if (!p) return;
+        const setVal = (id, v) => { const el = $('#' + id); if (el) el.value = v ?? ''; };
+        setVal('tgRemitente', p.remitente);
+        setVal('tgRemite',    p.remite);
+        setVal('tgAsunto',    p.asunto);
+        setVal('tgCuerpo',    p.cuerpo);
+        setVal('tgAdjunto',   p.adjunto);
+        const formatoLegacy = { T: 'texto', I: 'imagen', V: 'video', A: 'audio', U: 'ubicacion' };
+        setVal('tgFormato', formatoLegacy[p.formato] ?? p.formato);
+      });
+    }
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarTgMsg(a);
+  });
+}
+
+function formTgMsgHtml(rawM, lookups) {
+  const m = {
+    formato:   'texto',
+    prioridad: '3',
+    ...rawM,
+  };
+  const v   = (k) => esc(m?.[k] ?? '');
+  const sel = (k, val) => String(m?.[k] ?? '') === String(val) ? 'selected' : '';
+  const opts = (items, campo) => {
+    const cur = m?.[campo] ?? '';
+    const known = new Set((items ?? []).map(x => String(x.id)));
+    const extra = (cur !== '' && !known.has(String(cur)))
+      ? `<option value="${esc(cur)}" selected>#${esc(cur)} (fuera del catálogo)</option>`
+      : '';
+    const rows = (items ?? []).map(x => {
+      const s = String(cur) === String(x.id) ? 'selected' : '';
+      return `<option value="${x.id}" ${s}>${esc(x.nombre || ('#' + x.id))}</option>`;
+    }).join('');
+    return `<option value="">—</option>${extra}${rows}`;
+  };
+  return `
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto <span style="color:var(--danger)">*</span></label>
+        <select id="tgProyecto">${opts(lookups?.proyectos, 'proyecto_id')}</select>
+      </div>
+      <div class="form-group">
+        <label>Plantilla</label>
+        <select id="tgPlantilla">${tgMsgPlantillaOptionsHtml(lookups?.plantillas, m?.proyecto_id ?? '', m?.plantilla_id)}</select>
+      </div>
+      <div class="form-group">
+        <label>Bot <span style="color:var(--danger)">*</span></label>
+        <select id="tgCanal">${opts(lookups?.canales, 'canal_id')}</select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Remitente</label>
+        <input type="text" id="tgRemitente" maxlength="255" value="${v('remitente')}">
+      </div>
+      <div class="form-group">
+        <label>Remite</label>
+        <input type="text" id="tgRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Destinatario</label>
+        <input type="text" id="tgDestinatario" maxlength="255" value="${v('destinatario')}">
+      </div>
+      <div class="form-group">
+        <label>Destino (chat_id) <span style="color:var(--danger)">*</span></label>
+        <input type="text" id="tgDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace"
+               placeholder="ej. 123456789 o -1001234567890">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Asunto</label>
+      <input type="text" id="tgAsunto" maxlength="255" value="${v('asunto')}"
+             placeholder="Se antepone en negrita al cuerpo">
+    </div>
+    <div class="form-group">
+      <label>Formato</label>
+      <select id="tgFormato">
+        <option value=""          ${sel('formato','')}>—</option>
+        <option value="texto"     ${sel('formato','texto')}>Texto</option>
+        <option value="imagen"    ${sel('formato','imagen')}>Imagen</option>
+        <option value="video"     ${sel('formato','video')}>Video</option>
+        <option value="audio"     ${sel('formato','audio')}>Audio</option>
+        <option value="ubicacion" ${sel('formato','ubicacion')}>Ubicación</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Cuerpo <span style="color:var(--danger)">*</span></label>
+      <textarea id="tgCuerpo" rows="8" style="font-family:monospace"
+                placeholder="Texto del mensaje (soporta Markdown de Telegram: *negrita*, _italica_, \`monospace\`)">${v('cuerpo')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Adjunto (URL/ruta) <span style="font-weight:400;color:var(--muted)">— si es URL http(s) se envía como foto</span></label>
+      <input type="text" id="tgAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="tgPrioridad">
+          <option value=""  ${sel('prioridad','')}>—</option>
+          <option value="1" ${sel('prioridad','1')}>Muy baja</option>
+          <option value="2" ${sel('prioridad','2')}>Baja</option>
+          <option value="3" ${sel('prioridad','3')}>Media</option>
+          <option value="4" ${sel('prioridad','4')}>Alta</option>
+          <option value="5" ${sel('prioridad','5')}>Muy Alta</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tags</label>
+        <input type="text" id="tgTags" maxlength="255" value="${v('tags')}"
+               placeholder="Etiquetas separadas por coma">
+      </div>
+    </div>
+    <div class="field-error" id="tgFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarTgMsg(btn) {
+  const err = $('#tgFormError');
+  err.style.display = 'none';
+
+  // --- Validacion de campos obligatorios ------------------------------------
+  const requeridos = [
+    { id: 'tgProyecto', label: 'Proyecto' },
+    { id: 'tgCanal',    label: 'Bot'      },
+    { id: 'tgDestino',  label: 'Destino'  },
+    { id: 'tgCuerpo',   label: 'Cuerpo'   },
+  ];
+  requeridos.forEach(f => $('#' + f.id).classList.remove('input-invalid'));
+  const faltantes = requeridos.filter(f => !String($('#' + f.id).value).trim());
+  if (faltantes.length) {
+    faltantes.forEach(f => $('#' + f.id).classList.add('input-invalid'));
+    err.textContent = 'Faltan campos obligatorios: ' + faltantes.map(f => f.label).join(', ') + '.';
+    err.style.display = '';
+    $('#' + faltantes[0].id).focus();
+    return;
+  }
+
+  const payload = {
+    proyecto_id:  $('#tgProyecto').value,
+    plantilla_id: $('#tgPlantilla').value,
+    canal_id:     $('#tgCanal').value,
+    remitente:    $('#tgRemitente').value.trim(),
+    remite:       $('#tgRemite').value.trim(),
+    destinatario: $('#tgDestinatario').value.trim(),
+    destino:      $('#tgDestino').value.trim(),
+    asunto:       $('#tgAsunto').value.trim(),
+    formato:      $('#tgFormato').value,
+    cuerpo:       $('#tgCuerpo').value,
+    adjunto:      $('#tgAdjunto').value.trim(),
+    prioridad:    $('#tgPrioridad').value,
+    tags:         $('#tgTags').value.trim(),
+  };
+
+  btn.disabled = true;
+  try {
+    // Envio sincrono: el POST devuelve el estado final. El toast refleja el
+    // resultado real -- no mentimos con un "creado ok" cuando Telegram
+    // rechazo el mensaje.
+    const r = await apiSend('api/telegrammensajes.php', 'POST', payload);
+    if (r?.estado === 'enviado') {
+      toast('Mensaje enviado.');
+      closeModal();
+      cargarTgMsg();
+    } else {
+      // Estado 'error' o 'enviando': el mensaje se persistio pero Telegram
+      // no lo acepto (o el proceso murio). Mostramos el error en el form
+      // pero NO cerramos el modal -- el operador puede corregir y reintentar.
+      err.textContent = 'Telegram rechazó el mensaje: ' + (r?.error || 'sin detalle');
+      err.style.display = '';
+      btn.disabled = false;
+      cargarTgMsg(); // igual actualizamos el listado (la fila quedo con estado='error')
+    }
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarTgMsg(id) {
+  const ok = await confirmar({
+    title: 'Eliminar mensaje',
+    message: `Se eliminará el mensaje #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/telegrammensajes.php?id=${id}`, 'DELETE');
+    toast('Mensaje eliminado.');
+    cargarTgMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
 
 // ------------------------- Vista: Telegram > Bots (ABM) -------------------------
 const tgBotFiltrosDefaults = {
@@ -23970,6 +24813,17 @@ const tgBotFiltros = { ...tgBotFiltrosDefaults };
 let tgBotBuscadorTimer   = null;
 let tgBotFiltrosSnapshot = null;
 let tgBotCache           = []; // ultima respuesta del listado, para lookup del ctx-menu
+let tgBotProyectosCache  = null;
+
+// Lista de proyectos tipo='I' (internos) cacheada por vida del ABM. Se usa tanto
+// para mostrar el nombre en el listado/consulta como para poblar el <select>
+// del alta/edicion.
+async function tgBotCargarProyectos() {
+  if (tgBotProyectosCache) return tgBotProyectosCache;
+  const resp = await apiGet('api/proyectos.php?tipo=I');
+  tgBotProyectosCache = resp.items || [];
+  return tgBotProyectosCache;
+}
 
 function tgBotHabilitadoBadge(h) {
   if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
@@ -24031,10 +24885,10 @@ route('/telegrambots', async (mount) => {
             <tr>
               <!-- Columna "Código" oculta a proposito: el id sigue disponible
                    en el filtro por Codigo y en el header del modal Consultar. -->
+              <th>Proyecto</th>
               <th>Nombre</th>
               <th>Username</th>
               <th>Chat ID</th>
-              <th>Proyecto</th>
               <th>Actualizado</th>
               <th style="text-align:center">Habilitado</th>
               <th style="text-align:center">Acciones</th>
@@ -24191,10 +25045,13 @@ async function cargarTgBot() {
     if (v !== '' && v != null) qs.set(k, v);
   });
   try {
-    const data = await apiGet('api/telegrambots.php?' + qs.toString());
+    const [data, proyectos] = await Promise.all([
+      apiGet('api/telegrambots.php?' + qs.toString()),
+      tgBotCargarProyectos(),
+    ]);
     tgBotCache = data.items || [];
     pintarStatsTgBot(data.stats);
-    pintarTablaTgBot(tgBotCache);
+    pintarTablaTgBot(tgBotCache, proyectos);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
@@ -24207,18 +25064,24 @@ function pintarStatsTgBot(s) {
   cards[1].textContent = fmtNum(s.habilitados);
 }
 
-function pintarTablaTgBot(rows) {
+function pintarTablaTgBot(rows, proyectos = []) {
   const tbody = $('#tgBotTbody');
   if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin bots.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map((c) => `
+  const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
+  tbody.innerHTML = rows.map((c) => {
+    const proyNom = proyMap.get(Number(c.proyecto));
+    const proyCell = proyNom
+      ? esc(proyNom)
+      : (c.proyecto == null || c.proyecto === '' ? '—' : `#${esc(c.proyecto)}`);
+    return `
     <tr data-id="${c.id}" class="row-clickable">
+      <td>${proyCell}</td>
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
       <td style="font-family:monospace">${c.username ? '@' + esc(c.username) : '—'}</td>
       <td style="font-family:monospace">${esc(c.chat_id || '—')}</td>
-      <td>${esc(c.proyecto ?? '—')}</td>
       <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
       <td style="text-align:center">${tgBotHabilitadoDot(c.habilitado)}</td>
       <td style="text-align:center">
@@ -24228,8 +25091,8 @@ function pintarTablaTgBot(rows) {
           </button>
         </div>
       </td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 function onFiltroTgBot(key, value) {
@@ -24317,14 +25180,17 @@ async function abrirConsultarTgBot(id) {
   });
 
   try {
-    const c = await apiGet(`api/telegrambots.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaTgBot(c);
+    const [c, proyectos] = await Promise.all([
+      apiGet(`api/telegrambots.php?id=${id}`),
+      tgBotCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaTgBot(c, proyectos);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
 
-function renderConsultaTgBot(c) {
+function renderConsultaTgBot(c, proyectos = []) {
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
     const inner = empty ? 'Sin dato'
@@ -24351,8 +25217,8 @@ function renderConsultaTgBot(c) {
     </div>
 
     <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Proyecto',        proyectos.find((p) => Number(p.id) === Number(c.proyecto))?.nombre || null)}
       ${card('Nombre',          c.nombre)}
-      ${card('Proyecto',        c.proyecto)}
       ${card('Username',        c.username ? '@' + c.username : null, false, true)}
       ${card('Chat ID destino', c.chat_id, false, true)}
       ${card('Token',           c.token ? '••••••••' : null, true, true)}
@@ -24370,9 +25236,7 @@ async function abrirAltaEdicionTgBot(id) {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formTgBotHtml({})}
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
@@ -24381,13 +25245,14 @@ async function abrirAltaEdicionTgBot(id) {
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const c = await apiGet(`api/telegrambots.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formTgBotHtml(c);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  try {
+    const [c, proyectos] = await Promise.all([
+      esEdicion ? apiGet(`api/telegrambots.php?id=${id}`) : Promise.resolve({}),
+      tgBotCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formTgBotHtml(c, proyectos);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
@@ -24398,19 +25263,26 @@ async function abrirAltaEdicionTgBot(id) {
   });
 }
 
-function formTgBotHtml(c) {
+function formTgBotHtml(c, proyectos = []) {
   const v   = (k) => esc(c?.[k] ?? '');
   const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  const proyectoActual = c?.proyecto == null ? '' : String(c.proyecto);
+  const proyectosOpts = proyectos
+    .map((p) => `<option value="${esc(p.id)}" ${String(p.id) === proyectoActual ? 'selected' : ''}>${esc(p.nombre || '')}</option>`)
+    .join('');
   return `
     <div class="form-row">
+      <div class="form-group">
+        <label>Proyecto</label>
+        <select id="tgBotProyecto">
+          <option value="">— Seleccionar —</option>
+          ${proyectosOpts}
+        </select>
+      </div>
       <div class="form-group">
         <label>Nombre</label>
         <input type="text" id="tgBotNombre" maxlength="255" value="${v('nombre')}"
                placeholder="ej. Bot de soporte">
-      </div>
-      <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="tgBotProyecto" min="1" value="${v('proyecto')}">
       </div>
     </div>
     <div class="form-row">
@@ -24591,7 +25463,7 @@ route('/movistar', async (mount) => {
     </div>
 
     <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/movistarsims'">
+      <button type="button" class="tile-card" onclick="location.hash='#/movistar_sims'">
         <span class="tile-icon">📶</span>
         <span class="tile-title">SIMs</span>
         <span class="tile-desc">Catálogo de SIMs M2M administradas vía Kite Platform: línea, ICC, estado, IMEI, MSISDN y sincronización desde Kite.</span>
@@ -24680,7 +25552,7 @@ function simFmtEnUso(v) {
                 style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${color}"></span>`;
 }
 
-route('/movistarsims', async (mount) => {
+route('/movistar_sims', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -24738,12 +25610,13 @@ route('/movistarsims', async (mount) => {
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
               ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
+              ${thOrdenable('ultimo_trafico', 'Último tráfico', 'width:130px')}
               <th style="width:70px;text-align:center" title="En uso: verde = sí, rojo = no, gris = sin definir">En uso</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="msimTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -24831,6 +25704,7 @@ route('/movistarsims', async (mount) => {
                 <option value="estado">Estado</option>
                 <option value="limite_datos">Límite datos</option>
                 <option value="consumo_datos">Consumo datos</option>
+                <option value="ultimo_trafico">Último tráfico</option>
                 <option value="msisdn">MSISDN</option>
                 <option value="actualizado">Última sync</option>
               </select>
@@ -24939,7 +25813,7 @@ route('/movistarsims', async (mount) => {
 async function cargarMsim() {
   const tbody = $('#msimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(msimFiltros).forEach(([k, v]) => {
@@ -24947,11 +25821,11 @@ async function cargarMsim() {
   });
 
   try {
-    const data = await apiGet('api/movistarsims.php?' + qs.toString());
+    const data = await apiGet('api/movistar_sims.php?' + qs.toString());
     pintarStatsMsim(data.stats);
     pintarTablaMsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -24971,7 +25845,7 @@ function pintarStatsMsim(s) {
 function pintarTablaMsim(rows) {
   const tbody = $('#msimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
@@ -24983,6 +25857,7 @@ function pintarTablaMsim(rows) {
       <td>${msimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
+      <td style="white-space:nowrap" title="${esc(r.ultimo_trafico || '')}">${r.ultimo_trafico ? esc(fmtHace(r.ultimo_trafico)) : '—'}</td>
       <td style="text-align:center">${simFmtEnUso(r.en_uso)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
@@ -25080,7 +25955,7 @@ async function sincronizarMsim() {
     btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px"></div>`;
   }
   try {
-    const r = await apiSend('api/movistarsims_sync.php', 'POST', {});
+    const r = await apiSend('api/movistar_sims_sync.php', 'POST', {});
     const ins = r?.insertados ?? 0, act = r?.actualizados ?? 0, tot = r?.fetched ?? 0;
     toast(`Kite: ${tot} SIMs (${ins} nuevas, ${act} actualizadas).`);
     cargarMsim();
@@ -25129,7 +26004,7 @@ async function abrirConsultarMsim(id) {
   });
 
   try {
-    const r = await apiGet(`api/movistarsims.php?id=${id}`);
+    const r = await apiGet(`api/movistar_sims.php?id=${id}`);
     pintarConsultarMsimGeneral(r);
     pintarConsultarMsimEstado(r);
   } catch (e) {
@@ -25149,22 +26024,28 @@ function pintarConsultarMsimGeneral(r) {
   const lte   = r.estado_lte  ? msimFmtEstado(r.estado_lte)  : '—';
   const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
   const enUsoTxt = r.en_uso === 'si' ? 'Sí' : r.en_uso === 'no' ? 'No' : 'Sin definir';
+  const trafFecha = r.ultimo_trafico ? String(r.ultimo_trafico).replace('T', ' ').slice(0, 19) : null;
+  const trafHace  = r.ultimo_trafico ? fmtHaceLargo(r.ultimo_trafico) : '';
+  const trafHtml  = trafFecha
+    ? `${esc(trafFecha)}<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(trafHace)}</div>`
+    : '—';
   $('#modalRoot [data-panel="general"]').innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      ${card('Código',        `#${esc(r.id)}`)}
-      ${card('Nombre',        esc(r.nombre || '—'))}
-      ${card('Alias',         esc(r.alias  || '—'))}
-      ${card('Línea',         esc(r.linea  || '—'))}
-      ${card('MSISDN',        esc(r.msisdn || '—'))}
-      ${card('ICC',           esc(r.icc    || '—'))}
-      ${card('Estado',        est)}
-      ${card('Estado GPRS',   gprs)}
-      ${card('Estado LTE',    lte)}
-      ${card('Límite datos',  esc(r.limite_datos  || '—'))}
-      ${card('Consumo datos', esc(r.consumo_datos || '—'))}
-      ${card('IMEI',          esc(r.imei   || '—'))}
-      ${card('En uso',        `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
-      ${card('Última sync',   esc(sync))}
+      ${card('Código',         `#${esc(r.id)}`)}
+      ${card('Nombre',         esc(r.nombre || '—'))}
+      ${card('Alias',          esc(r.alias  || '—'))}
+      ${card('Línea',          esc(r.linea  || '—'))}
+      ${card('MSISDN',         esc(r.msisdn || '—'))}
+      ${card('ICC',            esc(r.icc    || '—'))}
+      ${card('Estado',         est)}
+      ${card('Estado GPRS',    gprs)}
+      ${card('Estado LTE',     lte)}
+      ${card('Límite datos',   esc(r.limite_datos  || '—'))}
+      ${card('Consumo datos',  esc(r.consumo_datos || '—'))}
+      ${card('Último tráfico', trafHtml)}
+      ${card('IMEI',           esc(r.imei   || '—'))}
+      ${card('En uso',         `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
+      ${card('Última sync',    esc(sync))}
     </div>
   `;
 }
@@ -25172,7 +26053,7 @@ function pintarConsultarMsimGeneral(r) {
 // Panel Estado del modal Consultar de Movistar. Muestra el estado actual
 // grande y dos botones para cambiarlo en Kite (activar/desactivar). El
 // cambio en Kite es asincronico — la BD se actualiza en la proxima corrida
-// del sync — por eso no toco `movistarsims.estado` aca; solo aviso al
+// del sync — por eso no toco `movistar_sims.estado` aca; solo aviso al
 // usuario que la operacion se envio.
 function pintarConsultarMsimEstado(r) {
   const activa = /^activ(a|ada|e)$/i.test(String(r.estado || ''));
@@ -25213,7 +26094,7 @@ async function cambiarEstadoMsim(id, target, btn) {
   btn.disabled = true;
   btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;margin-right:6px"></div> Enviando…`;
   try {
-    await apiSend('api/movistarsims_lifecycle.php', 'POST', { id, target });
+    await apiSend('api/movistar_sims_lifecycle.php', 'POST', { id, target });
     toast(`Pedido enviado a Kite (${label.toLowerCase()}). El estado se refresca en la proxima sincronizacion.`);
     closeModal();
     cargarMsim();
@@ -25246,7 +26127,7 @@ async function abrirAltaEdicionMsim(id) {
   `);
 
   try {
-    const r = await apiGet(`api/movistarsims.php?id=${id}`);
+    const r = await apiGet(`api/movistar_sims.php?id=${id}`);
     $('#modalRoot .modal-body').innerHTML = formMsimHtml(r);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
@@ -25284,7 +26165,7 @@ async function guardarMsim(id, btn) {
 
   btn.disabled = true;
   try {
-    await apiSend(`api/movistarsims.php?id=${id}`, 'PUT', payload);
+    await apiSend(`api/movistar_sims.php?id=${id}`, 'PUT', payload);
     toast('SIM actualizada.');
     closeModal();
     cargarMsim();
@@ -25303,7 +26184,7 @@ async function eliminarMsim(id) {
   });
   if (!ok) return;
   try {
-    await apiSend(`api/movistarsims.php?id=${id}`, 'DELETE');
+    await apiSend(`api/movistar_sims.php?id=${id}`, 'DELETE');
     toast('SIM eliminada.');
     cargarMsim();
   } catch (e) {
@@ -25313,7 +26194,7 @@ async function eliminarMsim(id) {
 
 async function cambiarEnUsoMsim(id, valor) {
   try {
-    await apiSend(`api/movistarsims.php?id=${id}`, 'PUT', { en_uso: valor });
+    await apiSend(`api/movistar_sims.php?id=${id}`, 'PUT', { en_uso: valor });
     cargarMsim();
   } catch (e) {
     toast(e.message, { error: true });
@@ -25329,7 +26210,7 @@ route('/claro', async (mount) => {
     </div>
 
     <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/clarosims'">
+      <button type="button" class="tile-card" onclick="location.hash='#/claro_sims'">
         <span class="tile-icon">📶</span>
         <span class="tile-title">SIMs</span>
         <span class="tile-desc">Catálogo de SIMs M2M administradas vía Autogestión Empresas: línea, ICC, estado, IMEI, MSISDN.</span>
@@ -25741,7 +26622,7 @@ function csimFmtEstado(v) {
   return `<span class="badge ${cls}">${esc(v)}</span>`;
 }
 
-route('/clarosims', async (mount) => {
+route('/claro_sims', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -25804,12 +26685,13 @@ route('/clarosims', async (mount) => {
               ${thOrdenable('estado',        'Estado', 'width:120px')}
               ${thOrdenable('limite_datos',  'Límite datos', 'width:130px')}
               ${thOrdenable('consumo_datos', 'Consumo datos', 'width:130px')}
+              ${thOrdenable('ultimo_trafico', 'Último tráfico', 'width:130px')}
               <th style="width:70px;text-align:center" title="En uso: verde = sí, rojo = no, gris = sin definir">En uso</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="csimTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -25879,6 +26761,7 @@ route('/clarosims', async (mount) => {
                 <option value="estado">Estado</option>
                 <option value="limite_datos">Límite datos</option>
                 <option value="consumo_datos">Consumo datos</option>
+                <option value="ultimo_trafico">Último tráfico</option>
                 <option value="msisdn">MSISDN</option>
                 <option value="actualizado">Última sync</option>
               </select>
@@ -25987,7 +26870,7 @@ route('/clarosims', async (mount) => {
 async function cargarCsim() {
   const tbody = $('#csimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(csimFiltros).forEach(([k, v]) => {
@@ -25995,11 +26878,11 @@ async function cargarCsim() {
   });
 
   try {
-    const data = await apiGet('api/clarosims.php?' + qs.toString());
+    const data = await apiGet('api/claro_sims.php?' + qs.toString());
     pintarStatsCsim(data.stats);
     pintarTablaCsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -26018,7 +26901,7 @@ function pintarStatsCsim(s) {
 function pintarTablaCsim(rows) {
   const tbody = $('#csimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
@@ -26030,6 +26913,7 @@ function pintarTablaCsim(rows) {
       <td>${csimFmtEstado(r.estado)}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.limite_datos || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.consumo_datos || '—')}</td>
+      <td style="white-space:nowrap" title="${esc(r.ultimo_trafico || '')}">${r.ultimo_trafico ? esc(fmtHace(r.ultimo_trafico)) : '—'}</td>
       <td style="text-align:center">${simFmtEnUso(r.en_uso)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
@@ -26110,8 +26994,8 @@ window.cerrarModalFiltrosCsim = cerrarModalFiltrosCsim;
 // -------------------------- Sincronizar SIMs Claro ---------------------------
 // El portal iotgestion.claro.com.ar tiene un WAF con fingerprint dinamico que
 // bloquea a PHP+cURL, asi que el scraping lo hace el agente externo `openclaw`
-// (ver api/clarosims_sync_pedido.php + api/clarosims_sync.php). Este modal es
-// el disparador: PUT api/clarosims_sync_pedido.php marca la bandera y openclaw
+// (ver api/claro_sims_sync_pedido.php + api/claro_sims_sync.php). Este modal es
+// el disparador: PUT api/claro_sims_sync_pedido.php marca la bandera y openclaw
 // la levanta en el proximo poll (cada 5 min).
 
 function abrirModalSincCsim() {
@@ -26170,19 +27054,19 @@ function abrirModalDetallesSincCsim() {
         <p style="margin:0 0 8px;font-weight:600">Flujo completo</p>
         <ol style="margin:0 0 12px 22px;padding:0">
           <li>Apretás <em>Sincronizar</em>. El panel hace
-              <code>PUT&nbsp;api/clarosims_sync_pedido.php</code> y se guarda
+              <code>PUT&nbsp;api/claro_sims_sync_pedido.php</code> y se guarda
               la bandera <code>pedido_clarosims_sincronizar&nbsp;=&nbsp;1</code>
               en la tabla <code>parametros</code>.</li>
           <li>openclaw pollea cada 5&nbsp;min haciendo
-              <code>POST&nbsp;api/clarosims_sync_pedido.php</code> con su
+              <code>POST&nbsp;api/claro_sims_sync_pedido.php</code> con su
               <em>API key</em> (fila de <code>aplicaciones</code>). Cuando ve la
               bandera en 1, la baja a 0 y arranca a trabajar.</li>
           <li>openclaw se loguea en el portal de Claro, pagina el listado de
               líneas activas y arma un CSV con las columnas
               <code>iccid</code>, <code>msisdn</code>, <code>estado</code>, etc.</li>
           <li>openclaw envía el CSV con
-              <code>POST&nbsp;api/clarosims_sync.php</code> (misma API key). El
-              endpoint hace UPSERT por ICCID sobre <code>clarosims</code> —
+              <code>POST&nbsp;api/claro_sims_sync.php</code> (misma API key). El
+              endpoint hace UPSERT por ICCID sobre <code>claro_sims</code> —
               actualiza líneas existentes y agrega las nuevas, sin pisar los
               campos que hayas editado a mano (nombre, IMEI, límite de datos).</li>
         </ol>
@@ -26215,7 +27099,7 @@ async function disparaSincCsim(btn) {
   btn.disabled = true;
   btn.innerHTML = `<div class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;margin-right:6px"></div> Solicitando…`;
   try {
-    const r = await apiSend('api/clarosims_sync_pedido.php', 'PUT', {});
+    const r = await apiSend('api/claro_sims_sync_pedido.php', 'PUT', {});
     const msg = r?.ya_pendiente
       ? 'Ya hay un pedido en curso — openclaw lo va a levantar en el próximo poll.'
       : 'Pedido enviado. openclaw lo va a levantar en el próximo poll (hasta 5 min).';
@@ -26263,7 +27147,7 @@ async function abrirConsultarCsim(id) {
   });
 
   try {
-    const r = await apiGet(`api/clarosims.php?id=${id}`);
+    const r = await apiGet(`api/claro_sims.php?id=${id}`);
     pintarConsultarCsimGeneral(r);
     pintarConsultarCsimEstado(r);
   } catch (e) {
@@ -26283,22 +27167,28 @@ function pintarConsultarCsimGeneral(r) {
   const lte   = r.estado_lte  ? csimFmtEstado(r.estado_lte)  : '—';
   const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
   const enUsoTxt = r.en_uso === 'si' ? 'Sí' : r.en_uso === 'no' ? 'No' : 'Sin definir';
+  const trafFecha = r.ultimo_trafico ? String(r.ultimo_trafico).replace('T', ' ').slice(0, 19) : null;
+  const trafHace  = r.ultimo_trafico ? fmtHaceLargo(r.ultimo_trafico) : '';
+  const trafHtml  = trafFecha
+    ? `${esc(trafFecha)}<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(trafHace)}</div>`
+    : '—';
   $('#modalRoot [data-panel="general"]').innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      ${card('Código',        `#${esc(r.id)}`)}
-      ${card('Nombre',        esc(r.nombre || '—'))}
-      ${card('Alias',         esc(r.alias  || '—'))}
-      ${card('Línea',         esc(r.linea  || '—'))}
-      ${card('MSISDN',        esc(r.msisdn || '—'))}
-      ${card('ICC',           esc(r.icc    || '—'))}
-      ${card('Estado',        est)}
-      ${card('Estado GPRS',   gprs)}
-      ${card('Estado LTE',    lte)}
-      ${card('Límite datos',  esc(r.limite_datos  || '—'))}
-      ${card('Consumo datos', esc(r.consumo_datos || '—'))}
-      ${card('IMEI',          esc(r.imei   || '—'))}
-      ${card('En uso',        `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
-      ${card('Última sync',   esc(sync))}
+      ${card('Código',         `#${esc(r.id)}`)}
+      ${card('Nombre',         esc(r.nombre || '—'))}
+      ${card('Alias',          esc(r.alias  || '—'))}
+      ${card('Línea',          esc(r.linea  || '—'))}
+      ${card('MSISDN',         esc(r.msisdn || '—'))}
+      ${card('ICC',            esc(r.icc    || '—'))}
+      ${card('Estado',         est)}
+      ${card('Estado GPRS',    gprs)}
+      ${card('Estado LTE',     lte)}
+      ${card('Límite datos',   esc(r.limite_datos  || '—'))}
+      ${card('Consumo datos',  esc(r.consumo_datos || '—'))}
+      ${card('Último tráfico', trafHtml)}
+      ${card('IMEI',           esc(r.imei   || '—'))}
+      ${card('En uso',         `${simFmtEnUso(r.en_uso)} <span style="margin-left:8px">${enUsoTxt}</span>`)}
+      ${card('Última sync',    esc(sync))}
     </div>
   `;
 }
@@ -26348,7 +27238,7 @@ async function abrirAltaEdicionCsim(id) {
   `);
 
   try {
-    const r = await apiGet(`api/clarosims.php?id=${id}`);
+    const r = await apiGet(`api/claro_sims.php?id=${id}`);
     $('#modalRoot .modal-body').innerHTML = formCsimHtml(r);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
@@ -26386,7 +27276,7 @@ async function guardarCsim(id, btn) {
 
   btn.disabled = true;
   try {
-    await apiSend(`api/clarosims.php?id=${id}`, 'PUT', payload);
+    await apiSend(`api/claro_sims.php?id=${id}`, 'PUT', payload);
     toast('SIM actualizada.');
     closeModal();
     cargarCsim();
@@ -26405,7 +27295,7 @@ async function eliminarCsim(id) {
   });
   if (!ok) return;
   try {
-    await apiSend(`api/clarosims.php?id=${id}`, 'DELETE');
+    await apiSend(`api/claro_sims.php?id=${id}`, 'DELETE');
     toast('SIM eliminada.');
     cargarCsim();
   } catch (e) {
@@ -26415,7 +27305,7 @@ async function eliminarCsim(id) {
 
 async function cambiarEnUsoCsim(id, valor) {
   try {
-    await apiSend(`api/clarosims.php?id=${id}`, 'PUT', { en_uso: valor });
+    await apiSend(`api/claro_sims.php?id=${id}`, 'PUT', { en_uso: valor });
     cargarCsim();
   } catch (e) {
     toast(e.message, { error: true });

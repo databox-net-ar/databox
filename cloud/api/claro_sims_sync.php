@@ -1,14 +1,14 @@
 <?php
-// api/clarosims_sync.php
+// api/claro_sims_sync.php
 // Recibe el inventario de SIMs Claro desde el agente externo `openclaw`, que
 // se encarga de loguearse en https://iotgestion.claro.com.ar/ (el portal esta
 // detras de un WAF con fingerprint dinamico que corta cualquier scraper HTTP
 // puro, ver notas en el commit) y exporta un CSV con las lineas. Hace UPSERT
-// sobre la tabla `clarosims` por ICCID (UNIQUE KEY uk_clarosims_icc).
+// sobre la tabla `claro_sims` por ICCID (UNIQUE KEY uk_claro_sims_icc).
 // Idempotente.
 //
 // Consume:
-//   POST api/clarosims_sync.php
+//   POST api/claro_sims_sync.php
 //     Content-Type: text/csv                          (body = archivo CSV)
 //     Content-Type: multipart/form-data; boundary=...  (field `csv` o `file`)
 //
@@ -26,7 +26,7 @@
 //   iccid   -> icc           (clave UPSERT, obligatoria)
 //   msisdn  -> msisdn
 //   estado  -> estado        (normalizado a "Activada"/"Desactivada"/... para que
-//                             coincida con la stats query de clarosims.php)
+//                             coincida con la stats query de claro_sims.php)
 //   msisdn  -> linea         (derivado: se le quita el prefijo "549" si esta, para
 //                             dejar el numero corto que muestra el portal)
 //   consumo* / trafico* -> consumo_datos
@@ -112,7 +112,7 @@ function readCsvBody(): array {
 }
 
 // ----------------------------------------------------------------------------
-// Import: UPSERT en clarosims por icc.
+// Import: UPSERT en claro_sims por icc.
 // ----------------------------------------------------------------------------
 
 function importClaroSimsCsv(PDO $pdo, array $csv): array {
@@ -124,12 +124,12 @@ function importClaroSimsCsv(PDO $pdo, array $csv): array {
     $actualizados = 0;
     $sinIcc       = 0;
 
-    $lookup = $pdo->prepare("SELECT id FROM clarosims WHERE icc = :icc");
+    $lookup = $pdo->prepare("SELECT id FROM claro_sims WHERE icc = :icc");
     // UPSERT: solo los campos que openclaw provee. `nombre`, `alias`, `imei`,
     // `limite_datos`, `estado_gprs` y `estado_lte` quedan intactos en el
     // UPDATE para no pisar ediciones manuales del ABM.
     $upsert = $pdo->prepare("
-        INSERT INTO clarosims
+        INSERT INTO claro_sims
             (linea, icc, estado, consumo_datos, msisdn, actualizado)
         VALUES
             (:linea, :icc, :estado, :consumo_datos, :msisdn, NOW())

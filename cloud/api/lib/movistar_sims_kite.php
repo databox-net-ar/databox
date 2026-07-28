@@ -1,10 +1,10 @@
 <?php
 /**
- * api/lib/movistarsims_kite.php
- * Nucleo compartido entre el endpoint api/movistarsims_sync.php y el job
- * cloud/jobs/movistarsims_actualizar.php. Consulta el inventario de SIMs
+ * api/lib/movistar_sims_kite.php
+ * Nucleo compartido entre el endpoint api/movistar_sims_sync.php y el job
+ * cloud/jobs/movistar_sims_actualizar.php. Consulta el inventario de SIMs
  * Movistar en Kite Platform (mTLS) y hace UPSERT sobre la tabla
- * `movistarsims` por ICCID.
+ * `movistar_sims` por ICCID.
  *
  * NO escribe en `sucesos`: cada caller decide como loguear el resultado
  * (el endpoint devuelve el resumen en JSON; el job lo escribe como suceso).
@@ -163,25 +163,30 @@ function kiteSyncSims(array $cfg, PDO $pdo): array {
     $actualizados = 0;
     $paginas      = 0;
 
-    $lookup = $pdo->prepare("SELECT id FROM movistarsims WHERE icc = :icc");
+    $lookup = $pdo->prepare("SELECT id FROM movistar_sims WHERE icc = :icc");
     // `nombre` NO se toca: es editable en el ABM y el sync no debe pisarlo.
     // El customField1 de Kite va a `alias` (columna dedicada).
+    // `ultimo_trafico` = fecha absoluta del ultimo trafico detectado por Kite
+    // para esa SIM (NULL si Kite no la reporta). Los "N dias sin trafico" se
+    // calculan al vuelo con DATEDIFF(NOW(), ultimo_trafico) en la consulta de
+    // presentacion, no se persisten.
     $upsert = $pdo->prepare("
-        INSERT INTO movistarsims
-            (alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, actualizado)
+        INSERT INTO movistar_sims
+            (alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, actualizado, ultimo_trafico)
         VALUES
-            (:alias, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :consumo_datos, :imei, :msisdn, NOW())
+            (:alias, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :consumo_datos, :imei, :msisdn, NOW(), :ultimo_trafico)
         ON DUPLICATE KEY UPDATE
-            alias         = VALUES(alias),
-            linea         = VALUES(linea),
-            estado        = VALUES(estado),
-            estado_gprs   = VALUES(estado_gprs),
-            estado_lte    = VALUES(estado_lte),
-            limite_datos  = VALUES(limite_datos),
-            consumo_datos = VALUES(consumo_datos),
-            imei          = VALUES(imei),
-            msisdn        = VALUES(msisdn),
-            actualizado   = VALUES(actualizado)
+            alias          = VALUES(alias),
+            linea          = VALUES(linea),
+            estado         = VALUES(estado),
+            estado_gprs    = VALUES(estado_gprs),
+            estado_lte     = VALUES(estado_lte),
+            limite_datos   = VALUES(limite_datos),
+            consumo_datos  = VALUES(consumo_datos),
+            imei           = VALUES(imei),
+            msisdn         = VALUES(msisdn),
+            actualizado    = VALUES(actualizado),
+            ultimo_trafico = COALESCE(VALUES(ultimo_trafico), ultimo_trafico)
     ");
 
     for ($startIndex = 0; ; $startIndex += $batch) {
@@ -273,16 +278,71 @@ function mapKiteSim(array $s): array {
     }
     $usedMB = $usedRaw !== null ? (int) round(((int)$usedRaw) / 1024 / 1024) . ' MB' : null;
 
+    // Ultimo trafico: Kite reporta la fecha del ultimo evento de datos en
+    // distintos nombres segun la version del endpoint / el tenant. Probamos
+    // los mas frecuentes en orden y nos quedamos con el primero parseable.
+    // Devolvemos NULL si ninguno matchea — el UPSERT preserva el valor previo
+    // con COALESCE, asi una respuesta parcial no borra el dato bueno.
+    $ultimoTrafico = firstDateTime($s, [
+        ['gprsStatus', 'lastDataAccessTS'],
+        ['gprsStatus', 'lastConnectionDate'],
+        ['gprsStatus', 'lastDataUsageDate'],
+        ['gprsStatus', 'lastUsageDate'],
+        ['lastDataUsageDate'],
+        ['lastConnectionDate'],
+        ['lastUsageDate'],
+        ['lastActivityDate'],
+    ]);
+
     return [
-        ':alias'         => $alias,
-        ':linea'         => $linea,
-        ':icc'           => $icc    !== '' ? $icc    : null,
-        ':estado'        => $estado !== '' ? $estado : null,
-        ':estado_gprs'   => $estadoGprs,
-        ':estado_lte'    => $estadoLte,
-        ':limite_datos'  => $limMB,
-        ':consumo_datos' => $usedMB,
-        ':imei'          => $imei   !== '' ? $imei   : null,
-        ':msisdn'        => $msisdn !== '' ? $msisdn : null,
+        ':alias'          => $alias,
+        ':linea'          => $linea,
+        ':icc'            => $icc    !== '' ? $icc    : null,
+        ':estado'         => $estado !== '' ? $estado : null,
+        ':estado_gprs'    => $estadoGprs,
+        ':estado_lte'     => $estadoLte,
+        ':limite_datos'   => $limMB,
+        ':consumo_datos'  => $usedMB,
+        ':imei'           => $imei   !== '' ? $imei   : null,
+        ':msisdn'         => $msisdn !== '' ? $msisdn : null,
+        ':ultimo_trafico' => $ultimoTrafico,
     ];
+}
+
+/**
+ * Recorre `$paths` (cada uno es una lista de claves anidadas dentro de $data)
+ * y devuelve el primer valor no vacio parseable a fecha, formateado como
+ * `Y-m-d H:i:s` en la zona horaria del servidor. Devuelve NULL si ninguno
+ * matchea. Acepta ISO8601 (`2026-07-28T14:23:45Z`, `...+00:00`), `Y-m-d H:i:s`
+ * y epoch en segundos o milisegundos.
+ */
+function firstDateTime(array $data, array $paths): ?string {
+    foreach ($paths as $path) {
+        $ref = $data;
+        foreach ($path as $key) {
+            if (!is_array($ref) || !array_key_exists($key, $ref)) { $ref = null; break; }
+            $ref = $ref[$key];
+        }
+        if ($ref === null || $ref === '' || $ref === false) continue;
+
+        $s = null;
+        if (is_numeric($ref)) {
+            // Epoch: si tiene 13 digitos, esta en milisegundos.
+            $n = (int) $ref;
+            if ($n > 100_000_000_000) $n = (int) round($n / 1000);
+            try {
+                $s = (new DateTimeImmutable('@' . $n))
+                    ->setTimezone(new DateTimeZone(date_default_timezone_get()))
+                    ->format('Y-m-d H:i:s');
+            } catch (Throwable $e) { $s = null; }
+        } else {
+            try {
+                $s = (new DateTimeImmutable((string)$ref))
+                    ->setTimezone(new DateTimeZone(date_default_timezone_get()))
+                    ->format('Y-m-d H:i:s');
+            } catch (Throwable $e) { $s = null; }
+        }
+        if ($s !== null) return $s;
+    }
+    return null;
 }

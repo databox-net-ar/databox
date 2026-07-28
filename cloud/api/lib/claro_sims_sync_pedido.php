@@ -1,8 +1,8 @@
 <?php
 /**
- * api/lib/clarosims_sync_pedido.php
- * Nucleo compartido entre el endpoint api/clarosims_sync_pedido.php y el job
- * cloud/jobs/clarosims_actualizar.php. Coordina el pedido de sincronizacion
+ * api/lib/claro_sims_sync_pedido.php
+ * Nucleo compartido entre el endpoint api/claro_sims_sync_pedido.php y el job
+ * cloud/jobs/claro_sims_actualizar.php. Coordina el pedido de sincronizacion
  * de SIMs Claro con el agente externo `openclaw` a traves de dos parametros:
  *
  *   pedido_clarosims_sincronizar         "0" | "1"
@@ -11,8 +11,8 @@
  * El panel (o el job) marca la bandera; openclaw pollea y la consume.
  */
 
-const CLAROSIMS_FLAG    = 'pedido_clarosims_sincronizar';
-const CLAROSIMS_FLAG_TS = 'pedido_clarosims_sincronizar_marcado';
+const CLARO_SIMS_FLAG    = 'pedido_clarosims_sincronizar';
+const CLARO_SIMS_FLAG_TS = 'pedido_clarosims_sincronizar_marcado';
 
 /**
  * Marca el flag en "1" y registra el timestamp. Idempotente: si ya estaba
@@ -21,25 +21,25 @@ const CLAROSIMS_FLAG_TS = 'pedido_clarosims_sincronizar_marcado';
  * consumio.
  */
 function marcarPedidoSyncClaro(PDO $pdo): array {
-    $existente = leerParametroFlag($pdo, CLAROSIMS_FLAG);
+    $existente = leerParametroFlag($pdo, CLARO_SIMS_FLAG);
     if ($existente === '1') {
         return [
             'pedido'       => true,
-            'marcado_en'   => leerParametroFlag($pdo, CLAROSIMS_FLAG_TS),
+            'marcado_en'   => leerParametroFlag($pdo, CLARO_SIMS_FLAG_TS),
             'ya_pendiente' => true,
         ];
     }
     $now = date('Y-m-d H:i:s');
     setParametroFlag(
         $pdo,
-        CLAROSIMS_FLAG,
+        CLARO_SIMS_FLAG,
         '1',
-        'Cuando =1, openclaw scrapea el portal de Claro y postea el CSV a api/clarosims_sync.php. '
-            . 'Se resetea a 0 cuando openclaw consume el pedido. Ver api/clarosims_sync_pedido.php.'
+        'Cuando =1, openclaw scrapea el portal de Claro y postea el CSV a api/claro_sims_sync.php. '
+            . 'Se resetea a 0 cuando openclaw consume el pedido. Ver api/claro_sims_sync_pedido.php.'
     );
     setParametroFlag(
         $pdo,
-        CLAROSIMS_FLAG_TS,
+        CLARO_SIMS_FLAG_TS,
         $now,
         'Timestamp del ultimo pedido en pedido_clarosims_sincronizar. Solo informativo.'
     );
@@ -54,12 +54,12 @@ function marcarPedidoSyncClaro(PDO $pdo): array {
  * un pedido manual apretado por un humano.
  */
 function consumirPedidoSyncClaro(PDO $pdo): array {
-    $val = leerParametroFlag($pdo, CLAROSIMS_FLAG);
+    $val = leerParametroFlag($pdo, CLARO_SIMS_FLAG);
     if ($val !== '1') {
         return ['pedido' => false, 'marcado_en' => null];
     }
-    $ts = leerParametroFlag($pdo, CLAROSIMS_FLAG_TS);
-    setParametroFlag($pdo, CLAROSIMS_FLAG, '0');
+    $ts = leerParametroFlag($pdo, CLARO_SIMS_FLAG_TS);
+    setParametroFlag($pdo, CLARO_SIMS_FLAG, '0');
     return ['pedido' => true, 'marcado_en' => $ts];
 }
 
