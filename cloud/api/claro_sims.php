@@ -48,6 +48,8 @@ try {
 function handleList(PDO $pdo, array $q): void {
     $codigo = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
     $estado = trim((string)($q['estado'] ?? ''));
+    $nombre = trim((string)($q['nombre'] ?? ''));
+    $linea  = trim((string)($q['linea']  ?? ''));
     $imei   = trim((string)($q['imei']   ?? ''));
     $enUso  = trim((string)($q['en_uso'] ?? ''));
     $search = trim((string)($q['q']      ?? ''));
@@ -82,9 +84,11 @@ function handleList(PDO $pdo, array $q): void {
     $where  = [];
     $params = [];
 
-    if ($codigo !== null) { $where[] = 'id = :codigo';       $params[':codigo'] = $codigo; }
-    if ($estado !== '')   { $where[] = 'estado = :estado';   $params[':estado'] = $estado; }
-    if ($imei   !== '')   { $where[] = 'imei LIKE :imei';    $params[':imei']   = "%{$imei}%"; }
+    if ($codigo !== null) { $where[] = 'id = :codigo';        $params[':codigo'] = $codigo; }
+    if ($estado !== '')   { $where[] = 'estado = :estado';    $params[':estado'] = $estado; }
+    if ($nombre !== '')   { $where[] = 'nombre LIKE :nombre'; $params[':nombre'] = "%{$nombre}%"; }
+    if ($linea  !== '')   { $where[] = 'linea LIKE :linea';   $params[':linea']  = "%{$linea}%"; }
+    if ($imei   !== '')   { $where[] = 'imei LIKE :imei';     $params[':imei']   = "%{$imei}%"; }
 
     // en_uso admite: 'si' | 'no' | 'null' (sin definir) | '' (todos).
     if ($enUso === 'null')          { $where[] = "(en_uso IS NULL OR en_uso = '')"; }
@@ -116,6 +120,17 @@ function handleList(PDO $pdo, array $q): void {
         FROM claro_sims
     ")->fetch();
 
+    // Lista de estados distintos que hoy tienen las SIMs, para poblar el
+    // <select> del modal de Filtros (asi el usuario solo puede elegir valores
+    // que realmente existen en la BD, sin tener que memorizar la nomenclatura
+    // exacta que devuelve el portal de Claro).
+    $estados = $pdo->query("
+        SELECT DISTINCT estado
+        FROM claro_sims
+        WHERE estado IS NOT NULL AND estado <> ''
+        ORDER BY estado
+    ")->fetchAll(PDO::FETCH_COLUMN);
+
     $sql = "
         SELECT " . CSIM_COLS . "
         FROM claro_sims
@@ -136,6 +151,7 @@ function handleList(PDO $pdo, array $q): void {
             'sin_estado'  => (int)($stats['sin_estado'] ?? 0),
             'en_uso'      => (int)($stats['en_uso']     ?? 0),
             'ultima_sync' => $stats['ultima_sync']      ?? null,
+            'estados'     => $estados,
         ],
         'items' => $rows,
     ]);

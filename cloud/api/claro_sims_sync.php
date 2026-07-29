@@ -49,6 +49,7 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/apikey_auth.php';
+require_once __DIR__ . '/lib/sucesos.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -59,10 +60,24 @@ try {
     $app = requireAppApikey();
 
     $t0     = microtime(true);
+    $pdo    = db();
     $csv    = readCsvBody();
-    $stats  = importClaroSimsCsv(db(), $csv);
+    $stats  = importClaroSimsCsv($pdo, $csv);
     $stats['duracion_ms'] = (int) round((microtime(true) - $t0) * 1000);
     $stats['aplicacion']  = ['id' => (int)$app['id'], 'nombre' => (string)$app['nombre']];
+
+    // Suceso 'alerta' cuando aparecen SIMs desaparecidas del origen: preserva
+    // en el Visor de sucesos el detalle (lista de ICCs) para que quede
+    // auditable. El sync de Claro solo se ejecuta cuando openclaw postea el
+    // CSV completo del portal, asi que un "ausente" es una linea que el
+    // portal ya no lista.
+    $ausentesNuevos = (int)($stats['ausentes_nuevos'] ?? 0);
+    if ($ausentesNuevos > 0) {
+        $iccs = array_slice((array)($stats['ausentes_iccs'] ?? []), 0, 500);
+        $detalle = "Claro: {$ausentesNuevos} SIMs no aparecieron en el CSV del origen y quedaron marcadas como Ausente (no se eliminaron).\n"
+                 . "ICCs:\n" . implode("\n", $iccs);
+        registrarSuceso($pdo, 'api/claro_sims_sync', 'alerta', $detalle);
+    }
 
     jsonOk($stats);
 } catch (Throwable $e) {
@@ -125,6 +140,12 @@ function importClaroSimsCsv(PDO $pdo, array $csv): array {
     $con_trafico  = 0;   // SIMs cuyo consumo cambio -> ultimo_trafico marcado
     $sinIcc       = 0;
 
+    // Referencia para detectar SIMs "desaparecidas" del portal (ver bloque
+    // post-import). Se captura ANTES del primer UPSERT porque el UPSERT
+    // pisa `actualizado = NOW()`; toda fila cuya `actualizado` quede menor
+    // (o NULL) al final es una linea que el CSV de openclaw no incluyo.
+    $syncStartedAt = date('Y-m-d H:i:s');
+
     // El portal de Claro (iotgestion) no expone la fecha del ultimo trafico
     // por linea, asi que la DERIVAMOS del delta de `consumo_datos` entre esta
     // corrida y la anterior. Reglas:
@@ -177,14 +198,51 @@ function importClaroSimsCsv(PDO $pdo, array $csv): array {
         $fetched++;
     }
 
+    // -----------------------------------------------------------------------
+    // Deteccion de SIMs "desaparecidas": las que estaban en la BD pero no
+    // vinieron en este CSV (openclaw postea el inventario completo, asi que
+    // una ausencia = linea que el portal ya no lista). Se marca
+    // `estado = 'Ausente'` (title case coincide con el resto de estados
+    // normalizados en normalizeClaroStatus) y nunca se elimina la fila:
+    // se preservan `nombre`, `alias`, `imei`, `tags`, `en_uso`, etc. La WHERE
+    // filtra por `estado <> 'Ausente'` para que la proxima corrida no vuelva
+    // a "descubrirla" en el listado de ausentes nuevos.
+    //
+    // Solo se corre si se proceso al menos una fila valida — si el CSV vino
+    // vacio o todo sin ICC, no marcamos nada para evitar falsos positivos
+    // por CSV mal formado.
+    $ausentes = [];
+    if ($fetched > 0) {
+        $sel = $pdo->prepare("
+            SELECT icc, linea, estado, actualizado
+              FROM claro_sims
+             WHERE (actualizado IS NULL OR actualizado < :ini)
+               AND (estado IS NULL OR estado <> 'Ausente')
+        ");
+        $sel->execute([':ini' => $syncStartedAt]);
+        $ausentes = $sel->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        if (!empty($ausentes)) {
+            $upd = $pdo->prepare("
+                UPDATE claro_sims
+                   SET estado = 'Ausente'
+                 WHERE (actualizado IS NULL OR actualizado < :ini)
+                   AND (estado IS NULL OR estado <> 'Ausente')
+            ");
+            $upd->execute([':ini' => $syncStartedAt]);
+        }
+    }
+
     return [
-        'fetched'      => $fetched,
-        'insertados'   => $insertados,
-        'actualizados' => $actualizados,
-        'con_trafico'  => $con_trafico,
-        'sin_icc'      => $sinIcc,
-        'filas_csv'    => count($rows),
-        'ultima_sync'  => date('Y-m-d H:i:s'),
+        'fetched'         => $fetched,
+        'insertados'      => $insertados,
+        'actualizados'    => $actualizados,
+        'con_trafico'     => $con_trafico,
+        'sin_icc'         => $sinIcc,
+        'filas_csv'       => count($rows),
+        'ausentes_nuevos' => count($ausentes),
+        'ausentes_iccs'   => array_map(static fn($r) => (string)$r['icc'], $ausentes),
+        'ultima_sync'     => date('Y-m-d H:i:s'),
     ];
 }
 

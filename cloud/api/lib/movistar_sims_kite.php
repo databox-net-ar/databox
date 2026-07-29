@@ -190,6 +190,12 @@ function kiteSyncSims(array $cfg, PDO $pdo, ?callable $emit = null): array {
     $con_trafico     = 0;   // SIMs cuyo consumo cambio -> ultimo_trafico marcado
     $paginas         = 0;
 
+    // Referencia para detectar SIMs "desaparecidas" del origen (ver bloque
+    // post-paginado). Se captura ANTES del primer UPSERT porque el UPSERT
+    // pisa `actualizado = NOW()`; toda fila cuya `actualizado` quede menor
+    // (o NULL) al final es una que Kite no devolvio en esta corrida.
+    $syncStartedAt = date('Y-m-d H:i:s');
+
     // Traemos consumo previo Y timestamp previo. El timestamp se preserva
     // cuando no hay delta (para no perder la ultima fecha buena).
     $lookup = $pdo->prepare("SELECT consumo_datos, ultimo_trafico FROM movistar_sims WHERE icc = :icc");
@@ -272,13 +278,51 @@ function kiteSyncSims(array $cfg, PDO $pdo, ?callable $emit = null): array {
     }
     $log('info', "Listo: {$fetched} SIMs upsertadas ({$insertados} nuevas, {$actualizados} actualizadas, {$con_trafico} con trafico nuevo) en {$paginas} paginas.");
 
+    // -----------------------------------------------------------------------
+    // Deteccion de SIMs "desaparecidas": las que estaban en la BD pero Kite
+    // no las devolvio en ninguna pagina de esta corrida. Como el UPSERT pisa
+    // `actualizado = NOW()`, todo lo que quede con `actualizado < syncStartedAt`
+    // (o NULL) es una SIM huerfana. Se marca `estado = 'AUSENTE'` (nunca se
+    // elimina la fila) para preservar el historial local y las ediciones
+    // manuales del ABM (nombre, tags, en_uso, etc.). Idempotente: si en la
+    // proxima corrida sigue faltando, la WHERE la filtra por estado y no
+    // aparece de nuevo en el listado de "nuevos ausentes".
+    //
+    // Este bloque solo corre si el bucle termino sin excepcion — si Kite
+    // fallo a mitad de paginacion, throw en el catch de arriba interrumpe
+    // antes de llegar aca y no se marca nada como falso positivo.
+    $ausentes = [];
+    if ($fetched > 0) {
+        $sel = $pdo->prepare("
+            SELECT icc, linea, estado, actualizado
+              FROM movistar_sims
+             WHERE (actualizado IS NULL OR actualizado < :ini)
+               AND (estado IS NULL OR estado <> 'AUSENTE')
+        ");
+        $sel->execute([':ini' => $syncStartedAt]);
+        $ausentes = $sel->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        if (!empty($ausentes)) {
+            $upd = $pdo->prepare("
+                UPDATE movistar_sims
+                   SET estado = 'AUSENTE'
+                 WHERE (actualizado IS NULL OR actualizado < :ini)
+                   AND (estado IS NULL OR estado <> 'AUSENTE')
+            ");
+            $upd->execute([':ini' => $syncStartedAt]);
+            $log('warn', count($ausentes) . " SIMs no aparecieron en el origen y se marcaron como AUSENTE (no se eliminaron).");
+        }
+    }
+
     return [
-        'fetched'      => $fetched,
-        'insertados'   => $insertados,
-        'actualizados' => $actualizados,
-        'con_trafico'  => $con_trafico,
-        'paginas'      => $paginas,
-        'ultima_sync'  => date('Y-m-d H:i:s'),
+        'fetched'         => $fetched,
+        'insertados'      => $insertados,
+        'actualizados'    => $actualizados,
+        'con_trafico'     => $con_trafico,
+        'paginas'         => $paginas,
+        'ausentes_nuevos' => count($ausentes),
+        'ausentes_iccs'   => array_map(static fn($r) => (string)$r['icc'], $ausentes),
+        'ultima_sync'     => date('Y-m-d H:i:s'),
     ];
 }
 

@@ -29,6 +29,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/movistar_sims_kite.php';
+require_once __DIR__ . '/lib/sucesos.php';
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $stream = isset($_GET['stream']) && $_GET['stream'] !== '' && $_GET['stream'] !== '0';
@@ -56,8 +57,19 @@ if (!$stream) {
         requirePermission('plataformas.movistar.sims.sincronizar');
         $cfg   = kiteConfig();
         $t0    = microtime(true);
-        $stats = kiteSyncSims($cfg, db());
+        $pdo   = db();
+        $stats = kiteSyncSims($cfg, $pdo);
         $stats['duracion_ms'] = (int) round((microtime(true) - $t0) * 1000);
+        // Suceso 'alerta' cuando aparecen SIMs desaparecidas del origen para
+        // que quede rastro en el Visor de sucesos incluso cuando la sync se
+        // dispara desde el endpoint (no solo desde el job).
+        $ausentesNuevos = (int)($stats['ausentes_nuevos'] ?? 0);
+        if ($ausentesNuevos > 0) {
+            $iccs = array_slice((array)($stats['ausentes_iccs'] ?? []), 0, 500);
+            $detalle = "Movistar: {$ausentesNuevos} SIMs no aparecieron en el origen y quedaron marcadas como AUSENTE (no se eliminaron).\n"
+                     . "ICCs:\n" . implode("\n", $iccs);
+            registrarSuceso($pdo, 'api/movistar_sims_sync', 'alerta', $detalle);
+        }
         jsonOk($stats);
     } catch (Throwable $e) {
         jsonError($e->getMessage(), 500);
@@ -91,15 +103,28 @@ try {
     $emit('ok',   'Configuracion OK. Iniciando sincronizacion.');
 
     $t0    = microtime(true);
-    $stats = kiteSyncSims($cfg, db(), $emit);
+    $pdo   = db();
+    $stats = kiteSyncSims($cfg, $pdo, $emit);
     $stats['duracion_ms'] = (int) round((microtime(true) - $t0) * 1000);
+    // Suceso 'alerta' cuando aparecen SIMs desaparecidas del origen: el emit
+    // ya se lo dice al usuario en el modal, pero conviene dejar la traza
+    // permanente en el Visor de sucesos para poder auditarla despues.
+    $ausentesNuevos = (int)($stats['ausentes_nuevos'] ?? 0);
+    if ($ausentesNuevos > 0) {
+        $iccs = array_slice((array)($stats['ausentes_iccs'] ?? []), 0, 500);
+        $detalle = "Movistar: {$ausentesNuevos} SIMs no aparecieron en el origen y quedaron marcadas como AUSENTE (no se eliminaron).\n"
+                 . "ICCs:\n" . implode("\n", $iccs);
+        registrarSuceso($pdo, 'api/movistar_sims_sync', 'alerta', $detalle);
+    }
 
+    $ausentesNuevos = (int)($stats['ausentes_nuevos'] ?? 0);
     $resumen = sprintf(
-        'Listo: %d SIMs (%d nuevas, %d actualizadas, %d con trafico nuevo). Duracion: %.1f s.',
+        'Listo: %d SIMs (%d nuevas, %d actualizadas, %d con trafico nuevo, %d marcadas AUSENTE). Duracion: %.1f s.',
         (int)$stats['fetched'],
         (int)$stats['insertados'],
         (int)$stats['actualizados'],
         (int)$stats['con_trafico'],
+        $ausentesNuevos,
         $stats['duracion_ms'] / 1000
     );
     $emit(count($errores) === 0 ? 'ok' : 'warn', $resumen);

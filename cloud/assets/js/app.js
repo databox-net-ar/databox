@@ -26832,7 +26832,7 @@ route('/anthropic', async (mount) => {
 
 // ------------------------- Vista: Claro > SIMs (ABM) -------------------------
 const csimFiltrosDefaults = {
-  q: '', codigo: '', imei: '', estado: '', en_uso: '',
+  q: '', codigo: '', nombre: '', linea: '', imei: '', estado: '', en_uso: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const csimFiltros = { ...csimFiltrosDefaults };
@@ -26841,6 +26841,10 @@ let csimFiltrosSnapshot = null;
 // Instancia del tags editor del modal Editar Claro. Se setea en
 // abrirAltaEdicionCsim (uno por apertura de modal) y se consume en guardarCsim.
 let csimTagsEditor      = null;
+// Cache de los estados distintos actualmente presentes en la BD. Se refresca
+// con cada corrida de `cargarCsim` (viene en `stats.estados`) y se usa para
+// poblar el <select> de estado del modal de Filtros.
+let csimEstadosCache    = [];
 
 function csimFmtEstado(v) {
   if (v == null || v === '') return `<span class="badge badge-muted">—</span>`;
@@ -26964,7 +26968,19 @@ route('/claro_sims', async (mount) => {
             </div>
             <div class="form-group">
               <label>Estado</label>
-              <input type="text" id="fCsimEstado" placeholder="Ej: Activada" oninput="onFiltroCsim('estado', this.value)">
+              <select id="fCsimEstado" onchange="onFiltroCsim('estado', this.value)">
+                <option value="">Todos</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Nombre</label>
+              <input type="text" id="fCsimNombre" placeholder="Contiene…" oninput="onFiltroCsim('nombre', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Línea</label>
+              <input type="text" id="fCsimLinea" placeholder="Contiene…" oninput="onFiltroCsim('linea', this.value)" style="font-family:monospace">
             </div>
           </div>
           <div class="form-row">
@@ -27133,6 +27149,7 @@ function pintarStatsCsim(s) {
   setSlot('total',      fmtNum(s?.total      ?? 0));
   setSlot('ultima_sync', s?.ultima_sync ? fmtHaceLargo(s.ultima_sync) : '—');
   actualizarSortIndicadores($('#csimThead'), csimFiltros);
+  if (Array.isArray(s?.estados)) csimEstadosCache = s.estados;
 }
 
 function pintarTablaCsim(rows) {
@@ -27196,12 +27213,24 @@ function refrescarBadgeFiltrosCsim() {
 function sincronizarControlesFiltrosCsim() {
   const f = csimFiltros;
   $('#fCsimCodigo').value  = f.codigo;
-  $('#fCsimEstado').value  = f.estado;
+  $('#fCsimNombre').value  = f.nombre;
+  $('#fCsimLinea').value   = f.linea;
   $('#fCsimImei').value    = f.imei;
   $('#fCsimEnUso').value   = f.en_uso;
   $('#fCsimLimite').value  = f.limite;
   $('#fCsimOrderBy').value = f.order_by;
   $('#fCsimDir').value     = f.dir;
+
+  // Poblar el <select> de estado desde la cache (viene del stats del ultimo
+  // cargarCsim). Si el valor actualmente filtrado no esta en la lista (raro
+  // pero puede pasar si el sync lo removio despues del ultimo load), lo
+  // agregamos para no perder la seleccion.
+  const sel  = $('#fCsimEstado');
+  const list = [...csimEstadosCache];
+  if (f.estado && !list.includes(f.estado)) list.push(f.estado);
+  sel.innerHTML = `<option value="">Todos</option>`
+    + list.map((e) => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+  sel.value = f.estado;
 }
 
 function abrirModalFiltrosCsim() {

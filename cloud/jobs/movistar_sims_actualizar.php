@@ -35,17 +35,28 @@ try {
     $stats = kiteSyncSims($cfg, $pdo);
     $stats['duracion_ms'] = (int) round((microtime(true) - $t0) * 1000);
 
+    $ausentesNuevos = (int)($stats['ausentes_nuevos'] ?? 0);
     $resumen = sprintf(
-        '%d SIMs (%d nuevas, %d actualizadas, %d con trafico nuevo) en %d paginas — %d ms',
+        '%d SIMs (%d nuevas, %d actualizadas, %d con trafico nuevo, %d marcadas AUSENTE) en %d paginas — %d ms',
         (int)$stats['fetched'],
         (int)$stats['insertados'],
         (int)$stats['actualizados'],
         (int)$stats['con_trafico'],
+        $ausentesNuevos,
         (int)$stats['paginas'],
         (int)$stats['duracion_ms']
     );
     anotarLog("Finalizado: {$resumen}");
+    // Suceso principal siempre en info; si hubo ausentes nuevos emitimos ADEMAS
+    // un suceso 'alerta' con el detalle (lista de ICCs) para que quede rastro
+    // navegable desde el Visor de sucesos sin ensuciar el suceso "OK".
     registrarSuceso($pdo, $ORIGEN_SUCESO, 'info', "Movistar SIMs sincronizadas: {$resumen}");
+    if ($ausentesNuevos > 0) {
+        $iccs = array_slice((array)($stats['ausentes_iccs'] ?? []), 0, 500);
+        $detalle = "Movistar: {$ausentesNuevos} SIMs no aparecieron en el origen y quedaron marcadas como AUSENTE (no se eliminaron).\n"
+                 . "ICCs:\n" . implode("\n", $iccs);
+        registrarSuceso($pdo, $ORIGEN_SUCESO, 'alerta', $detalle);
+    }
     marcarEjecucionOk($resumen);
 
 } catch (Throwable $e) {
