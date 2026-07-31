@@ -21,7 +21,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const TG_CANALES_COLS = "id, slug, proyecto, nombre, telefono,
+const TG_CANALES_COLS = "id, slug, proyecto, nombre, telefono, online, latido,
                          habilitado, actualizado";
 
 header('Content-Type: application/json; charset=utf-8');
@@ -59,6 +59,7 @@ function handleList(PDO $pdo, array $q): void {
     $codigo     = isset($q['codigo'])   && $q['codigo']   !== '' ? (int)$q['codigo']   : null;
     $proyecto   = isset($q['proyecto']) && $q['proyecto'] !== '' ? (int)$q['proyecto'] : null;
     $habilitado = trim((string)($q['habilitado'] ?? ''));
+    $online     = trim((string)($q['online']     ?? ''));
     $search     = trim((string)($q['q']          ?? ''));
 
     $orderBy = $q['order_by'] ?? 'id';
@@ -67,7 +68,8 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'nombre', 'telefono', 'proyecto', 'habilitado', 'actualizado'];
+    $allowedOrder = ['id', 'nombre', 'telefono', 'proyecto', 'online', 'latido',
+                     'habilitado', 'actualizado'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
 
@@ -77,6 +79,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($codigo     !== null) { $where[] = 'id = :codigo';             $params[':codigo']     = $codigo; }
     if ($proyecto   !== null) { $where[] = 'proyecto = :proyecto';     $params[':proyecto']   = $proyecto; }
     if ($habilitado !== '')   { $where[] = 'habilitado = :habilitado'; $params[':habilitado'] = $habilitado; }
+    if ($online     !== '')   { $where[] = 'online = :online';         $params[':online']     = $online; }
 
     if ($search !== '') {
         $where[] = '(nombre LIKE :s1 OR telefono LIKE :s2 OR slug LIKE :s3)';
@@ -91,7 +94,8 @@ function handleList(PDO $pdo, array $q): void {
     $stats = $pdo->query("
         SELECT
             COUNT(*)                                          AS total,
-            SUM(CASE WHEN habilitado = '1' THEN 1 ELSE 0 END) AS habilitados
+            SUM(CASE WHEN habilitado = '1' THEN 1 ELSE 0 END) AS habilitados,
+            SUM(CASE WHEN online     = '1' THEN 1 ELSE 0 END) AS online
         FROM telegram_canales
     ")->fetch();
 
@@ -110,6 +114,7 @@ function handleList(PDO $pdo, array $q): void {
         'stats' => [
             'total'       => (int)($stats['total']       ?? 0),
             'habilitados' => (int)($stats['habilitados'] ?? 0),
+            'online'      => (int)($stats['online']      ?? 0),
         ],
         'items' => $rows,
     ]);

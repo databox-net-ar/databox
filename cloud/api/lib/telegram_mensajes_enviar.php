@@ -137,6 +137,9 @@ function telegramMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
              WHERE id = :id
         ");
         $upd->execute([':id' => $id]);
+        // Latido pasivo del canal: cada envio OK refresca online/latido gratis.
+        // Cubre el "canal esta vivo" sin necesidad de correr el cron activo.
+        marcarCanalTelegramOnline($pdo, (int)$m['canal_id']);
         registrarSuceso($pdo, $origen, 'info', "Telegram mensaje #{$id} enviado a {$destinoRaw} via '{$m['canal_slug']}'");
         return [
             'ok'           => true,
@@ -149,6 +152,15 @@ function telegramMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
     $errApi = is_array($decoded) && isset($decoded['error']) ? (string)$decoded['error'] : '';
     $errTxt = 'HTTP ' . $resp['status'] . ($errApi !== '' ? ": {$errApi}" : ': ' . substr((string)$resp['body'], 0, 400));
     marcarTelegramError($pdo, $id, $errTxt);
+    // Deteccion pasiva de sesion caida: si el error contiene alguno de los
+    // codigos de auth que devuelve Telegram cuando la sesion ya no es valida,
+    // marcamos el canal como offline. No pisamos `latido` para conservar la
+    // ultima vez que se supo vivo.
+    if (esErrorSesionTelegramCaida($errTxt)) {
+        marcarCanalTelegramOffline($pdo, (int)$m['canal_id']);
+        registrarSuceso($pdo, $origen, 'error',
+            "Canal Telegram '{$m['canal_slug']}' marcado OFFLINE por error de sesion: {$errTxt}");
+    }
     registrarSuceso($pdo, $origen, 'alerta', "Telegram mensaje #{$id}: {$errTxt}");
     return ['ok' => false, 'error' => $errTxt, 'destino' => $destinoRaw, 'canal_nombre' => $canalNombre];
 }
@@ -166,6 +178,74 @@ function marcarTelegramError(PDO $pdo, int $id, string $err): void {
          WHERE id = :id
     ");
     $st->execute([':err' => substr($err, 0, 1000), ':id' => $id]);
+}
+
+/**
+ * Marca el canal como online='1' y actualiza `latido = NOW()`. Se llama
+ * desde el sender pasivo cada vez que un envio real termina OK -- gratis
+ * (piggyback sobre trafico organico). No-op si el canal_id es 0/NULL.
+ */
+function marcarCanalTelegramOnline(PDO $pdo, int $canalId): void {
+    if ($canalId <= 0) return;
+    $st = $pdo->prepare("
+        UPDATE telegram_canales
+           SET online      = '1',
+               latido      = NOW(),
+               actualizado = NOW()
+         WHERE id = :id
+    ");
+    $st->execute([':id' => $canalId]);
+}
+
+/**
+ * Marca el canal como online='0' (sesion caida). NO pisa `latido` --
+ * queda congelado el ultimo instante en que se supo vivo, para que el ABM
+ * muestre "hace X horas" y sea evidente cuando se cayo.
+ */
+function marcarCanalTelegramOffline(PDO $pdo, int $canalId): void {
+    if ($canalId <= 0) return;
+    $st = $pdo->prepare("
+        UPDATE telegram_canales
+           SET online      = '0',
+               actualizado = NOW()
+         WHERE id = :id
+    ");
+    $st->execute([':id' => $canalId]);
+}
+
+/**
+ * Clasifica un mensaje de error como "sesion caida" segun los codigos que
+ * devuelve Telegram/MadelineProto cuando la auth key ya no es valida en un
+ * DC (o el usuario se desactivo). Se usa para bajar `online='0'` sin
+ * requerir un health check activo.
+ *
+ * Codigos considerados fatales de sesion:
+ *   - AUTH_KEY_UNREGISTERED  : la auth key nunca se autorizo en este DC.
+ *   - AUTH_KEY_INVALID       : la auth key expiro o fue rechazada.
+ *   - AUTH_KEY_DUPLICATED    : otra conexion tomo la sesion (fuerza logout).
+ *   - SESSION_REVOKED        : el usuario revoco la sesion desde la app.
+ *   - SESSION_EXPIRED        : Telegram invalido la sesion por inactividad.
+ *   - USER_DEACTIVATED       : la cuenta fue desactivada (auto o baneada).
+ *   - USER_DEACTIVATED_BAN   : baneo explicito.
+ *
+ * NO cuentan como sesion caida (son transitorios / de la peer):
+ *   - PHONE_NUMBER_INVALID / PEER_ID_INVALID / user unreachable / timeouts.
+ */
+function esErrorSesionTelegramCaida(string $err): bool {
+    static $codigos = [
+        'AUTH_KEY_UNREGISTERED',
+        'AUTH_KEY_INVALID',
+        'AUTH_KEY_DUPLICATED',
+        'SESSION_REVOKED',
+        'SESSION_EXPIRED',
+        'USER_DEACTIVATED',
+        'USER_DEACTIVATED_BAN',
+    ];
+    $up = strtoupper($err);
+    foreach ($codigos as $c) {
+        if (strpos($up, $c) !== false) return true;
+    }
+    return false;
 }
 
 /**

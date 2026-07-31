@@ -17,13 +17,16 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
 #   - cron: dispara el tick minutal del scheduler del "Programador de tareas".
 #   - coreutils / procps: 'timeout', 'stdbuf', 'kill' — usados por el scheduler
 #     para lanzar procesos en background con timeout y line-buffering.
+#   - libxml2-dev: header requerido por ext-soap (compilacion de docker-php-ext-install soap).
 #   - pcntl: signal handler en _bootstrap.php de los jobs para cerrar la fila
 #     como 'timeout' cuando `timeout` de coreutils dispara SIGTERM.
 #   - pdo_mysql: acceso a la BD.
+#   - soap: SoapClient nativo, usado por /v4/arca/* para hablar directo con
+#     WSAA y WSFEv1 de AFIP (sustituye al proxy afipsdk.com que se retiro).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cron coreutils procps tzdata \
+ && apt-get install -y --no-install-recommends cron coreutils procps tzdata libxml2-dev \
  && rm -rf /var/lib/apt/lists/* \
- && docker-php-ext-install pdo_mysql pcntl \
+ && docker-php-ext-install pdo_mysql pcntl soap \
  && echo "date.timezone = $TZ" > /usr/local/etc/php/conf.d/timezone.ini \
  && a2enmod rewrite \
  && sed -i 's/Listen 80/Listen 8091/' /etc/apache2/ports.conf \

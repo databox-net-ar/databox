@@ -143,11 +143,12 @@ function handleList(PDO $pdo, array $q): void {
             'enviados'   => (int)($stats['enviados']   ?? 0),
             'anulados'   => (int)($stats['anulados']   ?? 0),
             'con_error'  => (int)($stats['con_error']  ?? 0),
+            // Estado actual del motor -- lo consume el UI para pintar la
+            // tarjeta "Motor" y el menu "Iniciar motor" / "Detener motor"
+            // de la toolbar. Mismo shape que Evolution (stats.motor).
+            'motor'      => getParametro('telegram.mensajes.enviar', '1'),
         ],
         'items' => $rows,
-        // Estado actual del motor -- lo consume el UI para pintar el
-        // menu "Iniciar motor" / "Detener motor".
-        'motor' => getParametro('telegram.mensajes.enviar', '1'),
     ]);
 }
 

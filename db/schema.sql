@@ -48,6 +48,42 @@ CREATE TABLE `aplicaciones`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 101 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for arca_certificados
+-- ----------------------------
+DROP TABLE IF EXISTS `arca_certificados`;
+CREATE TABLE `arca_certificados`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `llave` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `certificado` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `token` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `actualizado` datetime(0) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for arca_ta_cache
+-- ----------------------------
+-- Cache persistente del "Ticket de Acceso" (TA) que emite el WSAA de AFIP.
+-- Cada TA es propiedad del par (certificado, service) y dura 12hs; hay que
+-- reusarlo entre requests porque AFIP rechaza pedidos repetidos con error 25
+-- ("Ya existe TA valido"). Almacenamos token/sign opacos + expira_en para
+-- validar antes de reutilizar. UPSERT por (certificado_id, service).
+DROP TABLE IF EXISTS `arca_ta_cache`;
+CREATE TABLE `arca_ta_cache` (
+  `id`              int(11) NOT NULL AUTO_INCREMENT,
+  `certificado_id`  int(11) NOT NULL,
+  `service`         varchar(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `token`           mediumtext  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `sign`            mediumtext  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `expira_en`       datetime NOT NULL,
+  `actualizado`     datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_arca_ta_cache_cert_service`(`certificado_id`, `service`) USING BTREE,
+  INDEX `idx_arca_ta_cache_expira_en`(`expira_en`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for articulos
 -- ----------------------------
 DROP TABLE IF EXISTS `articulos`;
@@ -485,19 +521,23 @@ CREATE TABLE `datacount_empleados`  (
 -- con la misma razón social.
 DROP TABLE IF EXISTS `datacount_empresas`;
 CREATE TABLE `datacount_empresas`  (
-  `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
-  `nombre`     varchar(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
-  `razon`      varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
-  `domicilio`  varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `condicion`  enum('responsable_inscripto','monotributista','exento','consumidor_final','no_responsable','no_categorizado') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'responsable_inscripto',
-  `cuit`       varchar(15)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `iibb`       varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `inicio`     date NULL DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `id`             int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `nombre`         varchar(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `slug`           varchar(40)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `razon`          varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `domicilio`      varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `condicion`      enum('responsable_inscripto','monotributista','exento','consumidor_final','no_responsable','no_categorizado') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'responsable_inscripto',
+  `cuit`           varchar(15)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `iibb`           varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `inicio`         date NULL DEFAULT NULL,
+  `certificado_id` int(11) NULL DEFAULT NULL,
+  `created_at`     timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`     timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uk_razon`(`razon`) USING BTREE,
-  INDEX `idx_cuit`(`cuit`) USING BTREE
+  UNIQUE INDEX `uk_datacount_empresas_slug`(`slug`) USING BTREE,
+  INDEX `idx_cuit`(`cuit`) USING BTREE,
+  INDEX `idx_datacount_empresas_certificado_id`(`certificado_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -2795,12 +2835,15 @@ CREATE TABLE `telegram_canales`  (
   `proyecto` int(11) NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `telefono` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `online` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `latido` datetime(0) NULL DEFAULT NULL,
   `habilitado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `actualizado` datetime(0) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_telegram_canales_slug`(`slug`) USING BTREE,
   INDEX `idx_telegram_canales_proyecto`(`proyecto`) USING BTREE,
-  INDEX `idx_telegram_canales_habilitado`(`habilitado`) USING BTREE
+  INDEX `idx_telegram_canales_habilitado`(`habilitado`) USING BTREE,
+  INDEX `idx_telegram_canales_latido`(`latido`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

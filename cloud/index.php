@@ -136,6 +136,10 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
                data-perm-prefix="plataformas.anthropic.">
               <span class="nav-icon">✨</span> Anthropic
             </a>
+            <a href="#/arca" class="nav-item nav-sub-item" data-route="/arca"
+               data-perm-prefix="plataformas.arca.">
+              <span class="nav-icon">🏛️</span> Arca
+            </a>
           </div>
         </div>
 

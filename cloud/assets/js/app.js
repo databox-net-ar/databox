@@ -475,6 +475,9 @@ const ROUTE_PERMS = {
 
   '/anthropic':                { prefix: 'plataformas.anthropic.' },
 
+  '/arca':                     { prefix: 'plataformas.arca.' },
+  '/arcacertificados':         { perm:   'plataformas.arca.certificados.consultar' },
+
   '/usuarios':                 { perm:   'seguridad.usuarios.consultar' },
   '/roles':                    { perm:   'seguridad.roles.consultar' },
   '/permisos':                 { perm:   'seguridad.permisos.consultar' },
@@ -13048,16 +13051,40 @@ const DCE_CONDICIONES = [
 ];
 const DCE_CONDICION_MAP = Object.fromEntries(DCE_CONDICIONES.map((c) => [c.v, c]));
 
-let dceItems           = [];
-let dceBusqueda        = '';
-let dceFiltroCodigo    = '';
-let dceFiltroCondicion = '';
-let dceFiltroLimite    = 100;
-let dceFiltroOrden     = 'id';
-let dceFiltroDir       = 'desc';
-let dceEditandoId      = null;
-let dceBuscadorTimer   = null;
-let dceFiltrosSnapshot = null;
+let dceItems              = [];
+let dceBusqueda           = '';
+let dceFiltroCodigo       = '';
+let dceFiltroCondicion    = '';
+let dceFiltroLimite       = 100;
+let dceFiltroOrden        = 'id';
+let dceFiltroDir          = 'desc';
+let dceEditandoId         = null;
+let dceBuscadorTimer      = null;
+let dceFiltrosSnapshot    = null;
+let dceCertificadosCache  = null;
+
+async function dceGetCertificados() {
+  if (dceCertificadosCache) return dceCertificadosCache;
+  try {
+    const d = await apiGet(`${DCE_API}?listar=certificados`);
+    dceCertificadosCache = d.items || [];
+  } catch {
+    dceCertificadosCache = [];
+  }
+  return dceCertificadosCache;
+}
+
+// Conmuta pestañas del modal Alta/Edición de empresas (General / Detalles).
+function dceCambiarTab(tab) {
+  if (tab !== 'general' && tab !== 'detalles') return;
+  document.querySelectorAll('#modalRoot .modal-tab[data-dce-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.dceTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-dce-tab]').forEach((p) => {
+    p.hidden = p.dataset.dceTab !== tab;
+  });
+}
+window.dceCambiarTab = dceCambiarTab;
 
 function dceFmtCuit(cuit) {
   if (!cuit) return '—';
@@ -13078,6 +13105,24 @@ function dceCondicionBadge(v) {
   const c = DCE_CONDICION_MAP[v];
   if (!c) return `<span class="badge">${esc(v || '—')}</span>`;
   return `<span class="badge ${c.badge}">${esc(c.label)}</span>`;
+}
+
+// Mirror JS de dceSlugify() (cloud/api/datacountempresas.php).
+// Normaliza a kebab-case sin acentos, para autocompletar el input `slug`
+// mientras el operador tipea el nombre.
+function dceSlugify(s) {
+  if (!s) return '';
+  const pares = { 'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+                  'à':'a','è':'e','ì':'i','ò':'o','ù':'u',
+                  'ä':'a','ë':'e','ï':'i','ö':'o','ü':'u',
+                  'Á':'a','É':'e','Í':'i','Ó':'o','Ú':'u',
+                  'ñ':'n','Ñ':'n','ç':'c','Ç':'c' };
+  let out = String(s).trim();
+  out = out.replace(/[áéíóúàèìòùäëïöüÁÉÍÓÚñÑçÇ]/g, (c) => pares[c] || c);
+  out = out.toLowerCase();
+  out = out.replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, '');
+  return out.slice(0, 40);
 }
 
 route('/datacountempresas', async (mount) => {
@@ -13131,6 +13176,7 @@ route('/datacountempresas', async (mount) => {
             <tr>
               <th style="width:80px">Código</th>
               <th>Nombre</th>
+              <th style="width:160px">Slug</th>
               <th>Razón social</th>
               <th style="width:180px">Condición</th>
               <th style="width:140px">CUIT</th>
@@ -13139,7 +13185,7 @@ route('/datacountempresas', async (mount) => {
             </tr>
           </thead>
           <tbody id="dceTbody">
-            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -13190,6 +13236,7 @@ route('/datacountempresas', async (mount) => {
               <select id="fDceOrden" onchange="onFiltroDce('orden', this.value)">
                 <option value="id">Código</option>
                 <option value="nombre">Nombre</option>
+                <option value="slug">Slug</option>
                 <option value="razon">Razón social</option>
                 <option value="cuit">CUIT</option>
                 <option value="inicio">Inicio</option>
@@ -13287,7 +13334,7 @@ route('/datacountempresas', async (mount) => {
 async function cargarDce() {
   const tbody = $('#dceTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (dceBusqueda)        qs.set('q', dceBusqueda);
@@ -13303,7 +13350,7 @@ async function cargarDce() {
     pintarStatsDce(data.stats || {});
     renderDce();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -13318,7 +13365,7 @@ function renderDce() {
   const tbody = $('#dceTbody');
   if (!tbody) return;
   if (!dceItems.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin empresas registradas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin empresas registradas.</td></tr>`;
     return;
   }
 
@@ -13330,7 +13377,7 @@ function renderDce() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -13338,6 +13385,7 @@ function renderDce() {
     <tr data-id="${e.id}" class="row-clickable">
       <td><code style="font-size:.82rem">${e.id}</code></td>
       <td style="font-weight:600">${esc(e.nombre)}</td>
+      <td><code style="font-size:.78rem;color:var(--muted)">${esc(e.slug || '—')}</code></td>
       <td style="color:var(--muted)">${esc(e.razon)}</td>
       <td>${dceCondicionBadge(e.condicion)}</td>
       <td style="font-family:monospace;font-size:.85rem">${esc(dceFmtCuit(e.cuit))}</td>
@@ -13439,7 +13487,11 @@ function dceActualizarBadgeFiltros() {
 }
 
 // ---- Modal Alta / Edición ----
-function abrirAltaEdicionDce(id) {
+// El modal tiene dos pestañas:
+//   * General   — todos los campos identificatorios/fiscales de la empresa.
+//   * Detalles  — vínculos con otros catálogos (por ahora, el certificado
+//                 fiscal de Arca a usar para facturar como esta empresa).
+async function abrirAltaEdicionDce(id) {
   dceEditandoId = id;
   const editando = !!id;
   const e = editando ? dceItems.find((x) => x.id === id) : null;
@@ -13456,39 +13508,75 @@ function abrirAltaEdicionDce(id) {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        <div class="form-row">
-          <div class="form-group">
-            <label for="dceNombre">Nombre *</label>
-            <input type="text" id="dceNombre" placeholder="Nombre de fantasía" maxlength="160" autocomplete="off">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab"
+                  data-dce-tab="general" onclick="dceCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-dce-tab="detalles" onclick="dceCambiarTab('detalles')">
+            <i class="fa-solid fa-sliders"></i> Detalles
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" data-dce-tab="general" role="tabpanel">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dceNombre">Nombre *</label>
+              <input type="text" id="dceNombre" placeholder="Nombre de fantasía" maxlength="160" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="dceRazon">Razón social *</label>
+              <input type="text" id="dceRazon" placeholder="Razón social completa" maxlength="200" autocomplete="off">
+            </div>
           </div>
           <div class="form-group">
-            <label for="dceRazon">Razón social *</label>
-            <input type="text" id="dceRazon" placeholder="Razón social completa" maxlength="200" autocomplete="off">
+            <label for="dceSlug">
+              Slug *
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — identificador estable para el endpoint /v4/arca (kebab-case, se autocompleta desde el nombre)
+              </span>
+            </label>
+            <input type="text" id="dceSlug" placeholder="wescom-srl" maxlength="40"
+                   style="font-family:monospace" autocomplete="off"
+                   pattern="^[a-z0-9]+(-[a-z0-9]+)*$">
+          </div>
+          <div class="form-group">
+            <label for="dceDomicilio">Domicilio</label>
+            <input type="text" id="dceDomicilio" placeholder="Calle, número, ciudad, provincia" maxlength="255" autocomplete="off">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dceCondicion">Condición fiscal *</label>
+              <select id="dceCondicion">${opciones}</select>
+            </div>
+            <div class="form-group">
+              <label for="dceCuit">CUIT</label>
+              <input type="text" id="dceCuit" placeholder="20123456789 o 20-12345678-9" maxlength="15"
+                     style="font-family:monospace" autocomplete="off">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dceIibb">IIBB</label>
+              <input type="text" id="dceIibb" placeholder="Nº de Ingresos Brutos" maxlength="30" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="dceInicio">Inicio de actividades</label>
+              <input type="date" id="dceInicio">
+            </div>
           </div>
         </div>
-        <div class="form-group">
-          <label for="dceDomicilio">Domicilio</label>
-          <input type="text" id="dceDomicilio" placeholder="Calle, número, ciudad, provincia" maxlength="255" autocomplete="off">
-        </div>
-        <div class="form-row">
+
+        <div class="modal-tabpanel" data-dce-tab="detalles" role="tabpanel" hidden>
           <div class="form-group">
-            <label for="dceCondicion">Condición fiscal *</label>
-            <select id="dceCondicion">${opciones}</select>
-          </div>
-          <div class="form-group">
-            <label for="dceCuit">CUIT</label>
-            <input type="text" id="dceCuit" placeholder="20123456789 o 20-12345678-9" maxlength="15"
-                   style="font-family:monospace" autocomplete="off">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label for="dceIibb">IIBB</label>
-            <input type="text" id="dceIibb" placeholder="Nº de Ingresos Brutos" maxlength="30" autocomplete="off">
-          </div>
-          <div class="form-group">
-            <label for="dceInicio">Inicio de actividades</label>
-            <input type="date" id="dceInicio">
+            <label for="dceCertificado">
+              Certificado de Arca
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">— opcional</span>
+            </label>
+            <select id="dceCertificado">
+              <option value="">— Cargando… —</option>
+            </select>
           </div>
         </div>
       </div>
@@ -13501,6 +13589,7 @@ function abrirAltaEdicionDce(id) {
 
   if (editando && e) {
     $('#dceNombre').value    = e.nombre    || '';
+    $('#dceSlug').value      = e.slug      || '';
     $('#dceRazon').value     = e.razon     || '';
     $('#dceDomicilio').value = e.domicilio || '';
     $('#dceCondicion').value = e.condicion || 'responsable_inscripto';
@@ -13511,27 +13600,61 @@ function abrirAltaEdicionDce(id) {
     $('#dceCondicion').value = 'responsable_inscripto';
   }
 
+  // Auto-derivar slug desde nombre mientras el operador no lo edite a mano.
+  // Si el slug ya tenia valor (edicion) o el operador lo escribio explicito,
+  // no lo pisamos.
+  const slugInp   = $('#dceSlug');
+  const nombreInp = $('#dceNombre');
+  let slugManual  = editando && e && (e.slug || '') !== '';
+  slugInp.addEventListener('input', () => { slugManual = true; });
+  nombreInp.addEventListener('input', () => {
+    if (!slugManual) slugInp.value = dceSlugify(nombreInp.value);
+  });
+
   setTimeout(() => $('#dceNombre')?.focus(), 50);
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))   closeModal();
     if (ev.target.closest('[data-act="guardar"]')) guardarDce();
   });
+
+  // Poblar el <select> de certificados de forma asincrónica — la pestaña
+  // Detalles queda utilizable en cuanto termina la carga sin bloquear el
+  // render de la pestaña General.
+  const certificados = await dceGetCertificados();
+  const sel          = $('#dceCertificado');
+  if (!sel) return;
+  const actual = editando && e?.certificado_id != null ? String(e.certificado_id) : '';
+  sel.innerHTML = `
+    <option value="">— Sin certificado —</option>
+    ${certificados.map((c) => {
+      const label   = c.nombre || `#${c.id}`;
+      const selMark = String(c.id) === actual ? 'selected' : '';
+      return `<option value="${esc(c.id)}" ${selMark}>${esc(label)}</option>`;
+    }).join('')}
+  `;
 }
 
 async function guardarDce() {
-  const nombre    = $('#dceNombre').value.trim();
-  const razon     = $('#dceRazon').value.trim();
-  const domicilio = $('#dceDomicilio').value.trim();
-  const condicion = $('#dceCondicion').value;
-  const cuit      = $('#dceCuit').value.trim();
-  const iibb      = $('#dceIibb').value.trim();
-  const inicio    = $('#dceInicio').value || '';
+  const nombre         = $('#dceNombre').value.trim();
+  const slug           = $('#dceSlug').value.trim();
+  const razon          = $('#dceRazon').value.trim();
+  const domicilio      = $('#dceDomicilio').value.trim();
+  const condicion      = $('#dceCondicion').value;
+  const cuit           = $('#dceCuit').value.trim();
+  const iibb           = $('#dceIibb').value.trim();
+  const inicio         = $('#dceInicio').value || '';
+  const certificado_id = $('#dceCertificado')?.value || null;
 
   if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
   if (!razon)  { toast('La razón social es obligatoria', { error: true }); return; }
+  if (!slug)   { toast('El slug es obligatorio', { error: true }); return; }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+    toast('El slug solo admite minúsculas, dígitos y guiones (kebab-case).', { error: true });
+    return;
+  }
 
-  const body = { nombre, razon, domicilio, condicion, cuit, iibb, inicio };
+  const body = { nombre, slug, razon, domicilio, condicion, cuit, iibb, inicio, certificado_id };
 
   try {
     if (dceEditandoId) {
@@ -13550,6 +13673,11 @@ async function guardarDce() {
 }
 
 // ---- Modal Consulta ----
+// Misma estructura de pestañas que el modal Alta/Edición:
+//   * General   — datos identificatorios/fiscales.
+//   * Detalles  — vínculos con otros catálogos (certificado de Arca).
+// Reutiliza `dceCambiarTab()` porque el selector `#modalRoot .modal-tab[data-dce-tab]`
+// funciona igual para cualquiera de los dos modales.
 function abrirConsultaDce(id) {
   const e = dceItems.find((x) => x.id === id);
   if (!e) return;
@@ -13572,16 +13700,36 @@ function abrirConsultaDce(id) {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        <div style="display:flex;flex-wrap:wrap;gap:12px">
-          ${card('Código',            `<code>${e.id}</code>`)}
-          ${card('Condición fiscal',  dceCondicionBadge(e.condicion))}
-          ${card('Nombre',            esc(e.nombre), 'full')}
-          ${card('Razón social',      esc(e.razon), 'full')}
-          ${card('Domicilio',         esc(e.domicilio || '—'), 'full')}
-          ${card('CUIT',              `<span style="font-family:monospace">${esc(dceFmtCuit(e.cuit))}</span>`)}
-          ${card('IIBB',              `<span style="font-family:monospace">${esc(e.iibb || '—')}</span>`)}
-          ${card('Inicio actividades', esc(dceFmtFecha(e.inicio)))}
-          ${card('Alta',               esc(fmtFecha(e.created_at)))}
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab"
+                  data-dce-tab="general" onclick="dceCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-dce-tab="detalles" onclick="dceCambiarTab('detalles')">
+            <i class="fa-solid fa-sliders"></i> Detalles
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" data-dce-tab="general" role="tabpanel">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Código',            `<code>${e.id}</code>`)}
+            ${card('Condición fiscal',  dceCondicionBadge(e.condicion))}
+            ${card('Nombre',            esc(e.nombre), 'full')}
+            ${card('Slug',              `<code style="font-family:monospace">${esc(e.slug || '—')}</code>`, 'full')}
+            ${card('Razón social',      esc(e.razon), 'full')}
+            ${card('Domicilio',         esc(e.domicilio || '—'), 'full')}
+            ${card('CUIT',              `<span style="font-family:monospace">${esc(dceFmtCuit(e.cuit))}</span>`)}
+            ${card('IIBB',              `<span style="font-family:monospace">${esc(e.iibb || '—')}</span>`)}
+            ${card('Inicio actividades', esc(dceFmtFecha(e.inicio)))}
+            ${card('Alta',               esc(fmtFecha(e.created_at)))}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dce-tab="detalles" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Certificado Arca', esc(e.certificado_nombre || '—'), 'full')}
+          </div>
         </div>
       </div>
       <div class="modal-footer">
@@ -22775,6 +22923,17 @@ const evoChFiltros = { ...evoChFiltrosDefaults };
 let evoChBuscadorTimer   = null;
 let evoChFiltrosSnapshot = null;
 let evoChCache           = []; // ultima respuesta del listado, para lookup del ctx-menu
+let evoChProyectosCache  = null;
+
+// Lista de proyectos tipo='I' (internos) cacheada por vida del ABM. Se usa
+// tanto para mostrar el nombre en el listado/consulta como para poblar el
+// <select> del alta/edicion.
+async function evoChCargarProyectos() {
+  if (evoChProyectosCache) return evoChProyectosCache;
+  const resp = await apiGet('api/proyectos.php?tipo=I');
+  evoChProyectosCache = resp.items || [];
+  return evoChProyectosCache;
+}
 
 function evoChHabilitadoBadge(h) {
   if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
@@ -23020,10 +23179,13 @@ async function cargarEvoCh() {
     if (v !== '' && v != null) qs.set(k, v);
   });
   try {
-    const data = await apiGet('api/evolutioncanales.php?' + qs.toString());
+    const [data, proyectos] = await Promise.all([
+      apiGet('api/evolutioncanales.php?' + qs.toString()),
+      evoChCargarProyectos(),
+    ]);
     evoChCache = data.items || [];
     pintarStatsEvoCh(data.stats);
-    pintarTablaEvoCh(evoChCache);
+    pintarTablaEvoCh(evoChCache, proyectos);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
@@ -23037,16 +23199,22 @@ function pintarStatsEvoCh(s) {
   cards[2].textContent = fmtNum(s.online);
 }
 
-function pintarTablaEvoCh(rows) {
+function pintarTablaEvoCh(rows, proyectos = []) {
   const tbody = $('#evoChTbody');
   if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin canales.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map((c) => `
+  const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
+  tbody.innerHTML = rows.map((c) => {
+    const proyNom = proyMap.get(Number(c.proyecto));
+    const proyCell = proyNom
+      ? esc(proyNom)
+      : (c.proyecto == null || c.proyecto === '' ? '—' : `#${esc(c.proyecto)}`);
+    return `
     <tr data-id="${c.id}" class="row-clickable">
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
-      <td>${esc(c.proyecto ?? '—')}</td>
+      <td>${proyCell}</td>
       <td style="font-family:monospace">${esc((c.prefijo ? '+' + c.prefijo + ' ' : '') + (c.numero || '—'))}</td>
       <td style="font-family:monospace">${esc(c.celular || '—')}</td>
       <td style="font-family:monospace">${esc(fmtNum(c.enviados ?? 0))}</td>
@@ -23061,8 +23229,8 @@ function pintarTablaEvoCh(rows) {
           </button>
         </div>
       </td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 function onFiltroEvoCh(key, value) {
@@ -23158,14 +23326,17 @@ async function abrirConsultarEvoCh(id) {
   });
 
   try {
-    const c = await apiGet(`api/evolutioncanales.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaEvoCh(c);
+    const [c, proyectos] = await Promise.all([
+      apiGet(`api/evolutioncanales.php?id=${id}`),
+      evoChCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaEvoCh(c, proyectos);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
 
-function renderConsultaEvoCh(c) {
+function renderConsultaEvoCh(c, proyectos = []) {
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
     const inner = empty ? 'Sin dato'
@@ -23208,7 +23379,7 @@ function renderConsultaEvoCh(c) {
       ${seccion('Identificación')}
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
         ${card('Nombre',   c.nombre)}
-        ${card('Proyecto', c.proyecto)}
+        ${card('Proyecto', proyectos.find((p) => Number(p.id) === Number(c.proyecto))?.nombre || null)}
         ${card('Número',   numeroFull, false, true)}
         ${card('Celular',  c.celular, false, true)}
         ${card('Token',    c.token ? '••••••••' : null, false, true)}
@@ -23250,9 +23421,7 @@ async function abrirAltaEdicionEvoCh(id) {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formEvoChHtml({})}
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
@@ -23261,13 +23430,14 @@ async function abrirAltaEdicionEvoCh(id) {
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const c = await apiGet(`api/evolutioncanales.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formEvoChHtml(c);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  try {
+    const [c, proyectos] = await Promise.all([
+      esEdicion ? apiGet(`api/evolutioncanales.php?id=${id}`) : Promise.resolve({}),
+      evoChCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formEvoChHtml(c, proyectos);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
@@ -23278,18 +23448,29 @@ async function abrirAltaEdicionEvoCh(id) {
   });
 }
 
-function formEvoChHtml(c) {
-  const v   = (k) => esc(c?.[k] ?? '');
-  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+function formEvoChHtml(c, proyectos = []) {
+  const v = (k) => esc(c?.[k] ?? '');
+  const proyectoActual = c?.proyecto == null ? '' : String(c.proyecto);
+  const proyectosOpts = proyectos
+    .map((p) => `<option value="${esc(p.id)}" ${String(p.id) === proyectoActual ? 'selected' : ''}>${esc(p.nombre || '')}</option>`)
+    .join('');
   return `
-    <div class="form-row">
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label>Proyecto</label>
+        <select id="evoChProyecto">
+          <option value="">— Seleccionar —</option>
+          ${proyectosOpts}
+        </select>
+      </div>
       <div class="form-group">
         <label>Nombre</label>
         <input type="text" id="evoChNombre" maxlength="255" value="${v('nombre')}">
       </div>
       <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="evoChProyecto" min="1" value="${v('proyecto')}">
+        <label>Slug</label>
+        <input type="text" id="evoChSlug" maxlength="50" value="${v('slug')}"
+               style="font-family:monospace" autocomplete="off">
       </div>
     </div>
     <div class="form-row form-row-3">
@@ -23339,7 +23520,7 @@ function formEvoChHtml(c) {
         <input type="number" id="evoChUltimo" min="0" value="${v('ultimo')}">
       </div>
     </div>
-    <div class="form-row form-row-3">
+    <div class="form-row">
       <div class="form-group">
         <label>Alerta</label>
         <input type="number" id="evoChAlerta" min="0" value="${v('alerta')}">
@@ -23347,32 +23528,6 @@ function formEvoChHtml(c) {
       <div class="form-group">
         <label>Límite</label>
         <input type="number" id="evoChLimite" min="0" value="${v('limite')}">
-      </div>
-      <div class="form-group">
-        <label>Enviados</label>
-        <input type="number" id="evoChEnviados" min="0" value="${v('enviados')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Acumulados</label>
-        <input type="number" id="evoChAcumulados" min="0" value="${v('acumulados')}">
-      </div>
-      <div class="form-group">
-        <label>Habilitado</label>
-        <select id="evoChHabilitado">
-          <option value=""  ${sel('habilitado','')}>—</option>
-          <option value="1" ${sel('habilitado','1')}>Habilitado</option>
-          <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Online</label>
-        <select id="evoChOnline">
-          <option value=""  ${sel('online','')}>—</option>
-          <option value="1" ${sel('online','1')}>Online</option>
-          <option value="0" ${sel('online','0')}>Offline</option>
-        </select>
       </div>
     </div>
     <div class="form-group">
@@ -23383,6 +23538,13 @@ function formEvoChHtml(c) {
       <label>Grupos estado</label>
       <textarea id="evoChGruposEstado" rows="3" style="font-family:monospace">${v('gruposEstado')}</textarea>
     </div>
+    <!-- Contadores automáticos y flags gestionados fuera del form (toggle
+         desde el ctx-menu y cron de latido) - se preservan via hidden inputs
+         para que el PUT no los nulle. -->
+    <input type="hidden" id="evoChEnviados"   value="${v('enviados')}">
+    <input type="hidden" id="evoChAcumulados" value="${v('acumulados')}">
+    <input type="hidden" id="evoChHabilitado" value="${v('habilitado')}">
+    <input type="hidden" id="evoChOnline"     value="${v('online')}">
     <div class="field-error" id="evoChFormError" style="display:none"></div>
   `;
 }
@@ -23392,6 +23554,7 @@ async function guardarEvoCh(id, btn) {
   err.style.display = 'none';
 
   const payload = {
+    slug:           $('#evoChSlug').value.trim(),
     nombre:         $('#evoChNombre').value.trim(),
     proyecto:       $('#evoChProyecto').value,
     prefijo:        $('#evoChPrefijo').value.trim(),
@@ -24007,7 +24170,7 @@ route('/telegram', async (mount) => {
         <span class="tile-desc">Cada envío individual procesado por Telegram, con destinatario, cuerpo, estado y tiempo de entrega.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/telegramcanales'">
-        <span class="tile-icon">📱</span>
+        <span class="tile-icon">📡</span>
         <span class="tile-title">Canales</span>
         <span class="tile-desc">Las cuentas usuario (MTProto) desde las cuales se envían los mensajes, con número, alias y estado de habilitación.</span>
       </button>
@@ -24101,11 +24264,10 @@ route('/telegrammensajes', async (mount) => {
       </div>
 
       <div class="stats-bar" id="tgMsgStats">
+        <div class="stat-card"><span class="stat-label">Motor</span><span class="stat-value" id="tgMsgStatMotor">—</span></div>
         <div class="stat-card"><span class="stat-label">Pendientes</span><span class="stat-value" id="tgMsgStatPendientes">—</span></div>
-        <div class="stat-card"><span class="stat-label">Enviando</span><span class="stat-value" id="tgMsgStatEnviando">—</span></div>
         <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value" id="tgMsgStatEnviados">—</span></div>
         <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value" id="tgMsgStatConError">—</span></div>
-        <div class="stat-card"><span class="stat-label">Anulados</span><span class="stat-value" id="tgMsgStatAnulados">—</span></div>
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" id="tgMsgStatTotal">—</span></div>
       </div>
 
@@ -24122,6 +24284,9 @@ route('/telegrammensajes', async (mount) => {
           </button>
           <button class="btn btn-ghost btn-icon" id="tgMsgRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="tgMsgMotorMenuBtn" title="Motor de envío">
+            <i class="fa-solid fa-bars"></i>
           </button>
         </div>
         <div class="toolbar-right">
@@ -24166,6 +24331,15 @@ route('/telegrammensajes', async (mount) => {
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
         <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div id="tgMsgMotorCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-motor-action="iniciar" role="menuitem" style="display:none">
+        <i class="fa-solid fa-play-circle"></i><span>Iniciar motor</span>
+      </button>
+      <button type="button" data-motor-action="detener" role="menuitem" style="display:none">
+        <i class="fa-solid fa-stop-circle"></i><span>Detener motor</span>
       </button>
     </div>
 
@@ -24261,6 +24435,33 @@ route('/telegrammensajes', async (mount) => {
   $('#tgMsgFiltrosBtn').addEventListener('click', () => abrirModalFiltrosTgMsg());
   $('#tgMsgRefrescarBtn').addEventListener('click', () => cargarTgMsg());
 
+  // Menu del motor: abre un ctx menu con la opcion Iniciar / Detener segun
+  // el valor actual del flag (leido del cache que llena pintarStatsTgMsg).
+  $('#tgMsgMotorMenuBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const menu   = $('#tgMsgMotorCtxMenu');
+    const motor  = tgMsgLastStats?.motor ?? null;
+    const isStop = motor === '0';
+    menu.querySelector('[data-motor-action="iniciar"]').style.display = isStop ? '' : 'none';
+    menu.querySelector('[data-motor-action="detener"]').style.display = isStop ? 'none' : '';
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu(menu, r.right - 180, r.bottom + 4, {});
+  });
+
+  $('#tgMsgMotorCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-motor-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    const accion = b.dataset.motorAction; // 'iniciar' | 'detener'
+    try {
+      await apiSend('api/telegrammensajes_motor.php', 'POST', { accion });
+      toast(accion === 'iniciar' ? 'Motor iniciado.' : 'Motor detenido.');
+      await cargarTgMsg();
+    } catch (e) {
+      toast('Error: ' + e.message, { error: true });
+    }
+  });
+
   const inp = $('#tgMsgSearch');
   const clr = $('#tgMsgSearchClear');
   inp.value = tgMsgFiltros.q || '';
@@ -24334,13 +24535,30 @@ async function cargarTgMsg() {
   }
 }
 
+let tgMsgLastStats = null;
+
 function pintarStatsTgMsg(s) {
+  // Cache global para que el menu del motor (hamburguesa) sepa el valor
+  // actual sin re-fetchear. Mismo patron que Evolution.
+  tgMsgLastStats = s;
+
+  // Motor: tri-estado alineado con parametros.telegram.mensajes.enviar
+  //   '2' -> Enviando  (verde, hay trabajo)
+  //   '1' -> Esperando (sin color, cola vacia)
+  //   '0' -> Detenido  (rojo, pausa manual)
+  // Espeja los mismos colores que Evolution > Mensajes.
+  const motorEl = $('#tgMsgStatMotor');
+  if (motorEl) {
+    motorEl.classList.remove('green', 'orange', 'red', 'blue');
+    if (s?.motor === '2')      { motorEl.textContent = 'Enviando';  motorEl.classList.add('green'); }
+    else if (s?.motor === '1') { motorEl.textContent = 'Esperando'; }
+    else if (s?.motor === '0') { motorEl.textContent = 'Detenido';  motorEl.classList.add('red');   }
+    else                       { motorEl.textContent = '—'; }
+  }
   const set = (id, v) => { const el = $('#' + id); if (el) el.textContent = fmtNum(v); };
   set('tgMsgStatPendientes', s?.pendientes ?? 0);
-  set('tgMsgStatEnviando',   s?.enviando   ?? 0);
   set('tgMsgStatEnviados',   s?.enviados   ?? 0);
   set('tgMsgStatConError',   s?.con_error  ?? 0);
-  set('tgMsgStatAnulados',   s?.anulados   ?? 0);
   set('tgMsgStatTotal',      s?.total      ?? 0);
 }
 
@@ -24539,8 +24757,8 @@ function renderConsultaTgMsg(m) {
         <div>${tgMsgEstadoBadge(m.estado)}</div>
         <div style="margin-top:6px;font-size:.85rem;line-height:1.5">
           <div><span style="color:var(--muted)">Fecha:</span> ${esc(fmtFecha(m.fecha))}</div>
+          <div><span style="color:var(--muted)">Encolado:</span> ${esc(fmtFecha(m.encolado))}</div>
           <div><span style="color:var(--muted)">Enviado:</span> ${esc(fmtFecha(m.enviado))}</div>
-          <div><span style="color:var(--muted)">Demora:</span> ${esc(tgMsgFmtDemora(m.demora))}</div>
         </div>
       </div>
     </div>
@@ -24586,10 +24804,12 @@ function renderConsultaTgMsg(m) {
 
       ${seccion('Tiempos y resultado')}
       <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-        ${card('Fecha',    fmtFecha(m.fecha))}
-        ${card('Enviado',  fmtFecha(m.enviado))}
-        ${card('Demora',   tgMsgFmtDemora(m.demora))}
-        ${card('Estado',   TG_MSG_ESTADO_LABEL_MAP[m.estado] || m.estado)}
+        ${card('Fecha',      fmtFecha(m.fecha))}
+        ${card('Encolado',   fmtFecha(m.encolado))}
+        ${card('Programado', fmtFecha(m.programado))}
+        ${card('Enviado',    fmtFecha(m.enviado))}
+        ${card('Demora',     tgMsgFmtDemora(m.demora))}
+        ${card('Estado',     TG_MSG_ESTADO_LABEL_MAP[m.estado] || m.estado)}
       </dl>
 
       <dl class="data-list" style="grid-template-columns:1fr">
@@ -24717,13 +24937,27 @@ async function abrirAltaTgMsg(opciones = {}) {
 }
 
 function formTgMsgHtml(rawM, lookups) {
+  // Default para `programado`: NOW en hora local en el formato que consume
+  // <input type="datetime-local">. Mismo patron que evolution: si el
+  // operador no lo toca, el mensaje sale apenas el worker lo tome; puede
+  // moverlo a futuro para diferir el envio.
+  const nowLocal = () => {
+    const d = new Date(), pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+  };
   const m = {
-    formato:   'texto',
-    prioridad: '3',
+    formato:    'texto',
+    prioridad:  '3',
+    programado: nowLocal(),
     ...rawM,
   };
   const v   = (k) => esc(m?.[k] ?? '');
   const sel = (k, val) => String(m?.[k] ?? '') === String(val) ? 'selected' : '';
+  const dt  = (k) => {
+    const raw = m?.[k];
+    if (!raw) return '';
+    return esc(String(raw).replace(' ', 'T').slice(0, 16));
+  };
   // Renderer generico de <option>s. Aceptamos un labelFn opcional para casos
   // como canales (donde ademas del nombre queremos mostrar el telefono).
   const opts = (items, campo, labelFn) => {
@@ -24803,7 +25037,7 @@ function formTgMsgHtml(rawM, lookups) {
       <label>Adjunto (URL/ruta) <span style="font-weight:400;color:var(--muted)">— si es URL http(s) se envía como foto</span></label>
       <input type="text" id="tgAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
     </div>
-    <div class="form-row">
+    <div class="form-row form-row-3">
       <div class="form-group">
         <label>Prioridad</label>
         <select id="tgPrioridad">
@@ -24814,6 +25048,10 @@ function formTgMsgHtml(rawM, lookups) {
           <option value="4" ${sel('prioridad','4')}>Alta</option>
           <option value="5" ${sel('prioridad','5')}>Muy Alta</option>
         </select>
+      </div>
+      <div class="form-group">
+        <label>Programado</label>
+        <input type="datetime-local" id="tgProgramado" value="${dt('programado')}">
       </div>
       <div class="form-group">
         <label>Tags</label>
@@ -24859,6 +25097,7 @@ async function guardarTgMsg(btn) {
     cuerpo:       $('#tgCuerpo').value,
     adjunto:      $('#tgAdjunto').value.trim(),
     prioridad:    $('#tgPrioridad').value,
+    programado:   $('#tgProgramado').value || null,
     tags:         $('#tgTags').value.trim(),
   };
 
@@ -25516,7 +25755,7 @@ async function toggleHabilitadoTgBot(id) {
 // ABM solo declara el catalogo (slug + nombre + telefono + habilitado); no
 // toca la sesion.
 const tgCanFiltrosDefaults = {
-  q: '', codigo: '', proyecto: '', habilitado: '',
+  q: '', codigo: '', proyecto: '', habilitado: '', online: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const tgCanFiltros = { ...tgCanFiltrosDefaults };
@@ -25548,6 +25787,15 @@ function tgCanHabilitadoDot(h) {
                 style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${color}"></span>`;
 }
 
+// Badge de salud de la sesion MTProto (populado por el sender pasivo y por
+// el cron activo cloud/jobs/telegramcanales_actualizar_estados.php). Mirror
+// del evoChOnlineBadge de Evolution.
+function tgCanOnlineBadge(o) {
+  if (o === '1') return `<span class="badge badge-success">Online</span>`;
+  if (o === '0') return `<span class="badge badge-danger">Offline</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
 // El telefono se persiste en E.164 SIN '+' (ej. '541163219578'), asi el
 // nombre del subdirectorio de sesion (session_<telefono>/) coincide 1-a-1.
 // Para mostrarlo en la UI le anteponemos '+'.
@@ -25575,6 +25823,7 @@ route('/telegramcanales', async (mount) => {
       <div class="stats-bar" id="tgCanStats">
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Habilitados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Online</span><span class="stat-value">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -25607,13 +25856,15 @@ route('/telegramcanales', async (mount) => {
               <th>Nombre</th>
               <th>Slug</th>
               <th>Teléfono</th>
+              <th>Online</th>
+              <th>Latido</th>
               <th>Actualizado</th>
               <th style="text-align:center">Habilitado</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="tgCanTbody">
-            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -25663,6 +25914,14 @@ route('/telegramcanales', async (mount) => {
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
+              <label>Online</label>
+              <select id="fTgCanOnline" onchange="onFiltroTgCan('online', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Online</option>
+                <option value="0">Offline</option>
+              </select>
+            </div>
+            <div class="form-group">
               <label>Límite</label>
               <input type="number" id="fTgCanLimite" min="1" max="1000" value="100" onchange="onFiltroTgCan('limite', this.value)">
             </div>
@@ -25673,10 +25932,14 @@ route('/telegramcanales', async (mount) => {
                 <option value="nombre">Nombre</option>
                 <option value="telefono">Teléfono</option>
                 <option value="proyecto">Proyecto</option>
+                <option value="online">Online</option>
+                <option value="latido">Latido</option>
                 <option value="habilitado">Habilitado</option>
                 <option value="actualizado">Actualizado</option>
               </select>
             </div>
+          </div>
+          <div class="form-row">
             <div class="form-group">
               <label>Dirección</label>
               <select id="fTgCanDir" onchange="onFiltroTgCan('dir', this.value)">
@@ -25756,7 +26019,7 @@ route('/telegramcanales', async (mount) => {
 async function cargarTgCan() {
   const tbody = $('#tgCanTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(tgCanFiltros).forEach(([k, v]) => {
@@ -25771,21 +26034,22 @@ async function cargarTgCan() {
     pintarStatsTgCan(data.stats);
     pintarTablaTgCan(tgCanCache, proyectos);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
 function pintarStatsTgCan(s) {
   const cards = $$('#tgCanStats .stat-card .stat-value');
-  if (cards.length < 2) return;
+  if (cards.length < 3) return;
   cards[0].textContent = fmtNum(s.total);
   cards[1].textContent = fmtNum(s.habilitados);
+  cards[2].textContent = fmtNum(s.online);
 }
 
 function pintarTablaTgCan(rows, proyectos = []) {
   const tbody = $('#tgCanTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin canales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin canales.</td></tr>`;
     return;
   }
   const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
@@ -25800,6 +26064,8 @@ function pintarTablaTgCan(rows, proyectos = []) {
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
       <td style="font-family:monospace">${esc(c.slug || '—')}</td>
       <td style="font-family:monospace">${esc(tgCanTelefonoDisplay(c.telefono))}</td>
+      <td>${tgCanOnlineBadge(c.online)}</td>
+      <td title="${esc(c.latido || '')}">${esc(fmtHace(c.latido) || '—')}</td>
       <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
       <td style="text-align:center">${tgCanHabilitadoDot(c.habilitado)}</td>
       <td style="text-align:center">
@@ -25814,7 +26080,7 @@ function pintarTablaTgCan(rows, proyectos = []) {
 }
 
 function onFiltroTgCan(key, value) {
-  if (['habilitado', 'order_by', 'dir'].includes(key)) {
+  if (['habilitado', 'online', 'order_by', 'dir'].includes(key)) {
     tgCanFiltros[key] = value;
   } else if (['codigo', 'proyecto'].includes(key)) {
     const v = String(value).trim();
@@ -25847,6 +26113,7 @@ function sincronizarControlesFiltrosTgCan() {
   $('#fTgCanCodigo').value     = f.codigo;
   $('#fTgCanProyecto').value   = f.proyecto;
   $('#fTgCanHabilitado').value = f.habilitado;
+  $('#fTgCanOnline').value     = f.online;
   $('#fTgCanLimite').value     = f.limite;
   $('#fTgCanOrderBy').value    = f.order_by;
   $('#fTgCanDir').value        = f.dir;
@@ -25930,6 +26197,7 @@ function renderConsultaTgCan(c, proyectos = []) {
         </div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${tgCanOnlineBadge(c.online)}
         ${tgCanHabilitadoBadge(c.habilitado)}
       </div>
     </div>
@@ -25939,6 +26207,7 @@ function renderConsultaTgCan(c, proyectos = []) {
       ${card('Nombre',      c.nombre)}
       ${card('Slug',        c.slug, false, true)}
       ${card('Teléfono',    c.telefono ? tgCanTelefonoDisplay(c.telefono) : null, false, true)}
+      ${card('Latido',      c.latido)}
       ${card('Actualizado', c.actualizado)}
     </dl>
   `;
@@ -27456,6 +27725,535 @@ route('/anthropic', async (mount) => {
     </div>
   `;
 }, 'Anthropic');
+
+// ------------------------- Vista: Arca (landing) -------------------------
+route('/arca', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Arca</div>
+      <div class="page-subtitle">Plataforma de AFIP: servicios con clave fiscal.</div>
+    </div>
+
+    <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/arcacertificados'">
+        <span class="tile-icon">📜</span>
+        <span class="tile-title">Certificados</span>
+        <span class="tile-desc">Los certificados fiscales de cada contribuyente (CUIT, clave privada, certificado X.509 y token) usados para autenticar contra los webservices de AFIP.</span>
+      </button>
+      <button type="button" class="tile-card"
+              onclick="window.open('https://auth.afip.gob.ar/', '_blank', 'noopener')">
+        <span class="tile-icon">🔗</span>
+        <span class="tile-title">Plataforma</span>
+        <span class="tile-desc">Abre el portal de acceso a AFIP en una pestaña nueva.</span>
+      </button>
+    </div>
+  `;
+}, 'Arca');
+
+// ------------------------- Vista: Arca > Certificados (ABM) -------------------------
+// Los certificados de Arca agrupan el certificado X.509, la clave privada RSA
+// y el token de acceso emitidos por AFIP para cada contribuyente/CUIT. El ABM
+// es solo de carga: no genera ni renueva certificados -- se pegan los que
+// emite el portal fiscal.
+const arcCertFiltrosDefaults = {
+  q: '', codigo: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const arcCertFiltros = { ...arcCertFiltrosDefaults };
+let arcCertBuscadorTimer   = null;
+let arcCertFiltrosSnapshot = null;
+let arcCertCache           = [];
+
+route('/arcacertificados', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Arca" onclick="location.hash='#/arca'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🏛️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los certificados de Arca agrupan, por cada contribuyente, el <strong>CUIT</strong>, la <strong>clave privada RSA</strong>, el <strong>certificado X.509</strong> y el <strong>token</strong> emitidos por AFIP para autenticar contra sus webservices (WSAA, WSFEv1, etc.).
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="arcCertStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="arcCertSearch"
+                   placeholder="🔍 Buscar por nombre…">
+            <button class="search-clear" id="arcCertSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="arcCertFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="arcCertFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="arcCertRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="arcCertNuevoBtn">+ Nuevo certificado</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nombre</th>
+              <th>Actualizado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="arcCertTbody">
+            <tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="arcCertCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosArcCertBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosArcCert()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosArcCert()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fArcCertCodigo" min="1" placeholder="ID …" oninput="onFiltroArcCert('codigo', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fArcCertLimite" min="1" max="1000" value="100" onchange="onFiltroArcCert('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fArcCertOrderBy" onchange="onFiltroArcCert('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="actualizado">Actualizado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fArcCertDir" onchange="onFiltroArcCert('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosArcCert()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosArcCert()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosArcCert()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#arcCertNuevoBtn').addEventListener('click', () => abrirAltaEdicionArcCert(null));
+  $('#arcCertFiltrosBtn').addEventListener('click', () => abrirModalFiltrosArcCert());
+  $('#arcCertRefrescarBtn').addEventListener('click', () => cargarArcCert());
+
+  const inp = $('#arcCertSearch');
+  const clr = $('#arcCertSearchClear');
+  inp.value = arcCertFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    arcCertFiltros.q = inp.value.trim();
+    clearTimeout(arcCertBuscadorTimer);
+    arcCertBuscadorTimer = setTimeout(() => { cargarArcCert(); refrescarBadgeFiltrosArcCert(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    arcCertFiltros.q = '';
+    cargarArcCert();
+    refrescarBadgeFiltrosArcCert();
+  });
+
+  $('#arcCertCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultarArcCert(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionArcCert(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarArcCert(data.id);
+  });
+
+  $('#arcCertTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirMenuContextoArcCert(id, r.right - 190, r.bottom + 4);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarArcCert(Number(tr.dataset.id));
+  });
+  $('#arcCertTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirMenuContextoArcCert(Number(tr.dataset.id), ev.clientX, ev.clientY);
+  });
+
+  refrescarBadgeFiltrosArcCert();
+  await cargarArcCert();
+}, 'Arca &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Certificados');
+
+async function cargarArcCert() {
+  const tbody = $('#arcCertTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(arcCertFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/arcacertificados.php?' + qs.toString());
+    arcCertCache = data.items || [];
+    pintarStatsArcCert(data.stats);
+    pintarTablaArcCert(arcCertCache);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsArcCert(s) {
+  const cards = $$('#arcCertStats .stat-card .stat-value');
+  if (!cards.length) return;
+  cards[0].textContent = fmtNum(s.total);
+}
+
+function pintarTablaArcCert(rows) {
+  const tbody = $('#arcCertTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Sin certificados.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td>#${esc(c.id)}</td>
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function onFiltroArcCert(key, value) {
+  if (['order_by', 'dir'].includes(key)) {
+    arcCertFiltros[key] = value;
+  } else if (key === 'codigo') {
+    const v = String(value).trim();
+    arcCertFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    arcCertFiltros.limite = n;
+  } else {
+    arcCertFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosArcCert();
+  cargarArcCert();
+}
+
+function refrescarBadgeFiltrosArcCert() {
+  const btn   = $('#arcCertFiltrosBtn');
+  const badge = $('#arcCertFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(arcCertFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(arcCertFiltros[k]) !== String(arcCertFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosArcCert() {
+  const f = arcCertFiltros;
+  $('#fArcCertCodigo').value  = f.codigo;
+  $('#fArcCertLimite').value  = f.limite;
+  $('#fArcCertOrderBy').value = f.order_by;
+  $('#fArcCertDir').value     = f.dir;
+}
+
+function abrirModalFiltrosArcCert() {
+  arcCertFiltrosSnapshot = { ...arcCertFiltros };
+  sincronizarControlesFiltrosArcCert();
+  $('#filtrosArcCertBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosArcCert() { $('#filtrosArcCertBackdrop').classList.remove('open'); }
+function cancelarFiltrosArcCert() {
+  if (arcCertFiltrosSnapshot) {
+    Object.assign(arcCertFiltros, arcCertFiltrosSnapshot);
+    refrescarBadgeFiltrosArcCert();
+    cargarArcCert();
+  }
+  cerrarModalFiltrosArcCert();
+}
+function limpiarFiltrosArcCert() {
+  Object.assign(arcCertFiltros, arcCertFiltrosDefaults);
+  arcCertFiltros.q = $('#arcCertSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosArcCert();
+  refrescarBadgeFiltrosArcCert();
+  cargarArcCert();
+}
+window.onFiltroArcCert           = onFiltroArcCert;
+window.cancelarFiltrosArcCert    = cancelarFiltrosArcCert;
+window.limpiarFiltrosArcCert     = limpiarFiltrosArcCert;
+window.cerrarModalFiltrosArcCert = cerrarModalFiltrosArcCert;
+
+async function abrirConsultarArcCert(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:900px">
+      <div class="modal-header">
+        <div class="modal-title">Certificado de Arca <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-icon" data-act="menu-arccert-consultar" title="Más acciones" style="margin-right:auto">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+
+    <div id="arcCertConsultarCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="renovar-token" role="menuitem">
+        <i class="fa-solid fa-key"></i><span>Renovar Token Afip SDK</span>
+      </button>
+      <button type="button" data-action="correo-temporal" role="menuitem">
+        <i class="fa-solid fa-envelope"></i><span>Generar Correo Temporal</span>
+      </button>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu-arccert-consultar"]');
+    if (ham) {
+      ev.stopPropagation();
+      const r = ham.getBoundingClientRect();
+      const menu = $('#arcCertConsultarCtxMenu');
+      // Se abre hacia arriba porque el hamburguesa vive en el footer del modal.
+      abrirCtxMenu(menu, r.left, r.top - (menu.offsetHeight || 96) - 6, {});
+      return;
+    }
+    const mi = ev.target.closest('#arcCertConsultarCtxMenu [data-action]');
+    if (mi) {
+      cerrarCtxMenu();
+      if (mi.dataset.action === 'renovar-token')   window.open('https://app.afipsdk.com/', '_blank', 'noopener');
+      if (mi.dataset.action === 'correo-temporal') window.open('https://internxt.com/es/temporary-email', '_blank', 'noopener');
+      return;
+    }
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionArcCert(id); }
+  });
+
+  try {
+    const c = await apiGet(`api/arcacertificados.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaArcCert(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaArcCert(c) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+  const blob = (label, value) => {
+    const empty = value == null || value === '';
+    return `
+      <div class="data-row full">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.78rem;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;display:block">${empty ? 'Sin dato' : esc(value)}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(c.id)}
+        </div>
+      </div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Nombre',      c.nombre)}
+      ${card('Actualizado', c.actualizado)}
+      ${blob('Llave',       c.llave)}
+      ${blob('Certificado', c.certificado)}
+      ${blob('Token',       c.token)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionArcCert(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar certificado <span class="modal-subtitle">#${id}</span>` : 'Nuevo certificado'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const c = esEdicion ? await apiGet(`api/arcacertificados.php?id=${id}`) : {};
+    $('#modalRoot .modal-body').innerHTML = formArcCertHtml(c);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarArcCert(id, a);
+  });
+}
+
+function formArcCertHtml(c) {
+  const v = (k) => esc(c?.[k] ?? '');
+  return `
+    <div class="form-group">
+      <label>Nombre</label>
+      <input type="text" id="arcCertNombre" maxlength="255" value="${v('nombre')}"
+             placeholder="ej. Wescom">
+    </div>
+    <div class="form-group">
+      <label>Llave</label>
+      <textarea id="arcCertLlave" rows="6"
+                style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
+                placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----">${v('llave')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Certificado</label>
+      <textarea id="arcCertCertificado" rows="6"
+                style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
+                placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----">${v('certificado')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Token</label>
+      <textarea id="arcCertToken" rows="4"
+                style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
+                placeholder="Token de acceso emitido por AFIP">${v('token')}</textarea>
+    </div>
+    <div class="field-error" id="arcCertFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarArcCert(id, btn) {
+  const err = $('#arcCertFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:      $('#arcCertNombre').value.trim(),
+    llave:       $('#arcCertLlave').value,
+    certificado: $('#arcCertCertificado').value,
+    token:       $('#arcCertToken').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/arcacertificados.php', 'POST', payload);
+      toast('Certificado creado.');
+    } else {
+      await apiSend(`api/arcacertificados.php?id=${id}`, 'PUT', payload);
+      toast('Certificado actualizado.');
+    }
+    closeModal();
+    cargarArcCert();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarArcCert(id) {
+  const ok = await confirmar({
+    title: 'Eliminar certificado',
+    message: `Se eliminará el certificado #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/arcacertificados.php?id=${id}`, 'DELETE');
+    toast('Certificado eliminado.');
+    cargarArcCert();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+function abrirMenuContextoArcCert(id, x, y) {
+  const menu = $('#arcCertCtxMenu');
+  if (!menu) return;
+  abrirCtxMenu(menu, x, y, { id });
+}
 
 // ------------------------- Vista: Claro > SIMs (ABM) -------------------------
 const csimFiltrosDefaults = {

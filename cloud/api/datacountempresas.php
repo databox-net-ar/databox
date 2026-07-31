@@ -33,8 +33,11 @@ const DCE_CONDICIONES = [
     'no_responsable',
     'no_categorizado',
 ];
-const DCE_ORDENES = ['id', 'nombre', 'razon', 'cuit', 'inicio'];
-const DCE_COLS    = 'id, nombre, razon, domicilio, condicion, cuit, iibb, inicio, created_at, updated_at';
+const DCE_ORDENES = ['id', 'nombre', 'slug', 'razon', 'cuit', 'inicio'];
+// Columnas con alias `e.` porque el listado y el detalle hacen LEFT JOIN con
+// `arca_certificados` para traer el nombre del certificado asociado.
+const DCE_COLS    = 'e.id, e.nombre, e.slug, e.razon, e.domicilio, e.condicion, e.cuit, e.iibb, e.inicio, e.certificado_id, e.created_at, e.updated_at, c.nombre AS certificado_nombre';
+const DCE_FROM    = 'datacount_empresas e LEFT JOIN arca_certificados c ON c.id = e.certificado_id';
 
 try {
     requirePermCrud('datacount.empresas');
@@ -42,7 +45,12 @@ try {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
-    if ($method === 'GET' && $id > 0) {
+    // Catalogo de certificados de Arca para el select del formulario
+    // (mismo permiso — el operador que ya edita empresas puede ver los
+    // nombres de los certificados disponibles).
+    if ($method === 'GET' && ($_GET['listar'] ?? '') === 'certificados') {
+        handleListarCertificados($pdo);
+    } elseif ($method === 'GET' && $id > 0) {
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
         handleList($pdo, $_GET);
@@ -61,27 +69,62 @@ try {
     jsonError($e->getMessage(), 500);
 }
 
+function handleListarCertificados(PDO $pdo): void {
+    $rows = $pdo->query(
+        'SELECT id, nombre FROM arca_certificados ORDER BY nombre ASC, id ASC'
+    )->fetchAll();
+    $out  = array_map(fn($r) => [
+        'id'     => (int)$r['id'],
+        'nombre' => $r['nombre'] !== null ? (string)$r['nombre'] : '',
+    ], $rows);
+    jsonOk(['items' => $out]);
+}
+
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------
 
 function normalizarFila(array $r): array {
     return [
-        'id'         => (int)($r['id'] ?? 0),
-        'nombre'     => (string)($r['nombre'] ?? ''),
-        'razon'      => (string)($r['razon'] ?? ''),
-        'domicilio'  => $r['domicilio'] !== null ? (string)$r['domicilio'] : null,
-        'condicion'  => (string)($r['condicion'] ?? ''),
-        'cuit'       => $r['cuit'] !== null ? (string)$r['cuit'] : null,
-        'iibb'       => $r['iibb'] !== null ? (string)$r['iibb'] : null,
-        'inicio'     => $r['inicio'] !== null ? (string)$r['inicio'] : null,
-        'created_at' => $r['created_at'] ?? null,
-        'updated_at' => $r['updated_at'] ?? null,
+        'id'                 => (int)($r['id'] ?? 0),
+        'nombre'             => (string)($r['nombre'] ?? ''),
+        'slug'               => (string)($r['slug']   ?? ''),
+        'razon'              => (string)($r['razon']  ?? ''),
+        'domicilio'          => $r['domicilio'] !== null ? (string)$r['domicilio'] : null,
+        'condicion'          => (string)($r['condicion'] ?? ''),
+        'cuit'               => $r['cuit'] !== null ? (string)$r['cuit'] : null,
+        'iibb'               => $r['iibb'] !== null ? (string)$r['iibb'] : null,
+        'inicio'             => $r['inicio'] !== null ? (string)$r['inicio'] : null,
+        'certificado_id'     => $r['certificado_id'] !== null ? (int)$r['certificado_id'] : null,
+        'certificado_nombre' => $r['certificado_nombre'] !== null ? (string)$r['certificado_nombre'] : null,
+        'created_at'         => $r['created_at'] ?? null,
+        'updated_at'         => $r['updated_at'] ?? null,
     ];
+}
+
+// Normaliza un string a un slug kebab-case: [a-z0-9-]+, sin acentos, sin
+// caracteres raros, sin guiones al borde, colapsando corridas de separadores.
+// Se usa como fallback cuando el operador no llena el campo `slug` a mano.
+function dceSlugify(string $s): string {
+    $s = trim($s);
+    if ($s === '') return '';
+    $pares = [
+        'á'=>'a','é'=>'e','í'=>'i','ó'=>'o','ú'=>'u',
+        'à'=>'a','è'=>'e','ì'=>'i','ò'=>'o','ù'=>'u',
+        'ä'=>'a','ë'=>'e','ï'=>'i','ö'=>'o','ü'=>'u',
+        'Á'=>'a','É'=>'e','Í'=>'i','Ó'=>'o','Ú'=>'u',
+        'ñ'=>'n','Ñ'=>'n','ç'=>'c','Ç'=>'c',
+    ];
+    $s = strtr($s, $pares);
+    $s = strtolower($s);
+    $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+    $s = trim($s, '-');
+    return substr($s, 0, 40);
 }
 
 function sanitizePayload(array $in, bool $esAlta): array {
     $nombre    = trim((string)($in['nombre']    ?? ''));
+    $slug      = trim((string)($in['slug']      ?? ''));
     $razon     = trim((string)($in['razon']     ?? ''));
     $domicilio = trim((string)($in['domicilio'] ?? ''));
     $condicion = trim((string)($in['condicion'] ?? ''));
@@ -93,6 +136,21 @@ function sanitizePayload(array $in, bool $esAlta): array {
         if ($nombre === '')    jsonError('El nombre es obligatorio.', 400);
         if ($razon === '')     jsonError('La razón social es obligatoria.', 400);
         if ($condicion === '') $condicion = 'responsable_inscripto';
+        // Slug en alta: si vino vacio, derivarlo del nombre.
+        if ($slug === '') $slug = dceSlugify($nombre);
+        if ($slug === '') jsonError('No se pudo derivar un slug a partir del nombre. Cargalo manualmente.', 400);
+    } else {
+        // En update, si vino explicito pero vacio, error (no permitimos "borrar" el slug).
+        if (array_key_exists('slug', $in) && $slug === '') {
+            jsonError('El slug no puede quedar vacio.', 400);
+        }
+    }
+
+    if ($slug !== '' && !preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $slug)) {
+        jsonError('El slug solo admite minusculas, digitos y guiones (kebab-case).', 400);
+    }
+    if ($slug !== '' && strlen($slug) > 40) {
+        jsonError('El slug no puede superar los 40 caracteres.', 400);
     }
 
     if ($nombre !== '' && strlen($nombre) > 160) {
@@ -121,14 +179,26 @@ function sanitizePayload(array $in, bool $esAlta): array {
         jsonError('La fecha de inicio debe estar en formato AAAA-MM-DD.', 400);
     }
 
+    // certificado_id opcional; se acepta '', null, 0 como "sin certificado".
+    $certificadoId = null;
+    if (array_key_exists('certificado_id', $in)) {
+        $raw = $in['certificado_id'];
+        if ($raw !== '' && $raw !== null && $raw !== false) {
+            $certificadoId = (int)$raw;
+            if ($certificadoId <= 0) $certificadoId = null;
+        }
+    }
+
     return [
-        'nombre'    => $nombre,
-        'razon'     => $razon,
-        'domicilio' => $domicilio === '' ? null : $domicilio,
-        'condicion' => $condicion,
-        'cuit'      => $cuit === '' ? null : $cuit,
-        'iibb'      => $iibb === '' ? null : $iibb,
-        'inicio'    => $inicio === '' ? null : $inicio,
+        'nombre'         => $nombre,
+        'slug'           => $slug,
+        'razon'          => $razon,
+        'domicilio'      => $domicilio === '' ? null : $domicilio,
+        'condicion'      => $condicion,
+        'cuit'           => $cuit === '' ? null : $cuit,
+        'iibb'           => $iibb === '' ? null : $iibb,
+        'inicio'         => $inicio === '' ? null : $inicio,
+        'certificado_id' => $certificadoId,
     ];
 }
 
@@ -148,19 +218,21 @@ function handleList(PDO $pdo, array $q): void {
 
     if ($search !== '') {
         // EMULATE_PREPARES=false → placeholders distintos por columna.
-        $where[] = '(nombre LIKE :s_nom OR razon LIKE :s_raz OR cuit LIKE :s_cui OR domicilio LIKE :s_dom)';
+        $where[] = '(e.nombre LIKE :s_nom OR e.slug LIKE :s_slg OR e.razon LIKE :s_raz OR e.cuit LIKE :s_cui OR e.domicilio LIKE :s_dom)';
         $params[':s_nom'] = "%{$search}%";
+        $params[':s_slg'] = "%{$search}%";
         $params[':s_raz'] = "%{$search}%";
         $params[':s_cui'] = "%{$search}%";
         $params[':s_dom'] = "%{$search}%";
     }
     if ($condicion !== '' && in_array($condicion, DCE_CONDICIONES, true)) {
-        $where[] = 'condicion = :condicion';
+        $where[] = 'e.condicion = :condicion';
         $params[':condicion'] = $condicion;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
-    $sql = 'SELECT ' . DCE_COLS . " FROM datacount_empresas {$sqlWhere} ORDER BY {$orden} {$dir} LIMIT {$limite}";
+    $ordenCol = 'e.' . $orden;
+    $sql = 'SELECT ' . DCE_COLS . ' FROM ' . DCE_FROM . " {$sqlWhere} ORDER BY {$ordenCol} {$dir} LIMIT {$limite}";
     $st = $pdo->prepare($sql);
     $st->execute($params);
     $rows = array_map('normalizarFila', $st->fetchAll());
@@ -178,7 +250,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $st = $pdo->prepare('SELECT ' . DCE_COLS . ' FROM datacount_empresas WHERE id = :id LIMIT 1');
+    $st = $pdo->prepare('SELECT ' . DCE_COLS . ' FROM ' . DCE_FROM . ' WHERE e.id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $row = $st->fetch();
     if (!$row) jsonError('Empresa no encontrada', 404);
@@ -191,21 +263,29 @@ function handleCreate(PDO $pdo, array $body): void {
     try {
         $st = $pdo->prepare(
             'INSERT INTO datacount_empresas
-                (nombre, razon, domicilio, condicion, cuit, iibb, inicio)
+                (nombre, slug, razon, domicilio, condicion, cuit, iibb, inicio, certificado_id)
              VALUES
-                (:nombre, :razon, :domicilio, :condicion, :cuit, :iibb, :inicio)'
+                (:nombre, :slug, :razon, :domicilio, :condicion, :cuit, :iibb, :inicio, :certificado_id)'
         );
         $st->execute([
-            ':nombre'    => $p['nombre'],
-            ':razon'     => $p['razon'],
-            ':domicilio' => $p['domicilio'],
-            ':condicion' => $p['condicion'],
-            ':cuit'      => $p['cuit'],
-            ':iibb'      => $p['iibb'],
-            ':inicio'    => $p['inicio'],
+            ':nombre'         => $p['nombre'],
+            ':slug'           => $p['slug'],
+            ':razon'          => $p['razon'],
+            ':domicilio'      => $p['domicilio'],
+            ':condicion'      => $p['condicion'],
+            ':cuit'           => $p['cuit'],
+            ':iibb'           => $p['iibb'],
+            ':inicio'         => $p['inicio'],
+            ':certificado_id' => $p['certificado_id'],
         ]);
     } catch (PDOException $e) {
         if ($e->getCode() === '23000') {
+            // Puede colisionar por razon social o por slug; el mensaje del driver
+            // lleva el nombre del indice si el operador lo necesita depurar.
+            $msg = $e->getMessage();
+            if (stripos($msg, 'uk_datacount_empresas_slug') !== false) {
+                jsonError('Ya existe una empresa con ese slug.', 409);
+            }
             jsonError('Ya existe una empresa con esa razón social.', 409);
         }
         throw $e;
@@ -219,7 +299,7 @@ function handleCreate(PDO $pdo, array $body): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $body): void {
-    $st = $pdo->prepare('SELECT ' . DCE_COLS . ' FROM datacount_empresas WHERE id = :id LIMIT 1');
+    $st = $pdo->prepare('SELECT ' . DCE_COLS . ' FROM ' . DCE_FROM . ' WHERE e.id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $prev = $st->fetch();
     if (!$prev) jsonError('Empresa no encontrada', 404);
@@ -232,6 +312,10 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
     if (array_key_exists('nombre', $body) && $p['nombre'] !== '') {
         $sets[] = 'nombre = :nombre';
         $params[':nombre'] = $p['nombre'];
+    }
+    if (array_key_exists('slug', $body) && $p['slug'] !== '') {
+        $sets[] = 'slug = :slug';
+        $params[':slug'] = $p['slug'];
     }
     if (array_key_exists('razon', $body) && $p['razon'] !== '') {
         $sets[] = 'razon = :razon';
@@ -257,6 +341,10 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
         $sets[] = 'inicio = :inicio';
         $params[':inicio'] = $p['inicio'];
     }
+    if (array_key_exists('certificado_id', $body)) {
+        $sets[] = 'certificado_id = :certificado_id';
+        $params[':certificado_id'] = $p['certificado_id'];
+    }
 
     if (empty($sets)) jsonError('No hay campos para actualizar.', 400);
 
@@ -266,6 +354,10 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
         $st->execute($params);
     } catch (PDOException $e) {
         if ($e->getCode() === '23000') {
+            $msg = $e->getMessage();
+            if (stripos($msg, 'uk_datacount_empresas_slug') !== false) {
+                jsonError('Ya existe una empresa con ese slug.', 409);
+            }
             jsonError('Ya existe una empresa con esa razón social.', 409);
         }
         throw $e;
