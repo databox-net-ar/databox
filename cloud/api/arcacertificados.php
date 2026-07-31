@@ -2,8 +2,13 @@
 // api/arcacertificados.php
 // ABM de certificados fiscales de Arca/AFIP. Lee/escribe sobre la tabla
 // `arca_certificados` definida en db/schema.sql. Cada fila agrupa el
-// certificado X.509 (PEM), la clave privada RSA y el token de acceso de un
-// contribuyente/CUIT contra los webservices de AFIP.
+// certificado X.509 (PEM) y la clave privada RSA de un contribuyente para
+// autenticar contra los webservices de AFIP (WSAA/WSFEv1).
+//
+// El listado enriquece cada fila con `vence_en` (fecha de vencimiento del
+// X.509 parseada al vuelo con openssl_x509_parse) para que el operador vea
+// desde el listado a que cert le queda poco y renovarlo antes de que
+// rompa la facturacion.
 //
 //   GET    api/arcacertificados.php          -> listado con filtros (query string)
 //   GET    api/arcacertificados.php?id=N     -> registro individual
@@ -15,7 +20,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const ARCA_CERT_COLS = "id, nombre, llave, certificado, token, actualizado";
+const ARCA_CERT_COLS = "id, nombre, llave, certificado, actualizado";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -107,14 +112,28 @@ function handleGetOne(PDO $pdo, int $id): void {
 }
 
 function normalizarFilaArcaCert(array $r): array {
+    $cert = $r['certificado'] !== null ? (string)$r['certificado'] : null;
     return [
         'id'          => (int)($r['id'] ?? 0),
-        'nombre'      => $r['nombre']      !== null ? (string)$r['nombre']      : null,
-        'llave'       => $r['llave']       !== null ? (string)$r['llave']       : null,
-        'certificado' => $r['certificado'] !== null ? (string)$r['certificado'] : null,
-        'token'       => $r['token']       !== null ? (string)$r['token']       : null,
+        'nombre'      => $r['nombre'] !== null ? (string)$r['nombre'] : null,
+        'llave'       => $r['llave']  !== null ? (string)$r['llave']  : null,
+        'certificado' => $cert,
+        'vence_en'    => arcaCertVenceEn($cert),
         'actualizado' => $r['actualizado'] ?? null,
     ];
+}
+
+// Parsea el PEM y devuelve la fecha de vencimiento del X.509 en formato
+// 'YYYY-MM-DD HH:MM:SS' (UTC). Si el cert no es parseable, retorna null y
+// el frontend lo trata como "sin dato" (no rompe el listado).
+function arcaCertVenceEn(?string $pem): ?string {
+    if ($pem === null || $pem === '') return null;
+    if (!function_exists('openssl_x509_parse')) return null;
+    $info = @openssl_x509_parse($pem);
+    if (!is_array($info) || !isset($info['validTo_time_t'])) return null;
+    $ts = (int)$info['validTo_time_t'];
+    if ($ts <= 0) return null;
+    return gmdate('Y-m-d H:i:s', $ts);
 }
 
 // ----------------------------------------------------------------------------
@@ -140,7 +159,6 @@ function sanitizePayload(array $in): array {
         'nombre'      => nullableStr($in['nombre'] ?? null, 255),
         'llave'       => nullableText($in['llave']       ?? null),
         'certificado' => nullableText($in['certificado'] ?? null),
-        'token'       => nullableText($in['token']       ?? null),
     ];
 }
 
@@ -149,16 +167,15 @@ function handleCreate(PDO $pdo, array $in): void {
 
     $sql = "
         INSERT INTO arca_certificados
-            (nombre, llave, certificado, token, actualizado)
+            (nombre, llave, certificado, actualizado)
         VALUES
-            (:nombre, :llave, :certificado, :token, NOW())
+            (:nombre, :llave, :certificado, NOW())
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
         ':nombre'      => $p['nombre'],
         ':llave'       => $p['llave'],
         ':certificado' => $p['certificado'],
-        ':token'       => $p['token'],
     ]);
     jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
 }
@@ -175,7 +192,6 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             nombre      = :nombre,
             llave       = :llave,
             certificado = :certificado,
-            token       = :token,
             actualizado = NOW()
         WHERE id = :id
     ";
@@ -184,7 +200,6 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
         ':nombre'      => $p['nombre'],
         ':llave'       => $p['llave'],
         ':certificado' => $p['certificado'],
-        ':token'       => $p['token'],
         ':id'          => $id,
     ]);
     jsonOk(['id' => $id]);

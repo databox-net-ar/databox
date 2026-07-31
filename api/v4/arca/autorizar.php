@@ -47,6 +47,7 @@ require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once __DIR__ . '/_lib/auth.php';
 require_once __DIR__ . '/_lib/log.php';
 require_once __DIR__ . '/_lib/afip_factory.php';
+require_once __DIR__ . '/_lib/autorizaciones.php';
 
 // Leemos el body ANTES de registrar el log handler para poder usar los
 // campos como contexto (asi si algo explota, sabemos que factura estaba
@@ -62,11 +63,11 @@ arcaInitLog('autorizar', [
 ]);
 
 try {
-    arcaRequireApp();
+    $app    = arcaRequireApp();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     if ($method !== 'POST') jsonError('Metodo no soportado', 405);
 
-    handleAutorizar($inBody);
+    handleAutorizar($inBody, (int)$app['id']);
 } catch (Throwable $e) {
     jsonError($e->getMessage(), 500);
 }
@@ -75,7 +76,7 @@ try {
 // Handler
 // ---------------------------------------------------------------------------
 
-function handleAutorizar(array $in): void {
+function handleAutorizar(array $in, int $aplicacionId): void {
     $slug = trim((string)($in['empresa'] ?? ''));
 
     // Fecha por defecto = hoy en zona Buenos Aires. AFIP no acepta otro
@@ -161,8 +162,43 @@ function handleAutorizar(array $in): void {
     }
 
     // Disparo. Si AFIP rechaza (Errors, Observaciones, Resultado='R'), la
-    // clase levanta Exception con el codigo AFIP y el mensaje.
-    $res = $ebil->CreateVoucher($data);
+    // clase levanta Exception con el codigo AFIP y el mensaje. El try/catch/
+    // finally envuelve SOLO la llamada AFIP -- asi cada intento (exitoso o
+    // fallido) queda registrado en `arca_autorizaciones` con timing. Fallos
+    // previos (empresa sin cert, GetLastVoucher, etc) NO se registran ahi:
+    // no llegamos a intentar FECAESolicitar, van solo a `sucesos`.
+    $t0        = microtime(true);
+    $res       = null;
+    $resultado = 'error';
+    $errMsg    = null;
+    $excep     = null;
+    try {
+        $res       = $ebil->CreateVoucher($data);
+        $resultado = 'A';
+    } catch (Throwable $e) {
+        // Exceptions con code > 0 son errores semanticos AFIP (Errors.Err u
+        // Observaciones.Obs con Resultado='R'). Code = 0 = fallo tecnico
+        // (SoapFault, timeout, cert vencido, WSAA rechazo, etc).
+        $resultado = ((int)$e->getCode() > 0) ? 'R' : 'error';
+        $errMsg    = $e->getMessage();
+        $excep     = $e;
+    } finally {
+        arcaAutorizacionLog([
+            'aplicacion_id' => $aplicacionId,
+            'empresa_id'    => (int)$bag['empresa']['id'],
+            'punto'         => $punto,
+            'tipo'          => $tipo,
+            'cbte_nro'      => $cbteDesde,
+            'resultado'     => $resultado,
+            'cae'           => $res['CAE']       ?? null,
+            'cae_vto'       => $res['CAEFchVto'] ?? null,
+            'errores'       => $errMsg,
+            'duracion_ms'   => (int)((microtime(true) - $t0) * 1000),
+        ]);
+    }
+    if ($excep !== null) {
+        throw $excep;  // lo agarra el catch externo -> jsonError con el msg AFIP
+    }
 
     // Log del exito con detalles suficientes para auditoria: quien facturo
     // a quien por cuanto, y el CAE emitido. Se persiste ANTES de jsonOk()

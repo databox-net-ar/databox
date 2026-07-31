@@ -477,6 +477,7 @@ const ROUTE_PERMS = {
 
   '/arca':                     { prefix: 'plataformas.arca.' },
   '/arcacertificados':         { perm:   'plataformas.arca.certificados.consultar' },
+  '/arcaautorizaciones':       { perm:   'plataformas.arca.autorizaciones.consultar' },
 
   '/usuarios':                 { perm:   'seguridad.usuarios.consultar' },
   '/roles':                    { perm:   'seguridad.roles.consultar' },
@@ -27738,7 +27739,12 @@ route('/arca', async (mount) => {
       <button type="button" class="tile-card" onclick="location.hash='#/arcacertificados'">
         <span class="tile-icon">📜</span>
         <span class="tile-title">Certificados</span>
-        <span class="tile-desc">Los certificados fiscales de cada contribuyente (CUIT, clave privada, certificado X.509 y token) usados para autenticar contra los webservices de AFIP.</span>
+        <span class="tile-desc">Los certificados fiscales de cada contribuyente (clave privada RSA + certificado X.509) usados para autenticar contra los webservices de AFIP (WSAA, WSFEv1).</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/arcaautorizaciones'">
+        <span class="tile-icon">📄</span>
+        <span class="tile-title">Autorizaciones</span>
+        <span class="tile-desc">Log tecnico de cada FECAESolicitar disparada por el microservicio /v4/arca/autorizar: quien pidio, a que empresa, punto/tipo/numero, resultado (CAE u error), y timing.</span>
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://auth.afip.gob.ar/', '_blank', 'noopener')">
@@ -27751,10 +27757,11 @@ route('/arca', async (mount) => {
 }, 'Arca');
 
 // ------------------------- Vista: Arca > Certificados (ABM) -------------------------
-// Los certificados de Arca agrupan el certificado X.509, la clave privada RSA
-// y el token de acceso emitidos por AFIP para cada contribuyente/CUIT. El ABM
-// es solo de carga: no genera ni renueva certificados -- se pegan los que
-// emite el portal fiscal.
+// Los certificados de Arca agrupan el certificado X.509 y la clave privada
+// RSA emitidos por AFIP para cada contribuyente. El ABM es solo de carga:
+// no genera ni renueva certificados -- se pegan los que emite el portal
+// fiscal. La columna `Vence` del listado se calcula parseando el PEM en el
+// back con openssl_x509_parse (backend expone `vence_en`).
 const arcCertFiltrosDefaults = {
   q: '', codigo: '',
   order_by: 'id', dir: 'desc', limite: 100,
@@ -27763,6 +27770,41 @@ const arcCertFiltros = { ...arcCertFiltrosDefaults };
 let arcCertBuscadorTimer   = null;
 let arcCertFiltrosSnapshot = null;
 let arcCertCache           = [];
+
+// Conmuta pestanias General / Archivos en los modales alta/edicion y consulta
+// de certificados. El selector data-arccert-tab es generico entre los dos
+// modales (solo uno abierto a la vez en #modalRoot).
+function arcCertCambiarTab(tab) {
+  if (tab !== 'general' && tab !== 'archivos') return;
+  document.querySelectorAll('#modalRoot .modal-tab[data-arccert-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.arccertTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-arccert-tab]').forEach((p) => {
+    p.hidden = p.dataset.arccertTab !== tab;
+  });
+}
+window.arcCertCambiarTab = arcCertCambiarTab;
+
+// Formatea la fecha `vence_en` (YYYY-MM-DD HH:MM:SS UTC) devuelta por el
+// backend. Devuelve { html, dias } donde `html` es un chip con badge
+// verde/warn/rojo segun cuantos dias queden hasta el vencimiento, y `dias`
+// es el numero (negativo si ya vencio). Si el cert no se pudo parsear en
+// el back, `vence_en` viene null y devolvemos un fallback neutro.
+function arcCertVenceBadge(venceEn) {
+  if (!venceEn) return { html: '<span class="badge">— sin dato —</span>', dias: null };
+  const ms   = Date.parse(venceEn.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(ms)) return { html: '<span class="badge">— sin dato —</span>', dias: null };
+  const dias = Math.floor((ms - Date.now()) / 86400000);
+  const cls  = dias < 0 ? 'badge-danger'
+             : dias <= 30 ? 'badge-warn'
+             : 'badge-success';
+  const txt  = dias < 0    ? `Vencido hace ${Math.abs(dias)}d`
+             : dias === 0  ? 'Vence hoy'
+             : dias === 1  ? 'Vence maniana'
+             : `Vence en ${dias}d`;
+  const iso  = venceEn.slice(0, 10);
+  return { html: `<span class="badge ${cls}" title="${esc(venceEn)} UTC">${esc(txt)} <span style="opacity:.7;margin-left:4px">(${esc(iso)})</span></span>`, dias };
+}
 
 route('/arcacertificados', async (mount) => {
   mount.innerHTML = `
@@ -27775,7 +27817,7 @@ route('/arcacertificados', async (mount) => {
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
           <div style="font-size:1.6rem;line-height:1">🏛️</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los certificados de Arca agrupan, por cada contribuyente, el <strong>CUIT</strong>, la <strong>clave privada RSA</strong>, el <strong>certificado X.509</strong> y el <strong>token</strong> emitidos por AFIP para autenticar contra sus webservices (WSAA, WSFEv1, etc.).
+            Los certificados de Arca agrupan, por cada contribuyente, la <strong>clave privada RSA</strong> y el <strong>certificado X.509</strong> emitidos por AFIP para autenticar contra sus webservices (WSAA, WSFEv1, etc.). El CUIT que va en cada request se toma de la empresa asociada en <em>Datacount &rsaquo; Empresas</em>, no del certificado.
           </div>
         </div>
       </div>
@@ -27810,12 +27852,13 @@ route('/arcacertificados', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Nombre</th>
+              <th>Vence</th>
               <th>Actualizado</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="arcCertTbody">
-            <tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -27939,7 +27982,7 @@ route('/arcacertificados', async (mount) => {
 async function cargarArcCert() {
   const tbody = $('#arcCertTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(arcCertFiltros).forEach(([k, v]) => {
@@ -27951,7 +27994,7 @@ async function cargarArcCert() {
     pintarStatsArcCert(data.stats);
     pintarTablaArcCert(arcCertCache);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -27964,13 +28007,14 @@ function pintarStatsArcCert(s) {
 function pintarTablaArcCert(rows) {
   const tbody = $('#arcCertTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Sin certificados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin certificados.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
     <tr data-id="${c.id}" class="row-clickable">
       <td>#${esc(c.id)}</td>
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td>${arcCertVenceBadge(c.vence_en).html}</td>
       <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
@@ -28054,40 +28098,12 @@ async function abrirConsultarArcCert(id) {
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
-        <button class="btn btn-ghost btn-icon" data-act="menu-arccert-consultar" title="Más acciones" style="margin-right:auto">
-          <i class="fa-solid fa-bars"></i>
-        </button>
         <button class="btn btn-ghost"   data-act="close">Cerrar</button>
         <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
-
-    <div id="arcCertConsultarCtxMenu" class="ctx-menu" role="menu">
-      <button type="button" data-action="renovar-token" role="menuitem">
-        <i class="fa-solid fa-key"></i><span>Renovar Token Afip SDK</span>
-      </button>
-      <button type="button" data-action="correo-temporal" role="menuitem">
-        <i class="fa-solid fa-envelope"></i><span>Generar Correo Temporal</span>
-      </button>
-    </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
-    const ham = ev.target.closest('[data-act="menu-arccert-consultar"]');
-    if (ham) {
-      ev.stopPropagation();
-      const r = ham.getBoundingClientRect();
-      const menu = $('#arcCertConsultarCtxMenu');
-      // Se abre hacia arriba porque el hamburguesa vive en el footer del modal.
-      abrirCtxMenu(menu, r.left, r.top - (menu.offsetHeight || 96) - 6, {});
-      return;
-    }
-    const mi = ev.target.closest('#arcCertConsultarCtxMenu [data-action]');
-    if (mi) {
-      cerrarCtxMenu();
-      if (mi.dataset.action === 'renovar-token')   window.open('https://app.afipsdk.com/', '_blank', 'noopener');
-      if (mi.dataset.action === 'correo-temporal') window.open('https://internxt.com/es/temporary-email', '_blank', 'noopener');
-      return;
-    }
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionArcCert(id); }
   });
@@ -28101,43 +28117,56 @@ async function abrirConsultarArcCert(id) {
 }
 
 function renderConsultaArcCert(c) {
-  const card = (label, value, full = false, isCode = false) => {
-    const empty = value == null || value === '';
-    const inner = empty ? 'Sin dato'
-                : isCode ? `<code>${esc(value)}</code>`
-                : esc(value);
-    return `
-      <div class="data-row${full ? ' full' : ''}">
-        <span class="data-label">${esc(label)}</span>
-        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
-      </div>`;
-  };
+  const card = (label, valueHtml, empty = false) => `
+    <div class="data-row">
+      <span class="data-label">${esc(label)}</span>
+      <span class="data-value${empty ? ' muted' : ''}">${valueHtml}</span>
+    </div>`;
   const blob = (label, value) => {
     const empty = value == null || value === '';
     return `
       <div class="data-row full">
         <span class="data-label">${esc(label)}</span>
-        <span class="data-value${empty ? ' muted' : ''}" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.78rem;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;display:block">${empty ? 'Sin dato' : esc(value)}</span>
+        <span class="data-value${empty ? ' muted' : ''}" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.78rem;white-space:pre-wrap;word-break:break-all;max-height:340px;overflow:auto;display:block">${empty ? 'Sin dato' : esc(value)}</span>
       </div>`;
   };
+
+  const vence = arcCertVenceBadge(c.vence_en);
 
   return `
     <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
       <div>
         <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
-        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
-          #${esc(c.id)}
-        </div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">#${esc(c.id)}</div>
       </div>
+      <div>${vence.html}</div>
     </div>
 
-    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-      ${card('Nombre',      c.nombre)}
-      ${card('Actualizado', c.actualizado)}
-      ${blob('Llave',       c.llave)}
-      ${blob('Certificado', c.certificado)}
-      ${blob('Token',       c.token)}
-    </dl>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-arccert-tab="general" onclick="arcCertCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-arccert-tab="archivos" onclick="arcCertCambiarTab('archivos')">
+        <i class="fa-solid fa-file-lines"></i> Archivos
+      </button>
+    </div>
+
+    <div class="modal-tabpanel" data-arccert-tab="general" role="tabpanel">
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Nombre',      esc(c.nombre || '—'), !c.nombre)}
+        ${card('Vence',       vence.html,           vence.dias === null)}
+        ${card('Actualizado', esc(c.actualizado || '—'), !c.actualizado)}
+      </dl>
+    </div>
+
+    <div class="modal-tabpanel" data-arccert-tab="archivos" role="tabpanel" hidden>
+      <dl class="data-list" style="grid-template-columns:1fr">
+        ${blob('Llave',       c.llave)}
+        ${blob('Certificado', c.certificado)}
+      </dl>
+    </div>
   `;
 }
 
@@ -28176,30 +28205,52 @@ async function abrirAltaEdicionArcCert(id) {
 
 function formArcCertHtml(c) {
   const v = (k) => esc(c?.[k] ?? '');
+  const vence = arcCertVenceBadge(c?.vence_en);
   return `
-    <div class="form-group">
-      <label>Nombre</label>
-      <input type="text" id="arcCertNombre" maxlength="255" value="${v('nombre')}"
-             placeholder="ej. Wescom">
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-arccert-tab="general" onclick="arcCertCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-arccert-tab="archivos" onclick="arcCertCambiarTab('archivos')">
+        <i class="fa-solid fa-file-lines"></i> Archivos
+      </button>
     </div>
-    <div class="form-group">
-      <label>Llave</label>
-      <textarea id="arcCertLlave" rows="6"
-                style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
-                placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----">${v('llave')}</textarea>
+
+    <div class="modal-tabpanel" data-arccert-tab="general" role="tabpanel">
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="arcCertNombre" maxlength="255" value="${v('nombre')}"
+               placeholder="ej. Wescom">
+      </div>
+      ${c?.vence_en ? `
+      <div class="form-group">
+        <label>Vencimiento del certificado
+          <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+            — se calcula del PEM al guardar
+          </span>
+        </label>
+        <div>${vence.html}</div>
+      </div>
+      ` : ''}
     </div>
-    <div class="form-group">
-      <label>Certificado</label>
-      <textarea id="arcCertCertificado" rows="6"
-                style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
-                placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----">${v('certificado')}</textarea>
+
+    <div class="modal-tabpanel" data-arccert-tab="archivos" role="tabpanel" hidden>
+      <div class="form-group">
+        <label>Llave privada RSA (PEM)</label>
+        <textarea id="arcCertLlave" rows="10"
+                  style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
+                  placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----">${v('llave')}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Certificado X.509 (PEM)</label>
+        <textarea id="arcCertCertificado" rows="10"
+                  style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
+                  placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----">${v('certificado')}</textarea>
+      </div>
     </div>
-    <div class="form-group">
-      <label>Token</label>
-      <textarea id="arcCertToken" rows="4"
-                style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem"
-                placeholder="Token de acceso emitido por AFIP">${v('token')}</textarea>
-    </div>
+
     <div class="field-error" id="arcCertFormError" style="display:none"></div>
   `;
 }
@@ -28212,7 +28263,6 @@ async function guardarArcCert(id, btn) {
     nombre:      $('#arcCertNombre').value.trim(),
     llave:       $('#arcCertLlave').value,
     certificado: $('#arcCertCertificado').value,
-    token:       $('#arcCertToken').value,
   };
 
   btn.disabled = true;
@@ -28253,6 +28303,381 @@ function abrirMenuContextoArcCert(id, x, y) {
   const menu = $('#arcCertCtxMenu');
   if (!menu) return;
   abrirCtxMenu(menu, x, y, { id });
+}
+
+// ------------------------- Vista: Arca > Autorizaciones (visor read-only) -------------------------
+// Log tecnico de las FECAESolicitar que dispara el microservicio
+// `/v4/arca/autorizar`. Un intento por fila (exitoso, rechazado o error).
+// El listado es read-only -- no hay alta/edicion/borrado desde la UI.
+const arcAutFiltrosDefaults = {
+  q: '', resultado: '', empresa_id: '',
+  desde: '', hasta: '',
+  limite: 200,
+};
+const arcAutFiltros = { ...arcAutFiltrosDefaults };
+let arcAutBuscadorTimer   = null;
+let arcAutFiltrosSnapshot = null;
+let arcAutEmpresasCatalogo = null;
+
+async function arcAutCargarEmpresas() {
+  if (arcAutEmpresasCatalogo) return arcAutEmpresasCatalogo;
+  try {
+    const d = await apiGet('api/datacountempresas.php?limite=1000&orden=nombre&dir=asc');
+    arcAutEmpresasCatalogo = d.items || [];
+  } catch {
+    arcAutEmpresasCatalogo = [];
+  }
+  return arcAutEmpresasCatalogo;
+}
+
+function arcAutResultadoBadge(r) {
+  if (r === 'A')     return `<span class="badge badge-success">✓ Aceptada</span>`;
+  if (r === 'R')     return `<span class="badge badge-warn">✕ Rechazada</span>`;
+  if (r === 'error') return `<span class="badge badge-danger">⚠ Error</span>`;
+  return `<span class="badge">${esc(r || '—')}</span>`;
+}
+
+route('/arcaautorizaciones', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Arca" onclick="location.hash='#/arca'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📄</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Log tecnico de cada <strong>FECAESolicitar</strong> disparada por <code>/v4/arca/autorizar</code>. Una fila por intento: aceptado por AFIP (con CAE), rechazado por AFIP (con motivo) o fallo tecnico. Visor de solo lectura, las filas las escribe el microservicio.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="arcAutStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Aceptadas</span><span class="stat-value green">—</span></div>
+        <div class="stat-card"><span class="stat-label">Rechazadas</span><span class="stat-value" style="color:#fcd34d">—</span></div>
+        <div class="stat-card"><span class="stat-label">Errores</span><span class="stat-value" style="color:#f87171">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="arcAutSearch"
+                   placeholder="🔍 Buscar CAE, error, empresa o nro comprobante…">
+            <button class="search-clear" id="arcAutSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="arcAutFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="arcAutFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="arcAutRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:70px">ID</th>
+              <th style="width:150px">Fecha</th>
+              <th>Empresa</th>
+              <th style="width:60px">Pto</th>
+              <th style="width:60px">Tipo</th>
+              <th style="width:90px">Nro</th>
+              <th style="width:130px">Resultado</th>
+              <th style="width:150px">CAE</th>
+              <th style="width:70px;text-align:right">ms</th>
+            </tr>
+          </thead>
+          <tbody id="arcAutTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosArcAutBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosArcAut()">
+      <div class="modal" style="max-width:640px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosArcAut()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Empresa</label>
+            <select id="fArcAutEmpresa" onchange="onFiltroArcAut('empresa_id', this.value)">
+              <option value="">— Todas —</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Resultado</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap" id="fArcAutResChips">
+              <button type="button" class="filter-chip" data-res="">Todos</button>
+              <button type="button" class="filter-chip" data-res="A">Aceptadas</button>
+              <button type="button" class="filter-chip" data-res="R">Rechazadas</button>
+              <button type="button" class="filter-chip" data-res="error">Errores</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fArcAutDesde" onchange="onFiltroArcAut('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fArcAutHasta" onchange="onFiltroArcAut('hasta', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fArcAutLimite" min="1" max="2000" value="200" onchange="onFiltroArcAut('limite', this.value)">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosArcAut()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosArcAut()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosArcAut()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#arcAutFiltrosBtn').addEventListener('click', () => abrirModalFiltrosArcAut());
+  $('#arcAutRefrescarBtn').addEventListener('click', () => cargarArcAut());
+
+  const inp = $('#arcAutSearch');
+  const clr = $('#arcAutSearchClear');
+  inp.value = arcAutFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    arcAutFiltros.q = inp.value.trim();
+    clearTimeout(arcAutBuscadorTimer);
+    arcAutBuscadorTimer = setTimeout(() => { cargarArcAut(); refrescarBadgeFiltrosArcAut(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    arcAutFiltros.q = '';
+    cargarArcAut();
+    refrescarBadgeFiltrosArcAut();
+  });
+
+  // Chips de resultado dentro del modal de filtros.
+  $('#fArcAutResChips').addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    arcAutFiltros.resultado = b.dataset.res || '';
+    sincronizarChipsArcAut();
+    refrescarBadgeFiltrosArcAut();
+    cargarArcAut();
+  });
+
+  // Fila clickeable → modal de detalle.
+  $('#arcAutTbody').addEventListener('click', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirDetalleArcAut(Number(tr.dataset.id));
+  });
+
+  refrescarBadgeFiltrosArcAut();
+  await cargarArcAut();
+}, 'Arca &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Autorizaciones');
+
+async function cargarArcAut() {
+  const tbody = $('#arcAutTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(arcAutFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const data = await apiGet('api/arca_autorizaciones.php?' + qs.toString());
+    pintarStatsArcAut(data.stats || {});
+    pintarTablaArcAut(data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsArcAut(s) {
+  const cards = $$('#arcAutStats .stat-card .stat-value');
+  if (cards.length < 4) return;
+  cards[0].textContent = fmtNum(s.total      ?? 0);
+  cards[1].textContent = fmtNum(s.aceptadas  ?? 0);
+  cards[2].textContent = fmtNum(s.rechazadas ?? 0);
+  cards[3].textContent = fmtNum(s.errores    ?? 0);
+}
+
+function pintarTablaArcAut(rows) {
+  const tbody = $('#arcAutTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin autorizaciones.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td><code style="font-size:.78rem">#${r.id}</code></td>
+      <td title="${esc(r.fecha || '')}">${esc(fmtFecha(r.fecha) || '—')}</td>
+      <td>${esc(r.empresa_nombre || r.empresa_slug || '—')}</td>
+      <td>${r.punto}</td>
+      <td>${r.tipo}</td>
+      <td>${r.cbte_nro}</td>
+      <td>${arcAutResultadoBadge(r.resultado)}</td>
+      <td style="font-family:monospace;font-size:.78rem">${esc(r.cae || '—')}</td>
+      <td style="text-align:right;color:var(--muted)">${r.duracion_ms != null ? fmtNum(r.duracion_ms) : '—'}</td>
+    </tr>
+  `).join('');
+}
+
+function onFiltroArcAut(key, value) {
+  if (key === 'empresa_id') {
+    arcAutFiltros[key] = value === '' ? '' : (Number(value) || '');
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 2000) n = 2000;
+    arcAutFiltros.limite = n;
+  } else {
+    arcAutFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosArcAut();
+  cargarArcAut();
+}
+
+function refrescarBadgeFiltrosArcAut() {
+  const btn   = $('#arcAutFiltrosBtn');
+  const badge = $('#arcAutFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(arcAutFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(arcAutFiltros[k]) !== String(arcAutFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarChipsArcAut() {
+  const chips = document.querySelectorAll('#fArcAutResChips .filter-chip');
+  chips.forEach((b) => b.classList.toggle('active', (b.dataset.res || '') === (arcAutFiltros.resultado || '')));
+}
+
+async function sincronizarControlesFiltrosArcAut() {
+  const f = arcAutFiltros;
+  $('#fArcAutDesde').value  = f.desde;
+  $('#fArcAutHasta').value  = f.hasta;
+  $('#fArcAutLimite').value = f.limite;
+  sincronizarChipsArcAut();
+
+  // Poblar select de empresas (lazy).
+  const sel = $('#fArcAutEmpresa');
+  const empresas = await arcAutCargarEmpresas();
+  const actual   = f.empresa_id !== '' ? String(f.empresa_id) : '';
+  sel.innerHTML = `
+    <option value="">— Todas —</option>
+    ${empresas.map((e) => {
+      const s = String(e.id) === actual ? 'selected' : '';
+      return `<option value="${esc(e.id)}" ${s}>${esc(e.nombre || e.slug || `#${e.id}`)}</option>`;
+    }).join('')}
+  `;
+}
+
+async function abrirModalFiltrosArcAut() {
+  arcAutFiltrosSnapshot = { ...arcAutFiltros };
+  await sincronizarControlesFiltrosArcAut();
+  $('#filtrosArcAutBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosArcAut() { $('#filtrosArcAutBackdrop').classList.remove('open'); }
+function cancelarFiltrosArcAut() {
+  if (arcAutFiltrosSnapshot) {
+    Object.assign(arcAutFiltros, arcAutFiltrosSnapshot);
+    refrescarBadgeFiltrosArcAut();
+    cargarArcAut();
+  }
+  cerrarModalFiltrosArcAut();
+}
+function limpiarFiltrosArcAut() {
+  Object.assign(arcAutFiltros, arcAutFiltrosDefaults);
+  arcAutFiltros.q = $('#arcAutSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosArcAut();
+  refrescarBadgeFiltrosArcAut();
+  cargarArcAut();
+}
+window.onFiltroArcAut           = onFiltroArcAut;
+window.cancelarFiltrosArcAut    = cancelarFiltrosArcAut;
+window.limpiarFiltrosArcAut     = limpiarFiltrosArcAut;
+window.cerrarModalFiltrosArcAut = cerrarModalFiltrosArcAut;
+
+async function abrirDetalleArcAut(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:800px">
+      <div class="modal-header">
+        <div class="modal-title">Autorización <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+
+  try {
+    const r = await apiGet(`api/arca_autorizaciones.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = renderDetalleArcAut(r);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderDetalleArcAut(r) {
+  const card = (label, valueHtml, empty = false) => `
+    <div class="data-row">
+      <span class="data-label">${esc(label)}</span>
+      <span class="data-value${empty ? ' muted' : ''}">${valueHtml}</span>
+    </div>`;
+  const blob = (label, value) => {
+    const empty = value == null || value === '';
+    return `
+      <div class="data-row full">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.78rem;white-space:pre-wrap;word-break:break-all;max-height:280px;overflow:auto;display:block">${empty ? 'Sin dato' : esc(value)}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(r.empresa_nombre || r.empresa_slug || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${r.id} · ${esc(r.fecha || '—')}
+        </div>
+      </div>
+      <div>${arcAutResultadoBadge(r.resultado)}</div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Empresa',      esc(r.empresa_nombre || '—') + ' <code style="font-size:.75rem">' + esc(r.empresa_slug || '') + '</code>', !r.empresa_slug)}
+      ${card('Aplicación',   esc(r.aplicacion_nombre || `#${r.aplicacion_id}`))}
+      ${card('Punto de venta', String(r.punto))}
+      ${card('Tipo AFIP',    String(r.tipo))}
+      ${card('Nro comprobante', `<code>${r.cbte_nro}</code>`)}
+      ${card('Duración',     r.duracion_ms != null ? `<code>${fmtNum(r.duracion_ms)} ms</code>` : '—', r.duracion_ms == null)}
+      ${card('CAE',          r.cae ? `<code>${esc(r.cae)}</code>` : '—', !r.cae)}
+      ${card('Vencimiento CAE', r.cae_vto ? esc(r.cae_vto) : '—', !r.cae_vto)}
+      ${blob('Errores / Observaciones', r.errores)}
+    </dl>
+  `;
 }
 
 // ------------------------- Vista: Claro > SIMs (ABM) -------------------------

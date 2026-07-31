@@ -56,10 +56,40 @@ CREATE TABLE `arca_certificados`  (
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `llave` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   `certificado` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
-  `token` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   `actualizado` datetime(0) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for arca_autorizaciones
+-- ----------------------------
+-- Log tecnico de cada FECAESolicitar que sale del microservicio
+-- `/v4/arca/autorizar.php`. Una fila por intento -- sea exitoso (resultado='A'
+-- con CAE), rechazado por AFIP (resultado='R' con `errores`), o fallo tecnico
+-- (resultado='error' -- timeout, cert vencido, SoapFault, etc). NO duplica los
+-- datos financieros de la factura (neto/iva/receptor); esos viven en la
+-- factura misma. Sirve para el visor del panel y para queries de troubleshooting.
+DROP TABLE IF EXISTS `arca_autorizaciones`;
+CREATE TABLE `arca_autorizaciones` (
+  `id`             int(11) NOT NULL AUTO_INCREMENT,
+  `fecha`          datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `aplicacion_id`  int(11) NOT NULL,
+  `empresa_id`     int(11) UNSIGNED NOT NULL,
+  `punto`          int(11) NOT NULL,
+  `tipo`           int(11) NOT NULL,
+  `cbte_nro`       int(11) NOT NULL,
+  `resultado`      enum('A','R','error') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `cae`            varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cae_vto`        date NULL DEFAULT NULL,
+  `errores`        text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `duracion_ms`    int(11) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_fecha`(`fecha`) USING BTREE,
+  INDEX `idx_empresa_fecha`(`empresa_id`, `fecha`) USING BTREE,
+  INDEX `idx_resultado`(`resultado`) USING BTREE,
+  INDEX `idx_pto_tipo_nro`(`punto`, `tipo`, `cbte_nro`) USING BTREE,
+  INDEX `idx_cae`(`cae`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for arca_ta_cache
