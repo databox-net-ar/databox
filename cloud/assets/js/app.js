@@ -24022,9 +24022,10 @@ route('/telegram', async (mount) => {
 }, 'Telegram');
 
 // ------------------------- Vista: Telegram > Mensajes (ABM) -------------------------
-// A diferencia de Evolution, los mensajes de Telegram salen SINCRONOS en el
-// POST: no hay cola, no hay motor, no hay "Enviar ahora" ni "Anular". El
-// endpoint devuelve el resultado real (enviado / error) al toque.
+// Los mensajes de Telegram se ENCOLAN y un cron worker los despacha por
+// lotes (mismo patron que Evolution/WhatsApp). El POST del ABM solo hace el
+// alta con estado='pendiente'; el envio real via MTProto lo hace
+// cloud/jobs/telegram_mensajes_enviar.php contra el microservicio v4.
 const tgMsgFiltrosDefaults = {
   q: '', codigo: '', proyecto_id: '', canal_id: '', plantilla_id: '',
   estado: '', desde: '', hasta: '',
@@ -24052,18 +24053,21 @@ const TG_MSG_PRIORIDAD_MAP = {
   5: 'Muy Alta',
 };
 
-// telegram_mensajes.estado (varchar 20). Solo 3 valores posibles vs los 5 de
-// evolution: no hay 'pendiente' (no hay cola) ni 'anulado' (no hay ventana
-// para anular -- es sincrono).
+// telegram_mensajes.estado (varchar 20). Mismos 5 valores que evolution
+// desde que Telegram tambien tiene cola (2026-07-31).
 const TG_MSG_ESTADO_LABEL_MAP = {
-  enviando: 'Enviando',
-  enviado:  'Enviado',
-  error:    'Error',
+  pendiente: 'Pendiente',
+  enviando:  'Enviando',
+  enviado:   'Enviado',
+  anulado:   'Anulado',
+  error:     'Error',
 };
 const TG_MSG_ESTADO_COLOR_MAP = {
-  enviando: 'badge-info',
-  enviado:  'badge-success',
-  error:    'badge-danger',
+  pendiente: 'badge-warn',
+  enviando:  'badge-info',
+  enviado:   'badge-success',
+  anulado:   'badge-default',
+  error:     'badge-danger',
 };
 
 function tgMsgEstadoBadge(e) {
@@ -24091,15 +24095,17 @@ route('/telegrammensajes', async (mount) => {
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
           <div style="font-size:1.6rem;line-height:1">✉️</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los mensajes de Telegram son cada envío individual que un bot procesa contra la Bot API — con destinatario, cuerpo, estado y tiempo de entrega. Salen <strong>al toque</strong> (no hay cola): al crear uno, el resultado queda registrado inmediatamente.
+            Los mensajes de Telegram son cada envío individual que un canal (cuenta MTProto real) despacha via el microservicio v4. Al crear uno se <strong>encola</strong> (estado <em>Pendiente</em>) y un cron worker lo despacha por lotes.
           </div>
         </div>
       </div>
 
       <div class="stats-bar" id="tgMsgStats">
+        <div class="stat-card"><span class="stat-label">Pendientes</span><span class="stat-value" id="tgMsgStatPendientes">—</span></div>
+        <div class="stat-card"><span class="stat-label">Enviando</span><span class="stat-value" id="tgMsgStatEnviando">—</span></div>
         <div class="stat-card"><span class="stat-label">Enviados</span><span class="stat-value" id="tgMsgStatEnviados">—</span></div>
         <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value" id="tgMsgStatConError">—</span></div>
-        <div class="stat-card"><span class="stat-label">Enviando</span><span class="stat-value" id="tgMsgStatEnviando">—</span></div>
+        <div class="stat-card"><span class="stat-label">Anulados</span><span class="stat-value" id="tgMsgStatAnulados">—</span></div>
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value" id="tgMsgStatTotal">—</span></div>
       </div>
 
@@ -24129,7 +24135,7 @@ route('/telegrammensajes', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Fecha</th>
-              <th>Bot</th>
+              <th>Canal</th>
               <th>Destino</th>
               <th style="width:30%;max-width:30%">Cuerpo</th>
               <th>Estado</th>
@@ -24149,6 +24155,13 @@ route('/telegrammensajes', async (mount) => {
       </button>
       <button type="button" data-action="clonar" role="menuitem">
         <i class="fa-solid fa-clone"></i><span>Clonar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="enviar" role="menuitem" data-requires-pendiente>
+        <i class="fa-solid fa-paper-plane"></i><span>Enviar ahora</span>
+      </button>
+      <button type="button" data-action="anular" role="menuitem" data-requires-pendiente>
+        <i class="fa-solid fa-ban"></i><span>Anular</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
@@ -24173,9 +24186,11 @@ route('/telegrammensajes', async (mount) => {
               <label>Estado</label>
               <select id="fTgMsgEstado" onchange="onFiltroTgMsg('estado', this.value)">
                 <option value="">— Todos —</option>
-                <option value="enviado">Enviado</option>
-                <option value="error">Error</option>
+                <option value="pendiente">Pendiente</option>
                 <option value="enviando">Enviando</option>
+                <option value="enviado">Enviado</option>
+                <option value="anulado">Anulado</option>
+                <option value="error">Error</option>
               </select>
             </div>
           </div>
@@ -24193,7 +24208,7 @@ route('/telegrammensajes', async (mount) => {
               </select>
             </div>
             <div class="form-group">
-              <label>Bot</label>
+              <label>Canal</label>
               <select id="fTgMsgCanal" onchange="onFiltroTgMsg('canal_id', this.value)">
                 <option value="">— Todos —</option>
               </select>
@@ -24272,6 +24287,8 @@ route('/telegrammensajes', async (mount) => {
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarTgMsg(data.id);
     if (b.dataset.action === 'clonar')    abrirAltaTgMsg({ clonarDeId: data.id });
+    if (b.dataset.action === 'enviar')    enviarAhoraTgMsg(data.id);
+    if (b.dataset.action === 'anular')    anularTgMsg(data.id);
     if (b.dataset.action === 'eliminar')  eliminarTgMsg(data.id);
   });
 
@@ -24318,14 +24335,13 @@ async function cargarTgMsg() {
 }
 
 function pintarStatsTgMsg(s) {
-  const enviadosEl = $('#tgMsgStatEnviados');
-  if (enviadosEl) enviadosEl.textContent = fmtNum(s.enviados);
-  const conErrorEl = $('#tgMsgStatConError');
-  if (conErrorEl) conErrorEl.textContent = fmtNum(s.con_error);
-  const enviandoEl = $('#tgMsgStatEnviando');
-  if (enviandoEl) enviandoEl.textContent = fmtNum(s.enviando);
-  const totalEl = $('#tgMsgStatTotal');
-  if (totalEl) totalEl.textContent = fmtNum(s.total);
+  const set = (id, v) => { const el = $('#' + id); if (el) el.textContent = fmtNum(v); };
+  set('tgMsgStatPendientes', s?.pendientes ?? 0);
+  set('tgMsgStatEnviando',   s?.enviando   ?? 0);
+  set('tgMsgStatEnviados',   s?.enviados   ?? 0);
+  set('tgMsgStatConError',   s?.con_error  ?? 0);
+  set('tgMsgStatAnulados',   s?.anulados   ?? 0);
+  set('tgMsgStatTotal',      s?.total      ?? 0);
 }
 
 function pintarTablaTgMsg(rows) {
@@ -24340,7 +24356,7 @@ function pintarTablaTgMsg(rows) {
       <td style="font-family:monospace">${esc(fmtFechaLarga(m.fecha))}</td>
       <td class="td-nombre">
         ${esc(m.canal_nombre || '—')}
-        ${m.canal_username ? `<div style="font-size:.7rem;color:var(--muted);font-family:monospace">@${esc(m.canal_username)}</div>` : ''}
+        ${m.canal_telefono ? `<div style="font-size:.7rem;color:var(--muted);font-family:monospace">+${esc(m.canal_telefono)}</div>` : ''}
       </td>
       <td style="font-family:monospace">
         ${m.destinatario ? `<div style="font-size:.72rem;color:var(--muted);font-family:var(--font-sans, sans-serif);line-height:1.2">${esc(m.destinatario)}</div>` : ''}
@@ -24505,7 +24521,7 @@ function renderConsultaTgMsg(m) {
     : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
 
   const canalHuman = m.canal_nombre
-    ? (m.canal_username ? `${m.canal_nombre} (@${m.canal_username})` : m.canal_nombre)
+    ? (m.canal_telefono ? `${m.canal_nombre} (+${m.canal_telefono})` : m.canal_nombre)
     : (m.canal_id ? '#' + m.canal_id : null);
 
   return `
@@ -24540,7 +24556,7 @@ function renderConsultaTgMsg(m) {
         ${card('Remitente',    m.remitente)}
         ${card('Remite',       m.remite, false, true)}
         ${card('Destinatario', m.destinatario)}
-        ${card('Destino (chat_id)', m.destino, false, true)}
+        ${card('Destino (teléfono)', m.destino, false, true)}
       </dl>
     </div>
 
@@ -24562,7 +24578,7 @@ function renderConsultaTgMsg(m) {
       <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
         ${card('Proyecto',   m.proyecto_nombre  ?? m.proyecto_id)}
         ${card('Plantilla',  m.plantilla_nombre ?? m.plantilla_id)}
-        ${card('Bot',        canalHuman)}
+        ${card('Canal',      canalHuman)}
         ${card('Prioridad',  TG_MSG_PRIORIDAD_MAP[m.prioridad] || m.prioridad)}
         ${card('Formato',    TG_MSG_FORMATO_MAP[m.formato]     || m.formato)}
         ${card('Tags',       m.tags)}
@@ -24634,7 +24650,7 @@ async function abrirAltaTgMsg(opciones = {}) {
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Enviar</button>
+        <button class="btn btn-primary" data-act="guardar">Encolar</button>
       </div>
     </div>
   `);
@@ -24668,20 +24684,8 @@ async function abrirAltaTgMsg(opciones = {}) {
       });
     }
 
-    // Autopoblar Destino con chat_id default del bot al elegir uno. Solo
-    // pisa si el campo esta vacio: si el operador ya tipeo algo, respeta.
-    const $can = $('#tgCanal');
-    const $dst = $('#tgDestino');
-    if ($can && $dst) {
-      $can.addEventListener('change', () => {
-        const canId = $can.value;
-        if (!canId) return;
-        const bot = (lookups?.canales ?? []).find(x => String(x.id) === String(canId));
-        if (bot && bot.chat_id && !$dst.value.trim()) {
-          $dst.value = bot.chat_id;
-        }
-      });
-    }
+    // (Los canales MTProto no tienen chat_id default, a diferencia de los
+    // bots. El operador siempre carga el destino a mano.)
 
     // Autofill de plantilla -> form (mismo pattern que evolution).
     if ($pl) {
@@ -24720,7 +24724,9 @@ function formTgMsgHtml(rawM, lookups) {
   };
   const v   = (k) => esc(m?.[k] ?? '');
   const sel = (k, val) => String(m?.[k] ?? '') === String(val) ? 'selected' : '';
-  const opts = (items, campo) => {
+  // Renderer generico de <option>s. Aceptamos un labelFn opcional para casos
+  // como canales (donde ademas del nombre queremos mostrar el telefono).
+  const opts = (items, campo, labelFn) => {
     const cur = m?.[campo] ?? '';
     const known = new Set((items ?? []).map(x => String(x.id)));
     const extra = (cur !== '' && !known.has(String(cur)))
@@ -24728,10 +24734,14 @@ function formTgMsgHtml(rawM, lookups) {
       : '';
     const rows = (items ?? []).map(x => {
       const s = String(cur) === String(x.id) ? 'selected' : '';
-      return `<option value="${x.id}" ${s}>${esc(x.nombre || ('#' + x.id))}</option>`;
+      const label = labelFn ? labelFn(x) : (x.nombre || ('#' + x.id));
+      return `<option value="${x.id}" ${s}>${esc(label)}</option>`;
     }).join('');
     return `<option value="">—</option>${extra}${rows}`;
   };
+  const canalLabel = (x) => x.telefono
+    ? `${x.nombre || ('#' + x.id)} (+${x.telefono})`
+    : (x.nombre || ('#' + x.id));
   return `
     <div class="form-row form-row-3">
       <div class="form-group">
@@ -24743,8 +24753,8 @@ function formTgMsgHtml(rawM, lookups) {
         <select id="tgPlantilla">${tgMsgPlantillaOptionsHtml(lookups?.plantillas, m?.proyecto_id ?? '', m?.plantilla_id)}</select>
       </div>
       <div class="form-group">
-        <label>Bot <span style="color:var(--danger)">*</span></label>
-        <select id="tgCanal">${opts(lookups?.canales, 'canal_id')}</select>
+        <label>Canal <span style="color:var(--danger)">*</span></label>
+        <select id="tgCanal">${opts(lookups?.canales, 'canal_id', canalLabel)}</select>
       </div>
     </div>
     <div class="form-row">
@@ -24763,9 +24773,9 @@ function formTgMsgHtml(rawM, lookups) {
         <input type="text" id="tgDestinatario" maxlength="255" value="${v('destinatario')}">
       </div>
       <div class="form-group">
-        <label>Destino (chat_id) <span style="color:var(--danger)">*</span></label>
+        <label>Destino (teléfono) <span style="color:var(--danger)">*</span></label>
         <input type="text" id="tgDestino" maxlength="255" value="${v('destino')}" style="font-family:monospace"
-               placeholder="ej. 123456789 o -1001234567890">
+               placeholder="ej. +542644984568 o 542644984568">
       </div>
     </div>
     <div class="form-group">
@@ -24822,7 +24832,7 @@ async function guardarTgMsg(btn) {
   // --- Validacion de campos obligatorios ------------------------------------
   const requeridos = [
     { id: 'tgProyecto', label: 'Proyecto' },
-    { id: 'tgCanal',    label: 'Bot'      },
+    { id: 'tgCanal',    label: 'Canal'    },
     { id: 'tgDestino',  label: 'Destino'  },
     { id: 'tgCuerpo',   label: 'Cuerpo'   },
   ];
@@ -24854,23 +24864,13 @@ async function guardarTgMsg(btn) {
 
   btn.disabled = true;
   try {
-    // Envio sincrono: el POST devuelve el estado final. El toast refleja el
-    // resultado real -- no mentimos con un "creado ok" cuando Telegram
-    // rechazo el mensaje.
+    // Envio asincrono: el POST solo encola con estado='pendiente'. El
+    // despacho real lo hace el cron worker (cloud/jobs/telegram_mensajes_enviar.php)
+    // en el proximo tick minutal.
     const r = await apiSend('api/telegrammensajes.php', 'POST', payload);
-    if (r?.estado === 'enviado') {
-      toast('Mensaje enviado.');
-      closeModal();
-      cargarTgMsg();
-    } else {
-      // Estado 'error' o 'enviando': el mensaje se persistio pero Telegram
-      // no lo acepto (o el proceso murio). Mostramos el error en el form
-      // pero NO cerramos el modal -- el operador puede corregir y reintentar.
-      err.textContent = 'Telegram rechazó el mensaje: ' + (r?.error || 'sin detalle');
-      err.style.display = '';
-      btn.disabled = false;
-      cargarTgMsg(); // igual actualizamos el listado (la fila quedo con estado='error')
-    }
+    toast('Mensaje encolado (#' + (r?.id ?? '?') + '). Se enviará en el próximo tick del motor.');
+    closeModal();
+    cargarTgMsg();
   } catch (e) {
     err.textContent = e.message;
     err.style.display = '';
@@ -24888,6 +24888,37 @@ async function eliminarTgMsg(id) {
   try {
     await apiSend(`api/telegrammensajes.php?id=${id}`, 'DELETE');
     toast('Mensaje eliminado.');
+    cargarTgMsg();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function enviarAhoraTgMsg(id) {
+  // Dispara el envio sincrono via lib/telegram_mensajes_enviar.php sin
+  // esperar al proximo tick del cron. El endpoint 409 si el mensaje ya no
+  // esta pendiente (por otra corrida / anulacion / envio previo).
+  try {
+    const r = await apiSend(`api/telegrammensajes_enviar.php?id=${id}`, 'POST');
+    const dest = r?.destino ? ' a ' + r.destino : '';
+    toast('Mensaje enviado' + dest + '.');
+    cargarTgMsg();
+  } catch (e) {
+    toast('No se pudo enviar: ' + e.message, { error: true });
+    cargarTgMsg();
+  }
+}
+
+async function anularTgMsg(id) {
+  const ok = await confirmar({
+    title: 'Anular mensaje',
+    message: `Se marcará el mensaje #${id} como anulado (deja traza, a diferencia de eliminar). Solo aplica a mensajes en estado Pendiente.`,
+    confirmText: 'Anular',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/telegrammensajes_anular.php?id=${id}`, 'POST');
+    toast('Mensaje anulado.');
     cargarTgMsg();
   } catch (e) {
     toast(e.message, { error: true });

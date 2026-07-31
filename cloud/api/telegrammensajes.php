@@ -1,15 +1,19 @@
 <?php
 // api/telegrammensajes.php
 // ABM de mensajes de Telegram. Lee/escribe sobre la tabla `telegram_mensajes`
-// definida en db/schema.sql. A diferencia de Evolution API, los mensajes de
-// Telegram se envian de forma SINCRONA en el POST -- no hay cola ni motor.
-// Por eso no hay PUT (una vez enviado no se puede modificar) ni "Anular"
-// (el mensaje ya salio o ya fracaso al momento de responder).
+// definida en db/schema.sql. Envio ASINCRONO estilo Evolution: el POST solo
+// encola con estado='pendiente', y el cron worker
+// cloud/jobs/telegram_mensajes_enviar.php despacha por lotes contra el
+// endpoint MTProto /v4/telegram/mensajes.
+//
 //   GET    api/telegrammensajes.php             -> listado con filtros (query string)
 //   GET    api/telegrammensajes.php?id=N        -> registro individual
-//   GET    api/telegrammensajes.php?lookups=1   -> catalogos para el form (proyectos/bots/plantillas)
-//   POST   api/telegrammensajes.php             -> alta + envio sincrono (JSON body)
+//   GET    api/telegrammensajes.php?lookups=1   -> catalogos para el form (proyectos/canales/plantillas)
+//   POST   api/telegrammensajes.php             -> alta (encola con estado='pendiente')
 //   DELETE api/telegrammensajes.php?id=N        -> baja del historial
+//
+// NO hay PUT (mensajes en cola/enviados no se editan; para cambiar algo
+// se anula y se encola de nuevo).
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
@@ -41,8 +45,6 @@ try {
         if ($id <= 0) jsonError('Falta id', 400);
         handleDelete($pdo, $id);
     } else {
-        // Los mensajes ya enviados no se pueden editar (PUT deshabilitado).
-        // Solo consultar / crear (envia al toque) / eliminar del historial.
         jsonError('Metodo no soportado', 405);
     }
 } catch (Throwable $e) {
@@ -105,24 +107,26 @@ function handleList(PDO $pdo, array $q): void {
     $stats = $pdo->query("
         SELECT
             COUNT(*)                                                    AS total,
+            SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END)       AS pendientes,
+            SUM(CASE WHEN estado = 'enviando' THEN 1 ELSE 0 END)        AS enviando,
             SUM(CASE WHEN estado = 'enviado' THEN 1 ELSE 0 END)         AS enviados,
-            SUM(CASE WHEN estado = 'error' THEN 1 ELSE 0 END)           AS con_error,
-            SUM(CASE WHEN estado = 'enviando' THEN 1 ELSE 0 END)        AS enviando
+            SUM(CASE WHEN estado = 'anulado' THEN 1 ELSE 0 END)         AS anulados,
+            SUM(CASE WHEN estado = 'error' THEN 1 ELSE 0 END)           AS con_error
         FROM telegram_mensajes
     ")->fetch();
 
     // Prefijamos las columnas base con `tm.` para poder LEFT JOIN a
-    // telegram_bots y exponer canal_nombre en el listado (la tabla del
-    // ABM lo usa en la columna Bot).
+    // telegram_canales y exponer canal_nombre en el listado (la tabla del
+    // ABM lo usa en la columna Canal).
     $cols = preg_replace('/\s+/', ' ', TG_MSG_COLS);
     $qualified = implode(', ', array_map(
         fn($c) => 'tm.' . trim($c),
         explode(',', $cols)
     ));
     $sql = "
-        SELECT {$qualified}, tb.nombre AS canal_nombre, tb.username AS canal_username
+        SELECT {$qualified}, tc.nombre AS canal_nombre, tc.telefono AS canal_telefono, tc.slug AS canal_slug
         FROM telegram_mensajes tm
-        LEFT JOIN telegram_bots tb ON tb.id = tm.canal_id
+        LEFT JOIN telegram_canales tc ON tc.id = tm.canal_id
         {$sqlWhere}
         ORDER BY tm.{$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -133,18 +137,23 @@ function handleList(PDO $pdo, array $q): void {
 
     jsonOk([
         'stats' => [
-            'total'     => (int)($stats['total']     ?? 0),
-            'enviados'  => (int)($stats['enviados']  ?? 0),
-            'con_error' => (int)($stats['con_error'] ?? 0),
-            'enviando'  => (int)($stats['enviando']  ?? 0),
+            'total'      => (int)($stats['total']      ?? 0),
+            'pendientes' => (int)($stats['pendientes'] ?? 0),
+            'enviando'   => (int)($stats['enviando']   ?? 0),
+            'enviados'   => (int)($stats['enviados']   ?? 0),
+            'anulados'   => (int)($stats['anulados']   ?? 0),
+            'con_error'  => (int)($stats['con_error']  ?? 0),
         ],
         'items' => $rows,
+        // Estado actual del motor -- lo consume el UI para pintar el
+        // menu "Iniciar motor" / "Detener motor".
+        'motor' => getParametro('telegram.mensajes.enviar', '1'),
     ]);
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
     // JOINs a las tablas maestras para exponer los nombres humanos que el
-    // modal Consultar muestra en las tarjetas Proyecto / Bot / Plantilla /
+    // modal Consultar muestra en las tarjetas Proyecto / Canal / Plantilla /
     // Contacto. LEFT JOIN: si la FK apunta a un id inexistente devolvemos
     // NULL en el *_nombre y el frontend cae al "Sin dato" habitual.
     $cols = preg_replace('/\s+/', ' ', TG_MSG_COLS);
@@ -154,15 +163,16 @@ function handleGetOne(PDO $pdo, int $id): void {
     ));
     $stmt = $pdo->prepare("
         SELECT {$qualified},
-               pr.nombre  AS proyecto_nombre,
-               tb.nombre  AS canal_nombre,
-               tb.username AS canal_username,
-               dp.nombre  AS plantilla_nombre,
-               dc.nombre  AS contacto_nombre,
-               dc.celular AS contacto_celular
+               pr.nombre    AS proyecto_nombre,
+               tc.nombre    AS canal_nombre,
+               tc.telefono  AS canal_telefono,
+               tc.slug      AS canal_slug,
+               dp.nombre    AS plantilla_nombre,
+               dc.nombre    AS contacto_nombre,
+               dc.celular   AS contacto_celular
         FROM telegram_mensajes tm
         LEFT JOIN proyectos             pr ON pr.id = tm.proyecto_id
-        LEFT JOIN telegram_bots         tb ON tb.id = tm.canal_id
+        LEFT JOIN telegram_canales      tc ON tc.id = tm.canal_id
         LEFT JOIN datarocket_plantillas dp ON dp.id = tm.plantilla_id
         LEFT JOIN datarocket_contactos  dc ON dc.id = tm.contacto_id
         WHERE tm.id = :id
@@ -174,7 +184,7 @@ function handleGetOne(PDO $pdo, int $id): void {
 }
 
 // ----------------------------------------------------------------------------
-// Lookups: alimenta los selects del form (Proyecto / Bot / Plantilla).
+// Lookups: alimenta los selects del form (Proyecto / Canal / Plantilla).
 // ----------------------------------------------------------------------------
 
 function handleLookups(PDO $pdo): void {
@@ -185,22 +195,18 @@ function handleLookups(PDO $pdo): void {
         WHERE tipo = 'I' ORDER BY nombre
     ")->fetchAll();
 
-    // Bots: los que estan habilitados (habilitado='1'). Un bot deshabilitado
-    // no debe aparecer para elegir en un mensaje nuevo. Ademas del id/nombre
-    // exponemos chat_id (para autopoblar el campo Destino cuando el operador
-    // elige un bot con chat default).
+    // Canales: cuentas USUARIO MTProto habilitadas. Exponemos telefono para
+    // que el UI pueda mostrar "Databox (+541163219578)" en el dropdown.
     $canales = $pdo->query("
-        SELECT id, nombre, username, chat_id
-          FROM telegram_bots
-         WHERE habilitado = '1' OR habilitado IS NULL
+        SELECT id, slug, nombre, telefono
+          FROM telegram_canales
+         WHERE (habilitado = '1' OR habilitado IS NULL)
+           AND slug IS NOT NULL AND slug <> ''
          ORDER BY nombre
     ")->fetchAll();
 
     // Plantillas: catalogo compartido con evolution/aws. No filtramos por
-    // `medio` porque el catalogo aun no tiene una convencion para Telegram
-    // (evolution filtra medio='W', correo usa 'C'). Se muestran todas y el
-    // operador elige la que corresponda -- si no existen plantillas de
-    // Telegram, simplemente no se usa el campo.
+    // `medio`; el catalogo aun no tiene una convencion para Telegram.
     $plantillas = $pdo->query("
         SELECT id, nombre, proyecto_id,
                remitente, remite, asunto, cuerpo, formato, adjunto
@@ -214,9 +220,9 @@ function handleLookups(PDO $pdo): void {
         'canales'    => array_map(
             fn($r) => [
                 'id'       => (int)$r['id'],
+                'slug'     => (string)($r['slug'] ?? ''),
                 'nombre'   => (string)($r['nombre'] ?? ''),
-                'username' => $r['username'] !== null ? (string)$r['username'] : null,
-                'chat_id'  => $r['chat_id']  !== null ? (string)$r['chat_id']  : null,
+                'telefono' => $r['telefono'] !== null ? (string)$r['telefono'] : null,
             ],
             $canales
         ),
@@ -238,28 +244,28 @@ function handleLookups(PDO $pdo): void {
 }
 
 // ----------------------------------------------------------------------------
-// Alta (envio sincrono) / Baja
+// Alta (encola con estado='pendiente') / Baja
 // ----------------------------------------------------------------------------
 //
-// El envio real a la Bot API vive en cloud/api/lib/telegram_mensajes.php --
-// mismo lugar que usa el microservicio v4 de ingesta. Es el punto UNICO de
-// entrada de mensajes; garantiza que ambos callers apliquen las mismas reglas
-// (sanitizacion, validacion, envio sincrono, persistencia del resultado).
+// La logica de encolar (sanitizacion, validacion, INSERT, wake motor)
+// vive en cloud/api/lib/telegram_mensajes.php::encolarTelegramMensaje().
+// El endpoint solo mapea la respuesta HTTP y traduce las excepciones.
 
 function handleCreate(PDO $pdo, array $in): void {
     try {
-        $id = enviarTelegramMensaje($pdo, $in);
-        // Releemos la fila para que la respuesta refleje el estado final
-        // (enviado / error) que dejo el envio sincrono -- asi el frontend
-        // puede toastear "enviado" o "error: ..." sin un segundo fetch.
-        $st = $pdo->prepare("SELECT id, estado, error, enviado, demora
-                               FROM telegram_mensajes WHERE id = :id");
-        $st->execute([':id' => $id]);
-        $r = $st->fetch() ?: ['id' => $id];
-        jsonOk($r, 201);
+        $id = encolarTelegramMensaje($pdo, $in);
     } catch (InvalidArgumentException $e) {
         jsonError($e->getMessage(), 400);
+        return;
     }
+    // Releemos las columnas system-managed (fecha/encolado/programado que
+    // el encolador puede haber defaulteado a NOW) para que la respuesta
+    // sea fiel a lo persistido.
+    $st = $pdo->prepare("SELECT id, estado, fecha, encolado, programado
+                           FROM telegram_mensajes WHERE id = :id LIMIT 1");
+    $st->execute([':id' => $id]);
+    $r = $st->fetch() ?: ['id' => $id];
+    jsonOk($r, 201);
 }
 
 function handleDelete(PDO $pdo, int $id): void {
