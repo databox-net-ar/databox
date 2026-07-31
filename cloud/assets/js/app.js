@@ -452,6 +452,7 @@ const ROUTE_PERMS = {
   '/telegram':                 { prefix: 'plataformas.telegram.' },
   '/telegrambots':             { perm:   'plataformas.telegram.bots.consultar' },
   '/telegrammensajes':         { perm:   'plataformas.telegram.mensajes.consultar' },
+  '/telegramcanales':          { perm:   'plataformas.telegram.canales.consultar' },
 
   '/mercadopago':              { prefix: 'plataformas.mercadopago.' },
   '/mercadopagopagos':         { perm:   'plataformas.mercadopago.pagos.consultar' },
@@ -24005,6 +24006,11 @@ route('/telegram', async (mount) => {
         <span class="tile-title">Mensajes</span>
         <span class="tile-desc">Cada envío individual procesado por Telegram, con destinatario, cuerpo, estado y tiempo de entrega.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/telegramcanales'">
+        <span class="tile-icon">📱</span>
+        <span class="tile-title">Canales</span>
+        <span class="tile-desc">Las cuentas usuario (MTProto) desde las cuales se envían los mensajes, con número, alias y estado de habilitación.</span>
+      </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://t.me/BotFather', '_blank', 'noopener')">
         <span class="tile-icon">🔗</span>
@@ -25465,6 +25471,596 @@ async function toggleHabilitadoTgBot(id) {
     await apiSend(`api/telegrambots.php?id=${id}`, 'PUT', { ...c, habilitado: nuevo });
     toast(nuevo === '1' ? 'Bot habilitado.' : 'Bot deshabilitado.');
     cargarTgBot();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Telegram > Canales (ABM) -------------------------
+// Los canales de Telegram son las cuentas USUARIO (MTProto) desde las que el
+// microservicio v4 (api/v4/telegram/mensajes.php) envia. A diferencia de los
+// bots, no llevan token: la "auth" es un directorio de sesion en disco
+// (api/v4/telegram/session_<telefono>/) que se crea UNA UNICA VEZ en
+// desarrollo via `php login.php --canal=<slug>` y se deploya a prod. Este
+// ABM solo declara el catalogo (slug + nombre + telefono + habilitado); no
+// toca la sesion.
+const tgCanFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', habilitado: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const tgCanFiltros = { ...tgCanFiltrosDefaults };
+let tgCanBuscadorTimer   = null;
+let tgCanFiltrosSnapshot = null;
+let tgCanCache           = []; // ultima respuesta del listado, para lookup del ctx-menu
+let tgCanProyectosCache  = null;
+
+// Lista de proyectos tipo='I' (internos) cacheada por vida del ABM. Se usa
+// tanto para mostrar el nombre en el listado/consulta como para poblar el
+// <select> del alta/edicion.
+async function tgCanCargarProyectos() {
+  if (tgCanProyectosCache) return tgCanProyectosCache;
+  const resp = await apiGet('api/proyectos.php?tipo=I');
+  tgCanProyectosCache = resp.items || [];
+  return tgCanProyectosCache;
+}
+
+function tgCanHabilitadoBadge(h) {
+  if (h === '1') return `<span class="badge badge-success">Habilitado</span>`;
+  if (h === '0') return `<span class="badge badge-danger">Deshabilitado</span>`;
+  return `<span class="badge badge-info">—</span>`;
+}
+
+function tgCanHabilitadoDot(h) {
+  const color = h === '1' ? '#22c55e' : h === '0' ? '#ef4444' : '#6b7280';
+  const title = h === '1' ? 'Habilitado' : h === '0' ? 'Deshabilitado' : 'Sin definir';
+  return `<span title="${title}" aria-label="${title}"
+                style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${color}"></span>`;
+}
+
+// El telefono se persiste en E.164 SIN '+' (ej. '541163219578'), asi el
+// nombre del subdirectorio de sesion (session_<telefono>/) coincide 1-a-1.
+// Para mostrarlo en la UI le anteponemos '+'.
+function tgCanTelefonoDisplay(t) {
+  const digits = String(t ?? '').replace(/\D+/g, '');
+  return digits === '' ? '—' : '+' + digits;
+}
+
+route('/telegramcanales', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Telegram" onclick="location.hash='#/telegram'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📱</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los canales de Telegram son las <strong>cuentas usuario</strong> (MTProto) desde las que se envían mensajes, cada una con su número de teléfono. La sesión de cada canal se genera una única vez por CLI en desarrollo (<code>login.php --canal=&lt;slug&gt;</code>) y se transporta a producción por deploy.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="tgCanStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Habilitados</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="tgCanSearch"
+                   placeholder="🔍 Buscar nombre, teléfono o slug…">
+            <button class="search-clear" id="tgCanSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="tgCanFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="tgCanFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="tgCanRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="tgCanNuevoBtn">+ Nuevo canal</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <!-- Columna "Código" oculta a proposito: el id sigue disponible
+                   en el filtro por Codigo y en el header del modal Consultar. -->
+              <th>Proyecto</th>
+              <th>Nombre</th>
+              <th>Slug</th>
+              <th>Teléfono</th>
+              <th>Actualizado</th>
+              <th style="text-align:center">Habilitado</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="tgCanTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tgCanCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="toggle-habilitado" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Deshabilitar</span>
+      </button>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosTgCanBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosTgCan()">
+      <div class="modal" style="max-width:620px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosTgCan()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fTgCanCodigo" min="1" placeholder="ID …" oninput="onFiltroTgCan('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto (ID)</label>
+              <input type="number" id="fTgCanProyecto" min="1" oninput="onFiltroTgCan('proyecto', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Habilitado</label>
+              <select id="fTgCanHabilitado" onchange="onFiltroTgCan('habilitado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="1">Habilitados</option>
+                <option value="0">Deshabilitados</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fTgCanLimite" min="1" max="1000" value="100" onchange="onFiltroTgCan('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fTgCanOrderBy" onchange="onFiltroTgCan('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="telefono">Teléfono</option>
+                <option value="proyecto">Proyecto</option>
+                <option value="habilitado">Habilitado</option>
+                <option value="actualizado">Actualizado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fTgCanDir" onchange="onFiltroTgCan('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosTgCan()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosTgCan()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosTgCan()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#tgCanNuevoBtn').addEventListener('click', () => abrirAltaEdicionTgCan(null));
+  $('#tgCanFiltrosBtn').addEventListener('click', () => abrirModalFiltrosTgCan());
+  $('#tgCanRefrescarBtn').addEventListener('click', () => cargarTgCan());
+
+  const inp = $('#tgCanSearch');
+  const clr = $('#tgCanSearchClear');
+  inp.value = tgCanFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    tgCanFiltros.q = inp.value.trim();
+    clearTimeout(tgCanBuscadorTimer);
+    tgCanBuscadorTimer = setTimeout(() => { cargarTgCan(); refrescarBadgeFiltrosTgCan(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    tgCanFiltros.q = '';
+    cargarTgCan();
+    refrescarBadgeFiltrosTgCan();
+  });
+
+  $('#tgCanCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')         abrirConsultarTgCan(data.id);
+    if (b.dataset.action === 'toggle-habilitado') toggleHabilitadoTgCan(data.id);
+    if (b.dataset.action === 'editar')            abrirAltaEdicionTgCan(data.id);
+    if (b.dataset.action === 'eliminar')          eliminarTgCan(data.id);
+  });
+
+  $('#tgCanTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirMenuContextoTgCan(id, r.right - 190, r.bottom + 4);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarTgCan(Number(tr.dataset.id));
+  });
+  $('#tgCanTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirMenuContextoTgCan(Number(tr.dataset.id), ev.clientX, ev.clientY);
+  });
+
+  refrescarBadgeFiltrosTgCan();
+  await cargarTgCan();
+}, 'Telegram &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Canales');
+
+async function cargarTgCan() {
+  const tbody = $('#tgCanTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(tgCanFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const [data, proyectos] = await Promise.all([
+      apiGet('api/telegramcanales.php?' + qs.toString()),
+      tgCanCargarProyectos(),
+    ]);
+    tgCanCache = data.items || [];
+    pintarStatsTgCan(data.stats);
+    pintarTablaTgCan(tgCanCache, proyectos);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsTgCan(s) {
+  const cards = $$('#tgCanStats .stat-card .stat-value');
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.habilitados);
+}
+
+function pintarTablaTgCan(rows, proyectos = []) {
+  const tbody = $('#tgCanTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin canales.</td></tr>`;
+    return;
+  }
+  const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
+  tbody.innerHTML = rows.map((c) => {
+    const proyNom = proyMap.get(Number(c.proyecto));
+    const proyCell = proyNom
+      ? esc(proyNom)
+      : (c.proyecto == null || c.proyecto === '' ? '—' : `#${esc(c.proyecto)}`);
+    return `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td>${proyCell}</td>
+      <td class="td-nombre">${esc(c.nombre || '—')}</td>
+      <td style="font-family:monospace">${esc(c.slug || '—')}</td>
+      <td style="font-family:monospace">${esc(tgCanTelefonoDisplay(c.telefono))}</td>
+      <td title="${esc(c.actualizado || '')}">${esc(fmtHace(c.actualizado) || '—')}</td>
+      <td style="text-align:center">${tgCanHabilitadoDot(c.habilitado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function onFiltroTgCan(key, value) {
+  if (['habilitado', 'order_by', 'dir'].includes(key)) {
+    tgCanFiltros[key] = value;
+  } else if (['codigo', 'proyecto'].includes(key)) {
+    const v = String(value).trim();
+    tgCanFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    tgCanFiltros.limite = n;
+  } else {
+    tgCanFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosTgCan();
+  cargarTgCan();
+}
+
+function refrescarBadgeFiltrosTgCan() {
+  const btn   = $('#tgCanFiltrosBtn');
+  const badge = $('#tgCanFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(tgCanFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(tgCanFiltros[k]) !== String(tgCanFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosTgCan() {
+  const f = tgCanFiltros;
+  $('#fTgCanCodigo').value     = f.codigo;
+  $('#fTgCanProyecto').value   = f.proyecto;
+  $('#fTgCanHabilitado').value = f.habilitado;
+  $('#fTgCanLimite').value     = f.limite;
+  $('#fTgCanOrderBy').value    = f.order_by;
+  $('#fTgCanDir').value        = f.dir;
+}
+
+function abrirModalFiltrosTgCan() {
+  tgCanFiltrosSnapshot = { ...tgCanFiltros };
+  sincronizarControlesFiltrosTgCan();
+  $('#filtrosTgCanBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosTgCan() { $('#filtrosTgCanBackdrop').classList.remove('open'); }
+function cancelarFiltrosTgCan() {
+  if (tgCanFiltrosSnapshot) {
+    Object.assign(tgCanFiltros, tgCanFiltrosSnapshot);
+    refrescarBadgeFiltrosTgCan();
+    cargarTgCan();
+  }
+  cerrarModalFiltrosTgCan();
+}
+function limpiarFiltrosTgCan() {
+  Object.assign(tgCanFiltros, tgCanFiltrosDefaults);
+  tgCanFiltros.q = $('#tgCanSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosTgCan();
+  refrescarBadgeFiltrosTgCan();
+  cargarTgCan();
+}
+window.onFiltroTgCan           = onFiltroTgCan;
+window.cancelarFiltrosTgCan    = cancelarFiltrosTgCan;
+window.limpiarFiltrosTgCan     = limpiarFiltrosTgCan;
+window.cerrarModalFiltrosTgCan = cerrarModalFiltrosTgCan;
+
+async function abrirConsultarTgCan(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:900px">
+      <div class="modal-header">
+        <div class="modal-title">Canal de Telegram <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionTgCan(id); }
+  });
+
+  try {
+    const [c, proyectos] = await Promise.all([
+      apiGet(`api/telegramcanales.php?id=${id}`),
+      tgCanCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaTgCan(c, proyectos);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaTgCan(c, proyectos = []) {
+  const card = (label, value, full = false, isCode = false) => {
+    const empty = value == null || value === '';
+    const inner = empty ? 'Sin dato'
+                : isCode ? `<code>${esc(value)}</code>`
+                : esc(value);
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">
+          #${esc(c.id)} · Slug <code>${esc(c.slug || '—')}</code>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${tgCanHabilitadoBadge(c.habilitado)}
+      </div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Proyecto',    proyectos.find((p) => Number(p.id) === Number(c.proyecto))?.nombre || null)}
+      ${card('Nombre',      c.nombre)}
+      ${card('Slug',        c.slug, false, true)}
+      ${card('Teléfono',    c.telefono ? tgCanTelefonoDisplay(c.telefono) : null, false, true)}
+      ${card('Actualizado', c.actualizado)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionTgCan(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar canal <span class="modal-subtitle">#${id}</span>` : 'Nuevo canal'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const [c, proyectos] = await Promise.all([
+      esEdicion ? apiGet(`api/telegramcanales.php?id=${id}`) : Promise.resolve({}),
+      tgCanCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formTgCanHtml(c, proyectos);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarTgCan(id, a);
+  });
+}
+
+function formTgCanHtml(c, proyectos = []) {
+  const v   = (k) => esc(c?.[k] ?? '');
+  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
+  const proyectoActual = c?.proyecto == null ? '' : String(c.proyecto);
+  const proyectosOpts = proyectos
+    .map((p) => `<option value="${esc(p.id)}" ${String(p.id) === proyectoActual ? 'selected' : ''}>${esc(p.nombre || '')}</option>`)
+    .join('');
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Proyecto</label>
+        <select id="tgCanProyecto">
+          <option value="">— Seleccionar —</option>
+          ${proyectosOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="tgCanNombre" maxlength="255" value="${v('nombre')}"
+               placeholder="ej. Javier Alvarez (personal)">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Slug</label>
+        <input type="text" id="tgCanSlug" maxlength="50" value="${v('slug')}"
+               placeholder="ej. javier" style="font-family:monospace" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Teléfono (E.164, con o sin +)</label>
+        <input type="text" id="tgCanTelefono" maxlength="20" value="${v('telefono')}"
+               placeholder="ej. +541163219578" style="font-family:monospace" autocomplete="off">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Habilitado</label>
+        <select id="tgCanHabilitado">
+          <option value=""  ${sel('habilitado','')}>—</option>
+          <option value="1" ${sel('habilitado','1')}>Habilitado</option>
+          <option value="0" ${sel('habilitado','0')}>Deshabilitado</option>
+        </select>
+      </div>
+    </div>
+    <div class="field-error" id="tgCanFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarTgCan(id, btn) {
+  const err = $('#tgCanFormError');
+  err.style.display = 'none';
+
+  const payload = {
+    nombre:     $('#tgCanNombre').value.trim(),
+    proyecto:   $('#tgCanProyecto').value,
+    slug:       $('#tgCanSlug').value.trim(),
+    telefono:   $('#tgCanTelefono').value.trim(),
+    habilitado: $('#tgCanHabilitado').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/telegramcanales.php', 'POST', payload);
+      toast('Canal creado.');
+    } else {
+      await apiSend(`api/telegramcanales.php?id=${id}`, 'PUT', payload);
+      toast('Canal actualizado.');
+    }
+    closeModal();
+    cargarTgCan();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarTgCan(id) {
+  const ok = await confirmar({
+    title: 'Eliminar canal',
+    message: `Se eliminará el canal #${id}. Esta acción no se puede deshacer. Recordá que la sesión MTProto asociada sigue viviendo en disco (api/v4/telegram/session_&lt;telefono&gt;/) y debe limpiarse manualmente si ya no se usa.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/telegramcanales.php?id=${id}`, 'DELETE');
+    toast('Canal eliminado.');
+    cargarTgCan();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Abre el menu contextual actualizando el label del toggle habilitar/deshabilitar
+// segun el estado actual de la fila.
+function abrirMenuContextoTgCan(id, x, y) {
+  const menu = $('#tgCanCtxMenu');
+  if (!menu) return;
+  const c   = tgCanCache.find((r) => Number(r.id) === Number(id));
+  const lbl = menu.querySelector('[data-action="toggle-habilitado"] [data-label]');
+  if (lbl) lbl.textContent = (c && c.habilitado === '1') ? 'Deshabilitar' : 'Habilitar';
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+async function toggleHabilitadoTgCan(id) {
+  try {
+    const c = await apiGet(`api/telegramcanales.php?id=${id}`);
+    const nuevo = c.habilitado === '1' ? '0' : '1';
+    await apiSend(`api/telegramcanales.php?id=${id}`, 'PUT', { ...c, habilitado: nuevo });
+    toast(nuevo === '1' ? 'Canal habilitado.' : 'Canal deshabilitado.');
+    cargarTgCan();
   } catch (e) {
     toast(e.message, { error: true });
   }

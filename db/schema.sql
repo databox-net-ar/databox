@@ -2786,6 +2786,24 @@ CREATE TABLE `whapimensajes`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 260991 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for telegram_canales
+-- ----------------------------
+DROP TABLE IF EXISTS `telegram_canales`;
+CREATE TABLE `telegram_canales`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `slug` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `proyecto` int(11) NULL DEFAULT NULL,
+  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `telefono` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `habilitado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `actualizado` datetime(0) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_telegram_canales_slug`(`slug`) USING BTREE,
+  INDEX `idx_telegram_canales_proyecto`(`proyecto`) USING BTREE,
+  INDEX `idx_telegram_canales_habilitado`(`habilitado`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for telegram_bots
 -- ----------------------------
 DROP TABLE IF EXISTS `telegram_bots`;

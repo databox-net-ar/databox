@@ -47,6 +47,18 @@ touch /var/log/databox/cloud/scheduler.log 2>/dev/null || true
 chown -R www-data:www-data /var/log/databox 2>/dev/null || true
 chmod 644 /var/log/databox/cloud/scheduler.log 2>/dev/null || true
 
+# MadelineProto (api/v4/telegram/canales/<telefono>/): cada canal tiene su
+# propio directorio aislado con phar + session + log + .phar.lock. Apache
+# (www-data) tiene que poder escribir todo eso; el deploy.sh empaqueta el
+# tree local con tar y el ownership resultante en el contenedor es el uid
+# del host (tipicamente 1000:1000), no www-data. Sin este chown, la primera
+# request contra /v4/telegram/mensajes despues de un deploy falla con
+# "Failed to open stream: Permission denied" al intentar tomar el lock del
+# phar. Idempotente: si canales/ no existe, no rompe.
+if [ -d /var/www/api/v4/telegram/canales ]; then
+  chown -R www-data:www-data /var/www/api/v4/telegram/canales 2>/dev/null || true
+fi
+
 service cron start
 
 exec apache2-foreground

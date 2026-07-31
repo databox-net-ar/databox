@@ -1,3 +1,12 @@
 .env.development
 .env.production
 certs/
+
+# MadelineProto (api/v4/telegram/canales/<telefono>/): un directorio TOTALMENTE
+# AISLADO por canal, con su propio phar (~20MB, se autodescarga desde
+# https://phar.madelineproto.xyz/madeline.php la primera vez), su propio
+# session.madeline/ (auth key -- quien tenga esa carpeta puede impersonar
+# la cuenta) y su propio log. Nada de esto va a git; deploy.sh empaqueta
+# con tar desde el filesystem local (no desde git) asi que la subida a prod
+# no se ve afectada.
+api/v4/telegram/canales/
