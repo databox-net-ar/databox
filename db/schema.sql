@@ -369,8 +369,11 @@ CREATE TABLE `datacountbilleteras`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 116 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datacountcomprobantes
+-- Table structure for datacountcomprobantes  (LEGACY — sistema anterior)
 -- ----------------------------
+-- Sigue viva porque el sistema legado del grupo la sigue leyendo/escribiendo.
+-- El panel cloud dejó de usarla — pasó a operar sobre `datacount_comprobantes`
+-- (clon con nombre snake_case, misma estructura al momento del clonado).
 DROP TABLE IF EXISTS `datacountcomprobantes`;
 CREATE TABLE `datacountcomprobantes`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -409,10 +412,76 @@ CREATE TABLE `datacountcomprobantes`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 24682 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datacountcomprobantesrenglones
+-- Table structure for datacount_comprobantes
 -- ----------------------------
+-- Clon snake_case de la legacy `datacountcomprobantes`. Es la tabla que usa
+-- el panel cloud (ABM Datacount > Comprobantes). Al momento del clon eran
+-- idénticas; a partir de acá evolucionan por separado — el legado sigue
+-- sobre la vieja, cualquier cambio de esquema Datacount va sólo aquí.
+DROP TABLE IF EXISTS `datacount_comprobantes`;
+CREATE TABLE `datacount_comprobantes`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `uuid` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `talonario` int(11) NULL DEFAULT NULL,
+  `proyecto` int(11) NULL DEFAULT NULL,
+  `empresa` int(11) NULL DEFAULT NULL,
+  `tipo` varchar(2) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `punto` int(11) NULL DEFAULT NULL,
+  `serie` int(11) NULL DEFAULT NULL,
+  `fiscal` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `caenro` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `caevto` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `caeres` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `emision` date NULL DEFAULT NULL,
+  `vencimiento` date NULL DEFAULT NULL,
+  `asociado` int(11) NULL DEFAULT NULL,
+  `contrato` int(11) NULL DEFAULT NULL,
+  `cliente` int(11) NULL DEFAULT NULL,
+  `razon` varchar(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `condicion` varchar(2) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cuit` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `domicilio` varchar(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `correo` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `celular` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `neto` decimal(11, 2) NULL DEFAULT NULL,
+  `iva` decimal(11, 2) NULL DEFAULT NULL,
+  `total` decimal(11, 2) NULL DEFAULT NULL,
+  `observaciones` varchar(2000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `comentarios` varchar(2000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `medio` int(11) NULL DEFAULT NULL,
+  `registrado` datetime(0) NULL DEFAULT NULL,
+  `autorizado` datetime(0) NULL DEFAULT NULL,
+  `estado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 24682 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacountcomprobantesrenglones  (LEGACY — sistema anterior)
+-- ----------------------------
+-- Renglones de la legacy `datacountcomprobantes`. El panel cloud pasó a usar
+-- `datacount_comprobantes_renglones`; ésta queda por el sistema legado.
 DROP TABLE IF EXISTS `datacountcomprobantesrenglones`;
 CREATE TABLE `datacountcomprobantesrenglones`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `comprobante` int(11) NULL DEFAULT NULL,
+  `orden` smallint(2) NULL DEFAULT NULL,
+  `cantidad` decimal(11, 2) NULL DEFAULT NULL,
+  `articulo` int(11) NULL DEFAULT NULL,
+  `detalle` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `iva` decimal(11, 2) NULL DEFAULT NULL,
+  `unitario` decimal(11, 2) NULL DEFAULT NULL,
+  `monto` decimal(11, 2) NULL DEFAULT NULL,
+  `estado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 19727 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_comprobantes_renglones
+-- ----------------------------
+-- Renglones de `datacount_comprobantes`. Clon snake_case de la legacy
+-- `datacountcomprobantesrenglones`; el panel cloud opera sobre ésta.
+DROP TABLE IF EXISTS `datacount_comprobantes_renglones`;
+CREATE TABLE `datacount_comprobantes_renglones`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `comprobante` int(11) NULL DEFAULT NULL,
   `orden` smallint(2) NULL DEFAULT NULL,
@@ -775,10 +844,37 @@ CREATE TABLE `datacountpagosadjuntos`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 2291 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datacounttalonarios
+-- Table structure for datacounttalonarios  (LEGACY — sistema anterior)
 -- ----------------------------
+-- Sigue viva por el sistema legado. El panel cloud pasó a usar
+-- `datacount_talonarios` (clon snake_case, misma estructura al momento del
+-- clonado); cualquier cambio de esquema Datacount va sólo sobre la nueva.
 DROP TABLE IF EXISTS `datacounttalonarios`;
 CREATE TABLE `datacounttalonarios`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `proyecto` int(11) NULL DEFAULT NULL,
+  `empresa` int(11) NULL DEFAULT NULL,
+  `tipo` varchar(2) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `punto` int(11) NULL DEFAULT NULL,
+  `serie` int(11) NULL DEFAULT NULL,
+  `discriminar` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `fiscal` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `correo` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `web` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `fondo` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `terminos` varchar(5000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `estado` smallint(1) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = MyISAM AUTO_INCREMENT = 80 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_talonarios
+-- ----------------------------
+-- Clon snake_case de la legacy `datacounttalonarios`. Es la tabla que consulta
+-- el panel cloud (JOIN desde `datacount_comprobantes`).
+DROP TABLE IF EXISTS `datacount_talonarios`;
+CREATE TABLE `datacount_talonarios`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `proyecto` int(11) NULL DEFAULT NULL,

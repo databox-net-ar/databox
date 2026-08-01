@@ -1,19 +1,19 @@
 <?php
-// api/datacountempleados.php
+// api/datacount_empleados.php
 // Empleados Datacount (CRUD). Lee/escribe sobre la tabla `datacount_empleados`
 // definida en db/schema.sql — cada fila representa un empleado de una empresa
 // con datos personales, de contacto y laborales (cuenta contable donde imputa
 // el sueldo, sueldo mensual, CVU/CBU, estado y observaciones).
 //
-//   GET    api/datacountempleados.php[?q=...&empresa=N&cuenta_id=N&activo=si|no
+//   GET    api/datacount_empleados.php[?q=...&empresa=N&cuenta_id=N&activo=si|no
 //                                      &limite=100&orden=id&dir=desc]
 //                                     -> listado + stats
-//   GET    api/datacountempleados.php?id=N
+//   GET    api/datacount_empleados.php?id=N
 //                                     -> registro individual
-//   POST   api/datacountempleados.php  -> alta (JSON body)
-//   PUT    api/datacountempleados.php?id=N
+//   POST   api/datacount_empleados.php  -> alta (JSON body)
+//   PUT    api/datacount_empleados.php?id=N
 //                                     -> modificación (JSON body)
-//   DELETE api/datacountempleados.php?id=N
+//   DELETE api/datacount_empleados.php?id=N
 //                                     -> baja
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -284,7 +284,7 @@ function handleCreateEmpleado(PDO $pdo, array $body): void {
     ]);
 
     $id = (int)$pdo->lastInsertId();
-    registrarSuceso($pdo, 'datacountempleados', 'info',
+    registrarSuceso($pdo, 'datacount_empleados', 'info',
         "Alta empleado #{$id} — empresa {$p['empresa_id']} nombre \"{$p['nombre']}\"");
 
     handleGetOneEmpleado($pdo, $id);
@@ -366,7 +366,7 @@ function handleUpdateEmpleado(PDO $pdo, int $id, array $body): void {
     $st  = $pdo->prepare($sql);
     $st->execute($params);
 
-    registrarSuceso($pdo, 'datacountempleados', 'info',
+    registrarSuceso($pdo, 'datacount_empleados', 'info',
         "Modificación empleado #{$id}");
 
     handleGetOneEmpleado($pdo, $id);
@@ -381,7 +381,7 @@ function handleDeleteEmpleado(PDO $pdo, int $id): void {
     $sd = $pdo->prepare('DELETE FROM datacount_empleados WHERE id = :id');
     $sd->execute([':id' => $id]);
 
-    registrarSuceso($pdo, 'datacountempleados', 'info',
+    registrarSuceso($pdo, 'datacount_empleados', 'info',
         "Baja empleado #{$id} — \"{$row['nombre']}\"");
 
     jsonOk(['id' => $id]);

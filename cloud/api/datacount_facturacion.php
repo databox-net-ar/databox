@@ -1,16 +1,16 @@
 <?php
-// api/datacountfacturacion.php
+// api/datacount_facturacion.php
 // Control del motor de facturacion de Datacount + log de actividad.
 //
 // El "motor" es un proceso externo (corre fuera de la app cloud) que se
 // enciende/apaga leyendo el parametro `datacount.motor` de la tabla
 // `parametros` (1 = encendido, 0 = apagado).
 //
-//   GET  api/datacountfacturacion.php?action=status
+//   GET  api/datacount_facturacion.php?action=status
 //                                       -> { motor: '1'|'0', parametro_id: N }
-//   GET  api/datacountfacturacion.php?action=log&since=<id>
+//   GET  api/datacount_facturacion.php?action=log&since=<id>
 //                                       -> { items: [...], last_id: N }
-//   POST api/datacountfacturacion.php?action=motor   (body JSON)
+//   POST api/datacount_facturacion.php?action=motor   (body JSON)
 //                                       -> { valor: '1'|'0' } => mismo formato que status
 //
 // El log todavia no tiene fuente real (no hay tabla ni archivo). El endpoint

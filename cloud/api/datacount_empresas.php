@@ -1,19 +1,19 @@
 <?php
-// api/datacountempresas.php
+// api/datacount_empresas.php
 // Empresas Datacount (CRUD). Lee/escribe sobre la tabla
 // `datacount_empresas` definida en db/schema.sql — cada fila representa
 // una empresa para la cual Datacount lleva la contabilidad, con datos
 // identificatorios y fiscales (nombre, razón social, domicilio,
 // condición ante AFIP, CUIT, IIBB e inicio de actividades).
 //
-//   GET    api/datacountempresas.php[?q=...&condicion=...&limite=100&orden=id&dir=desc]
+//   GET    api/datacount_empresas.php[?q=...&condicion=...&limite=100&orden=id&dir=desc]
 //                                       -> listado + stats por condición
-//   GET    api/datacountempresas.php?id=N
+//   GET    api/datacount_empresas.php?id=N
 //                                       -> registro individual
-//   POST   api/datacountempresas.php     -> alta (JSON body)
-//   PUT    api/datacountempresas.php?id=N
+//   POST   api/datacount_empresas.php     -> alta (JSON body)
+//   PUT    api/datacount_empresas.php?id=N
 //                                       -> modificación (JSON body)
-//   DELETE api/datacountempresas.php?id=N
+//   DELETE api/datacount_empresas.php?id=N
 //                                       -> baja
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -292,7 +292,7 @@ function handleCreate(PDO $pdo, array $body): void {
     }
 
     $id = (int)$pdo->lastInsertId();
-    registrarSuceso($pdo, 'datacountempresas', 'info',
+    registrarSuceso($pdo, 'datacount_empresas', 'info',
         "Alta empresa #{$id} — {$p['nombre']} ({$p['razon']})");
 
     handleGetOne($pdo, $id);
@@ -363,7 +363,7 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
         throw $e;
     }
 
-    registrarSuceso($pdo, 'datacountempresas', 'info',
+    registrarSuceso($pdo, 'datacount_empresas', 'info',
         "Modificación empresa #{$id} — {$prev['nombre']} ({$prev['razon']})");
 
     handleGetOne($pdo, $id);
@@ -378,7 +378,7 @@ function handleDelete(PDO $pdo, int $id): void {
     $sd = $pdo->prepare('DELETE FROM datacount_empresas WHERE id = :id');
     $sd->execute([':id' => $id]);
 
-    registrarSuceso($pdo, 'datacountempresas', 'info',
+    registrarSuceso($pdo, 'datacount_empresas', 'info',
         "Baja empresa #{$id} — {$prev['nombre']} ({$prev['razon']})");
 
     jsonOk(['id' => $id]);

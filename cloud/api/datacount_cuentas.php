@@ -1,18 +1,18 @@
 <?php
-// api/datacountcuentas.php
+// api/datacount_cuentas.php
 // Plan de Cuentas Datacount (CRUD). Lee/escribe sobre la tabla
 // `datacount_cuentas` definida en db/schema.sql — mismo esquema que
 // `repo`.`cuentas`: codigo unico, jerarquia por parent_id + nivel,
 // imputable, naturaleza (deudora/acreedora), activa y saldo propagado.
 //
-//   GET    api/datacountcuentas.php[?q=...&tipo=...]
+//   GET    api/datacount_cuentas.php[?q=...&tipo=...]
 //                                       -> listado plano de cuentas + stats por tipo
-//   GET    api/datacountcuentas.php?id=N
+//   GET    api/datacount_cuentas.php?id=N
 //                                       -> registro individual
-//   POST   api/datacountcuentas.php     -> alta (JSON body)
-//   PUT    api/datacountcuentas.php?id=N
+//   POST   api/datacount_cuentas.php     -> alta (JSON body)
+//   PUT    api/datacount_cuentas.php?id=N
 //                                       -> modificacion (JSON body)
-//   DELETE api/datacountcuentas.php?id=N
+//   DELETE api/datacount_cuentas.php?id=N
 //                                       -> baja (solo si no tiene hijos)
 //
 // Auto-seed: en el primer request, si la tabla esta vacia, se carga un
@@ -243,7 +243,7 @@ function handleCreate(PDO $pdo, array $body): void {
     }
 
     $id = (int)$pdo->lastInsertId();
-    registrarSuceso($pdo, 'datacountcuentas', 'info',
+    registrarSuceso($pdo, 'datacount_cuentas', 'info',
         "Alta cuenta #{$id} — empresa {$p['empresa_id']} — {$p['codigo']} {$p['nombre']}");
 
     handleGetOne($pdo, $id);
@@ -316,7 +316,7 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
         throw $e;
     }
 
-    registrarSuceso($pdo, 'datacountcuentas', 'info',
+    registrarSuceso($pdo, 'datacount_cuentas', 'info',
         "Modificacion cuenta #{$id} — empresa {$empresaCuenta} — {$prev['codigo']} {$prev['nombre']}");
 
     handleGetOne($pdo, $id);
@@ -337,7 +337,7 @@ function handleDelete(PDO $pdo, int $id): void {
     $sd = $pdo->prepare('DELETE FROM datacount_cuentas WHERE id = :id');
     $sd->execute([':id' => $id]);
 
-    registrarSuceso($pdo, 'datacountcuentas', 'info',
+    registrarSuceso($pdo, 'datacount_cuentas', 'info',
         "Baja cuenta #{$id} — {$prev['codigo']} {$prev['nombre']}");
 
     jsonOk(['id' => $id]);

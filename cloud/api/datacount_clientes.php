@@ -1,19 +1,19 @@
 <?php
-// api/datacountclientes.php
+// api/datacount_clientes.php
 // Clientes Datacount (CRUD). Lee/escribe sobre la tabla `datacount_clientes`
 // definida en db/schema.sql — cada fila representa un cliente transversal
 // (multiempresa) con datos identificatorios (nombre, razón social, condición
 // fiscal AFIP, CUIT), de contacto (domicilio, celular, correo, web) y
 // bancarios (CBU).
 //
-//   GET    api/datacountclientes.php[?q=...&condicion=...&limite=100&orden=id&dir=desc]
+//   GET    api/datacount_clientes.php[?q=...&condicion=...&limite=100&orden=id&dir=desc]
 //                                      -> listado + stats por condición
-//   GET    api/datacountclientes.php?id=N
+//   GET    api/datacount_clientes.php?id=N
 //                                      -> registro individual
-//   POST   api/datacountclientes.php     -> alta (JSON body)
-//   PUT    api/datacountclientes.php?id=N
+//   POST   api/datacount_clientes.php     -> alta (JSON body)
+//   PUT    api/datacount_clientes.php?id=N
 //                                      -> modificación (JSON body)
-//   DELETE api/datacountclientes.php?id=N
+//   DELETE api/datacount_clientes.php?id=N
 //                                      -> baja
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -207,7 +207,7 @@ function handleCreateCliente(PDO $pdo, array $body): void {
     ]);
 
     $id = (int)$pdo->lastInsertId();
-    registrarSuceso($pdo, 'datacountclientes', 'info',
+    registrarSuceso($pdo, 'datacount_clientes', 'info',
         "Alta cliente #{$id} — \"{$p['nombre']}\"");
 
     handleGetOneCliente($pdo, $id);
@@ -267,7 +267,7 @@ function handleUpdateCliente(PDO $pdo, int $id, array $body): void {
     $st  = $pdo->prepare($sql);
     $st->execute($params);
 
-    registrarSuceso($pdo, 'datacountclientes', 'info',
+    registrarSuceso($pdo, 'datacount_clientes', 'info',
         "Modificación cliente #{$id} — \"{$prev['nombre']}\"");
 
     handleGetOneCliente($pdo, $id);
@@ -282,7 +282,7 @@ function handleDeleteCliente(PDO $pdo, int $id): void {
     $sd = $pdo->prepare('DELETE FROM datacount_clientes WHERE id = :id');
     $sd->execute([':id' => $id]);
 
-    registrarSuceso($pdo, 'datacountclientes', 'info',
+    registrarSuceso($pdo, 'datacount_clientes', 'info',
         "Baja cliente #{$id} — \"{$prev['nombre']}\"");
 
     jsonOk(['id' => $id]);

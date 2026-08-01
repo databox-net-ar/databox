@@ -11,6 +11,27 @@
 # ============================================================
 
 set -e
+set -o pipefail   # que el error del `tar | ssh` no se coma el exit code
+
+# Imprime la hora de finalizacion siempre, tanto si el deploy termina OK como
+# si `set -e` corta el script a mitad (p.ej. tar fallando por permisos).
+START_TS=$(date +%s)
+finish() {
+    RC=$?
+    END_TS=$(date +%s)
+    DUR=$((END_TS - START_TS))
+    echo ""
+    echo "================================================"
+    if [ $RC -eq 0 ]; then
+        echo "  Deploy completo -- https://cloud.databox.net.ar"
+    else
+        echo "  Deploy FALLIDO (exit code: $RC)"
+    fi
+    echo "  Finalizado: $(date '+%Y-%m-%d %H:%M:%S')  (duracion: ${DUR}s)"
+    echo "================================================"
+    echo ""
+}
+trap finish EXIT
 
 HOST="manchester.databox.net.ar"
 USER="ec2-user"
@@ -88,10 +109,11 @@ tar \
     --exclude='./api/node_modules' \
     --exclude='./api/vendor' \
     --exclude='*.log' \
+    --exclude='api/v4/telegram/canales' \
     -czf - cloud api robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
-    "tar -xzf - -C '$BASE_REMOTE/'"
+    "tar --no-overwrite-dir -xzf - -C '$BASE_REMOTE/'"
 echo "  OK"
 echo ""
 
@@ -119,10 +141,3 @@ echo ""
 # Herramientas > Migrador DB), que registra cada corrida en la tabla
 # `migraciones` y muestra pendientes/aplicadas con hash.
 echo "  Migraciones SQL: aplicar desde Panel > Administracion > Herramientas > Migrador DB."
-echo ""
-
-echo "================================================"
-echo "  Deploy completo -- https://cloud.databox.net.ar"
-echo "  Finalizado: $(date '+%Y-%m-%d %H:%M:%S')"
-echo "================================================"
-echo ""

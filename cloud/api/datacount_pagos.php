@@ -1,14 +1,16 @@
 <?php
-// api/datacountpagos.php
-// ABM de pagos Datacount. Lee/escribe sobre la tabla `datacountpagos`
+// api/datacount_pagos.php
+// ABM de pagos Datacount. Lee/escribe sobre la tabla `datacount_pagos`
 // definida en db/schema.sql. Cada fila representa un documento digitalizado
-// (factura recibida, VEP, comprobante de transferencia, etc.) con su empresa,
-// proyecto, periodo, monto, moneda y estado de contabilizacion.
-//   GET    api/datacountpagos.php          -> listado con filtros (query string)
-//   GET    api/datacountpagos.php?id=N     -> registro individual
-//   POST   api/datacountpagos.php          -> alta (JSON body)
-//   PUT    api/datacountpagos.php?id=N     -> modificacion (JSON body)
-//   DELETE api/datacountpagos.php?id=N     -> baja
+// (factura recibida, VEP, comprobante de transferencia, etc.) con su
+// empresa, proyecto, periodo, monto, moneda y estado de contabilizacion.
+// Los adjuntos viven en `datacount_pagos_adjuntos` (metadata) + un binario
+// separado servido por DCPAGO_MEDIA_URL.
+//   GET    api/datacount_pagos.php          -> listado con filtros (query string)
+//   GET    api/datacount_pagos.php?id=N     -> registro individual
+//   POST   api/datacount_pagos.php          -> alta (JSON body)
+//   PUT    api/datacount_pagos.php?id=N     -> modificacion (JSON body)
+//   DELETE api/datacount_pagos.php?id=N     -> baja
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
@@ -109,12 +111,12 @@ function handleListDcPago(PDO $pdo, array $q): void {
         SELECT
             COUNT(*)                AS total,
             COALESCE(SUM(valor), 0) AS importe_total
-        FROM datacountpagos
+        FROM datacount_pagos
     ")->fetch();
 
     $sql = "
         SELECT " . DCP_COLS . "
-        FROM datacountpagos
+        FROM datacount_pagos
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -133,17 +135,17 @@ function handleListDcPago(PDO $pdo, array $q): void {
 }
 
 function handleGetOneDcPago(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . DCP_COLS . " FROM datacountpagos WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . DCP_COLS . " FROM datacount_pagos WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Pago no encontrado', 404);
 
-    // Adjuntos asociados al pago (datacountpagosadjuntos). Se listan como
+    // Adjuntos asociados al pago (datacount_pagos_adjuntos). Se listan como
     // metadata (nombre / cargado / tipo / formato) — el binario en si vive
     // aparte y no lo servimos por esta API todavia.
     $stmtA = $pdo->prepare("
         SELECT id, uuid, nombre, cargado, tipo, archivo, formato
-        FROM datacountpagosadjuntos
+        FROM datacount_pagos_adjuntos
         WHERE pago = :id
         ORDER BY cargado ASC, id ASC
     ");
@@ -235,7 +237,7 @@ function handleCreateDcPago(PDO $pdo, array $in): void {
     $p['registrador'] = (int)($auth['sub'] ?? 0) ?: null;
 
     $sql = "
-        INSERT INTO datacountpagos
+        INSERT INTO datacount_pagos
             (uuid, empresa, proyecto, periodo, tipo, emision, cancelacion,
              razon, cuit, numero, moneda, monto, cotizacion, valor,
              billetera, descripcion, comprobante, transaccion, contabilizado,
@@ -277,14 +279,14 @@ function handleCreateDcPago(PDO $pdo, array $in): void {
 }
 
 function handleUpdateDcPago(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM datacountpagos WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM datacount_pagos WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Pago no encontrado', 404);
 
     $p = dcpSanitizePayload($in);
 
     $sql = "
-        UPDATE datacountpagos SET
+        UPDATE datacount_pagos SET
             empresa       = :empresa,
             proyecto      = :proyecto,
             periodo       = :periodo,
@@ -337,7 +339,7 @@ function handleUpdateDcPago(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDeleteDcPago(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM datacountpagos WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM datacount_pagos WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Pago no encontrado', 404);
     jsonOk(['id' => $id]);

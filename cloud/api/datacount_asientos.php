@@ -1,20 +1,20 @@
 <?php
-// api/datacountasientos.php
+// api/datacount_asientos.php
 // Asientos contables Datacount (CRUD). Lee/escribe sobre las tablas
 // `datacount_asientos` + `datacount_asientos_detalles` — mismo esquema que
 // `repo.asientos` / `repo.asiento_detalles`. Cada asiento se asocia a una
 // empresa (`empresa_id`) y la numeracion `numero` es autoincrementable por
 // empresa (index UNIQUE `(empresa_id, numero)`).
 //
-//   GET    api/datacountasientos.php[?empresa=N&q=...&desde=YYYY-MM-DD
+//   GET    api/datacount_asientos.php[?empresa=N&q=...&desde=YYYY-MM-DD
 //                                     &hasta=YYYY-MM-DD&cuenta_id=N]
 //                                       -> listado (500 max) + stats + detalle por asiento
-//   GET    api/datacountasientos.php?id=N
+//   GET    api/datacount_asientos.php?id=N
 //                                       -> asiento individual con su detalle
-//   POST   api/datacountasientos.php     -> alta (JSON body con `empresa` y `detalle` array)
-//   PUT    api/datacountasientos.php?id=N
+//   POST   api/datacount_asientos.php     -> alta (JSON body con `empresa` y `detalle` array)
+//   PUT    api/datacount_asientos.php?id=N
 //                                       -> modificacion (reemplaza el detalle completo)
-//   DELETE api/datacountasientos.php?id=N
+//   DELETE api/datacount_asientos.php?id=N
 //                                       -> baja (CASCADE borra el detalle)
 //
 // Validacion: total DEBE = total HABER (tolerancia 0.01), 2+ lineas, todas
@@ -343,7 +343,7 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
     $todasIds = array_values(array_unique(array_merge($idsUnicos, array_map('intval', $oldCuentaIds))));
     recalcularSaldoCuentas($pdo, $todasIds);
 
-    registrarSuceso($pdo, 'datacountasientos', 'info',
+    registrarSuceso($pdo, 'datacount_asientos', 'info',
         ($id ? 'Modificacion' : 'Alta') .
         " asiento #{$asientoId} — empresa {$empresaId} — {$descripcion} — total {$total}");
 
@@ -366,7 +366,7 @@ function handleDelete(PDO $pdo, int $id): void {
 
     recalcularSaldoCuentas($pdo, $delCuentaIds);
 
-    registrarSuceso($pdo, 'datacountasientos', 'info',
+    registrarSuceso($pdo, 'datacount_asientos', 'info',
         "Baja asiento #{$id} — N.{$prev['numero']} {$prev['descripcion']}");
 
     jsonOk(['id' => $id]);

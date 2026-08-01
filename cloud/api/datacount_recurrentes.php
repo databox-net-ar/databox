@@ -1,19 +1,19 @@
 <?php
-// api/datacountrecurrentes.php
+// api/datacount_recurrentes.php
 // Movimientos recurrentes Datacount (CRUD). Lee/escribe sobre la tabla
 // `datacount_recurrentes` definida en db/schema.sql — cada fila representa
 // un movimiento contable esperado que combina empresa + cuenta con montos
 // previstos de ingreso y egreso y un flag `activo`.
 //
-//   GET    api/datacountrecurrentes.php[?q=...&empresa=N&cuenta=N&activo=0|1
+//   GET    api/datacount_recurrentes.php[?q=...&empresa=N&cuenta=N&activo=0|1
 //                                        &limite=100&orden=id&dir=desc]
 //                                       -> listado + stats
-//   GET    api/datacountrecurrentes.php?id=N
+//   GET    api/datacount_recurrentes.php?id=N
 //                                       -> registro individual
-//   POST   api/datacountrecurrentes.php  -> alta (JSON body)
-//   PUT    api/datacountrecurrentes.php?id=N
+//   POST   api/datacount_recurrentes.php  -> alta (JSON body)
+//   PUT    api/datacount_recurrentes.php?id=N
 //                                       -> modificación (JSON body)
-//   DELETE api/datacountrecurrentes.php?id=N
+//   DELETE api/datacount_recurrentes.php?id=N
 //                                       -> baja
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -259,7 +259,7 @@ function handleCreate(PDO $pdo, array $body): void {
 
     $id = (int)$pdo->lastInsertId();
     $cuentaTxt = $p['cuenta'] === null ? 'sin cuenta' : "cuenta {$p['cuenta']}";
-    registrarSuceso($pdo, 'datacountrecurrentes', 'info',
+    registrarSuceso($pdo, 'datacount_recurrentes', 'info',
         "Alta movimiento recurrente #{$id} — empresa {$p['empresa']} {$cuentaTxt}");
 
     handleGetOne($pdo, $id);
@@ -325,7 +325,7 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
     $st->bindValue(':id', $id, PDO::PARAM_INT);
     $st->execute();
 
-    registrarSuceso($pdo, 'datacountrecurrentes', 'info',
+    registrarSuceso($pdo, 'datacount_recurrentes', 'info',
         "Modificación movimiento recurrente #{$id}");
 
     handleGetOne($pdo, $id);
@@ -339,7 +339,7 @@ function handleDelete(PDO $pdo, int $id): void {
     $sd = $pdo->prepare('DELETE FROM datacount_recurrentes WHERE id = :id');
     $sd->execute([':id' => $id]);
 
-    registrarSuceso($pdo, 'datacountrecurrentes', 'info',
+    registrarSuceso($pdo, 'datacount_recurrentes', 'info',
         "Baja movimiento recurrente #{$id}");
 
     jsonOk(['id' => $id]);

@@ -649,7 +649,7 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
         <div class="form-group">
           <label for="formEstadoCampo">Campo</label>
           <input type="text" id="formEstadoCampo"
-                 placeholder="ej. datacountcomprobantes.estado"
+                 placeholder="ej. datacount_comprobante_estado"
                  autocomplete="off" autocapitalize="none" spellcheck="false"
                  maxlength="255" style="font-family:monospace" list="formEstadoCampoLista">
           <datalist id="formEstadoCampoLista"></datalist>

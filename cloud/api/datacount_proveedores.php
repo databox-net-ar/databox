@@ -1,19 +1,19 @@
 <?php
-// api/datacountproveedores.php
+// api/datacount_proveedores.php
 // Proveedores Datacount (CRUD). Lee/escribe sobre la tabla
 // `datacount_proveedores` definida en db/schema.sql — cada fila representa
 // un proveedor transversal (multiempresa) con datos identificatorios
 // (nombre, razón social, condición fiscal AFIP, CUIT), de contacto
 // (domicilio, celular, correo, web) y bancarios (CBU, para transferencias).
 //
-//   GET    api/datacountproveedores.php[?q=...&condicion=...&limite=100&orden=id&dir=desc]
+//   GET    api/datacount_proveedores.php[?q=...&condicion=...&limite=100&orden=id&dir=desc]
 //                                         -> listado + stats por condición
-//   GET    api/datacountproveedores.php?id=N
+//   GET    api/datacount_proveedores.php?id=N
 //                                         -> registro individual
-//   POST   api/datacountproveedores.php     -> alta (JSON body)
-//   PUT    api/datacountproveedores.php?id=N
+//   POST   api/datacount_proveedores.php     -> alta (JSON body)
+//   PUT    api/datacount_proveedores.php?id=N
 //                                         -> modificación (JSON body)
-//   DELETE api/datacountproveedores.php?id=N
+//   DELETE api/datacount_proveedores.php?id=N
 //                                         -> baja
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -207,7 +207,7 @@ function handleCreateProveedor(PDO $pdo, array $body): void {
     ]);
 
     $id = (int)$pdo->lastInsertId();
-    registrarSuceso($pdo, 'datacountproveedores', 'info',
+    registrarSuceso($pdo, 'datacount_proveedores', 'info',
         "Alta proveedor #{$id} — \"{$p['nombre']}\"");
 
     handleGetOneProveedor($pdo, $id);
@@ -267,7 +267,7 @@ function handleUpdateProveedor(PDO $pdo, int $id, array $body): void {
     $st  = $pdo->prepare($sql);
     $st->execute($params);
 
-    registrarSuceso($pdo, 'datacountproveedores', 'info',
+    registrarSuceso($pdo, 'datacount_proveedores', 'info',
         "Modificación proveedor #{$id} — \"{$prev['nombre']}\"");
 
     handleGetOneProveedor($pdo, $id);
@@ -282,7 +282,7 @@ function handleDeleteProveedor(PDO $pdo, int $id): void {
     $sd = $pdo->prepare('DELETE FROM datacount_proveedores WHERE id = :id');
     $sd->execute([':id' => $id]);
 
-    registrarSuceso($pdo, 'datacountproveedores', 'info',
+    registrarSuceso($pdo, 'datacount_proveedores', 'info',
         "Baja proveedor #{$id} — \"{$prev['nombre']}\"");
 
     jsonOk(['id' => $id]);

@@ -411,16 +411,17 @@ const ROUTE_PERMS = {
   '/dashboard':                { perm:   'inicio.dashboard.consultar' },
 
   '/datacount':                { prefix: 'datacount.' },
-  '/datacountcomprobantes':    { perm:   'datacount.comprobantes.consultar' },
-  '/datacountpagos':           { perm:   'datacount.pagos.consultar' },
-  '/datacountfacturacion':     { perm:   'datacount.facturacion.consultar' },
-  '/datacountasientos':        { perm:   'datacount.asientos.consultar' },
-  '/datacountempleados':       { perm:   'datacount.empleados.consultar' },
-  '/datacountrecurrentes':     { perm:   'datacount.recurrentes.consultar' },
-  '/datacountcuentas':         { perm:   'datacount.cuentas.consultar' },
-  '/datacountempresas':        { perm:   'datacount.empresas.consultar' },
-  '/datacountclientes':        { perm:   'datacount.clientes.consultar' },
-  '/datacountproveedores':     { perm:   'datacount.proveedores.consultar' },
+  '/datacount_comprobantes':    { perm:   'datacount.comprobantes.consultar' },
+  '/datacount_pagos':           { perm:   'datacount.pagos.consultar' },
+  '/datacount_facturacion':     { perm:   'datacount.facturacion.consultar' },
+  '/datacount_asientos':        { perm:   'datacount.asientos.consultar' },
+  '/datacount_empleados':       { perm:   'datacount.empleados.consultar' },
+  '/datacount_recurrentes':     { perm:   'datacount.recurrentes.consultar' },
+  '/datacount_cuentas':         { perm:   'datacount.cuentas.consultar' },
+  '/datacount_empresas':        { perm:   'datacount.empresas.consultar' },
+  '/datacount_clientes':        { perm:   'datacount.clientes.consultar' },
+  '/datacount_proveedores':     { perm:   'datacount.proveedores.consultar' },
+  '/datacount_talonarios':      { perm:   'datacount.talonarios.consultar' },
 
   '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketinteracciones':    { perm:   'datarocket.interacciones.consultar' },
@@ -10281,55 +10282,60 @@ route('/datacount', async (mount) => {
     </div>
 
     <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountcomprobantes'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_comprobantes'">
         <span class="tile-icon">🧾</span>
         <span class="tile-title">Comprobantes</span>
         <span class="tile-desc">Comprobantes emitidos y recibidos con tipo, punto, serie, cliente, CUIT, estado y totales.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountpagos'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_pagos'">
         <span class="tile-icon">💵</span>
         <span class="tile-title">Pagos</span>
         <span class="tile-desc">Facturas recibidas y demás documentos digitalizados con período, monto, moneda y estado de contabilización.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountfacturacion'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_facturacion'">
         <span class="tile-icon">🤖</span>
         <span class="tile-title">Facturación</span>
         <span class="tile-desc">Motor de facturación automática con log de corridas y estado de emisión.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountasientos'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_asientos'">
         <span class="tile-icon">📖</span>
         <span class="tile-title">Asientos</span>
         <span class="tile-desc">Asientos contables con fecha, cuenta, debe/haber, glosa y agrupamiento.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountempleados'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_empleados'">
         <span class="tile-icon">👤</span>
         <span class="tile-title">Empleados</span>
         <span class="tile-desc">Nómina de empleados con legajo, datos personales y situación laboral.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountrecurrentes'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_recurrentes'">
         <span class="tile-icon">🔁</span>
         <span class="tile-title">Recurrentes</span>
         <span class="tile-desc">Movimientos que se repiten según una cadencia definida (mensuales, quincenales, etc.).</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountcuentas'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_cuentas'">
         <span class="tile-icon">📒</span>
         <span class="tile-title">Plan de cuentas</span>
         <span class="tile-desc">Estructura jerárquica de cuentas contables con código, nombre y tipo.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountempresas'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_empresas'">
         <span class="tile-icon">🏢</span>
         <span class="tile-title">Empresas</span>
         <span class="tile-desc">Empresas administradas por Datacount con razón social, CUIT y datos fiscales.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountclientes'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_clientes'">
         <span class="tile-icon">🧑‍💼</span>
         <span class="tile-title">Clientes</span>
         <span class="tile-desc">Catálogo transversal de clientes (multiempresa) con datos identificatorios, de contacto y bancarios.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacountproveedores'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_proveedores'">
         <span class="tile-icon">🏭</span>
         <span class="tile-title">Proveedores</span>
         <span class="tile-desc">Catálogo transversal de proveedores (multiempresa) con datos identificatorios, de contacto y bancarios.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_talonarios'">
+        <span class="tile-icon">📇</span>
+        <span class="tile-title">Talonarios</span>
+        <span class="tile-desc">Talonarios de comprobantes por empresa con punto de venta, serie corriente, tipo, marcas fiscales y datos de branding.</span>
       </button>
     </div>
   `;
@@ -10337,9 +10343,15 @@ route('/datacount', async (mount) => {
 
 // ------------------------- Vista: Datacount > Comprobantes (ABM) -------------------------
 const dcCompFiltrosDefaults = {
-  q: '', codigo: '', tipo: '', punto: '', serie: '', cliente: '',
-  razon: '', cuit: '', estado: '',
-  order_by: 'id', dir: 'desc', limite: 100,
+  q: '', codigo: '',
+  talonario: '', proyecto: '', empresa: '',
+  tipo: '', punto: '', serie: '', fiscal: '',
+  emi_desde: '', emi_hasta: '', vto_desde: '', vto_hasta: '',
+  razon: '', celular: '', correo: '',
+  cliente: '', cuit: '',
+  total_desde: '', total_hasta: '',
+  estado: '',
+  order_by: 'id', dir: 'desc', limite: 50,
 };
 const dcCompFiltros = { ...dcCompFiltrosDefaults };
 let dcCompBuscadorTimer  = null;
@@ -10348,6 +10360,59 @@ let dcCompFiltrosSnapshot = null;
 // donde `campo = 'datacount_comprobante_estado'`. Se cachea entre navegaciones.
 let dcCompEstadosCatalogo = null;
 let dcCompEstadosPromesa  = null;
+// Catalogos para los `<select>` de tipo/fiscal/condicion IVA (tabla `estados`)
+// y talonario/proyecto/empresa (endpoint ?lookups=1 de este mismo modulo).
+let dcCompTiposCatalogo       = null;
+let dcCompFiscalesCatalogo    = null;
+let dcCompCondicionesCatalogo = null;
+let dcCompLookups             = null;
+let dcCompLookupsPromesa      = null;
+
+async function dcCompCargarCatalogoTipos() {
+  if (dcCompTiposCatalogo) return dcCompTiposCatalogo;
+  const data = await apiGet('api/estados.php?campo=datacount_comprobante_tipo&order_by=campo_orden&dir=asc&limite=500');
+  dcCompTiposCatalogo = (data.items || []).map((r) => ({
+    valor: String(r.valor ?? ''),
+    texto: String(r.texto ?? '').trim() || String(r.valor ?? ''),
+  }));
+  return dcCompTiposCatalogo;
+}
+
+async function dcCompCargarCatalogoFiscales() {
+  if (dcCompFiscalesCatalogo) return dcCompFiscalesCatalogo;
+  const data = await apiGet('api/estados.php?campo=datacount_comprobante_fiscal&order_by=campo_orden&dir=asc&limite=500');
+  dcCompFiscalesCatalogo = (data.items || []).map((r) => ({
+    valor: String(r.valor ?? ''),
+    texto: String(r.texto ?? '').trim() || String(r.valor ?? ''),
+  }));
+  return dcCompFiscalesCatalogo;
+}
+
+async function dcCompCargarCatalogoCondiciones() {
+  if (dcCompCondicionesCatalogo) return dcCompCondicionesCatalogo;
+  const data = await apiGet('api/estados.php?campo=datacount_comprobante_condicion&order_by=campo_orden&dir=asc&limite=500');
+  dcCompCondicionesCatalogo = (data.items || []).map((r) => ({
+    valor: String(r.valor ?? ''),
+    texto: String(r.texto ?? '').trim() || String(r.valor ?? ''),
+  }));
+  return dcCompCondicionesCatalogo;
+}
+
+async function dcCompCargarLookups() {
+  if (dcCompLookups) return dcCompLookups;
+  if (dcCompLookupsPromesa) return dcCompLookupsPromesa;
+  dcCompLookupsPromesa = (async () => {
+    const data = await apiGet('api/datacount_comprobantes.php?lookups=1');
+    dcCompLookups = {
+      talonarios: data.talonarios || [],
+      proyectos:  data.proyectos  || [],
+      empresas:   data.empresas   || [],
+    };
+    return dcCompLookups;
+  })();
+  try { return await dcCompLookupsPromesa; }
+  finally { dcCompLookupsPromesa = null; }
+}
 
 async function dcCompCargarCatalogoEstados() {
   if (dcCompEstadosCatalogo) return dcCompEstadosCatalogo;
@@ -10364,11 +10429,21 @@ async function dcCompCargarCatalogoEstados() {
   finally { dcCompEstadosPromesa = null; }
 }
 
+// Orden explicito de los chips en el modal de filtros. El catalogo `estados`
+// viene ordenado por `campo_orden` que pone Anulado (valor '4') al principio
+// — pero para el filtro queremos el orden natural del ciclo de vida:
+// Preparacion -> Pendiente -> Autorizado -> Rechazado -> Anulado.
+const DCCOMP_ORDEN_CHIPS_ESTADO = ['1', '2', '3', '0', '4'];
+
 function dcCompPintarChipsEstado() {
   const box = document.getElementById('fDcCompEstadoChips');
   if (!box) return;
   const actual = dcCompFiltros.estado || '';
-  const items  = dcCompEstadosCatalogo || [];
+  const items  = [...(dcCompEstadosCatalogo || [])].sort((a, b) => {
+    const ia = DCCOMP_ORDEN_CHIPS_ESTADO.indexOf(String(a.valor));
+    const ib = DCCOMP_ORDEN_CHIPS_ESTADO.indexOf(String(b.valor));
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
   box.innerHTML =
     `<button type="button" class="filter-chip${actual === '' ? ' active' : ''}" data-estado="">Todos</button>` +
     items.map((e) =>
@@ -10387,31 +10462,80 @@ function dcCompFmtComprobante(punto, serie) {
   return `${p}-${s}`;
 }
 
+// Muestra "<talonario> - <serie del comprobante>" con la serie padded a 8
+// digitos. Comprobantes rechazados / no autorizados quedan con serie=0 y
+// se ven como "00000000" (nunca se les asigno un correlativo real).
+function dcCompFmtTalonario(nombre, serie) {
+  const n = (nombre ?? '').toString().trim();
+  const s = serie != null && serie !== '' ? String(serie).padStart(8, '0') : '--------';
+  if (n) return `${n} - ${s}`;
+  return s || '—';
+}
+
 function dcCompFmtImporte(v) {
   if (v == null || v === '' || isNaN(Number(v))) return '—';
   return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Toggle del item "Editar" del ctx menu del listado + del boton "Editar" del
+// modal Consultar. La regla de negocio es que solo los comprobantes en estado
+// 'Preparacion' (valor '1' del catalogo `datacount_comprobante_estado`) son
+// editables — el resto ya paso por AFIP o esta cerrado.
+function dcCompEsEditable(estado) {
+  return String(estado ?? '') === '1';
+}
+
+// Maquina de estados del menu contextual del listado. Debe coincidir con
+// DC_TRANSICIONES_ESTADO del backend (cloud/api/datacount_comprobantes.php).
+// Valor -> lista de acciones habilitadas en el menu.
+const DCCOMP_ACCIONES_POR_ESTADO = {
+  '1': ['marcar-pendiente', 'marcar-anulado', 'editar', 'eliminar'],
+  '2': ['marcar-preparacion', 'marcar-anulado', 'eliminar'],
+  '3': [],
+  '0': [],
+  '4': ['marcar-preparacion', 'eliminar'],
+};
+
+// Aplica el gate del menu contextual: consultar y clonar siempre visibles,
+// el resto segun DCCOMP_ACCIONES_POR_ESTADO. Tambien esconde los separadores
+// cuando no hay ningun item de transicion o de ABM debajo, para no dejar
+// rayas huerfanas.
+function dcCompAplicarGateEstado(estado) {
+  const menu = document.getElementById('dcCompCtxMenu');
+  if (!menu) return;
+  const permitidas = DCCOMP_ACCIONES_POR_ESTADO[String(estado ?? '')] || [];
+  const siempreVisibles = ['consultar', 'clonar'];
+  menu.querySelectorAll('[data-action]').forEach((btn) => {
+    if (siempreVisibles.includes(btn.dataset.action)) { btn.style.display = ''; return; }
+    btn.style.display = permitidas.includes(btn.dataset.action) ? '' : 'none';
+  });
+  const hayTransicion = permitidas.some((a) => a.startsWith('marcar-'));
+  const hayAbm        = permitidas.includes('editar') || permitidas.includes('eliminar');
+  const sepTrans = menu.querySelector('[data-role="sep-transiciones"]');
+  const sepAbm   = menu.querySelector('[data-role="sep-abm"]');
+  if (sepTrans) sepTrans.style.display = hayTransicion ? '' : 'none';
+  if (sepAbm)   sepAbm.style.display   = (hayTransicion && hayAbm) ? '' : 'none';
+}
+
 function dcCompEstadoBadge(e) {
   if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  // El texto del estado se toma del catalogo `estados` (campo
-  // 'datacount_comprobante_estado'). Si el catalogo aun no cargo o no
-  // contiene el codigo, mostramos el valor crudo como fallback.
-  // Los colores siguen la convencion heredada para A/P/C/B; el resto
-  // cae en badge-info.
+  // Colores por codigo del catalogo `datacount_comprobante_estado`:
+  //   '1' Preparacion -> naranja, '2' Pendiente -> azul,
+  //   '3' Autorizado -> verde, '0' Rechazado / '4' Anulado -> rojo.
   const colorMap = {
-    A: 'badge-success',
-    P: 'badge-warn',
-    C: 'badge-danger',
-    B: 'badge-danger',
+    '1': 'badge-warn',
+    '2': 'badge-info',
+    '3': 'badge-success',
+    '0': 'badge-danger',
+    '4': 'badge-danger',
   };
-  const cls  = colorMap[e] || 'badge-info';
+  const cls  = colorMap[String(e)] || 'badge-info';
   const item = (dcCompEstadosCatalogo || []).find((x) => String(x.valor) === String(e));
   const label = item ? item.texto : String(e);
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 
-route('/datacountcomprobantes', async (mount) => {
+route('/datacount_comprobantes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -10458,29 +10582,43 @@ route('/datacountcomprobantes', async (mount) => {
           <thead>
             <tr>
               <th>Código</th>
-              <th>Tipo</th>
-              <th>Comprobante</th>
+              <th>Talonario</th>
               <th>Emisión</th>
               <th>Razón social</th>
               <th>CUIT</th>
               <th style="text-align:right">Total</th>
-              <th>Estado</th>
+              <th style="text-align:center">Estado</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="dcCompTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- Menú contextual único de la sección -->
+    <!-- Menú contextual único de la sección. Los items marcar-*, editar y
+         eliminar se muestran u ocultan segun el estado actual del comprobante
+         (ver dcCompAplicarGateEstado). -->
     <div id="dcCompCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
-      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="clonar" role="menuitem">
+        <i class="fa-solid fa-clone"></i><span>Clonar</span>
+      </button>
+      <div class="ctx-menu-sep" data-role="sep-transiciones"></div>
+      <button type="button" data-action="marcar-preparacion" role="menuitem">
+        <i class="fa-solid fa-pencil-ruler"></i><span>Marcar como preparación</span>
+      </button>
+      <button type="button" data-action="marcar-pendiente" role="menuitem">
+        <i class="fa-solid fa-clock"></i><span>Marcar como pendiente</span>
+      </button>
+      <button type="button" data-action="marcar-anulado" role="menuitem">
+        <i class="fa-solid fa-ban"></i><span>Marcar como anulado</span>
+      </button>
+      <div class="ctx-menu-sep" data-role="sep-abm"></div>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
       </button>
@@ -10492,23 +10630,46 @@ route('/datacountcomprobantes', async (mount) => {
     <!-- Modal de filtros -->
     <div class="modal-backdrop" id="filtrosDcCompBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcComp()">
-      <div class="modal" style="max-width:620px">
+      <div class="modal" style="max-width:860px">
         <div class="modal-header">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
           <button class="btn btn-ghost" onclick="cancelarFiltrosDcComp()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
-          <div class="form-row">
+          <!-- Fila 1: Código / Proyecto / Empresa / Talonario -->
+          <div class="form-row form-row-4">
             <div class="form-group">
               <label>Código</label>
               <input type="number" id="fDcCompCodigo" min="1" placeholder="ID …" oninput="onFiltroDcComp('codigo', this.value)">
             </div>
             <div class="form-group">
-              <label>Tipo</label>
-              <input type="text" id="fDcCompTipo" maxlength="2" oninput="onFiltroDcComp('tipo', this.value)">
+              <label>Proyecto</label>
+              <select id="fDcCompProyecto" onchange="onFiltroDcComp('proyecto', this.value)">
+                <option value="">Todos</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Empresa</label>
+              <select id="fDcCompEmpresa" onchange="onFiltroDcComp('empresa', this.value)">
+                <option value="">Todas</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Talonario</label>
+              <select id="fDcCompTalonario" onchange="onFiltroDcComp('talonario', this.value)">
+                <option value="">Todos</option>
+              </select>
             </div>
           </div>
-          <div class="form-row form-row-3">
+
+          <!-- Fila 2: Tipo / Punto / Serie / Fiscal -->
+          <div class="form-row form-row-4">
+            <div class="form-group">
+              <label>Tipo</label>
+              <select id="fDcCompTipo" onchange="onFiltroDcComp('tipo', this.value)">
+                <option value="">Todos</option>
+              </select>
+            </div>
             <div class="form-group">
               <label>Punto</label>
               <input type="number" id="fDcCompPunto" min="0" oninput="onFiltroDcComp('punto', this.value)">
@@ -10518,30 +10679,88 @@ route('/datacountcomprobantes', async (mount) => {
               <input type="number" id="fDcCompSerie" min="0" oninput="onFiltroDcComp('serie', this.value)">
             </div>
             <div class="form-group">
-              <label>Cliente (ID)</label>
-              <input type="number" id="fDcCompCliente" min="1" oninput="onFiltroDcComp('cliente', this.value)">
+              <label>Fiscal</label>
+              <select id="fDcCompFiscal" onchange="onFiltroDcComp('fiscal', this.value)">
+                <option value="">Todos</option>
+              </select>
             </div>
           </div>
-          <div class="form-row">
+
+          <!-- Fila 3: rangos Emisión / Vencimiento -->
+          <div class="form-row form-row-4">
+            <div class="form-group">
+              <label>Emi Desde</label>
+              <input type="date" id="fDcCompEmiDesde" onchange="onFiltroDcComp('emi_desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Emi Hasta</label>
+              <input type="date" id="fDcCompEmiHasta" onchange="onFiltroDcComp('emi_hasta', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Vto Desde</label>
+              <input type="date" id="fDcCompVtoDesde" onchange="onFiltroDcComp('vto_desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Vto Hasta</label>
+              <input type="date" id="fDcCompVtoHasta" onchange="onFiltroDcComp('vto_hasta', this.value)">
+            </div>
+          </div>
+
+          <!-- Fila 4: Razón / Celular / Correo -->
+          <div class="form-row form-row-3">
             <div class="form-group">
               <label>Razón social</label>
               <input type="text" id="fDcCompRazon" oninput="onFiltroDcComp('razon', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Celular</label>
+              <input type="text" id="fDcCompCelular" oninput="onFiltroDcComp('celular', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Correo</label>
+              <input type="text" id="fDcCompCorreo" oninput="onFiltroDcComp('correo', this.value)">
+            </div>
+          </div>
+
+          <!-- Fila 5: Cliente (ID) / CUIT (extras del cloud, no estan en legacy) -->
+          <div class="form-row">
+            <div class="form-group">
+              <label>Cliente (ID)</label>
+              <input type="number" id="fDcCompCliente" min="1" oninput="onFiltroDcComp('cliente', this.value)">
             </div>
             <div class="form-group">
               <label>CUIT</label>
               <input type="text" id="fDcCompCuit" oninput="onFiltroDcComp('cuit', this.value)">
             </div>
           </div>
+
+          <!-- Fila 6: rangos Total -->
+          <div class="form-row">
+            <div class="form-group">
+              <label>Total Desde</label>
+              <input type="number" id="fDcCompTotalDesde" step="0.01" placeholder="0"
+                     oninput="onFiltroDcComp('total_desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Total Hasta</label>
+              <input type="number" id="fDcCompTotalHasta" step="0.01" placeholder="999999999"
+                     oninput="onFiltroDcComp('total_hasta', this.value)">
+            </div>
+          </div>
+
+          <!-- Fila 7: Estado (chips) -->
           <div class="form-group">
             <label>Estado del comprobante</label>
             <div id="fDcCompEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
               <button type="button" class="filter-chip active" data-estado="">Todos</button>
             </div>
           </div>
+
+          <!-- Fila 8: Límite / Ordenar por / Dirección -->
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Límite</label>
-              <input type="number" id="fDcCompLimite" min="1" max="1000" value="100" onchange="onFiltroDcComp('limite', this.value)">
+              <input type="number" id="fDcCompLimite" min="1" max="1000" value="50" onchange="onFiltroDcComp('limite', this.value)">
             </div>
             <div class="form-group">
               <label>Ordenar por</label>
@@ -10606,19 +10825,27 @@ route('/datacountcomprobantes', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarDcComp(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionDcComp(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarDcComp(data.id);
+    if (b.dataset.action === 'consultar')          abrirConsultarDcComp(data.id);
+    if (b.dataset.action === 'clonar')             clonarDcComp(data.id);
+    if (b.dataset.action === 'editar')             abrirAltaEdicionDcComp(data.id);
+    if (b.dataset.action === 'eliminar')           eliminarDcComp(data.id);
+    if (b.dataset.action === 'marcar-preparacion') cambiarEstadoDcComp(data.id, '1');
+    if (b.dataset.action === 'marcar-pendiente')   cambiarEstadoDcComp(data.id, '2');
+    if (b.dataset.action === 'marcar-anulado')     cambiarEstadoDcComp(data.id, '4');
   });
 
-  // Clic en fila → consultar; clic en hamburguesa → menú
+  // Clic en fila → consultar; clic en hamburguesa → menú.
+  // Los items del ctx menu se muestran/ocultan segun el estado actual del
+  // comprobante (ver dcCompAplicarGateEstado + DCCOMP_ACCIONES_POR_ESTADO).
   $('#dcCompTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
+      const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#dcCompCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      dcCompAplicarGateEstado(tr?.dataset.estado);
+      abrirCtxMenu($('#dcCompCtxMenu'), r.right - 190, r.bottom + 4, { id, estado: tr?.dataset.estado });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -10629,20 +10856,62 @@ route('/datacountcomprobantes', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#dcCompCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    dcCompAplicarGateEstado(tr.dataset.estado);
+    abrirCtxMenu($('#dcCompCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), estado: tr.dataset.estado });
   });
 
   refrescarBadgeFiltrosDcComp();
-  // Cargamos el catalogo de estados en paralelo con el listado, asi los chips
-  // del modal de filtros ya estan listos cuando el usuario lo abre.
+  // Cargamos catalogo de estados + tipos + fiscales + lookups en paralelo con
+  // el listado, asi los selects del modal ya estan listos cuando el usuario lo abre.
   dcCompCargarCatalogoEstados().then(dcCompPintarChipsEstado).catch(() => {});
+  dcCompCargarCatalogoTipos().then(dcCompPintarSelectTipo).catch(() => {});
+  dcCompCargarCatalogoFiscales().then(dcCompPintarSelectFiscal).catch(() => {});
+  dcCompCargarLookups().then(dcCompPintarSelectsLookups).catch(() => {});
   await cargarDcComp();
 }, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Comprobantes');
+
+function dcCompPintarSelectTipo() {
+  const sel = document.getElementById('fDcCompTipo');
+  if (!sel) return;
+  const items = dcCompTiposCatalogo || [];
+  const cur   = dcCompFiltros.tipo || '';
+  sel.innerHTML =
+    `<option value="">Todos</option>` +
+    items.map((t) => `<option value="${esc(t.valor)}">${esc(t.texto)}</option>`).join('');
+  sel.value = cur;
+}
+
+function dcCompPintarSelectFiscal() {
+  const sel = document.getElementById('fDcCompFiscal');
+  if (!sel) return;
+  const items = dcCompFiscalesCatalogo || [];
+  const cur   = dcCompFiltros.fiscal || '';
+  sel.innerHTML =
+    `<option value="">Todos</option>` +
+    items.map((t) => `<option value="${esc(t.valor)}">${esc(t.texto)}</option>`).join('');
+  sel.value = cur;
+}
+
+function dcCompPintarSelectsLookups() {
+  const lk = dcCompLookups || { talonarios: [], proyectos: [], empresas: [] };
+  const pintar = (id, items, placeholder) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML =
+      `<option value="">${placeholder}</option>` +
+      items.map((r) => `<option value="${esc(r.id)}">${esc(r.nombre)}</option>`).join('');
+    sel.value = cur;
+  };
+  pintar('fDcCompTalonario', lk.talonarios, 'Todos');
+  pintar('fDcCompProyecto',  lk.proyectos,  'Todos');
+  pintar('fDcCompEmpresa',   lk.empresas,   'Todas');
+}
 
 async function cargarDcComp() {
   const tbody = $('#dcCompTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(dcCompFiltros).forEach(([k, v]) => {
@@ -10653,13 +10922,13 @@ async function cargarDcComp() {
     // este cargado, asi `dcCompEstadoBadge` puede mostrar el `texto` y no el
     // codigo crudo en la primera pintada.
     const [data] = await Promise.all([
-      apiGet('api/datacountcomprobantes.php?' + qs.toString()),
+      apiGet('api/datacount_comprobantes.php?' + qs.toString()),
       dcCompCargarCatalogoEstados().catch(() => null),
     ]);
     pintarStatsDcComp(data.stats);
     pintarTablaDcComp(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -10673,19 +10942,18 @@ function pintarStatsDcComp(s) {
 function pintarTablaDcComp(rows) {
   const tbody = $('#dcCompTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin comprobantes.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin comprobantes.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
-    <tr data-id="${c.id}" class="row-clickable">
+    <tr data-id="${c.id}" data-estado="${esc(c.estado ?? '')}" class="row-clickable">
       <td class="td-id">#${esc(c.id)}</td>
-      <td>${esc(c.tipo || '—')}</td>
-      <td style="font-family:monospace">${esc(dcCompFmtComprobante(c.punto, c.serie))}</td>
+      <td>${esc(dcCompFmtTalonario(c.talonario_nombre, c.serie))}</td>
       <td>${esc(c.emision || '—')}</td>
       <td class="td-nombre">${esc(c.razon || '—')}</td>
       <td>${esc(c.cuit || '—')}</td>
       <td style="text-align:right">${c.total != null ? '$ ' + dcCompFmtImporte(c.total) : '—'}</td>
-      <td>${dcCompEstadoBadge(c.estado)}</td>
+      <td style="text-align:center">${dcCompEstadoBadge(c.estado)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
@@ -10699,11 +10967,19 @@ function pintarTablaDcComp(rows) {
 
 // ---- Modal de Filtros ----
 function onFiltroDcComp(key, value) {
-  if (key === 'tipo' || key === 'razon' || key === 'cuit') {
+  const strKeys = ['tipo', 'fiscal', 'razon', 'celular', 'correo', 'cuit',
+                   'emi_desde', 'emi_hasta', 'vto_desde', 'vto_hasta'];
+  const intKeys = ['codigo', 'talonario', 'proyecto', 'empresa',
+                   'punto', 'serie', 'cliente'];
+  const numKeys = ['total_desde', 'total_hasta'];
+  if (strKeys.includes(key)) {
     dcCompFiltros[key] = String(value).trim();
-  } else if (key === 'codigo' || key === 'punto' || key === 'serie' || key === 'cliente') {
+  } else if (intKeys.includes(key)) {
     const v = String(value).trim();
     dcCompFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (numKeys.includes(key)) {
+    const v = String(value).trim();
+    dcCompFiltros[key] = v === '' || isNaN(Number(v)) ? '' : Number(v);
   } else if (key === 'limite') {
     let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
     dcCompFiltros.limite = n;
@@ -10729,16 +11005,28 @@ function refrescarBadgeFiltrosDcComp() {
 
 function sincronizarControlesFiltrosDcComp() {
   const f = dcCompFiltros;
-  $('#fDcCompCodigo').value  = f.codigo;
-  $('#fDcCompTipo').value    = f.tipo;
-  $('#fDcCompPunto').value   = f.punto;
-  $('#fDcCompSerie').value   = f.serie;
-  $('#fDcCompCliente').value = f.cliente;
-  $('#fDcCompRazon').value   = f.razon;
-  $('#fDcCompCuit').value    = f.cuit;
-  $('#fDcCompLimite').value  = f.limite;
-  $('#fDcCompOrderBy').value = f.order_by;
-  $('#fDcCompDir').value     = f.dir;
+  $('#fDcCompCodigo').value     = f.codigo;
+  $('#fDcCompTalonario').value  = f.talonario;
+  $('#fDcCompProyecto').value   = f.proyecto;
+  $('#fDcCompEmpresa').value    = f.empresa;
+  $('#fDcCompTipo').value       = f.tipo;
+  $('#fDcCompPunto').value      = f.punto;
+  $('#fDcCompSerie').value      = f.serie;
+  $('#fDcCompFiscal').value     = f.fiscal;
+  $('#fDcCompEmiDesde').value   = f.emi_desde;
+  $('#fDcCompEmiHasta').value   = f.emi_hasta;
+  $('#fDcCompVtoDesde').value   = f.vto_desde;
+  $('#fDcCompVtoHasta').value   = f.vto_hasta;
+  $('#fDcCompRazon').value      = f.razon;
+  $('#fDcCompCelular').value    = f.celular;
+  $('#fDcCompCorreo').value     = f.correo;
+  $('#fDcCompCliente').value    = f.cliente;
+  $('#fDcCompCuit').value       = f.cuit;
+  $('#fDcCompTotalDesde').value = f.total_desde;
+  $('#fDcCompTotalHasta').value = f.total_hasta;
+  $('#fDcCompLimite').value     = f.limite;
+  $('#fDcCompOrderBy').value    = f.order_by;
+  $('#fDcCompDir').value        = f.dir;
   $$('#fDcCompEstadoChips .filter-chip').forEach((c) => {
     c.classList.toggle('active', (c.dataset.estado || '') === (f.estado || ''));
   });
@@ -10746,12 +11034,16 @@ function sincronizarControlesFiltrosDcComp() {
 
 function abrirModalFiltrosDcComp() {
   dcCompFiltrosSnapshot = { ...dcCompFiltros };
-  // Si el catalogo aun no llego, reintentamos (mantiene visible "Todos" mientras tanto).
-  if (!dcCompEstadosCatalogo) {
-    dcCompCargarCatalogoEstados().then(dcCompPintarChipsEstado).catch(() => {});
-  } else {
-    dcCompPintarChipsEstado();
-  }
+  // Si algun catalogo aun no llego, lo pedimos ahora (deja los selects con
+  // "Todos" mientras tanto). Cada `then` re-pinta y re-aplica el valor actual.
+  if (!dcCompEstadosCatalogo)  dcCompCargarCatalogoEstados().then(dcCompPintarChipsEstado).catch(() => {});
+  else dcCompPintarChipsEstado();
+  if (!dcCompTiposCatalogo)    dcCompCargarCatalogoTipos().then(dcCompPintarSelectTipo).catch(() => {});
+  else dcCompPintarSelectTipo();
+  if (!dcCompFiscalesCatalogo) dcCompCargarCatalogoFiscales().then(dcCompPintarSelectFiscal).catch(() => {});
+  else dcCompPintarSelectFiscal();
+  if (!dcCompLookups)          dcCompCargarLookups().then(dcCompPintarSelectsLookups).catch(() => {});
+  else dcCompPintarSelectsLookups();
   sincronizarControlesFiltrosDcComp();
   $$('#fDcCompEstadoChips .filter-chip').forEach((c) => {
     c.onclick = () => { onFiltroDcComp('estado', c.dataset.estado || ''); sincronizarControlesFiltrosDcComp(); };
@@ -10807,8 +11099,12 @@ async function abrirConsultarDcComp(id) {
   });
 
   try {
-    const c = await apiGet(`api/datacountcomprobantes.php?id=${id}`);
+    const c = await apiGet(`api/datacount_comprobantes.php?id=${id}`);
     $('#modalRoot .modal-body').innerHTML = renderConsultaDcComp(c);
+    // Solo mostramos el boton Editar del footer si el comprobante esta en
+    // Preparacion — los demas estados son read-only desde la UI.
+    const btnEditar = document.querySelector('#modalRoot .modal-footer [data-act="editar"]');
+    if (btnEditar && !dcCompEsEditable(c.estado)) btnEditar.style.display = 'none';
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -10846,6 +11142,25 @@ function renderConsultaDcComp(c) {
       </div>`;
   };
 
+  // Variante para Detalle (respuesta CAE): oculta el texto del error/respuesta
+  // detrás de un "Ver" que abre el modal secundario. Si no hay respuesta,
+  // se comporta como el resto de las líneas (muestra "Sin dato").
+  const lineaCaeRes = (value) => {
+    const empty = value == null || value === '';
+    if (empty) return linea('Detalle', null);
+    const safe = esc(value);
+    return `
+      <div style="display:flex;align-items:baseline;gap:6px;font-size:.9rem;line-height:1.55;padding:3px 0;min-width:0">
+        <span style="color:var(--muted);font-weight:600;flex:0 0 auto">Detalle:</span>
+        <a
+          href="javascript:void(0)"
+          data-full="${safe}"
+          onclick="dcCompVerCaeResCompleto(this.getAttribute('data-full'))"
+          style="color:var(--primary);text-decoration:underline;cursor:pointer"
+        >Ver</a>
+      </div>`;
+  };
+
   // Renglones
   const renglones = c.renglones || [];
   const renglonesHtml = !renglones.length
@@ -10861,11 +11176,6 @@ function renderConsultaDcComp(c) {
         </tr>
       `).join('');
 
-  const seccion = (titulo) => `
-    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
-      ${esc(titulo)}
-    </div>`;
-
   return `
     <!-- Encabezado tipo factura -->
     <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
@@ -10875,6 +11185,12 @@ function renderConsultaDcComp(c) {
           <span style="font-family:monospace;font-size:1.2rem;color:var(--muted)">${esc(numero)}</span>
         </div>
         <div style="font-size:.78rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code></div>
+        <div style="margin-top:10px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap">
+          <div>
+            <span style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Total</span>
+            <div style="font-family:monospace;font-size:1.5rem;font-weight:700;color:var(--primary);line-height:1.1">${money(c.total)}</div>
+          </div>
+        </div>
       </div>
       <div style="text-align:right;min-width:180px">
         <div>${dcCompEstadoBadge(c.estado)}</div>
@@ -10885,95 +11201,188 @@ function renderConsultaDcComp(c) {
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Cliente</div>
-        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;padding:14px 18px">
-          ${linea('Razón social',  c.razon)}
-          ${linea('Domicilio',     c.domicilio)}
-          ${linea('Correo',        c.correo)}
-          ${linea('Celular',       c.celular)}
-          ${linea('CUIT',          c.cuit)}
-          ${linea('Condición IVA', c.condicion)}
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-dccomp-tab="general" onclick="dcCompCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-dccomp-tab="cuerpo" onclick="dcCompCambiarTab('cuerpo')">
+        <i class="fa-solid fa-list"></i> Cuerpo
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-dccomp-tab="detalles" onclick="dcCompCambiarTab('detalles')">
+        <i class="fa-solid fa-note-sticky"></i> Detalles
+      </button>
+    </div>
+
+    <div class="modal-tabpanel" data-dccomp-tab="general">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Datos fiscales</div>
+          <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;padding:14px 18px">
+            ${linea('Proyecto',       c.proyecto_nombre  || (c.proyecto  ? `#${c.proyecto}`  : null))}
+            ${linea('Empresa',        c.empresa_nombre   || (c.empresa   ? `#${c.empresa}`   : null))}
+            ${linea('Talonario',      c.talonario_nombre || (c.talonario ? `#${c.talonario}` : null))}
+            ${linea('CAE Número',     c.caenro)}
+            ${linea('CAE Vencimiento', c.caevto)}
+            ${lineaCaeRes(c.caeres)}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Cliente</div>
+          <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;padding:14px 18px">
+            ${linea('Razón social',  c.razon)}
+            ${linea('Domicilio',     c.domicilio)}
+            ${linea('Correo',        c.correo)}
+            ${linea('Celular',       c.celular)}
+            ${linea('CUIT',          c.cuit)}
+            ${linea('Condición IVA', c.condicion)}
+          </div>
         </div>
       </div>
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Datos fiscales</div>
-        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;padding:14px 18px">
-          ${linea('CAE',            c.caenro)}
-          ${linea('Vto. CAE',       c.caevto)}
-          ${linea('Talonario',      c.talonario)}
-          ${linea('Punto de venta', c.punto)}
-          ${linea('Proyecto',       c.proyecto)}
-          ${linea('Empresa',        c.empresa)}
+    </div>
+
+    <div class="modal-tabpanel" data-dccomp-tab="cuerpo" hidden>
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:48px;text-align:center">#</th>
+              <th style="width:90px;text-align:right">Cant.</th>
+              <th>Detalle</th>
+              <th style="width:120px;text-align:right">Unitario</th>
+              <th style="width:110px;text-align:right">IVA</th>
+              <th style="width:130px;text-align:right">Monto</th>
+            </tr>
+          </thead>
+          <tbody>${renglonesHtml}</tbody>
+        </table>
+      </div>
+
+      <!-- Observaciones + Totales -->
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:end;margin-top:12px">
+        <div class="form-group" style="margin:0">
+          <label>Observaciones</label>
+          <textarea readonly rows="5" style="width:100%;resize:vertical" placeholder="Sin observaciones">${esc(c.observaciones || '')}</textarea>
+        </div>
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border:1px solid var(--border);border-radius:10px;padding:14px 18px">
+          <div style="display:flex;justify-content:space-between;font-size:.9rem;padding:2px 0">
+            <span style="color:var(--muted)">Subtotal</span>
+            <span style="font-family:monospace">${money(c.neto)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:.9rem;padding:2px 0">
+            <span style="color:var(--muted)">IVA</span>
+            <span style="font-family:monospace">${money(c.iva)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding:6px 0 0;border-top:1px solid var(--border);margin-top:6px">
+            <span>Total</span>
+            <span style="font-family:monospace;color:var(--primary)">${money(c.total)}</span>
+          </div>
         </div>
       </div>
     </div>
 
-    ${seccion('Detalle')}
-    <div class="table-card">
-      <table>
-        <thead>
-          <tr>
-            <th style="width:48px;text-align:center">#</th>
-            <th style="width:90px;text-align:right">Cant.</th>
-            <th>Detalle</th>
-            <th style="width:120px;text-align:right">Unitario</th>
-            <th style="width:110px;text-align:right">IVA</th>
-            <th style="width:130px;text-align:right">Monto</th>
-          </tr>
-        </thead>
-        <tbody>${renglonesHtml}</tbody>
-      </table>
+    <div class="modal-tabpanel" data-dccomp-tab="detalles" hidden>
+      <div style="display:grid;grid-template-columns:1fr;gap:12px;align-items:start">
+        ${card('Comentarios',   c.comentarios)}
+      </div>
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Medio de pago', c.medio)}
+        ${card('Asociado',      c.asociado)}
+        ${card('Contrato',      c.contrato)}
+        ${card('Registrado',    fmtFecha(c.registrado))}
+        ${card('Autorizado',    fmtFecha(c.autorizado))}
+      </dl>
     </div>
-
-    <!-- Totales -->
-    <div style="display:flex;justify-content:flex-end">
-      <table style="width:340px;font-size:.9rem">
-        <tr>
-          <td style="padding:6px 12px;color:var(--muted)">Neto</td>
-          <td style="padding:6px 12px;text-align:right;font-family:monospace">${money(c.neto)}</td>
-        </tr>
-        <tr>
-          <td style="padding:6px 12px;color:var(--muted)">IVA</td>
-          <td style="padding:6px 12px;text-align:right;font-family:monospace">${money(c.iva)}</td>
-        </tr>
-        <tr style="border-top:1px solid var(--border)">
-          <td style="padding:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em">Total</td>
-          <td style="padding:12px;text-align:right;font-weight:700;font-size:1.2rem;font-family:monospace;color:var(--primary)">${money(c.total)}</td>
-        </tr>
-      </table>
-    </div>
-
-    ${seccion('Notas y referencias')}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
-      ${card('Observaciones', c.observaciones)}
-      ${card('Comentarios',   c.comentarios)}
-    </div>
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Medio de pago', c.medio)}
-      ${card('Asociado',      c.asociado)}
-      ${card('Contrato',      c.contrato)}
-      ${card('Registrado',    fmtFecha(c.registrado))}
-      ${card('Autorizado',    fmtFecha(c.autorizado))}
-      ${card('Respuesta CAE', c.caeres, true)}
-    </dl>
   `;
 }
 
+function dcCompCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-dccomp-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.dccompTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-dccomp-tab]').forEach((p) => {
+    p.hidden = p.dataset.dccompTab !== tab;
+  });
+}
+window.dcCompCambiarTab = dcCompCambiarTab;
+
+// Overlay secundario para ver la respuesta CAE completa cuando el texto no
+// cabe en la línea de "Datos fiscales". Se monta aparte de #modalRoot para no
+// destruir el modal de consulta que está debajo.
+function dcCompVerCaeResCompleto(txt) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999';
+  wrap.innerHTML = `
+    <div class="modal" style="width:min(680px,92vw)">
+      <div class="modal-header">
+        <div class="modal-title">Respuesta CAE</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <textarea readonly style="width:100%;min-height:240px;font-family:monospace;font-size:.85rem;background:color-mix(in srgb, var(--surface) 90%, #000);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;resize:vertical">${esc(txt)}</textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target === wrap || ev.target.closest('[data-act="close"]')) wrap.remove();
+  });
+}
+window.dcCompVerCaeResCompleto = dcCompVerCaeResCompleto;
+
 // ---- Modal Alta / Edición ----
+// Layout con tabs "General" / "Líneas". La pestaña General agrupa el resto de
+// los campos (Comprobante / Cliente / Fiscal + CAE). La pestaña Líneas es un
+// mini-editor de renglones — cada línea guarda cantidad, detalle, alícuota
+// IVA y unitario; el subtotal (cant*unit) y los totales del comprobante
+// (Neto = Σ subtot, IVA = Σ subtot*alic/100, Total = Neto+IVA) se
+// recalculan client-side en cada input y también se recomputan server-side
+// al guardar para que la UI no pueda mandar totales inconsistentes.
+
+// Alicuotas IVA disponibles en el <select> de cada línea (typico AFIP AR).
+const DC_COMP_IVA_ALICUOTAS = ['0', '2.5', '5', '10.5', '21', '27'];
+
+// Defaults precargados al abrir "Nuevo comprobante": fecha de emision = hoy,
+// fecha de vencimiento = hoy + 7 dias, condicion IVA = Consumidor Final ('CF').
+// Devolvemos strings YYYY-MM-DD en zona horaria local (no UTC —
+// toISOString().slice(0,10) daria un dia distinto para clientes al oeste del
+// meridiano).
+function dcCompDefaultsNuevo() {
+  const isoLocal = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${dd}`;
+  };
+  const hoy = new Date();
+  const vto = new Date(hoy.getTime() + 7 * 24 * 3600 * 1000);
+  return {
+    emision:     isoLocal(hoy),
+    vencimiento: isoLocal(vto),
+    condicion:   'CF',
+  };
+}
+
 async function abrirAltaEdicionDcComp(id) {
   const esEdicion = id != null;
+  const defaults  = esEdicion ? {} : dcCompDefaultsNuevo();
   openModal(`
-    <div class="modal modal-wide">
+    <div class="modal modal-wide" style="width:min(90vw,1100px);max-width:1100px">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar comprobante <span class="modal-subtitle">#${id}</span>` : 'Nuevo comprobante'}</div>
+        <div class="modal-title">
+          <i class="fa-solid fa-file-invoice"></i>
+          ${esEdicion ? `Editar comprobante <span class="modal-subtitle">#${id}</span>` : 'Nuevo comprobante'}
+        </div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
         ${esEdicion
           ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formDcCompHtml({})}
+          : formDcCompHtml(defaults)}
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
@@ -10982,220 +11391,331 @@ async function abrirAltaEdicionDcComp(id) {
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const c = await apiGet(`api/datacountcomprobantes.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formDcCompHtml(c);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  // Aseguramos que los catalogos de talonarios/proyectos/empresas + condicion IVA
+  // esten cargados antes de pintar el form — si no, los <select> quedan vacios.
+  const [comp] = await Promise.all([
+    esEdicion ? apiGet(`api/datacount_comprobantes.php?id=${id}`).catch((e) => ({ __err: e.message })) : Promise.resolve(defaults),
+    dcCompLookups             ? null : dcCompCargarLookups().catch(() => null),
+    dcCompCondicionesCatalogo ? null : dcCompCargarCatalogoCondiciones().catch(() => null),
+  ]);
+
+  if (comp && comp.__err) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(comp.__err)}</div>`;
+  } else {
+    $('#modalRoot .modal-body').innerHTML = formDcCompHtml(comp || defaults);
+    dcCompRecalcularTotales();
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
     const a = ev.target.closest('[data-act]');
     if (!a) return;
-    if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarDcComp(id, a);
+    if (a.dataset.act === 'close')       closeModal();
+    if (a.dataset.act === 'guardar')     await guardarDcComp(id, a);
+    if (a.dataset.act === 'add-line')    dcCompAgregarLinea();
+    if (a.dataset.act === 'del-line') {
+      const tr = a.closest('tr[data-line]');
+      if (tr) { tr.remove(); dcCompRecalcularTotales(); }
+    }
+  });
+
+  // Recalcular totales al tipear en cualquier input de la tabla de lineas.
+  $('#modalRoot').addEventListener('input', (ev) => {
+    if (ev.target.closest('#dcLineasBody')) dcCompRecalcularTotales();
+  });
+  $('#modalRoot').addEventListener('change', (ev) => {
+    if (ev.target.closest('#dcLineasBody')) dcCompRecalcularTotales();
+    // Cascada: cambiar proyecto o empresa re-pinta el <select> de talonarios
+    // filtrado por ese proyecto+empresa. Si el talonario actual sigue siendo
+    // valido para la nueva combinacion se preserva la seleccion; si no, queda
+    // en blanco. El <select> queda `disabled` hasta que ambos estén elegidos.
+    if (ev.target.id === 'dcProyecto' || ev.target.id === 'dcEmpresa') {
+      const sel = document.getElementById('dcTalonario');
+      if (!sel) return;
+      const proyectoId = document.getElementById('dcProyecto')?.value || '';
+      const empresaId  = document.getElementById('dcEmpresa')?.value  || '';
+      sel.innerHTML = dcCompOpcionesTalonarios(sel.value, proyectoId, empresaId);
+      sel.disabled  = !proyectoId || !empresaId;
+    }
   });
 }
 
+function dcCompOpcionesLookup(items, actual, placeholder) {
+  const cur = actual == null || actual === '' ? '' : String(actual);
+  const arr = items || [];
+  return `<option value="">${esc(placeholder)}</option>` +
+    arr.map((r) => `<option value="${esc(r.id)}"${cur === String(r.id) ? ' selected' : ''}>${esc(r.nombre)}</option>`).join('');
+}
+
+// Options del <select> Talonario. Se cascada con Proyecto + Empresa: hasta que
+// no estén ambos elegidos el <select> se pinta con un placeholder guia (y el
+// caller lo deja `disabled`); una vez elegidos se listan solo los talonarios
+// que matcheen exactamente proyecto+empresa (los talonarios traen ambos ids
+// en el payload de `?lookups=1`).
+function dcCompOpcionesTalonarios(actual, proyectoId, empresaId) {
+  const sinProyecto = proyectoId == null || proyectoId === '';
+  const sinEmpresa  = empresaId  == null || empresaId  === '';
+  if (sinProyecto && sinEmpresa) {
+    return `<option value="">— Elegí un proyecto y una empresa primero —</option>`;
+  }
+  if (sinProyecto) {
+    return `<option value="">— Elegí un proyecto primero —</option>`;
+  }
+  if (sinEmpresa) {
+    return `<option value="">— Elegí una empresa primero —</option>`;
+  }
+  const items = (dcCompLookups?.talonarios || []).filter(
+    (t) => String(t.proyecto ?? '') === String(proyectoId)
+        && String(t.empresa  ?? '') === String(empresaId),
+  );
+  return dcCompOpcionesLookup(items, actual, '— Seleccionar —');
+}
+
+// Options del <select> Condicion IVA (catalogo `datacount_comprobante_condicion`
+// de la tabla `estados`). Si el catalogo aun no cargo mostramos solo el
+// placeholder para no confundir al operador con opciones inventadas — el
+// modal lo precarga en abrirAltaEdicionDcComp asi que en la practica siempre
+// esta listo antes de pintar.
+function dcCompOpcionesCondicion(actual) {
+  const items = dcCompCondicionesCatalogo || [];
+  const cur   = actual == null ? '' : String(actual);
+  return `<option value=""${cur === '' ? ' selected' : ''}>— Seleccionar —</option>` +
+    items.map((o) => `<option value="${esc(o.valor)}"${cur === String(o.valor) ? ' selected' : ''}>${esc(o.texto)}</option>`).join('');
+}
+
 function formDcCompHtml(c) {
-  const v   = (k) => esc(c?.[k] ?? '');
-  const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
-  // datetime-local quiere 'YYYY-MM-DDTHH:MM'
-  const dt  = (k) => {
-    const raw = c?.[k];
-    if (!raw) return '';
-    return esc(String(raw).replace(' ', 'T').slice(0, 16));
-  };
+  const v  = (k) => esc(c?.[k] ?? '');
+  const lk = dcCompLookups || { talonarios: [], proyectos: [], empresas: [] };
+
+  // Renglones existentes (o una linea vacia inicial en alta).
+  const renglones = Array.isArray(c?.renglones) && c.renglones.length
+    ? c.renglones
+    : [{ cantidad: 1, detalle: '', iva: 21, unitario: 0 }];
+
   return `
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Tipo</label>
-        <input type="text" id="dcTipo" maxlength="2" value="${v('tipo')}">
-      </div>
-      <div class="form-group">
-        <label>Punto de venta</label>
-        <input type="number" id="dcPunto" min="0" value="${v('punto')}">
-      </div>
-      <div class="form-group">
-        <label>Número</label>
-        <input type="number" id="dcSerie" min="0" value="${v('serie')}">
-      </div>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-dccomp-tab="general" onclick="dcCompCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-dccomp-tab="lineas" onclick="dcCompCambiarTab('lineas')">
+        <i class="fa-solid fa-list"></i> Líneas
+      </button>
     </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Fiscal</label>
-        <input type="text" id="dcFiscal" maxlength="1" value="${v('fiscal')}">
+
+    <!-- =================== TAB GENERAL =================== -->
+    <!-- Los campos tipo/punto/fiscal los autocompleta el backend en el alta
+         desde el talonario elegido (ver handleCreate en
+         cloud/api/datacount_comprobantes.php). Los campos serie/caenro/
+         caevto/caeres/autorizado los completa el cron de autorizacion contra
+         AFIP (jobs/datacount_comprobantes_autorizar.php). Los campos estado/
+         cliente/asociado/contrato/medio los completa el sistema. El PUT usa
+         partial-update, asi que al no mandarlos no se pisan. -->
+    <div class="modal-tabpanel" data-dccomp-tab="general">
+      <!-- Sección: Comprobante -->
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:4px">Comprobante</div>
+      <div class="form-row form-row-3">
+        <div class="form-group">
+          <label>Proyecto</label>
+          <select id="dcProyecto">${dcCompOpcionesLookup(lk.proyectos, c?.proyecto, '— Seleccionar —')}</select>
+        </div>
+        <div class="form-group">
+          <label>Empresa</label>
+          <select id="dcEmpresa">${dcCompOpcionesLookup(lk.empresas, c?.empresa, '— Seleccionar —')}</select>
+        </div>
+        <div class="form-group">
+          <label>Talonario</label>
+          <select id="dcTalonario"${(!c?.proyecto || !c?.empresa) ? ' disabled' : ''}>${dcCompOpcionesTalonarios(c?.talonario, c?.proyecto, c?.empresa)}</select>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="dcEstado">
-          <option value=""  ${sel('estado','')}>—</option>
-          <option value="A" ${sel('estado','A')}>Autorizado</option>
-          <option value="P" ${sel('estado','P')}>Pendiente</option>
-          <option value="C" ${sel('estado','C')}>Cancelado</option>
-          <option value="B" ${sel('estado','B')}>Baja</option>
-        </select>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Fecha de emisión</label>
+          <input type="date" id="dcEmision" value="${v('emision')}">
+        </div>
+        <div class="form-group">
+          <label>Fecha de vencimiento</label>
+          <input type="date" id="dcVencimiento" value="${v('vencimiento')}">
+        </div>
       </div>
+
+      <!-- Sección: Cliente -->
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:8px">Cliente</div>
       <div class="form-group">
-        <label>Talonario</label>
-        <input type="number" id="dcTalonario" min="1" value="${v('talonario')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Proyecto</label>
-        <input type="number" id="dcProyecto" min="1" value="${v('proyecto')}">
-      </div>
-      <div class="form-group">
-        <label>Empresa</label>
-        <input type="number" id="dcEmpresa" min="1" value="${v('empresa')}">
-      </div>
-      <div class="form-group">
-        <label>Medio</label>
-        <input type="number" id="dcMedio" min="1" value="${v('medio')}">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Emisión</label>
-        <input type="date" id="dcEmision" value="${v('emision')}">
-      </div>
-      <div class="form-group">
-        <label>Vencimiento</label>
-        <input type="date" id="dcVencimiento" value="${v('vencimiento')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Asociado</label>
-        <input type="number" id="dcAsociado" min="1" value="${v('asociado')}">
-      </div>
-      <div class="form-group">
-        <label>Contrato</label>
-        <input type="number" id="dcContrato" min="1" value="${v('contrato')}">
-      </div>
-      <div class="form-group">
-        <label>Cliente (ID)</label>
-        <input type="number" id="dcCliente" min="1" value="${v('cliente')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Razón social</label>
-      <input type="text" id="dcRazon" maxlength="250" value="${v('razon')}">
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Condición IVA</label>
-        <input type="text" id="dcCondicion" maxlength="2" value="${v('condicion')}">
-      </div>
-      <div class="form-group">
-        <label>CUIT</label>
-        <input type="text" id="dcCuit" maxlength="50" value="${v('cuit')}">
-      </div>
-      <div class="form-group">
-        <label>Correo</label>
-        <input type="email" id="dcCorreo" maxlength="100" value="${v('correo')}">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Celular</label>
-        <input type="text" id="dcCelular" maxlength="100" value="${v('celular')}">
+        <label>Razón social</label>
+        <input type="text" id="dcRazon" maxlength="250" value="${v('razon')}" placeholder="Razón social del cliente">
       </div>
       <div class="form-group">
         <label>Domicilio</label>
-        <input type="text" id="dcDomicilio" maxlength="250" value="${v('domicilio')}">
+        <input type="text" id="dcDomicilio" maxlength="250" value="${v('domicilio')}" placeholder="Calle, número, localidad">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Correo</label>
+          <input type="email" id="dcCorreo" maxlength="100" value="${v('correo')}" placeholder="cliente@ejemplo.com">
+        </div>
+        <div class="form-group">
+          <label>Celular</label>
+          <input type="text" id="dcCelular" maxlength="100" value="${v('celular')}" placeholder="+54 11 …">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>CUIT</label>
+          <input type="text" id="dcCuit" maxlength="50" value="${v('cuit')}" placeholder="30-12345678-9">
+        </div>
+        <div class="form-group">
+          <label>Condición frente al IVA</label>
+          <select id="dcCondicion">${dcCompOpcionesCondicion(c?.condicion)}</select>
+        </div>
       </div>
     </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Neto</label>
-        <input type="number" id="dcNeto" step="0.01" value="${v('neto')}">
+
+    <!-- =================== TAB LÍNEAS =================== -->
+    <div class="modal-tabpanel" data-dccomp-tab="lineas" hidden>
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:90px">Cant.</th>
+              <th>Descripción</th>
+              <th style="width:110px">IVA</th>
+              <th style="width:130px;text-align:right">Unitario</th>
+              <th style="width:130px;text-align:right">Subtotal</th>
+              <th style="width:44px"></th>
+            </tr>
+          </thead>
+          <tbody id="dcLineasBody">
+            ${renglones.map((r) => dcCompLineaHtml(r)).join('')}
+          </tbody>
+        </table>
       </div>
-      <div class="form-group">
-        <label>IVA</label>
-        <input type="number" id="dcIva" step="0.01" value="${v('iva')}">
+
+      <div>
+        <button type="button" class="btn btn-secondary btn-sm" data-act="add-line">
+          <i class="fa-solid fa-plus"></i> Agregar línea
+        </button>
       </div>
-      <div class="form-group">
-        <label>Total</label>
-        <input type="number" id="dcTotal" step="0.01" value="${v('total')}">
+
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:end">
+        <div class="form-group" style="margin:0">
+          <label>Observaciones</label>
+          <textarea id="dcObservaciones" maxlength="2000" rows="5" placeholder="Observaciones para el cliente">${v('observaciones')}</textarea>
+        </div>
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border:1px solid var(--border);border-radius:10px;padding:14px 18px">
+          <div style="display:flex;justify-content:space-between;font-size:.9rem;padding:2px 0">
+            <span style="color:var(--muted)">Subtotal</span>
+            <span style="font-family:monospace" id="dcTotNeto">0,00</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:.9rem;padding:2px 0">
+            <span style="color:var(--muted)">IVA</span>
+            <span style="font-family:monospace" id="dcTotIva">0,00</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding:6px 0 0;border-top:1px solid var(--border);margin-top:6px">
+            <span>Total</span>
+            <span style="font-family:monospace;color:var(--primary)" id="dcTotTotal">0,00</span>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>CAE (Nº)</label>
-        <input type="text" id="dcCaenro" maxlength="50" value="${v('caenro')}">
-      </div>
-      <div class="form-group">
-        <label>CAE (Vto.)</label>
-        <input type="text" id="dcCaevto" maxlength="50" value="${v('caevto')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Respuesta CAE</label>
-      <textarea id="dcCaeres">${v('caeres')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Observaciones</label>
-      <textarea id="dcObservaciones" maxlength="2000">${v('observaciones')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Comentarios</label>
-      <textarea id="dcComentarios" maxlength="2000">${v('comentarios')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Autorizado</label>
-      <input type="datetime-local" id="dcAutorizado" value="${dt('autorizado')}">
-    </div>
+
     <div class="field-error" id="dcError" style="display:none"></div>
   `;
+}
+
+function dcCompLineaHtml(r) {
+  const cant = r?.cantidad != null && r?.cantidad !== '' ? Number(r.cantidad) : 1;
+  const unit = r?.unitario != null && r?.unitario !== '' ? Number(r.unitario) : 0;
+  const ali  = r?.iva      != null && r?.iva      !== '' ? Number(r.iva)      : 21;
+  const det  = r?.detalle ?? '';
+  const subtotal = (cant * unit).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const opts = DC_COMP_IVA_ALICUOTAS.map((a) => {
+    const num = Number(a);
+    const sel = num === ali ? ' selected' : '';
+    return `<option value="${a}"${sel}>${num.toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</option>`;
+  }).join('');
+  return `
+    <tr data-line>
+      <td><input type="number" step="1" min="0" class="dc-line-cant" value="${esc(cant)}" style="width:100%"></td>
+      <td><input type="text" class="dc-line-det" value="${esc(det)}" placeholder="Descripción" style="width:100%"></td>
+      <td><select class="dc-line-iva">${opts}</select></td>
+      <td><input type="number" step="0.01" min="0" class="dc-line-unit" value="${esc(unit)}" style="width:100%;text-align:right"></td>
+      <td class="dc-line-sub" style="text-align:right;font-family:monospace">${subtotal}</td>
+      <td style="text-align:center">
+        <button type="button" class="btn-icon-sm" data-act="del-line" title="Eliminar línea" style="color:var(--danger)">
+          <i class="fa-solid fa-trash"></i>
+        </button>
+      </td>
+    </tr>`;
+}
+
+function dcCompAgregarLinea() {
+  const tbody = document.getElementById('dcLineasBody');
+  if (!tbody) return;
+  tbody.insertAdjacentHTML('beforeend', dcCompLineaHtml({ cantidad: 1, iva: 21, unitario: 0, detalle: '' }));
+  dcCompRecalcularTotales();
+}
+
+function dcCompRecalcularTotales() {
+  const rows = document.querySelectorAll('#dcLineasBody tr[data-line]');
+  const fmt = (n) => Number(n).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  let neto = 0, iva = 0;
+  rows.forEach((tr) => {
+    const cant = Number(tr.querySelector('.dc-line-cant')?.value || 0);
+    const unit = Number(tr.querySelector('.dc-line-unit')?.value || 0);
+    const ali  = Number(tr.querySelector('.dc-line-iva')?.value  || 0);
+    const sub  = cant * unit;
+    const ivaL = sub * ali / 100;
+    neto += sub;
+    iva  += ivaL;
+    const cell = tr.querySelector('.dc-line-sub');
+    if (cell) cell.textContent = fmt(sub);
+  });
+  const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = fmt(val); };
+  setTxt('dcTotNeto',  neto);
+  setTxt('dcTotIva',   iva);
+  setTxt('dcTotTotal', neto + iva);
 }
 
 async function guardarDcComp(id, btn) {
   const err = $('#dcError');
   err.style.display = 'none';
 
+  const renglones = Array.from(document.querySelectorAll('#dcLineasBody tr[data-line]')).map((tr, i) => ({
+    orden:    i + 1,
+    cantidad: tr.querySelector('.dc-line-cant')?.value || '0',
+    detalle:  tr.querySelector('.dc-line-det')?.value  || '',
+    iva:      tr.querySelector('.dc-line-iva')?.value  || '0',
+    unitario: tr.querySelector('.dc-line-unit')?.value || '0',
+  }));
+
+  // Solo mandamos los campos que el modal expone. Los que quedan fuera
+  // (tipo/fiscal/punto/serie/estado/cliente/caenro/caevto/caeres/autorizado/
+  // asociado/contrato/medio/comentarios) los rellena el sistema y el PUT
+  // partial-update del backend deja intactas sus columnas al no recibirlas.
   const payload = {
-    tipo:          $('#dcTipo').value.trim(),
-    punto:         $('#dcPunto').value,
-    serie:         $('#dcSerie').value,
-    fiscal:        $('#dcFiscal').value.trim(),
-    estado:        $('#dcEstado').value,
     talonario:     $('#dcTalonario').value,
     proyecto:      $('#dcProyecto').value,
     empresa:       $('#dcEmpresa').value,
-    medio:         $('#dcMedio').value,
     emision:       $('#dcEmision').value || null,
     vencimiento:   $('#dcVencimiento').value || null,
-    asociado:      $('#dcAsociado').value,
-    contrato:      $('#dcContrato').value,
-    cliente:       $('#dcCliente').value,
     razon:         $('#dcRazon').value.trim(),
     condicion:     $('#dcCondicion').value.trim(),
     cuit:          $('#dcCuit').value.trim(),
     correo:        $('#dcCorreo').value.trim(),
     celular:       $('#dcCelular').value.trim(),
     domicilio:     $('#dcDomicilio').value.trim(),
-    neto:          $('#dcNeto').value,
-    iva:           $('#dcIva').value,
-    total:         $('#dcTotal').value,
-    caenro:        $('#dcCaenro').value.trim(),
-    caevto:        $('#dcCaevto').value.trim(),
-    caeres:        $('#dcCaeres').value,
     observaciones: $('#dcObservaciones').value,
-    comentarios:   $('#dcComentarios').value,
-    autorizado:    $('#dcAutorizado').value || null,
+    renglones,
   };
 
   btn.disabled = true;
   try {
     if (id == null) {
-      await apiSend('api/datacountcomprobantes.php', 'POST', payload);
+      await apiSend('api/datacount_comprobantes.php', 'POST', payload);
       toast('Comprobante creado.');
     } else {
-      await apiSend(`api/datacountcomprobantes.php?id=${id}`, 'PUT', payload);
+      await apiSend(`api/datacount_comprobantes.php?id=${id}`, 'PUT', payload);
       toast('Comprobante actualizado.');
     }
     closeModal();
@@ -11215,8 +11735,50 @@ async function eliminarDcComp(id) {
   });
   if (!ok) return;
   try {
-    await apiSend(`api/datacountcomprobantes.php?id=${id}`, 'DELETE');
+    await apiSend(`api/datacount_comprobantes.php?id=${id}`, 'DELETE');
     toast('Comprobante eliminado.');
+    cargarDcComp();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Clona el comprobante en el server (POST ?action=clonar). El backend crea un
+// nuevo registro en estado Preparacion copiando atributos comerciales y
+// renglones, y descartando la vida AFIP del original (caenro/caevto/caeres/
+// autorizado). Recarga el listado para mostrar el nuevo comprobante arriba.
+async function clonarDcComp(id) {
+  const ok = await confirmar({
+    title:       'Clonar comprobante',
+    message:     `Se creará un nuevo comprobante en estado Preparación copiando los datos del comprobante #${id}.`,
+    confirmText: 'Clonar',
+  });
+  if (!ok) return;
+  try {
+    const r = await apiSend(`api/datacount_comprobantes.php?id=${id}&action=clonar`, 'POST');
+    toast(`Comprobante clonado como #${r?.id ?? '?'}.`);
+    cargarDcComp();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Dispara la transicion de estado contra el endpoint PUT ?action=estado. El
+// backend valida la transicion contra la maquina DC_TRANSICIONES_ESTADO y
+// rechaza saltos no permitidos (409). Recarga el listado para reflejar el cambio.
+async function cambiarEstadoDcComp(id, nuevo) {
+  const labels = { '1': 'preparación', '2': 'pendiente', '3': 'autorizado', '0': 'rechazado', '4': 'anulado' };
+  const label = labels[nuevo] || nuevo;
+  const ok = await confirmar({
+    title:       `Marcar como ${label}`,
+    message:     `Se marcará el comprobante #${id} como ${label}.`,
+    confirmText: 'Aceptar',
+    danger:      nuevo === '4',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datacount_comprobantes.php?id=${id}&action=estado`, 'PUT', { estado: nuevo });
+    toast(`Comprobante marcado como ${label}.`);
     cargarDcComp();
   } catch (e) {
     toast(e.message, { error: true });
@@ -11327,7 +11889,7 @@ function dcPagoFmtPeriodo(v) {
   return s.length >= 7 ? s.slice(0, 7) : s;
 }
 
-route('/datacountpagos', async (mount) => {
+route('/datacount_pagos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -11573,7 +12135,7 @@ async function cargarDcPago() {
   });
   try {
     const [data] = await Promise.all([
-      apiGet('api/datacountpagos.php?' + qs.toString()),
+      apiGet('api/datacount_pagos.php?' + qs.toString()),
       dcPagoCargarCatalogosEstados().catch(() => null),
     ]);
     pintarStatsDcPago(data.stats);
@@ -11877,7 +12439,7 @@ async function abrirConsultarDcPago(id) {
 
   try {
     const [p] = await Promise.all([
-      apiGet(`api/datacountpagos.php?id=${id}`),
+      apiGet(`api/datacount_pagos.php?id=${id}`),
       dcPagoCargarCatalogosEstados().catch(() => null),
     ]);
     dcPagoAdjuntosCache = p.adjuntos || [];
@@ -12034,7 +12596,7 @@ async function abrirAltaEdicionDcPago(id) {
     // Nos aseguramos de tener los catalogos antes de renderizar el form (los
     // selects de tipo/moneda/estado/clasificado dependen de ellos).
     await dcPagoCargarCatalogosEstados().catch(() => null);
-    const datos = esEdicion ? await apiGet(`api/datacountpagos.php?id=${id}`) : {};
+    const datos = esEdicion ? await apiGet(`api/datacount_pagos.php?id=${id}`) : {};
     const hintAdj = esEdicion
       ? 'Este pago no tiene adjuntos.'
       : 'Los adjuntos se pueden cargar una vez guardado el pago.';
@@ -12214,10 +12776,10 @@ async function guardarDcPago(id, btn) {
   btn.disabled = true;
   try {
     if (id == null) {
-      await apiSend('api/datacountpagos.php', 'POST', payload);
+      await apiSend('api/datacount_pagos.php', 'POST', payload);
       toast('Pago creado.');
     } else {
-      await apiSend(`api/datacountpagos.php?id=${id}`, 'PUT', payload);
+      await apiSend(`api/datacount_pagos.php?id=${id}`, 'PUT', payload);
       toast('Pago actualizado.');
     }
     closeModal();
@@ -12237,7 +12799,7 @@ async function eliminarDcPago(id) {
   });
   if (!ok) return;
   try {
-    await apiSend(`api/datacountpagos.php?id=${id}`, 'DELETE');
+    await apiSend(`api/datacount_pagos.php?id=${id}`, 'DELETE');
     toast('Pago eliminado.');
     cargarDcPago();
   } catch (e) {
@@ -12249,7 +12811,7 @@ async function eliminarDcPago(id) {
 // El motor de facturación corre por fuera de esta app (proceso externo); lee el
 // parámetro `datacount.motor` de la tabla `parametros` para saber si tiene que
 // trabajar. Esta vista solo prende/apaga ese parámetro y muestra el log que el
-// motor va dejando. El log todavía no tiene fuente real (ver api/datacountfacturacion.php).
+// motor va dejando. El log todavía no tiene fuente real (ver api/datacount_facturacion.php).
 
 const FACT_REFRESH_MS = 1000;
 let factPollTimer  = null;
@@ -12280,14 +12842,14 @@ function factSetMotorUI(motor) {
 
 async function factCargarStatus() {
   try {
-    const s = await apiGet('api/datacountfacturacion.php?action=status');
+    const s = await apiGet('api/datacount_facturacion.php?action=status');
     factSetMotorUI(s.motor);
   } catch (e) { /* silencioso: es polling */ }
 }
 
 async function factCargarLog() {
   try {
-    const d = await apiGet('api/datacountfacturacion.php?action=log&since=' + factLastLogId);
+    const d = await apiGet('api/datacount_facturacion.php?action=log&since=' + factLastLogId);
     if (!Array.isArray(d.items) || d.items.length === 0) return;
     factAppendLineas(d.items);
     if (d.last_id) factLastLogId = Math.max(factLastLogId, Number(d.last_id) || 0);
@@ -12317,7 +12879,7 @@ async function factToggleMotor(ev) {
   const anterior = factMotorPrev;
   factSetMotorUI(nuevo); // optimista
   try {
-    const r = await apiSend('api/datacountfacturacion.php?action=motor', 'POST', { valor: nuevo });
+    const r = await apiSend('api/datacount_facturacion.php?action=motor', 'POST', { valor: nuevo });
     factSetMotorUI(r.motor);
     toast(r.motor === '1' ? 'Motor de facturación encendido.' : 'Motor de facturación apagado.');
   } catch (e) {
@@ -12326,7 +12888,7 @@ async function factToggleMotor(ev) {
   }
 }
 
-route('/datacountfacturacion', async (mount) => {
+route('/datacount_facturacion', async (mount) => {
   factDetener();
   factLastLogId = 0;
   factMotorPrev = null;
@@ -12404,7 +12966,7 @@ let dcEmpresasCache = [];
 async function dcGetEmpresas(force = false) {
   if (!force && dcEmpresasCache.length) return dcEmpresasCache;
   try {
-    const d = await apiGet('api/datacountempresas.php?limite=1000&orden=nombre&dir=asc');
+    const d = await apiGet('api/datacount_empresas.php?limite=1000&orden=nombre&dir=asc');
     dcEmpresasCache = d.items || [];
   } catch {
     dcEmpresasCache = [];
@@ -12447,7 +13009,7 @@ async function dcAsegurarEmpresaId() {
 // "+ Nueva cuenta" abre un formulario que hereda tipo/naturaleza del padre
 // si se pasa parentId.
 
-const DCC_API = 'api/datacountcuentas.php';
+const DCC_API = 'api/datacount_cuentas.php';
 const DCC_TIPO_LABEL = {
   activo:     'Activo',
   pasivo:     'Pasivo',
@@ -12474,7 +13036,7 @@ function dccFmtMoney(n) {
   return Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-route('/datacountcuentas', async (mount) => {
+route('/datacount_cuentas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -13040,7 +13602,7 @@ async function eliminarDcc(id) {
 // inicio de actividades). Listado + toolbar mínima con buscador rápido +
 // modal de filtros según ABM.md.
 
-const DCE_API = 'api/datacountempresas.php';
+const DCE_API = 'api/datacount_empresas.php';
 
 const DCE_CONDICIONES = [
   { v: 'responsable_inscripto', label: 'Responsable Inscripto', badge: 'badge-info'    },
@@ -13108,7 +13670,7 @@ function dceCondicionBadge(v) {
   return `<span class="badge ${c.badge}">${esc(c.label)}</span>`;
 }
 
-// Mirror JS de dceSlugify() (cloud/api/datacountempresas.php).
+// Mirror JS de dceSlugify() (cloud/api/datacount_empresas.php).
 // Normaliza a kebab-case sin acentos, para autocompletar el input `slug`
 // mientras el operador tipea el nombre.
 function dceSlugify(s) {
@@ -13126,7 +13688,7 @@ function dceSlugify(s) {
   return out.slice(0, 40);
 }
 
-route('/datacountempresas', async (mount) => {
+route('/datacount_empresas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -13773,7 +14335,7 @@ async function eliminarDce(id) {
 // `datacount_recurrentes`); el listado filtra por la empresa activa del
 // contexto compartido de Datacount.
 
-const DCA_API = 'api/datacountasientos.php';
+const DCA_API = 'api/datacount_asientos.php';
 
 let dcaAsientos           = [];
 let dcaBusqueda           = '';
@@ -13804,7 +14366,7 @@ function dcaFmtFechaAR(iso) {
   return `${p[2]}/${p[1]}/${p[0]}`;
 }
 
-route('/datacountasientos', async (mount) => {
+route('/datacount_asientos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -14622,7 +15184,7 @@ function dcaRenderArbolPicker() {
 // previstos de ingreso/egreso y flag `activo`. Listado + toolbar con
 // buscador rápido + modal de filtros según ABM.md.
 
-const DCR_API = 'api/datacountrecurrentes.php';
+const DCR_API = 'api/datacount_recurrentes.php';
 
 let dcrItems             = [];
 let dcrTodasCuentasCache = [];       // todas las cuentas (con agrupaciones) — para el árbol
@@ -14653,7 +15215,7 @@ function dcrFmtMoney(n) {
 async function dcrCargarCuentasEmpresa(empresaId) {
   if (dcrTodasCuentasCache.length && dcrCuentasCacheEmp === empresaId) return dcrCuentasCache;
   try {
-    const d = await apiGet(`api/datacountcuentas.php?empresa_id=${empresaId}`);
+    const d = await apiGet(`api/datacount_cuentas.php?empresa_id=${empresaId}`);
     dcrTodasCuentasCache = d.items || [];
     dcrCuentasCache = dcrTodasCuentasCache.filter((c) =>
       Number(c.imputable) === 1 && Number(c.activa) === 1);
@@ -14666,7 +15228,7 @@ async function dcrCargarCuentasEmpresa(empresaId) {
   return dcrCuentasCache;
 }
 
-route('/datacountrecurrentes', async (mount) => {
+route('/datacount_recurrentes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -15480,7 +16042,7 @@ async function eliminarDcr(id) {
 // observaciones). Listado + toolbar con buscador rápido + modal de filtros según
 // ABM.md.
 
-const DCM_API = 'api/datacountempleados.php';
+const DCM_API = 'api/datacount_empleados.php';
 
 let dcmItems             = [];
 let dcmTodasCuentasCache = [];       // todas las cuentas (con agrupaciones) — para el árbol
@@ -15511,7 +16073,7 @@ function dcmFmtMoney(n) {
 async function dcmCargarCuentasEmpresa(empresaId) {
   if (dcmTodasCuentasCache.length && dcmCuentasCacheEmp === empresaId) return dcmCuentasCache;
   try {
-    const d = await apiGet(`api/datacountcuentas.php?empresa_id=${empresaId}`);
+    const d = await apiGet(`api/datacount_cuentas.php?empresa_id=${empresaId}`);
     dcmTodasCuentasCache = d.items || [];
     dcmCuentasCache = dcmTodasCuentasCache.filter((c) =>
       Number(c.imputable) === 1 && Number(c.activa) === 1);
@@ -15524,7 +16086,7 @@ async function dcmCargarCuentasEmpresa(empresaId) {
   return dcmCuentasCache;
 }
 
-route('/datacountempleados', async (mount) => {
+route('/datacount_empleados', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -16462,7 +17024,7 @@ async function eliminarDcm(id) {
 // mismo modal de filtros. Se reutilizan las constantes de condición fiscal
 // (DCE_CONDICIONES / dceCondicionBadge / dceFmtCuit / dceFmtFecha) declaradas
 // en el ABM de empresas más arriba.
-const DCCL_API = 'api/datacountclientes.php';
+const DCCL_API = 'api/datacount_clientes.php';
 
 let dcclItems           = [];
 let dcclBusqueda        = '';
@@ -16475,7 +17037,7 @@ let dcclEditandoId      = null;
 let dcclBuscadorTimer   = null;
 let dcclFiltrosSnapshot = null;
 
-route('/datacountclientes', async (mount) => {
+route('/datacount_clientes', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -17025,7 +17587,7 @@ async function eliminarDccl(id) {
 // mismos campos y mismo modal de filtros. Se reutilizan las constantes de
 // condición fiscal (DCE_CONDICIONES / dceCondicionBadge / dceFmtCuit) del
 // ABM de empresas.
-const DCPR_API = 'api/datacountproveedores.php';
+const DCPR_API = 'api/datacount_proveedores.php';
 
 let dcprItems           = [];
 let dcprBusqueda        = '';
@@ -17038,7 +17600,7 @@ let dcprEditandoId      = null;
 let dcprBuscadorTimer   = null;
 let dcprFiltrosSnapshot = null;
 
-route('/datacountproveedores', async (mount) => {
+route('/datacount_proveedores', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -17578,6 +18140,831 @@ async function eliminarDcpr(id) {
     await apiSend(`${DCPR_API}?id=${id}`, 'DELETE');
     toast('Proveedor eliminado');
     await cargarDcpr();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Talonarios (ABM) -------------------------
+// ABM de talonarios de comprobantes. Cada fila representa un talonario asociado
+// a una empresa Datacount, con punto de venta, serie corriente, tipo de
+// comprobante (catálogo `estados` campo `datacount_talonario_tipo`), marcas
+// fiscales (discrimina IVA / es fiscal ante AFIP) y datos de branding
+// (correo de contacto, web, imagen de fondo, términos y condiciones).
+
+const DCT_API = 'api/datacount_talonarios.php';
+
+let dctItems             = [];
+let dctBusqueda          = '';
+let dctFiltroCodigo      = '';
+let dctFiltroProyecto    = '';
+let dctFiltroEmpresa     = '';
+let dctFiltroTipo        = '';
+let dctFiltroEstado      = '';   // '', '1' (activo), '0' (inactivo)
+let dctFiltroLimite      = 100;
+let dctFiltroOrden       = 'id';
+let dctFiltroDir         = 'desc';
+let dctEditandoId        = null;
+let dctBuscadorTimer     = null;
+let dctFiltrosSnapshot   = null;
+let dctLookupsCache      = null;
+let dctLookupsPromesa    = null;
+
+async function dctCargarLookups() {
+  if (dctLookupsCache) return dctLookupsCache;
+  if (dctLookupsPromesa) return dctLookupsPromesa;
+  dctLookupsPromesa = (async () => {
+    const data = await apiGet(`${DCT_API}?lookups=1`);
+    dctLookupsCache = {
+      empresas:  data.empresas  || [],
+      proyectos: data.proyectos || [],
+      tipos:     data.tipos     || [],
+    };
+    return dctLookupsCache;
+  })();
+  try { return await dctLookupsPromesa; }
+  finally { dctLookupsPromesa = null; }
+}
+
+function dctEmpresaNombre(id) {
+  if (!id) return '—';
+  const e = (dctLookupsCache?.empresas || []).find((x) => x.id === id);
+  return e ? e.nombre : `#${id}`;
+}
+
+function dctTipoTexto(v) {
+  if (v == null || v === '') return '—';
+  const t = (dctLookupsCache?.tipos || []).find((x) => String(x.valor) === String(v));
+  return t ? t.texto : String(v);
+}
+
+function dctTipoBadge(v) {
+  if (v == null || v === '') return `<span class="badge badge-info">—</span>`;
+  return `<span class="badge badge-info">${esc(dctTipoTexto(v))}</span>`;
+}
+
+function dctEstadoBadge(v) {
+  if (Number(v) === 1) return `<span class="badge badge-success">Activo</span>`;
+  return `<span class="badge badge-danger">Inactivo</span>`;
+}
+
+function dctFmtPuntoSerie(punto, serie) {
+  const p = punto != null && punto !== '' ? String(punto).padStart(4, '0') : '----';
+  const s = serie != null && serie !== '' ? String(serie).padStart(8, '0') : '--------';
+  return `${p}-${s}`;
+}
+
+route('/datacount_talonarios', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📇</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los talonarios son las series de comprobantes que Datacount emite para cada empresa:
+            cada fila reúne el punto de venta, la serie corriente, el tipo de comprobante,
+            las marcas fiscales (discrimina IVA / es fiscal ante AFIP) y los datos de branding
+            (correo, web, imagen de fondo, términos y condiciones).
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dctStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dctStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green" id="dctStatActivos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Inactivos</span><span class="stat-value" style="color:#fca5a5" id="dctStatInactivos">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dctSearch"
+                   placeholder="🔍 Buscar nombre, correo o web…">
+            <button class="search-clear" id="dctSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dctFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dctFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dctRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dctNuevoBtn">+ Nuevo talonario</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Nombre</th>
+              <th style="width:200px">Empresa</th>
+              <th style="width:140px">Tipo</th>
+              <th style="width:150px;font-family:monospace">Punto-Serie</th>
+              <th style="width:110px">Estado</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dctTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dctCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDctBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDct()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDct()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDctCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDct('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fDctProyecto" onchange="onFiltroDct('proyecto', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Empresa</label>
+              <select id="fDctEmpresa" onchange="onFiltroDct('empresa', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Tipo</label>
+            <div id="fDctTipoChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <div id="fDctEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-estado="">Todos</button>
+              <button type="button" class="filter-chip" data-estado="1">Activo</button>
+              <button type="button" class="filter-chip" data-estado="0">Inactivo</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDctLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDct('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDctOrden" onchange="onFiltroDct('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="empresa">Empresa</option>
+                <option value="tipo">Tipo</option>
+                <option value="punto">Punto de venta</option>
+                <option value="serie">Serie</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDctDir" onchange="onFiltroDct('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDct()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDct()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDct()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dctSearch');
+  const clr = $('#dctSearchClear');
+  inp.value = dctBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dctBusqueda = inp.value.trim();
+    clearTimeout(dctBuscadorTimer);
+    dctBuscadorTimer = setTimeout(cargarDct, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dctBusqueda = ''; cargarDct();
+  });
+
+  $('#dctFiltrosBtn').addEventListener('click', abrirModalFiltrosDct);
+  $('#dctRefrescarBtn').addEventListener('click', cargarDct);
+  $('#dctNuevoBtn').addEventListener('click', () => abrirAltaEdicionDct(null));
+
+  // Menú contextual + interacción con la fila.
+  $('#dctCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDct(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDct(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDct(data.id);
+  });
+
+  $('#dctTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dctCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDct(Number(tr.dataset.id));
+  });
+  $('#dctTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dctCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  // Cargar lookups + poblar controles del modal de filtros.
+  await dctCargarLookups();
+
+  const selProy = $('#fDctProyecto');
+  if (selProy) {
+    selProy.innerHTML = `<option value="">— Todos —</option>` +
+      (dctLookupsCache?.proyectos || []).map((p) =>
+        `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+  }
+
+  const selEmp = $('#fDctEmpresa');
+  if (selEmp) {
+    selEmp.innerHTML = `<option value="">— Todas —</option>` +
+      (dctLookupsCache?.empresas || []).map((e) =>
+        `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+  }
+
+  const chipsTipo = $('#fDctTipoChips');
+  if (chipsTipo) {
+    chipsTipo.innerHTML =
+      `<button type="button" class="filter-chip" data-tipo="">Todos</button>` +
+      (dctLookupsCache?.tipos || []).map((t) =>
+        `<button type="button" class="filter-chip" data-tipo="${esc(t.valor)}">${esc(t.texto)}</button>`).join('');
+    chipsTipo.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      dctFiltroTipo = b.dataset.tipo || '';
+      dctSincronizarChipsTipo();
+      dctActualizarBadgeFiltros();
+      cargarDct();
+    });
+  }
+
+  const chipsEst = $('#fDctEstadoChips');
+  if (chipsEst) {
+    chipsEst.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      dctFiltroEstado = b.dataset.estado || '';
+      dctSincronizarChipsEstado();
+      dctActualizarBadgeFiltros();
+      cargarDct();
+    });
+  }
+
+  dctActualizarBadgeFiltros();
+  await cargarDct();
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Talonarios');
+
+async function cargarDct() {
+  const tbody = $('#dctTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dctBusqueda)       qs.set('q',        dctBusqueda);
+  if (dctFiltroProyecto) qs.set('proyecto', dctFiltroProyecto);
+  if (dctFiltroEmpresa)  qs.set('empresa',  dctFiltroEmpresa);
+  if (dctFiltroTipo)     qs.set('tipo',     dctFiltroTipo);
+  if (dctFiltroEstado !== '') qs.set('estado', dctFiltroEstado);
+  if (dctFiltroLimite)  qs.set('limite',  dctFiltroLimite);
+  if (dctFiltroOrden)   qs.set('orden',   dctFiltroOrden);
+  if (dctFiltroDir)     qs.set('dir',     dctFiltroDir);
+
+  try {
+    const data = await apiGet(DCT_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dctItems = data.items || [];
+    pintarStatsDct(data.stats || {});
+    renderDct();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDct(s) {
+  $('#dctStatTotal').textContent     = fmtNum(s.total     ?? dctItems.length);
+  $('#dctStatActivos').textContent   = fmtNum(s.activos   ?? 0);
+  $('#dctStatInactivos').textContent = fmtNum(s.inactivos ?? 0);
+}
+
+function renderDct() {
+  const tbody = $('#dctTbody');
+  if (!tbody) return;
+  if (!dctItems.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin talonarios registrados.</td></tr>`;
+    return;
+  }
+
+  // Filtro cliente por Código (el buscador rápido y el resto los resuelve el server).
+  let filas = dctItems;
+  if (dctFiltroCodigo) {
+    const cod = Number(dctFiltroCodigo);
+    filas = filas.filter((t) => t.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((t) => `
+    <tr data-id="${t.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${t.id}</code></td>
+      <td style="font-weight:600">${esc(t.nombre || '—')}</td>
+      <td style="color:var(--muted)">${esc(dctEmpresaNombre(t.empresa))}</td>
+      <td>${dctTipoBadge(t.tipo)}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(dctFmtPuntoSerie(t.punto, t.serie))}</td>
+      <td>${dctEstadoBadge(t.estado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${t.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDct() {
+  dctFiltrosSnapshot = {
+    codigo:   dctFiltroCodigo,
+    proyecto: dctFiltroProyecto,
+    empresa:  dctFiltroEmpresa,
+    tipo:     dctFiltroTipo,
+    estado:   dctFiltroEstado,
+    limite:   dctFiltroLimite,
+    orden:    dctFiltroOrden,
+    dir:      dctFiltroDir,
+  };
+  $('#fDctCodigo').value   = dctFiltroCodigo || '';
+  $('#fDctProyecto').value = dctFiltroProyecto || '';
+  $('#fDctEmpresa').value  = dctFiltroEmpresa || '';
+  $('#fDctLimite').value   = dctFiltroLimite || 100;
+  $('#fDctOrden').value   = dctFiltroOrden  || 'id';
+  $('#fDctDir').value     = dctFiltroDir    || 'desc';
+  dctSincronizarChipsTipo();
+  dctSincronizarChipsEstado();
+  document.getElementById('filtrosDctBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDct = abrirModalFiltrosDct;
+
+function cerrarModalFiltrosDct() {
+  document.getElementById('filtrosDctBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDct = cerrarModalFiltrosDct;
+
+function cancelarFiltrosDct() {
+  if (dctFiltrosSnapshot) {
+    dctFiltroCodigo   = dctFiltrosSnapshot.codigo;
+    dctFiltroProyecto = dctFiltrosSnapshot.proyecto;
+    dctFiltroEmpresa  = dctFiltrosSnapshot.empresa;
+    dctFiltroTipo     = dctFiltrosSnapshot.tipo;
+    dctFiltroEstado   = dctFiltrosSnapshot.estado;
+    dctFiltroLimite   = dctFiltrosSnapshot.limite;
+    dctFiltroOrden    = dctFiltrosSnapshot.orden;
+    dctFiltroDir      = dctFiltrosSnapshot.dir;
+    dctActualizarBadgeFiltros();
+    cargarDct();
+  }
+  cerrarModalFiltrosDct();
+}
+window.cancelarFiltrosDct = cancelarFiltrosDct;
+
+function limpiarFiltrosDct() {
+  dctFiltroCodigo   = '';
+  dctFiltroProyecto = '';
+  dctFiltroEmpresa  = '';
+  dctFiltroTipo     = '';
+  dctFiltroEstado   = '';
+  dctFiltroLimite   = 100;
+  dctFiltroOrden    = 'id';
+  dctFiltroDir      = 'desc';
+  $('#fDctCodigo').value   = '';
+  $('#fDctProyecto').value = '';
+  $('#fDctEmpresa').value  = '';
+  $('#fDctLimite').value   = 100;
+  $('#fDctOrden').value   = 'id';
+  $('#fDctDir').value     = 'desc';
+  dctSincronizarChipsTipo();
+  dctSincronizarChipsEstado();
+  dctActualizarBadgeFiltros();
+  cargarDct();
+}
+window.limpiarFiltrosDct = limpiarFiltrosDct;
+
+function onFiltroDct(campo, valor) {
+  if (campo === 'codigo')   dctFiltroCodigo   = (valor || '').trim();
+  if (campo === 'proyecto') dctFiltroProyecto = (valor || '').trim();
+  if (campo === 'empresa')  dctFiltroEmpresa  = (valor || '').trim();
+  if (campo === 'limite')   dctFiltroLimite   = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')    dctFiltroOrden    = valor || 'id';
+  if (campo === 'dir')      dctFiltroDir      = valor || 'desc';
+  dctActualizarBadgeFiltros();
+  cargarDct();
+}
+window.onFiltroDct = onFiltroDct;
+
+function dctSincronizarChipsTipo() {
+  document.querySelectorAll('#fDctTipoChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.tipo || '') === (dctFiltroTipo || ''));
+  });
+}
+
+function dctSincronizarChipsEstado() {
+  document.querySelectorAll('#fDctEstadoChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.estado || '') === (dctFiltroEstado || ''));
+  });
+}
+
+function dctActualizarBadgeFiltros() {
+  let n = 0;
+  if (dctFiltroCodigo)                 n++;
+  if (dctFiltroProyecto)               n++;
+  if (dctFiltroEmpresa)                n++;
+  if (dctFiltroTipo)                   n++;
+  if (dctFiltroEstado !== '')          n++;
+  if (Number(dctFiltroLimite) !== 100) n++;
+  if (dctFiltroOrden !== 'id')         n++;
+  if (dctFiltroDir   !== 'desc')       n++;
+  const badge = $('#dctFiltrosBadge');
+  const btn   = $('#dctFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// Pestañas del modal Alta/Edición y Consulta.
+function dctCambiarTab(tab) {
+  if (tab !== 'general' && tab !== 'fiscal' && tab !== 'branding') return;
+  document.querySelectorAll('#modalRoot .modal-tab[data-dct-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.dctTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-dct-tab]').forEach((p) => {
+    p.hidden = p.dataset.dctTab !== tab;
+  });
+}
+window.dctCambiarTab = dctCambiarTab;
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDct(id) {
+  dctEditandoId = id;
+  const editando = !!id;
+  const t = editando ? dctItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar talonario' : 'Nuevo talonario';
+
+  await dctCargarLookups();
+  const empresas  = dctLookupsCache?.empresas  || [];
+  const proyectos = dctLookupsCache?.proyectos || [];
+  const tipos     = dctLookupsCache?.tipos     || [];
+
+  const optsEmpresas  = `<option value="">— Sin empresa —</option>` +
+    empresas.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+  const optsProyectos = `<option value="">— Sin proyecto —</option>` +
+    proyectos.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+  const optsTipos     = `<option value="">— Sin tipo —</option>` +
+    tipos.map((tp) => `<option value="${esc(tp.valor)}">${esc(tp.texto)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab"
+                  data-dct-tab="general" onclick="dctCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-dct-tab="fiscal" onclick="dctCambiarTab('fiscal')">
+            <i class="fa-solid fa-file-invoice-dollar"></i> Fiscal
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-dct-tab="branding" onclick="dctCambiarTab('branding')">
+            <i class="fa-solid fa-palette"></i> Branding
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" data-dct-tab="general" role="tabpanel">
+          <div class="form-group">
+            <label for="dctNombre">Nombre *</label>
+            <input type="text" id="dctNombre" placeholder="Nombre descriptivo del talonario" maxlength="255" autocomplete="off">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dctProyecto">Proyecto</label>
+              <select id="dctProyecto">${optsProyectos}</select>
+            </div>
+            <div class="form-group">
+              <label for="dctEmpresa">Empresa</label>
+              <select id="dctEmpresa">${optsEmpresas}</select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label for="dctTipo">Tipo</label>
+              <select id="dctTipo">${optsTipos}</select>
+            </div>
+            <div class="form-group">
+              <label for="dctPunto">Punto de venta</label>
+              <input type="number" id="dctPunto" min="0" placeholder="1" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="dctSerie">Serie corriente</label>
+              <input type="number" id="dctSerie" min="0" placeholder="0" autocomplete="off">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="toggle-switch">
+              <input type="checkbox" id="dctEstado">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Activo</span>
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — al desactivarlo el talonario deja de aparecer para emitir nuevos comprobantes
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dct-tab="fiscal" role="tabpanel" hidden>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dctDiscriminar">Discrimina IVA</label>
+              <select id="dctDiscriminar">
+                <option value="">— No especificado —</option>
+                <option value="1">Sí</option>
+                <option value="0">No</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="dctFiscal">Fiscal ante AFIP</label>
+              <select id="dctFiscal">
+                <option value="">— No especificado —</option>
+                <option value="1">Sí</option>
+                <option value="0">No</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dct-tab="branding" role="tabpanel" hidden>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dctCorreo">Correo de contacto</label>
+              <input type="email" id="dctCorreo" placeholder="facturacion@empresa.com" maxlength="100" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="dctWeb">Web</label>
+              <input type="text" id="dctWeb" placeholder="www.empresa.com" maxlength="100" autocomplete="off">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="dctFondo">Imagen de fondo
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">— nombre del archivo</span>
+            </label>
+            <input type="text" id="dctFondo" placeholder="fondo_empresa.jpg" maxlength="100" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dctTerminos">Términos y condiciones</label>
+            <textarea id="dctTerminos" rows="6" maxlength="5000"
+                      placeholder="Texto legal que aparece al pie de cada comprobante emitido con este talonario"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && t) {
+    $('#dctNombre').value      = t.nombre      || '';
+    $('#dctEmpresa').value     = t.empresa     != null ? String(t.empresa) : '';
+    $('#dctProyecto').value    = t.proyecto    != null ? String(t.proyecto) : '';
+    $('#dctTipo').value        = t.tipo        || '';
+    $('#dctPunto').value       = t.punto       != null ? t.punto : '';
+    $('#dctSerie').value       = t.serie       != null ? t.serie : '';
+    $('#dctDiscriminar').value = t.discriminar || '';
+    $('#dctFiscal').value      = t.fiscal      || '';
+    $('#dctCorreo').value      = t.correo      || '';
+    $('#dctWeb').value         = t.web         || '';
+    $('#dctFondo').value       = t.fondo       || '';
+    $('#dctTerminos').value    = t.terminos    || '';
+    $('#dctEstado').checked    = Number(t.estado) === 1;
+  } else {
+    $('#dctEstado').checked = true; // alta: por defecto activo
+  }
+
+  setTimeout(() => $('#dctNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDct();
+  });
+}
+
+async function guardarDct() {
+  const nombre      = $('#dctNombre').value.trim();
+  const empresa     = $('#dctEmpresa').value || null;
+  const proyecto    = $('#dctProyecto').value || null;
+  const tipo        = $('#dctTipo').value || null;
+  const punto       = $('#dctPunto').value || null;
+  const serie       = $('#dctSerie').value || null;
+  const discriminar = $('#dctDiscriminar').value || null;
+  const fiscal      = $('#dctFiscal').value || null;
+  const correo      = $('#dctCorreo').value.trim();
+  const web         = $('#dctWeb').value.trim();
+  const fondo       = $('#dctFondo').value.trim();
+  const terminos    = $('#dctTerminos').value.trim();
+  const estado      = $('#dctEstado').checked ? 1 : 0;
+
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
+    toast('El correo no es válido', { error: true }); return;
+  }
+
+  const body = {
+    nombre, empresa, proyecto, tipo, punto, serie,
+    discriminar, fiscal, correo, web, fondo, terminos, estado,
+  };
+
+  try {
+    if (dctEditandoId) {
+      await apiSend(`${DCT_API}?id=${dctEditandoId}`, 'PUT', body);
+      toast('Talonario actualizado');
+    } else {
+      await apiSend(DCT_API, 'POST', body);
+      toast('Talonario creado');
+    }
+    closeModal();
+    dctEditandoId = null;
+    await cargarDct();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDct(id) {
+  const t = dctItems.find((x) => x.id === id);
+  if (!t) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  const siNo = (v) => {
+    if (v == null || v === '') return '—';
+    return String(v) === '1'
+      ? '<span class="badge badge-success">Sí</span>'
+      : '<span class="badge badge-danger">No</span>';
+  };
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title">
+          📇 <span class="modal-subtitle">${esc(t.nombre || `#${t.id}`)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab"
+                  data-dct-tab="general" onclick="dctCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-dct-tab="fiscal" onclick="dctCambiarTab('fiscal')">
+            <i class="fa-solid fa-file-invoice-dollar"></i> Fiscal
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-dct-tab="branding" onclick="dctCambiarTab('branding')">
+            <i class="fa-solid fa-palette"></i> Branding
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" data-dct-tab="general" role="tabpanel">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Código',          `<code>${t.id}</code>`)}
+            ${card('Estado',          dctEstadoBadge(t.estado))}
+            ${card('Nombre',          esc(t.nombre || '—'), 'full')}
+            ${card('Empresa',         esc(dctEmpresaNombre(t.empresa)), 'full')}
+            ${card('Tipo',            dctTipoBadge(t.tipo))}
+            ${card('Punto-Serie',     `<span style="font-family:monospace">${esc(dctFmtPuntoSerie(t.punto, t.serie))}</span>`)}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dct-tab="fiscal" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Discrimina IVA',    siNo(t.discriminar))}
+            ${card('Fiscal ante AFIP',  siNo(t.fiscal))}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dct-tab="branding" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Correo',   esc(t.correo || '—'))}
+            ${card('Web',      esc(t.web || '—'))}
+            ${card('Fondo',    esc(t.fondo || '—'), 'full')}
+            ${card('Términos', `<div style="white-space:pre-wrap;font-size:.85rem">${esc(t.terminos || '—')}</div>`, 'full')}
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDct(id); }
+  });
+}
+
+async function eliminarDct(id) {
+  const t = dctItems.find((x) => x.id === id);
+  if (!t) return;
+  const ok = await confirmar({
+    title:       'Eliminar talonario',
+    message:     `¿Eliminás el talonario "${t.nombre || '#' + t.id}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCT_API}?id=${id}`, 'DELETE');
+    toast('Talonario eliminado');
+    await cargarDct();
   } catch (err) {
     toast(err.message, { error: true });
   }
@@ -28322,7 +29709,7 @@ let arcAutEmpresasCatalogo = null;
 async function arcAutCargarEmpresas() {
   if (arcAutEmpresasCatalogo) return arcAutEmpresasCatalogo;
   try {
-    const d = await apiGet('api/datacountempresas.php?limite=1000&orden=nombre&dir=asc');
+    const d = await apiGet('api/datacount_empresas.php?limite=1000&orden=nombre&dir=asc');
     arcAutEmpresasCatalogo = d.items || [];
   } catch {
     arcAutEmpresasCatalogo = [];
