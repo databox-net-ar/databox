@@ -434,6 +434,8 @@ CREATE TABLE `datacount_comprobantes`  (
   `caeres` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   `emision` date NULL DEFAULT NULL,
   `vencimiento` date NULL DEFAULT NULL,
+  -- 1=Productos, 2=Servicios, 3=Productos+Servicios (AFIP FECAESolicitar/Concepto)
+  `concepto` tinyint(1) NULL DEFAULT NULL,
   `asociado` int(11) NULL DEFAULT NULL,
   `contrato` int(11) NULL DEFAULT NULL,
   `cliente` int(11) NULL DEFAULT NULL,

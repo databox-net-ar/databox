@@ -89,96 +89,108 @@ function handleAutorizar(array $in, int $aplicacionId): void {
     if ($punto <= 0) jsonError('Falta `punto` (PtoVta > 0).', 400);
     if ($tipo  <= 0) jsonError('Falta `tipo` (CbteTipo AFIP > 0).', 400);
 
-    // Numeros de comprobante: si no vinieron, autopedimos ultimo+1.
+    // Numeros de comprobante: si no vinieron, se autopiden dentro del try
+    // (GetLastVoucher dispara WSAA y puede fallar; lo queremos loggeado).
     $cbteDesde = isset($in['cbte_desde']) && $in['cbte_desde'] !== '' ? (int)$in['cbte_desde'] : null;
     $cbteHasta = isset($in['cbte_hasta']) && $in['cbte_hasta'] !== '' ? (int)$in['cbte_hasta'] : null;
+    if ($cbteDesde !== null && $cbteHasta !== null && $cbteHasta < $cbteDesde) {
+        jsonError('`cbte_hasta` no puede ser menor que `cbte_desde`.', 400);
+    }
 
     $bag  = arcaFor($slug);
     $ebil = $bag['arca']->ElectronicBilling;
-
-    if ($cbteDesde === null) {
-        $ultimo    = $ebil->GetLastVoucher($punto, $tipo);
-        $cbteDesde = $ultimo + 1;
-    }
-    if ($cbteHasta === null) $cbteHasta = $cbteDesde;
-    if ($cbteHasta < $cbteDesde) jsonError('`cbte_hasta` no puede ser menor que `cbte_desde`.', 400);
 
     // Documento del comprador. Si no vino, asumimos consumidor final (99/0).
     $docTipo = isset($in['doc_tipo']) && $in['doc_tipo'] !== '' ? (int)$in['doc_tipo'] : 99;
     $docNroS = isset($in['doc_nro']) ? preg_replace('/\D+/', '', (string)$in['doc_nro']) : '';
     $docNro  = $docNroS === '' ? 0 : (int)$docNroS;
 
-    $data = [
-        // Cabecera (los saca el CreateVoucher y los mueve a FeCabReq).
-        'CantReg'   => $cbteHasta - $cbteDesde + 1,
-        'PtoVta'    => $punto,
-        'CbteTipo'  => $tipo,
-        // Detalle.
-        'Concepto'  => (int)($in['concepto'] ?? 1),
-        'DocTipo'   => $docTipo,
-        'DocNro'    => $docNro,
-        'CbteDesde' => $cbteDesde,
-        'CbteHasta' => $cbteHasta,
-        'CbteFch'   => (string)($in['cbte_fch'] ?? $hoyStr),
-        'ImpTotal'  => (float)($in['imp_total']   ?? 0),
-        'ImpTotConc'=> (float)($in['imp_tot_conc'] ?? 0),
-        'ImpNeto'   => (float)($in['imp_neto']    ?? 0),
-        'ImpOpEx'   => (float)($in['imp_op_ex']   ?? 0),
-        'ImpIVA'    => (float)($in['imp_iva']     ?? 0),
-        'ImpTrib'   => (float)($in['imp_trib']    ?? 0),
-        'MonId'     => (string)($in['mon_id']     ?? 'PES'),
-        'MonCotiz'  => (float)($in['mon_cotiz']   ?? 1),
-    ];
-
-    // IVA por alicuota (opcional). El SDK espera claves PascalCase.
-    if (!empty($in['iva']) && is_array($in['iva'])) {
-        $data['Iva'] = [];
-        foreach ($in['iva'] as $al) {
-            if (!is_array($al)) continue;
-            $data['Iva'][] = [
-                'Id'      => (int)($al['id'] ?? 0),
-                'BaseImp' => (float)($al['base']    ?? 0),
-                'Importe' => (float)($al['importe'] ?? 0),
-            ];
-        }
-        if (empty($data['Iva'])) unset($data['Iva']);
-    }
-
-    // Comprobantes asociados (obligatorio para notas de credito/debito).
-    if (!empty($in['cbtes_asoc']) && is_array($in['cbtes_asoc'])) {
-        $data['CbtesAsoc'] = [];
-        foreach ($in['cbtes_asoc'] as $ca) {
-            if (!is_array($ca)) continue;
-            $item = [
-                'Tipo'  => (int)($ca['tipo']  ?? 0),
-                'PtoVta'=> (int)($ca['punto'] ?? 0),
-                'Nro'   => (int)($ca['nro']   ?? 0),
-            ];
-            if (!empty($ca['cuit']))  $item['Cuit']  = preg_replace('/\D+/', '', (string)$ca['cuit']);
-            if (!empty($ca['fecha'])) $item['CbteFch'] = (string)$ca['fecha'];
-            $data['CbtesAsoc'][] = $item;
-        }
-        if (empty($data['CbtesAsoc'])) unset($data['CbtesAsoc']);
-    }
-
-    // Disparo. Si AFIP rechaza (Errors, Observaciones, Resultado='R'), la
-    // clase levanta Exception con el codigo AFIP y el mensaje. El try/catch/
-    // finally envuelve SOLO la llamada AFIP -- asi cada intento (exitoso o
-    // fallido) queda registrado en `arca_autorizaciones` con timing. Fallos
-    // previos (empresa sin cert, GetLastVoucher, etc) NO se registran ahi:
-    // no llegamos a intentar FECAESolicitar, van solo a `sucesos`.
+    // A partir de aca, TODA interaccion con AFIP (WSAA + WSFE) queda envuelta
+    // en un unico try/catch/finally: asi cualquier fallo -- GetLastVoucher,
+    // openssl_pkcs7_sign en WSAA, SoapFault, CreateVoucher rechazado, cert
+    // vencido, etc -- genera igual una fila en `arca_autorizaciones` con
+    // resultado='error' o 'R' y el mensaje. La unica clase de fallos que NO
+    // queda aca es los validation errors antes de tener el bag/empresa
+    // resuelto (arcaFor lanza jsonError y va solo a sucesos, pero al menos
+    // tenemos referencia).
     $t0        = microtime(true);
     $res       = null;
     $resultado = 'error';
     $errMsg    = null;
     $excep     = null;
+    $data      = null;
     try {
+        // 1) Numero de comprobante: si el caller no lo mando, lo pedimos.
+        //    Esta llamada dispara WSAA la primera vez (openssl_pkcs7_sign,
+        //    TA cacheado o nuevo). Si el cert de la empresa esta corrupto,
+        //    revienta aca.
+        if ($cbteDesde === null) {
+            $ultimo    = $ebil->GetLastVoucher($punto, $tipo);
+            $cbteDesde = $ultimo + 1;
+        }
+        if ($cbteHasta === null) $cbteHasta = $cbteDesde;
+
+        // 2) Armar el body para FECAESolicitar.
+        $data = [
+            // Cabecera (CreateVoucher los mueve a FeCabReq).
+            'CantReg'   => $cbteHasta - $cbteDesde + 1,
+            'PtoVta'    => $punto,
+            'CbteTipo'  => $tipo,
+            // Detalle.
+            'Concepto'  => (int)($in['concepto'] ?? 1),
+            'DocTipo'   => $docTipo,
+            'DocNro'    => $docNro,
+            'CbteDesde' => $cbteDesde,
+            'CbteHasta' => $cbteHasta,
+            'CbteFch'   => (string)($in['cbte_fch'] ?? $hoyStr),
+            'ImpTotal'  => (float)($in['imp_total']   ?? 0),
+            'ImpTotConc'=> (float)($in['imp_tot_conc'] ?? 0),
+            'ImpNeto'   => (float)($in['imp_neto']    ?? 0),
+            'ImpOpEx'   => (float)($in['imp_op_ex']   ?? 0),
+            'ImpIVA'    => (float)($in['imp_iva']     ?? 0),
+            'ImpTrib'   => (float)($in['imp_trib']    ?? 0),
+            'MonId'     => (string)($in['mon_id']     ?? 'PES'),
+            'MonCotiz'  => (float)($in['mon_cotiz']   ?? 1),
+        ];
+        // IVA por alicuota (opcional). El SDK espera claves PascalCase.
+        if (!empty($in['iva']) && is_array($in['iva'])) {
+            $data['Iva'] = [];
+            foreach ($in['iva'] as $al) {
+                if (!is_array($al)) continue;
+                $data['Iva'][] = [
+                    'Id'      => (int)($al['id'] ?? 0),
+                    'BaseImp' => (float)($al['base']    ?? 0),
+                    'Importe' => (float)($al['importe'] ?? 0),
+                ];
+            }
+            if (empty($data['Iva'])) unset($data['Iva']);
+        }
+        // Comprobantes asociados (obligatorio para notas de credito/debito).
+        if (!empty($in['cbtes_asoc']) && is_array($in['cbtes_asoc'])) {
+            $data['CbtesAsoc'] = [];
+            foreach ($in['cbtes_asoc'] as $ca) {
+                if (!is_array($ca)) continue;
+                $item = [
+                    'Tipo'  => (int)($ca['tipo']  ?? 0),
+                    'PtoVta'=> (int)($ca['punto'] ?? 0),
+                    'Nro'   => (int)($ca['nro']   ?? 0),
+                ];
+                if (!empty($ca['cuit']))  $item['Cuit']  = preg_replace('/\D+/', '', (string)$ca['cuit']);
+                if (!empty($ca['fecha'])) $item['CbteFch'] = (string)$ca['fecha'];
+                $data['CbtesAsoc'][] = $item;
+            }
+            if (empty($data['CbtesAsoc'])) unset($data['CbtesAsoc']);
+        }
+
+        // 3) FECAESolicitar. Si AFIP rechaza (Errors, Observaciones,
+        //    Resultado='R'), la clase levanta Exception con el codigo AFIP.
         $res       = $ebil->CreateVoucher($data);
         $resultado = 'A';
     } catch (Throwable $e) {
         // Exceptions con code > 0 son errores semanticos AFIP (Errors.Err u
         // Observaciones.Obs con Resultado='R'). Code = 0 = fallo tecnico
-        // (SoapFault, timeout, cert vencido, WSAA rechazo, etc).
+        // (SoapFault, timeout, cert vencido, WSAA rechazo, openssl_pkcs7_sign
+        // fallo, etc).
         $resultado = ((int)$e->getCode() > 0) ? 'R' : 'error';
         $errMsg    = $e->getMessage();
         $excep     = $e;
@@ -188,7 +200,10 @@ function handleAutorizar(array $in, int $aplicacionId): void {
             'empresa_id'    => (int)$bag['empresa']['id'],
             'punto'         => $punto,
             'tipo'          => $tipo,
-            'cbte_nro'      => $cbteDesde,
+            // 0 cuando el fallo ocurrio antes de saber el numero (ej. WSAA
+            // rechazo antes de GetLastVoucher). Es un placeholder visible en
+            // el visor para diferenciar de un cbte_nro real.
+            'cbte_nro'      => $cbteDesde ?? 0,
             'resultado'     => $resultado,
             'cae'           => $res['CAE']       ?? null,
             'cae_vto'       => $res['CAEFchVto'] ?? null,

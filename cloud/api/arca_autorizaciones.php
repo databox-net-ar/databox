@@ -123,12 +123,21 @@ function handleList(PDO $pdo, array $q): void {
     $st->execute($params);
     $rows = array_map('normalizarFilaArcaAut', $st->fetchAll());
 
+    // Estado del motor de autorizacion (parametros.datacount.comprobantes.autorizar).
+    // El visor no maneja el flag, pero la tarjeta "Motor" del stats-bar y el
+    // menu hamburger de arriba lo necesitan para pintarse. Booleano:
+    // '1' = habilitado; cualquier otro valor = detenido (pausa manual).
+    // Ver cloud/jobs/datacount_comprobantes_autorizar.php y
+    //     cloud/api/arca_autorizaciones_motor.php.
+    $motor = getParametro('datacount.comprobantes.autorizar', '1');
+
     jsonOk([
         'stats' => [
             'total'      => (int)($stats['total']      ?? 0),
             'aceptadas'  => (int)($stats['aceptadas']  ?? 0),
             'rechazadas' => (int)($stats['rechazadas'] ?? 0),
             'errores'    => (int)($stats['errores']    ?? 0),
+            'motor'      => (string)($motor ?? '1'),
         ],
         'items' => $rows,
     ]);

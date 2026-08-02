@@ -7,21 +7,36 @@
  *   POST http://localhost:8114/v4/arca/autorizar  (Bearer con apikey de `aplicaciones`)
  *
  * Selecciona comprobantes con:
- *   tipo IN ('FA','FB','FC','FM')  (SOLO facturas -- notas de credito se manejan aparte)
- *   fiscal = '1'                   (los no-fiscales -- prefacturas, presupuestos -- no van a AFIP)
+ *   fiscal = '1'                   (los no-fiscales -- prefacturas, presupuestos, remitos X -- no van a AFIP)
  *   estado = '2'                   (Pendiente segun DC_TRANSICIONES_ESTADO)
- *   caeres IS NULL OR = ''         (no intentados aun; retries manuales al limpiarlo)
+ *
+ * `caeres` NO se filtra -- un valor previo (transitorio o permanente) es solo
+ * evidencia del ultimo intento; no bloquea reintentos. La proteccion contra
+ * bucles vive en el circuit breaker (ver mas abajo): un permanente detiene el
+ * motor, y no vuelve a correr hasta que un humano rehabilite despues de
+ * arreglar la causa del fallo.
+ *
+ * Los `tipo` fiscales admitidos son facturas (FA/FB/FC/FM) y notas de credito
+ * (NA/NB/NC/NM). Para las NC, AFIP exige `cbtes_asoc` con los datos del
+ * comprobante que se esta acreditando -- los tomamos del comprobante apuntado
+ * por la columna `asociado`, que debe estar autorizado (estado='3') y ser una
+ * factura fiscal. Si falta o no esta autorizado, se cierra con error permanente.
  *
  * Por corrida procesa hasta DCC_AUT_LOTE comprobantes (arranca en 1; el cron
  * define la cadencia). El microservicio autonumera el CbteNro pidiendo el
  * ultimo autorizado + 1 -- no le mandamos cbte_desde/hasta.
  *
- * Reglas de cierre por comprobante:
+ * Reglas de cierre por comprobante (ver cerrarConError + esTransitorio):
  *   OK:    estado='3', caenro=CAE, caevto=CAEFchVto, serie=cbte_nro,
  *          autorizado=NOW(), caeres="OK CAE <n>"
- *   ERR:   estado queda en '2' (no forzamos '0' -- el operador anula o corrige),
- *          caeres = mensaje de error. Asi el proximo tick se saltea este
- *          comprobante hasta que alguien limpie caeres.
+ *   ERR TRANSITORIO (AFIP/Apache caidos, TA stale, timeout de red):
+ *          NO se toca caeres -- el proximo tick reintenta el mismo comprobante.
+ *          Suceso 'alerta' asi el operador ve si AFIP esta flaky por horas.
+ *   ERR PERMANENTE (bug de armado, empresa mal configurada, rechazo AFIP):
+ *          se graba caeres con el mensaje Y se DETIENE el motor entero
+ *          (parametros.datacount.comprobantes.autorizar='0'). El cron no
+ *          vuelve a autorizar hasta que un humano reactive desde el ABM
+ *          de Parametros (o Herramientas > motor). Suceso 'error'.
  *
  * El microservicio tambien registra cada intento en `arca_autorizaciones`, por
  * lo que la auditoria tecnica vive alli; aca solo dejamos rastro en el log del
@@ -32,41 +47,49 @@
  */
 
 require_once __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../api/lib/parametros.php';
+require_once __DIR__ . '/../api/lib/datacount_comprobantes_autorizar.php';
 
-const DCC_AUT_ENDPOINT   = 'http://localhost:8114/v4/arca/autorizar';
-const DCC_AUT_TIMEOUT_S  = 60;    // AFIP WSFEv1 suele responder en < 5s pero WSAA cold puede tardar.
-const DCC_AUT_CONNECT_S  = 5;
-const DCC_AUT_LOTE       = 1;     // batch size por corrida (subir cuando se estabilice).
+// Canal unico de autorizacion: TODA la logica de armar el body, llamar al
+// v4 y cerrar el comprobante en BD vive en la lib compartida arriba
+// (dccAutAutorizar). Este cron es solo el orquestador batch: selecciona
+// pendientes, itera y aplica el circuit breaker segun clasifique el error.
+// El endpoint manual (api/datacount_comprobantes.php action=autorizar)
+// usa la misma lib -- no puede haber divergencia entre ambos caminos.
 
-// Letra de la factura -> CbteTipo AFIP (WSFEv1). Solo facturas -- las notas
-// de credito (NA/NB/NC/NM) se autorizan aparte (requieren `cbtes_asoc`).
-// Cualquier otro codigo (FX/PX/etc) es no-fiscal y ni deberia llegar aca por
-// el gate `fiscal='1'`, pero si llega el filtro SQL lo descarta.
-const DCC_TIPO_A_AFIP = [
-    'FA' =>  1,   // Factura A
-    'FB' =>  6,   // Factura B
-    'FC' => 11,   // Factura C
-    'FM' => 51,   // Factura M
-];
+const DCC_AUT_LOTE = 1;     // batch size por corrida (subir cuando se estabilice).
 
-// Alicuota IVA (formato "0.00" con 2 decimales) -> Id AFIP (FEParamGetTiposIva).
-// Si un renglon usa otro %, cerramos el comprobante con error -- AFIP rechazaria.
-const DCC_IVA_ID_AFIP = [
-    '0.00'  => 3,   // 0%
-    '10.50' => 4,   // 10.5%
-    '21.00' => 5,   // 21%
-    '27.00' => 6,   // 27%
-    '5.00'  => 8,   // 5%
-    '2.50'  => 9,   // 2.5%
-];
+// Flag booleano de activacion del motor (tabla `parametros`).
+//   '1' = HABILITADO. El cron procesa normalmente.
+//   cualquier otro valor = DETENIDO. El cron se saltea la corrida hasta
+//                                    que alguien restablezca el valor a '1'
+//                                    desde el ABM de Parametros.
+const DCC_AUT_FLAG = 'datacount.comprobantes.autorizar';
 
 $ORIGEN = 'cron/datacount_comprobantes_autorizar';
 
 try {
     $pdo = db();
 
+    // Sembrar el parametro si no existe (fallback si la migracion nunca corrio).
+    parametroAsegurar($pdo, DCC_AUT_FLAG, '1',
+        'Motor de autorizacion automatica de comprobantes AFIP. ' .
+        'Valor 1 = habilitado; cualquier otro valor = detenido (pausa manual). ' .
+        'Ver cloud/jobs/datacount_comprobantes_autorizar.php.');
+
+    // Gate manual: si el operador dejo el flag en algo distinto de '1',
+    // el motor esta DETENIDO y no procesa nada hasta ser rehabilitado
+    // desde el ABM de Parametros.
+    $flag = parametroLeer($pdo, DCC_AUT_FLAG, '1');
+    if ($flag !== '1') {
+        $msg = "Flag " . DCC_AUT_FLAG . " en '{$flag}' (DETENIDO), pausa manual.";
+        anotarLog($msg);
+        marcarEjecucionOk($msg);
+        return;
+    }
+
     // Apikey para el loopback al v4 (mismo patron que telegramcanales/telegram_mensajes).
-    $apikey = obtenerApikeyLoopback($pdo);
+    $apikey = dccAutObtenerApikey($pdo);
     if ($apikey === null) {
         $msg = 'No hay ninguna aplicacion habilitada con apikey para el loopback';
         registrarSuceso($pdo, $ORIGEN, 'error', $msg);
@@ -84,23 +107,32 @@ try {
     }
 
     $okC = 0; $errC = 0;
+    $motorDetenido = false;
     foreach ($pendientes as $i => $c) {
-        $prefix = sprintf('[%d/%d] cbte#%d', $i + 1, $total, (int)$c['id']);
+        $id     = (int)$c['id'];
+        $prefix = sprintf('[%d/%d] cbte#%d', $i + 1, $total, $id);
         try {
-            $ok = autorizarUno($pdo, $apikey, $c, $ORIGEN, $prefix);
+            $ok = autorizarUno($pdo, $apikey, $id, $ORIGEN, $prefix);
             $ok ? $okC++ : $errC++;
         } catch (Throwable $e) {
-            // Ultimo dique: si algo escapa del handler por-comprobante, lo dejamos
-            // registrado y seguimos con el siguiente. No abortamos la corrida.
+            // Ultimo dique: si algo escapa del handler por-comprobante lo pasamos
+            // igual por la clasificacion transitorio/permanente para que decida
+            // si detiene el motor o solo suma al contador de errores.
             $errC++;
-            $msg = 'excepcion no controlada: ' . $e->getMessage();
-            marcarErrorComprobante($pdo, (int)$c['id'], $msg);
-            registrarSuceso($pdo, $ORIGEN, 'error', "cbte#{$c['id']}: {$msg}");
-            anotarLog("{$prefix} - EXC: {$msg}");
+            cerrarConError($pdo, $id, 'excepcion no controlada: ' . $e->getMessage(), $ORIGEN, $prefix);
+        }
+        // Si el ultimo error fue permanente, cerrarConError ya puso el flag en
+        // '0'. Cortamos el lote -- el proximo tick ni siquiera va a arrancar
+        // hasta que un humano rehabilite desde el ABM.
+        if (parametroLeer($pdo, DCC_AUT_FLAG, '1') !== '1') {
+            $motorDetenido = true;
+            anotarLog('Motor DETENIDO durante la corrida, cortando el lote.');
+            break;
         }
     }
 
-    $resumen = "{$okC} OK / {$errC} err / {$total} total";
+    $resumen = "{$okC} OK / {$errC} err / {$total} total"
+             . ($motorDetenido ? ' -- MOTOR DETENIDO' : '');
     anotarLog("Finalizado: {$resumen}");
     marcarEjecucionOk($resumen);
 } catch (Throwable $e) {
@@ -110,24 +142,25 @@ try {
 }
 
 // ============================================================================
-// Seleccion + orquestacion
+// Seleccion + orquestacion (concerns del cron, no de la autorizacion)
 // ============================================================================
 
 function seleccionarPendientes(PDO $pdo, int $lote): array {
-    // Solo fiscales pendientes que no hayan sido intentados (caeres vacio) --
-    // asi los rechazos previos no se reprocesan hasta que el operador limpie
-    // caeres o anule+reencole desde el ABM.
+    // Autorizables = fiscal='1' AND estado='2'. Punto. No filtramos por `caeres`
+    // ni por `tipo`:
+    //   - `caeres` es solo evidencia del ultimo intento; no debe bloquear el
+    //     reintento. La proteccion contra bucles infinitos vive en el circuit
+    //     breaker (permanente detiene el motor -- flag='0' -- y no vuelve
+    //     hasta que un humano rehabilite despues de arreglar la causa).
+    //   - `tipo` se valida dentro de dccAutAutorizar via DCC_TIPO_A_AFIP: si
+    //     aparece un codigo sin mapeo cae como error permanente con mensaje
+    //     claro y detiene el motor -- mejor que saltearlo silenciosamente.
     $limite = max(1, (int)$lote);
     $st = $pdo->prepare("
-        SELECT c.id, c.tipo, c.punto, c.condicion, c.cuit, c.emision,
-               c.neto, c.iva, c.total, c.empresa, c.talonario,
-               e.slug AS empresa_slug
+        SELECT c.id
           FROM datacount_comprobantes c
-          LEFT JOIN datacount_empresas e ON e.id = c.empresa
-         WHERE c.tipo   IN ('FA','FB','FC','FM')
-           AND c.fiscal = '1'
+         WHERE c.fiscal = '1'
            AND c.estado = '2'
-           AND (c.caeres IS NULL OR c.caeres = '')
          ORDER BY c.id ASC
          LIMIT {$limite}
     ");
@@ -135,225 +168,69 @@ function seleccionarPendientes(PDO $pdo, int $lote): array {
     return $st->fetchAll();
 }
 
-function autorizarUno(PDO $pdo, string $apikey, array $c, string $origen, string $prefix): bool {
-    $id = (int)$c['id'];
-
-    // --- sanity checks previos a llamar al microservicio ---
-    $slug = trim((string)($c['empresa_slug'] ?? ''));
-    if ($slug === '') {
-        return cerrarConError($pdo, $id, 'Empresa sin slug en datacount_empresas', $origen, $prefix);
+/**
+ * Wrapper del cron sobre la lib compartida `dccAutAutorizar`. Carga el
+ * comprobante, delega la autorizacion a la lib, y aplica el circuit breaker
+ * del cron sobre el resultado (transitorio -> reintenta, permanente -> frena).
+ *
+ * NO hay logica de armado del body ni de POST aca -- todo eso vive en la lib
+ * para garantizar que cron y endpoint manual usen exactamente el mismo camino.
+ */
+function autorizarUno(PDO $pdo, string $apikey, int $id, string $origen, string $prefix): bool {
+    $c = dccAutLoadComprobante($pdo, $id);
+    if ($c === null) {
+        // El comprobante desaparecio entre el SELECT y este load (borrado?).
+        // No es transitorio ni permanente en sentido AFIP -- solo lo saltamos.
+        anotarLog("{$prefix} - SKIP: comprobante desaparecio");
+        return false;
     }
 
-    $tipoCod  = strtoupper(trim((string)($c['tipo'] ?? '')));
-    $tipoAfip = DCC_TIPO_A_AFIP[$tipoCod] ?? 0;
-    if ($tipoAfip === 0) {
-        return cerrarConError($pdo, $id, "Tipo '{$tipoCod}' sin mapeo AFIP", $origen, $prefix);
-    }
-
-    $punto = (int)($c['punto'] ?? 0);
-    if ($punto <= 0) {
-        return cerrarConError($pdo, $id, 'Punto de venta invalido', $origen, $prefix);
-    }
-
-    // Documento del comprador. CF o sin CUIT -> Consumidor Final; el resto = CUIT.
-    $cond    = strtoupper(trim((string)($c['condicion'] ?? '')));
-    $cuitS   = preg_replace('/\D+/', '', (string)($c['cuit'] ?? ''));
-    $docTipo = ($cond === 'CF' || $cuitS === '') ? 99 : 80;
-    $docNro  = $docTipo === 99 ? 0 : (int)$cuitS;
-
-    // Fecha de emision -> YYYYMMDD (formato exigido por AFIP CbteFch). Si el
-    // comprobante no la tiene, cae en hoy (AR) via default del microservicio.
-    $cbteFch = null;
-    $emision = (string)($c['emision'] ?? '');
-    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $emision, $m)) {
-        $cbteFch = "{$m[1]}{$m[2]}{$m[3]}";
-    }
-
-    // Discriminacion IVA por alicuota desde los renglones. Aunque tipos B/C no
-    // muestran IVA discriminado al cliente, WSFEv1 igual exige el array.
-    $iva = calcularIvaPorAlicuota($pdo, $id);
-    if (isset($iva['error'])) {
-        return cerrarConError($pdo, $id, $iva['error'], $origen, $prefix);
-    }
-
-    $body = [
-        'empresa'   => $slug,
-        'punto'     => $punto,
-        'tipo'      => $tipoAfip,
-        'concepto'  => 1,                     // Productos. TODO: derivar si aparece la columna.
-        'imp_neto'  => (float)($c['neto']  ?? 0),
-        'imp_iva'   => (float)($c['iva']   ?? 0),
-        'imp_total' => (float)($c['total'] ?? 0),
-        'doc_tipo'  => $docTipo,
-        'doc_nro'   => (string)$docNro,       // el endpoint hace preg_replace/\D+/ y castea a int
-        'iva'       => $iva['items'],
-    ];
-    if ($cbteFch !== null) $body['cbte_fch'] = $cbteFch;
-
+    $slug   = trim((string)($c['empresa_slug'] ?? ''));
+    $tipoCod = strtoupper(trim((string)($c['tipo'] ?? '')));
     anotarLog(sprintf(
-        '%s empresa=%s tipo=%s(#%d) pto=%d total=%.2f doc=%d/%s -> POST /v4/arca/autorizar',
-        $prefix, $slug, $tipoCod, $tipoAfip, $punto,
-        (float)($c['total'] ?? 0), $docTipo, $docNro
+        '%s empresa=%s tipo=%s pto=%d total=%.2f -> POST /v4/arca/autorizar',
+        $prefix, $slug, $tipoCod, (int)($c['punto'] ?? 0), (float)($c['total'] ?? 0)
     ));
 
-    $resp = postAutorizar($apikey, $body);
-    if (!$resp['ok']) {
-        // Errores AFIP (Resultado='R', Observaciones, Errors.Err) y errores
-        // tecnicos (SoapFault, timeout, cert vencido, empresa sin cert...)
-        // llegan igual como {ok:false, error}. No los diferenciamos aca; el
-        // detalle fino queda en `arca_autorizaciones` que escribe el microservicio.
-        return cerrarConError($pdo, $id, $resp['error'], $origen, $prefix);
-    }
-
-    $d      = $resp['data'];
-    $cae    = (string)($d['cae']     ?? '');
-    $vto    = (string)($d['cae_vto'] ?? '');
-    $nroAf  = (int)($d['cbte_nro']  ?? 0);
-    $upd = $pdo->prepare("
-        UPDATE datacount_comprobantes
-           SET estado     = '3',
-               caenro     = :cae,
-               caevto     = :vto,
-               serie      = :nro,
-               autorizado = NOW(),
-               caeres     = :res
-         WHERE id = :id
-    ");
-    $upd->execute([
-        ':cae' => $cae,
-        ':vto' => $vto,
-        ':nro' => $nroAf,
-        ':res' => "OK CAE {$cae} (vto {$vto})",
-        ':id'  => $id,
-    ]);
-
-    // Adelantamos el correlativo del talonario a lo que devolvio AFIP. Usamos
-    // GREATEST para no retroceder por si otra corrida/proceso ya subio el
-    // numero (p.ej. autorizacion concurrente contra el mismo pto+tipo).
-    $talId = (int)($c['talonario'] ?? 0);
-    if ($talId > 0 && $nroAf > 0) {
-        $pdo->prepare('UPDATE datacount_talonarios SET serie = GREATEST(COALESCE(serie, 0), :nro) WHERE id = :id')
-            ->execute([':nro' => $nroAf, ':id' => $talId]);
+    $r = dccAutAutorizar($pdo, $apikey, $c);
+    if (!$r['ok']) {
+        return cerrarConError($pdo, $id, (string)$r['error'], $origen, $prefix);
     }
 
     registrarSuceso($pdo, $origen, 'info',
-        "cbte#{$id} autorizado - CAE={$cae} nro={$nroAf} vto={$vto}");
-    anotarLog("{$prefix} - OK CAE={$cae} nro={$nroAf} vto={$vto}");
+        "cbte#{$id} autorizado - CAE={$r['cae']} nro={$r['cbte_nro']} vto={$r['cae_vto']}");
+    anotarLog("{$prefix} - OK CAE={$r['cae']} nro={$r['cbte_nro']} vto={$r['cae_vto']}");
     return true;
 }
 
 /**
- * Cierra un comprobante con error: escribe caeres (para saltearlo en la
- * proxima corrida) y deja registro en el log del job y en `sucesos`.
- * Devuelve false para que el caller sume al contador de errores.
+ * Circuit breaker del cron: clasifica el error y actua.
+ *
+ *   TRANSITORIO (AFIP/Apache caidos, TA stale, timeout de red):
+ *     - NO se graba `caeres` -- el proximo tick reintenta el mismo comprobante.
+ *     - Se deja rastro en `sucesos` como 'alerta'.
+ *
+ *   PERMANENTE (bug de armado, empresa mal configurada, rechazo semantico AFIP):
+ *     - Se graba `caeres` con el mensaje (evidencia para el humano).
+ *     - Se DETIENE el motor -- parametros.datacount.comprobantes.autorizar='0'.
+ *     - Se registra el suceso como 'error'.
+ *
+ * Este comportamiento es EXCLUSIVO del cron. El endpoint manual usa la misma
+ * lib de autorizacion pero NO invoca cerrarConError -- muestra un toast y ya.
+ *
+ * Devuelve false siempre (para que el caller sume al contador de errores).
  */
 function cerrarConError(PDO $pdo, int $id, string $msg, string $origen, string $prefix): bool {
-    marcarErrorComprobante($pdo, $id, $msg);
-    registrarSuceso($pdo, $origen, 'error', "cbte#{$id}: {$msg}");
-    anotarLog("{$prefix} - ERROR: {$msg}");
+    if (dccAutEsTransitorio($msg)) {
+        registrarSuceso($pdo, $origen, 'alerta',
+            "cbte#{$id}: reintento por error transitorio: {$msg}");
+        anotarLog("{$prefix} - TRANSITORIO (reintentable): {$msg}");
+        return false;
+    }
+    dccAutMarcarCaeres($pdo, $id, $msg);
+    parametroEscribir($pdo, DCC_AUT_FLAG, '0');
+    registrarSuceso($pdo, $origen, 'error',
+        "cbte#{$id}: MOTOR DETENIDO por error permanente: {$msg}");
+    anotarLog("{$prefix} - PERMANENTE: {$msg} -- MOTOR DETENIDO");
     return false;
-}
-
-function marcarErrorComprobante(PDO $pdo, int $id, string $msg): void {
-    // caeres es mediumtext -- cortamos por las dudas a un tamano razonable para
-    // que un dump de AFIP con XML gigante no explote el UPDATE.
-    $st = $pdo->prepare("UPDATE datacount_comprobantes SET caeres = :m WHERE id = :id");
-    $st->execute([':m' => substr($msg, 0, 60000), ':id' => $id]);
-}
-
-// ============================================================================
-// Renglones -> array `iva` para AFIP
-// ============================================================================
-
-function calcularIvaPorAlicuota(PDO $pdo, int $comprobanteId): array {
-    $st = $pdo->prepare("
-        SELECT iva AS alicuota,
-               SUM(monto) AS base
-          FROM datacount_comprobantes_renglones
-         WHERE comprobante = :id
-      GROUP BY iva
-      ORDER BY iva ASC
-    ");
-    $st->execute([':id' => $comprobanteId]);
-    $rows = $st->fetchAll();
-    if (!$rows) return ['error' => 'Comprobante sin renglones -- nada para autorizar'];
-
-    $items = [];
-    foreach ($rows as $r) {
-        $ali = number_format((float)$r['alicuota'], 2, '.', '');
-        if (!isset(DCC_IVA_ID_AFIP[$ali])) {
-            return ['error' => "Alicuota IVA {$ali}% sin mapeo AFIP"];
-        }
-        $base    = round((float)$r['base'], 2);
-        $importe = round($base * (float)$ali / 100, 2);
-        $items[] = [
-            'id'      => DCC_IVA_ID_AFIP[$ali],
-            'base'    => $base,
-            'importe' => $importe,
-        ];
-    }
-    return ['items' => $items];
-}
-
-// ============================================================================
-// HTTP loopback + apikey
-// ============================================================================
-
-function postAutorizar(string $apikey, array $body): array {
-    $ch = curl_init(DCC_AUT_ENDPOINT);
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => json_encode($body, JSON_UNESCAPED_UNICODE),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => DCC_AUT_TIMEOUT_S,
-        CURLOPT_CONNECTTIMEOUT => DCC_AUT_CONNECT_S,
-        CURLOPT_HTTPHEADER     => [
-            'Authorization: Bearer ' . $apikey,
-            'Content-Type: application/json; charset=utf-8',
-            'Accept: application/json',
-        ],
-    ]);
-    $raw    = curl_exec($ch);
-    $errStr = curl_error($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($raw === false) {
-        return ['ok' => false, 'error' => 'cURL: ' . ($errStr !== '' ? $errStr : 'sin detalle')];
-    }
-    $decoded = json_decode((string)$raw, true);
-    if (!is_array($decoded)) {
-        return ['ok' => false, 'error' => "HTTP {$status}: respuesta no JSON: " . substr((string)$raw, 0, 400)];
-    }
-    if (!empty($decoded['ok']) && $status >= 200 && $status < 300) {
-        $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
-        return ['ok' => true, 'data' => $data];
-    }
-    $errMsg = isset($decoded['error']) ? (string)$decoded['error'] : "HTTP {$status}";
-    return ['ok' => false, 'error' => $errMsg];
-}
-
-/**
- * Devuelve una apikey de `aplicaciones` para hacer el loopback al v4.
- * Preferimos la app "Kernel"; si no existe, agarramos cualquiera habilitada.
- * Mirror del patron ya usado por telegramcanales_actualizar_estados.php y por
- * telegram_mensajes_enviar.php.
- */
-function obtenerApikeyLoopback(PDO $pdo): ?string {
-    static $cached = false;
-    static $key    = null;
-    if ($cached) return $key;
-    $cached = true;
-
-    $st = $pdo->prepare("
-        SELECT apikey
-          FROM aplicaciones
-         WHERE habilitada = '1' AND apikey IS NOT NULL AND apikey <> ''
-      ORDER BY (nombre = 'Kernel') DESC, id ASC
-         LIMIT 1
-    ");
-    $st->execute();
-    $val = $st->fetchColumn();
-    $key = ($val === false || $val === null) ? null : (string)$val;
-    return $key;
 }

@@ -11,21 +11,24 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/datacount_comprobantes_autorizar.php';
+require_once __DIR__ . '/lib/parametros.php';
+require_once __DIR__ . '/lib/sucesos.php';
 
 // Columnas SELECT comunes (debe declararse ANTES del dispatch porque PHP procesa
 // los `const` a nivel de archivo secuencialmente).
 const DC_COLS = "id, uuid, talonario, proyecto, empresa, tipo, punto, serie, fiscal,
-                 caenro, caevto, caeres, emision, vencimiento, asociado, contrato,
-                 cliente, razon, condicion, cuit, domicilio, correo, celular,
-                 neto, iva, total, observaciones, comentarios, medio,
-                 registrado, autorizado, estado";
+                 caenro, caevto, caeres, emision, vencimiento, concepto,
+                 asociado, contrato, cliente, razon, condicion, cuit, domicilio,
+                 correo, celular, neto, iva, total, observaciones, comentarios,
+                 medio, registrado, autorizado, estado";
 
 // Columnas de datacount_comprobantes que estan bajo control del payload.
 // uuid / registrado se setean aparte en el alta (no via payload).
 const DC_PAYLOAD_COLS = [
     'talonario', 'proyecto', 'empresa', 'tipo', 'punto', 'serie', 'fiscal',
-    'caenro', 'caevto', 'caeres', 'emision', 'vencimiento', 'asociado',
-    'contrato', 'cliente', 'razon', 'condicion', 'cuit', 'domicilio',
+    'caenro', 'caevto', 'caeres', 'emision', 'vencimiento', 'concepto',
+    'asociado', 'contrato', 'cliente', 'razon', 'condicion', 'cuit', 'domicilio',
     'correo', 'celular', 'neto', 'iva', 'total', 'observaciones',
     'comentarios', 'medio', 'autorizado', 'estado',
 ];
@@ -46,10 +49,22 @@ const DC_TRANSICIONES_ESTADO = [
 header('Content-Type: application/json; charset=utf-8');
 
 try {
-    requirePermCrud('datacount.comprobantes');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    $action = (string)($_GET['action'] ?? '');
+
+    // La accion `autorizar` NO usa el permiso CRUD (agregar) -- obtener un
+    // CAE contra AFIP es una capacidad propia: `datacount.comprobantes.autorizar_manual`.
+    // Se autoriza aca antes de entrar al dispatch normal.
+    if ($method === 'POST' && $action === 'autorizar') {
+        requirePermission('datacount.comprobantes.autorizar_manual');
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleAutorizar($pdo, $id);
+        exit;
+    }
+
+    requirePermCrud('datacount.comprobantes');
 
     if ($method === 'GET' && ($_GET['lookups'] ?? '') !== '') {
         handleLookups($pdo);
@@ -57,12 +72,12 @@ try {
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
         handleList($pdo, $_GET);
-    } elseif ($method === 'POST' && ($_GET['action'] ?? '') === 'clonar') {
+    } elseif ($method === 'POST' && $action === 'clonar') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleClonar($pdo, $id);
     } elseif ($method === 'POST') {
         handleCreate($pdo, readJsonBody());
-    } elseif ($method === 'PUT' && ($_GET['action'] ?? '') === 'estado') {
+    } elseif ($method === 'PUT' && $action === 'estado') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleCambiarEstado($pdo, $id, readJsonBody());
     } elseif ($method === 'PUT') {
@@ -176,6 +191,11 @@ function handleList(PDO $pdo, array $q): void {
         FROM datacount_comprobantes
     ")->fetch();
 
+    // Estado del motor de autorizacion automatica (mismo flag que consume el
+    // visor de Arca > Autorizaciones y el cron cloud/jobs/datacount_comprobantes_autorizar.php).
+    // Booleano: '1' = habilitado; otro = detenido (pausa manual).
+    $motor = getParametro('datacount.comprobantes.autorizar', '1');
+
     // JOIN con datacount_talonarios para traer el nombre del talonario y
     // pintar la columna "Talonario" del listado sin round-trip extra.
     $selectCols = 'c.' . preg_replace('/,\s*/', ', c.', DC_COLS);
@@ -196,6 +216,7 @@ function handleList(PDO $pdo, array $q): void {
         'stats' => [
             'total'         => (int)($stats['total']         ?? 0),
             'importe_total' => (float)($stats['importe_total'] ?? 0),
+            'motor'         => (string)($motor ?? '1'),
         ],
         'items' => $rows,
     ]);
@@ -255,7 +276,7 @@ function handleGetOne(PDO $pdo, int $id): void {
     $stmt = $pdo->prepare("
         SELECT c.id, c.uuid, c.talonario, c.proyecto, c.empresa, c.tipo, c.punto,
                c.serie, c.fiscal, c.caenro, c.caevto, c.caeres, c.emision,
-               c.vencimiento, c.asociado, c.contrato, c.cliente, c.razon,
+               c.vencimiento, c.concepto, c.asociado, c.contrato, c.cliente, c.razon,
                c.condicion, c.cuit, c.domicilio, c.correo, c.celular, c.neto,
                c.iva, c.total, c.observaciones, c.comentarios, c.medio,
                c.registrado, c.autorizado, c.estado,
@@ -351,6 +372,7 @@ function sanitizePayload(array $in): array {
         'caeres'        => ['str', null],
         'emision'       => ['date'],
         'vencimiento'   => ['date'],
+        'concepto'      => ['int'],
         'asociado'      => ['int'],
         'contrato'      => ['int'],
         'cliente'       => ['int'],
@@ -499,16 +521,16 @@ function handleCreate(PDO $pdo, array $in): void {
         $sql = "
             INSERT INTO datacount_comprobantes
                 (uuid, talonario, proyecto, empresa, tipo, punto, serie, fiscal,
-                 caenro, caevto, caeres, emision, vencimiento, asociado, contrato,
-                 cliente, razon, condicion, cuit, domicilio, correo, celular,
-                 neto, iva, total, observaciones, comentarios, medio,
-                 registrado, autorizado, estado)
+                 caenro, caevto, caeres, emision, vencimiento, concepto,
+                 asociado, contrato, cliente, razon, condicion, cuit, domicilio,
+                 correo, celular, neto, iva, total, observaciones, comentarios,
+                 medio, registrado, autorizado, estado)
             VALUES
                 (:uuid, :talonario, :proyecto, :empresa, :tipo, :punto, :serie, :fiscal,
-                 :caenro, :caevto, :caeres, :emision, :vencimiento, :asociado, :contrato,
-                 :cliente, :razon, :condicion, :cuit, :domicilio, :correo, :celular,
-                 :neto, :iva, :total, :observaciones, :comentarios, :medio,
-                 :registrado, :autorizado, :estado)
+                 :caenro, :caevto, :caeres, :emision, :vencimiento, :concepto,
+                 :asociado, :contrato, :cliente, :razon, :condicion, :cuit, :domicilio,
+                 :correo, :celular, :neto, :iva, :total, :observaciones, :comentarios,
+                 :medio, :registrado, :autorizado, :estado)
         ";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
@@ -525,6 +547,7 @@ function handleCreate(PDO $pdo, array $in): void {
             ':caeres'        => $p['caeres'],
             ':emision'       => $p['emision'],
             ':vencimiento'   => $p['vencimiento'],
+            ':concepto'      => $p['concepto'],
             ':asociado'      => $p['asociado'],
             ':contrato'      => $p['contrato'],
             ':cliente'       => $p['cliente'],
@@ -587,16 +610,16 @@ function handleClonar(PDO $pdo, int $id): void {
         $sql = "
             INSERT INTO datacount_comprobantes
                 (uuid, talonario, proyecto, empresa, tipo, punto, serie, fiscal,
-                 caenro, caevto, caeres, emision, vencimiento, asociado, contrato,
-                 cliente, razon, condicion, cuit, domicilio, correo, celular,
-                 neto, iva, total, observaciones, comentarios, medio,
-                 registrado, autorizado, estado)
+                 caenro, caevto, caeres, emision, vencimiento, concepto,
+                 asociado, contrato, cliente, razon, condicion, cuit, domicilio,
+                 correo, celular, neto, iva, total, observaciones, comentarios,
+                 medio, registrado, autorizado, estado)
             VALUES
                 (:uuid, :talonario, :proyecto, :empresa, :tipo, :punto, NULL, :fiscal,
-                 NULL, NULL, NULL, :emision, :vencimiento, :asociado, :contrato,
-                 :cliente, :razon, :condicion, :cuit, :domicilio, :correo, :celular,
-                 :neto, :iva, :total, :observaciones, :comentarios, :medio,
-                 :registrado, NULL, '1')
+                 NULL, NULL, NULL, :emision, :vencimiento, :concepto,
+                 :asociado, :contrato, :cliente, :razon, :condicion, :cuit, :domicilio,
+                 :correo, :celular, :neto, :iva, :total, :observaciones, :comentarios,
+                 :medio, :registrado, NULL, '1')
         ";
         $ins = $pdo->prepare($sql);
         $ins->execute([
@@ -609,6 +632,7 @@ function handleClonar(PDO $pdo, int $id): void {
             ':fiscal'        => $src['fiscal'],
             ':emision'       => $emision,
             ':vencimiento'   => $vencimiento,
+            ':concepto'      => $src['concepto'],
             ':asociado'      => $src['asociado'],
             ':contrato'      => $src['contrato'],
             ':cliente'       => $src['cliente'],
@@ -649,6 +673,80 @@ function handleClonar(PDO $pdo, int $id): void {
     }
 
     jsonOk(['id' => $nuevoId], 201);
+}
+
+// Autoriza manualmente UN comprobante contra AFIP (accion "Autorizar" del
+// menu contextual del listado). Comparte el 100% de la logica de autorizacion
+// con el cron via la lib `datacount_comprobantes_autorizar.php` -- no hay
+// dos caminos para obtener un CAE.
+//
+// Circuit breaker: si el error es PERMANENTE (cert corrupto, empresa mal
+// configurada, rechazo semantico AFIP), detiene el motor automatico igual
+// que el cron -- razon: un fallo sistemico afecta tambien a las corridas
+// automatizadas y no queremos que el cron siga golpeando AFIP con la misma
+// causa. Si el error es TRANSITORIO (AFIP/Apache caidos, TA stale), NO
+// se toca el motor -- el cron reintentara solo cuando AFIP se recupere.
+//
+// En cualquier error graba `caeres` (incluso transitorios) para que el
+// operador vea el mensaje en el modal "Respuesta CAE" del panel.
+//
+// Validaciones previas: existe, fiscal='1', estado='2'. Si no, 400/404/409.
+function handleAutorizar(PDO $pdo, int $id): void {
+    // 1) Cargar y validar el comprobante contra los criterios del pipeline.
+    $c = dccAutLoadComprobante($pdo, $id);
+    if ($c === null) jsonError('Comprobante no encontrado', 404);
+    if ((string)($c['fiscal'] ?? '') !== '1') {
+        jsonError('El comprobante no es fiscal, no se autoriza contra AFIP', 409);
+    }
+    if ((string)($c['estado'] ?? '') !== '2') {
+        jsonError('Solo se autorizan comprobantes en estado Pendiente', 409);
+    }
+
+    // 2) Apikey para el loopback al v4 (mismo patron que el cron).
+    $apikey = dccAutObtenerApikey($pdo);
+    if ($apikey === null) {
+        jsonError('No hay ninguna aplicacion habilitada con apikey para el loopback', 500);
+    }
+
+    // 3) Delegar en la lib (canal unico compartido con el cron).
+    $r = dccAutAutorizar($pdo, $apikey, $c);
+
+    if (!$r['ok']) {
+        $errMsg = (string)$r['error'];
+        // Grabamos caeres para que el mensaje quede visible en el modal del
+        // panel, independientemente de si fue transitorio o permanente.
+        dccAutMarcarCaeres($pdo, $id, $errMsg);
+
+        // Circuit breaker igual que el cron: los permanentes detienen el
+        // motor automatico. Un error sistemico afecta a ambos caminos por
+        // igual -- si el manual choco con cert corrupto o rechazo AFIP, el
+        // cron del proximo minuto va a chocar con lo mismo.
+        if (!dccAutEsTransitorio($errMsg)) {
+            parametroEscribir($pdo, 'datacount.comprobantes.autorizar', '0');
+            try {
+                registrarSuceso($pdo, 'panel/datacount_comprobantes.autorizar', 'error',
+                    "cbte#{$id}: MOTOR DETENIDO tras autorizacion manual con error permanente ({$r['fuente']}): {$errMsg}");
+            } catch (Throwable $_) { /* no romper el flujo */ }
+        } else {
+            try {
+                registrarSuceso($pdo, 'panel/datacount_comprobantes.autorizar', 'alerta',
+                    "cbte#{$id}: autorizacion manual fallo transitoriamente ({$r['fuente']}): {$errMsg}");
+            } catch (Throwable $_) { /* no romper el flujo */ }
+        }
+        jsonError($errMsg, 422);
+    }
+
+    try {
+        registrarSuceso($pdo, 'panel/datacount_comprobantes.autorizar', 'info',
+            "cbte#{$id} autorizado manualmente - CAE={$r['cae']} nro={$r['cbte_nro']} vto={$r['cae_vto']}");
+    } catch (Throwable $_) { /* no romper el flujo */ }
+
+    jsonOk([
+        'id'       => $id,
+        'cae'      => $r['cae'],
+        'cae_vto'  => $r['cae_vto'],
+        'cbte_nro' => $r['cbte_nro'],
+    ]);
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {

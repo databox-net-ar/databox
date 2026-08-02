@@ -25,10 +25,22 @@ const ARCA_CERT_COLS = "id, nombre, llave, certificado, actualizado";
 header('Content-Type: application/json; charset=utf-8');
 
 try {
-    requirePermCrud('plataformas.arca.certificados');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    $action = (string)($_GET['action'] ?? '');
+
+    // La accion `invalidar_ta_cache` NO usa el permiso CRUD (agregar) -- purgar
+    // los tickets WSAA de un certificado es un verbo propio, distinto de dar de
+    // alta un certificado nuevo. Permiso: `plataformas.arca.certificados.invalidar_ta_cache`.
+    if ($method === 'POST' && $action === 'invalidar_ta_cache') {
+        requirePermission('plataformas.arca.certificados.invalidar_ta_cache');
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleInvalidarTaCache($pdo, $id);
+        exit;
+    }
+
+    requirePermCrud('plataformas.arca.certificados');
 
     if ($method === 'GET' && $id > 0) {
         handleGetOne($pdo, $id);
@@ -210,4 +222,26 @@ function handleDelete(PDO $pdo, int $id): void {
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Certificado no encontrado', 404);
     jsonOk(['id' => $id]);
+}
+
+// ----------------------------------------------------------------------------
+// Invalidar cache de tickets de acceso (WSAA)
+// ----------------------------------------------------------------------------
+
+// Borra todas las filas de arca_ta_cache asociadas al certificado. Uso tipico:
+// el operador rota o renueva el .crt y quiere forzar que la proxima llamada a
+// AFIP negocie un TA nuevo en vez de reutilizar el cacheado (que quedo firmado
+// con la llave anterior).
+//
+// Puede borrar N filas: un certificado puede tener 1 TA por cada `service`
+// AFIP (wsfe, wsmtxca, ws_sr_padron_a4, etc.). No es error borrar 0 filas
+// (puede no haber TA cacheado todavia); devolvemos el conteo para feedback.
+function handleInvalidarTaCache(PDO $pdo, int $id): void {
+    $exists = $pdo->prepare('SELECT id FROM arca_certificados WHERE id = :id');
+    $exists->execute([':id' => $id]);
+    if (!$exists->fetch()) jsonError('Certificado no encontrado', 404);
+
+    $stmt = $pdo->prepare('DELETE FROM arca_ta_cache WHERE certificado_id = :id');
+    $stmt->execute([':id' => $id]);
+    jsonOk(['id' => $id, 'borrados' => $stmt->rowCount()]);
 }

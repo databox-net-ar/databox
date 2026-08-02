@@ -10490,7 +10490,7 @@ function dcCompEsEditable(estado) {
 // Valor -> lista de acciones habilitadas en el menu.
 const DCCOMP_ACCIONES_POR_ESTADO = {
   '1': ['marcar-pendiente', 'marcar-anulado', 'editar', 'eliminar'],
-  '2': ['marcar-preparacion', 'marcar-anulado', 'eliminar'],
+  '2': ['autorizar', 'marcar-preparacion', 'marcar-anulado', 'eliminar'],
   '3': [],
   '0': [],
   '4': ['marcar-preparacion', 'eliminar'],
@@ -10555,6 +10555,10 @@ route('/datacount_comprobantes', async (mount) => {
       <div class="stats-bar" id="dcCompStats">
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Importe total</span><span class="stat-value orange">—</span></div>
+        <div class="stat-card dash-link" title="Ir a Arca &gt; Autorizaciones"
+             onclick="location.hash='#/arcaautorizaciones'">
+          <span class="stat-label">Motor</span><span class="stat-value">—</span>
+        </div>
       </div>
 
       <div class="toolbar">
@@ -10607,6 +10611,9 @@ route('/datacount_comprobantes', async (mount) => {
       </button>
       <button type="button" data-action="clonar" role="menuitem">
         <i class="fa-solid fa-clone"></i><span>Clonar</span>
+      </button>
+      <button type="button" data-action="autorizar" role="menuitem">
+        <i class="fa-solid fa-file-signature"></i><span>Autorizar</span>
       </button>
       <div class="ctx-menu-sep" data-role="sep-transiciones"></div>
       <button type="button" data-action="marcar-preparacion" role="menuitem">
@@ -10827,6 +10834,7 @@ route('/datacount_comprobantes', async (mount) => {
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar')          abrirConsultarDcComp(data.id);
     if (b.dataset.action === 'clonar')             clonarDcComp(data.id);
+    if (b.dataset.action === 'autorizar')          autorizarDcComp(data.id);
     if (b.dataset.action === 'editar')             abrirAltaEdicionDcComp(data.id);
     if (b.dataset.action === 'eliminar')           eliminarDcComp(data.id);
     if (b.dataset.action === 'marcar-preparacion') cambiarEstadoDcComp(data.id, '1');
@@ -10934,9 +10942,15 @@ async function cargarDcComp() {
 
 function pintarStatsDcComp(s) {
   const cards = $$('#dcCompStats .stat-card .stat-value');
-  if (cards.length < 2) return;
+  if (cards.length < 3) return;
   cards[0].textContent = fmtNum(s.total);
   cards[1].textContent = '$ ' + dcCompFmtImporte(s.importe_total);
+  // Motor booleano: '1' = habilitado (Iniciado, blanco); otro = detenido (rojo).
+  // Mismo criterio que pintarStatsArcAut. Semantica en
+  // cloud/jobs/datacount_comprobantes_autorizar.php.
+  const habilitado = String(s.motor ?? '1') === '1';
+  cards[2].textContent = habilitado ? 'Iniciado' : 'Detenido';
+  cards[2].className   = 'stat-value' + (habilitado ? '' : ' red');
 }
 
 function pintarTablaDcComp(rows) {
@@ -11142,16 +11156,16 @@ function renderConsultaDcComp(c) {
       </div>`;
   };
 
-  // Variante para Detalle (respuesta CAE): oculta el texto del error/respuesta
+  // Variante para CAE respuesta: oculta el texto del error/respuesta
   // detrás de un "Ver" que abre el modal secundario. Si no hay respuesta,
   // se comporta como el resto de las líneas (muestra "Sin dato").
   const lineaCaeRes = (value) => {
     const empty = value == null || value === '';
-    if (empty) return linea('Detalle', null);
+    if (empty) return linea('CAE respuesta', null);
     const safe = esc(value);
     return `
       <div style="display:flex;align-items:baseline;gap:6px;font-size:.9rem;line-height:1.55;padding:3px 0;min-width:0">
-        <span style="color:var(--muted);font-weight:600;flex:0 0 auto">Detalle:</span>
+        <span style="color:var(--muted);font-weight:600;flex:0 0 auto">CAE respuesta:</span>
         <a
           href="javascript:void(0)"
           data-full="${safe}"
@@ -11180,6 +11194,7 @@ function renderConsultaDcComp(c) {
     <!-- Encabezado tipo factura -->
     <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
       <div>
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:4px">${esc(c.talonario_nombre || (c.talonario ? `Talonario #${c.talonario}` : 'Sin talonario'))}</div>
         <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
           <span style="font-family:monospace;font-size:1.5rem;font-weight:700">${esc(tipoEnc)}</span>
           <span style="font-family:monospace;font-size:1.2rem;color:var(--muted)">${esc(numero)}</span>
@@ -11288,6 +11303,7 @@ function renderConsultaDcComp(c) {
         ${card('Comentarios',   c.comentarios)}
       </div>
       <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+        ${card('Concepto',      c.concepto == null || c.concepto === '' ? null : (DC_COMP_CONCEPTOS[String(c.concepto)] || c.concepto))}
         ${card('Medio de pago', c.medio)}
         ${card('Asociado',      c.asociado)}
         ${card('Contrato',      c.contrato)}
@@ -11345,6 +11361,12 @@ window.dcCompVerCaeResCompleto = dcCompVerCaeResCompleto;
 
 // Alicuotas IVA disponibles en el <select> de cada línea (typico AFIP AR).
 const DC_COMP_IVA_ALICUOTAS = ['0', '2.5', '5', '10.5', '21', '27'];
+
+// Conceptos AFIP admitidos (FECAESolicitar/Concepto). La columna `concepto` de
+// `datacount_comprobantes` guarda el valor numerico; si viene NULL se muestra
+// como "Sin dato" en el modal Consultar y el job de autorizacion cae al default
+// del microservicio (1 = Productos).
+const DC_COMP_CONCEPTOS = { '1': 'Productos', '2': 'Servicios', '3': 'Productos + Servicios' };
 
 // Defaults precargados al abrir "Nuevo comprobante": fecha de emision = hoy,
 // fecha de vencimiento = hoy + 7 dias, condicion IVA = Consumidor Final ('CF').
@@ -11482,6 +11504,16 @@ function dcCompOpcionesCondicion(actual) {
     items.map((o) => `<option value="${esc(o.valor)}"${cur === String(o.valor) ? ' selected' : ''}>${esc(o.texto)}</option>`).join('');
 }
 
+// Options del <select> Concepto (AFIP FECAESolicitar/Concepto). Catalogo fijo
+// definido en DC_COMP_CONCEPTOS — no depende de la tabla `estados`.
+function dcCompOpcionesConcepto(actual) {
+  const cur = actual == null ? '' : String(actual);
+  const opts = Object.entries(DC_COMP_CONCEPTOS)
+    .map(([val, txt]) => `<option value="${esc(val)}"${cur === val ? ' selected' : ''}>${esc(txt)}</option>`)
+    .join('');
+  return `<option value=""${cur === '' ? ' selected' : ''}>— Seleccionar —</option>${opts}`;
+}
+
 function formDcCompHtml(c) {
   const v  = (k) => esc(c?.[k] ?? '');
   const lk = dcCompLookups || { talonarios: [], proyectos: [], empresas: [] };
@@ -11528,7 +11560,7 @@ function formDcCompHtml(c) {
           <select id="dcTalonario"${(!c?.proyecto || !c?.empresa) ? ' disabled' : ''}>${dcCompOpcionesTalonarios(c?.talonario, c?.proyecto, c?.empresa)}</select>
         </div>
       </div>
-      <div class="form-row">
+      <div class="form-row form-row-3">
         <div class="form-group">
           <label>Fecha de emisión</label>
           <input type="date" id="dcEmision" value="${v('emision')}">
@@ -11536,6 +11568,10 @@ function formDcCompHtml(c) {
         <div class="form-group">
           <label>Fecha de vencimiento</label>
           <input type="date" id="dcVencimiento" value="${v('vencimiento')}">
+        </div>
+        <div class="form-group">
+          <label>Concepto</label>
+          <select id="dcConcepto">${dcCompOpcionesConcepto(c?.concepto)}</select>
         </div>
       </div>
 
@@ -11699,6 +11735,7 @@ async function guardarDcComp(id, btn) {
     empresa:       $('#dcEmpresa').value,
     emision:       $('#dcEmision').value || null,
     vencimiento:   $('#dcVencimiento').value || null,
+    concepto:      $('#dcConcepto').value || null,
     razon:         $('#dcRazon').value.trim(),
     condicion:     $('#dcCondicion').value.trim(),
     cuit:          $('#dcCuit').value.trim(),
@@ -11757,6 +11794,27 @@ async function clonarDcComp(id) {
   try {
     const r = await apiSend(`api/datacount_comprobantes.php?id=${id}&action=clonar`, 'POST');
     toast(`Comprobante clonado como #${r?.id ?? '?'}.`);
+    cargarDcComp();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Dispara la autorizacion manual contra AFIP para 1 comprobante. Usa el mismo
+// canal de autorizacion que el cron (cloud/api/lib/datacount_comprobantes_autorizar.php
+// via el endpoint POST ?action=autorizar), pero NO toca el flag del motor
+// automatico -- es una accion humana puntual.
+// Toast verde con CAE si sale OK, rojo con el mensaje de AFIP si falla.
+async function autorizarDcComp(id) {
+  const ok = await confirmar({
+    title:       'Autorizar contra AFIP',
+    message:     `Se solicitará CAE a AFIP para el comprobante #${id}. La operación es irreversible.`,
+    confirmText: 'Autorizar',
+  });
+  if (!ok) return;
+  try {
+    const r = await apiSend(`api/datacount_comprobantes.php?id=${id}&action=autorizar`, 'POST');
+    toast(`CAE ${r?.cae ?? '?'} (nro ${r?.cbte_nro ?? '?'}, vto ${r?.cae_vto ?? '?'}).`);
     cargarDcComp();
   } catch (e) {
     toast(e.message, { error: true });
@@ -29255,6 +29313,9 @@ route('/arcacertificados', async (mount) => {
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
+      <button type="button" data-action="invalidar_ta_cache" role="menuitem">
+        <i class="fa-solid fa-rotate"></i><span>Invalidar caché</span>
+      </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
@@ -29337,9 +29398,10 @@ route('/arcacertificados', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarArcCert(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionArcCert(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarArcCert(data.id);
+    if (b.dataset.action === 'consultar')          abrirConsultarArcCert(data.id);
+    if (b.dataset.action === 'invalidar_ta_cache') invalidarTaCacheArcCert(data.id);
+    if (b.dataset.action === 'editar')             abrirAltaEdicionArcCert(data.id);
+    if (b.dataset.action === 'eliminar')           eliminarArcCert(data.id);
   });
 
   $('#arcCertTbody').addEventListener('click', (ev) => {
@@ -29686,6 +29748,22 @@ async function eliminarArcCert(id) {
   }
 }
 
+async function invalidarTaCacheArcCert(id) {
+  const ok = await confirmar({
+    title: 'Invalidar caché',
+    message: `Se borrarán los tickets de acceso (TA) cacheados para el certificado #${id}. La próxima llamada a AFIP negociará un TA nuevo contra el WSAA.`,
+    confirmText: 'Invalidar',
+  });
+  if (!ok) return;
+  try {
+    const r = await apiSend(`api/arcacertificados.php?id=${id}&action=invalidar_ta_cache`, 'POST');
+    const n = Number(r?.borrados ?? 0);
+    toast(n > 0 ? `Caché invalidado (${n} ticket${n === 1 ? '' : 's'}).` : 'No había tickets cacheados.');
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 function abrirMenuContextoArcCert(id, x, y) {
   const menu = $('#arcCertCtxMenu');
   if (!menu) return;
@@ -29705,6 +29783,11 @@ const arcAutFiltros = { ...arcAutFiltrosDefaults };
 let arcAutBuscadorTimer   = null;
 let arcAutFiltrosSnapshot = null;
 let arcAutEmpresasCatalogo = null;
+// Ultimo valor del flag `datacount.comprobantes.autorizar` recibido en stats.
+// Lo setea pintarStatsArcAut() y lo consume el boton hamburger del motor para
+// mostrar la unica opcion aplicable (Iniciar cuando esta detenido, Detener
+// cuando esta habilitado). Booleano: '1' = habilitado; otro = detenido.
+let arcAutMotorActual     = '1';
 
 async function arcAutCargarEmpresas() {
   if (arcAutEmpresasCatalogo) return arcAutEmpresasCatalogo;
@@ -29745,6 +29828,7 @@ route('/arcaautorizaciones', async (mount) => {
         <div class="stat-card"><span class="stat-label">Aceptadas</span><span class="stat-value green">—</span></div>
         <div class="stat-card"><span class="stat-label">Rechazadas</span><span class="stat-value" style="color:#fcd34d">—</span></div>
         <div class="stat-card"><span class="stat-label">Errores</span><span class="stat-value" style="color:#f87171">—</span></div>
+        <div class="stat-card"><span class="stat-label">Motor</span><span class="stat-value">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -29761,7 +29845,19 @@ route('/arcaautorizaciones', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="arcAutRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="arcAutMotorBtn" title="Motor de autorizacion">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
+      </div>
+
+      <div id="arcAutMotorMenu" class="ctx-menu" role="menu">
+        <button type="button" class="ctx-menu-plain" data-action="motor-detener" role="menuitem">
+          <i class="fa-solid fa-stop-circle"></i><span>Detener motor</span>
+        </button>
+        <button type="button" class="ctx-menu-plain" data-action="motor-iniciar" role="menuitem">
+          <i class="fa-solid fa-play-circle"></i><span>Iniciar motor</span>
+        </button>
       </div>
 
       <div class="table-card">
@@ -29836,6 +29932,34 @@ route('/arcaautorizaciones', async (mount) => {
   $('#arcAutFiltrosBtn').addEventListener('click', () => abrirModalFiltrosArcAut());
   $('#arcAutRefrescarBtn').addEventListener('click', () => cargarArcAut());
 
+  // Hamburger del motor: abre un ctx-menu debajo con la unica opcion aplicable
+  // segun el ultimo valor del flag `datacount.comprobantes.autorizar`:
+  //   '1'    -> "Detener motor" (unica visible)
+  //   otro   -> "Iniciar motor" (unica visible)
+  $('#arcAutMotorBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const menu       = $('#arcAutMotorMenu');
+    const habilitado = String(arcAutMotorActual) === '1';
+    menu.querySelector('[data-action="motor-detener"]').style.display = habilitado ? '' : 'none';
+    menu.querySelector('[data-action="motor-iniciar"]').style.display = habilitado ? 'none' : '';
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu(menu, r.right - 180, r.bottom + 4, {});
+  });
+
+  $('#arcAutMotorMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    const accion = b.dataset.action === 'motor-detener' ? 'detener' : 'iniciar';
+    try {
+      await apiSend('api/arca_autorizaciones_motor.php', 'POST', { accion });
+      toast(accion === 'detener' ? 'Motor detenido.' : 'Motor iniciado.');
+      cargarArcAut();   // refresca stats (y por ende la tarjeta Motor)
+    } catch (e) {
+      toast('Error: ' + e.message, 'error');
+    }
+  });
+
   const inp = $('#arcAutSearch');
   const clr = $('#arcAutSearchClear');
   inp.value = arcAutFiltros.q || '';
@@ -29895,11 +30019,19 @@ async function cargarArcAut() {
 
 function pintarStatsArcAut(s) {
   const cards = $$('#arcAutStats .stat-card .stat-value');
-  if (cards.length < 4) return;
+  if (cards.length < 5) return;
+  // Orden: Total, Aceptadas, Rechazadas, Errores, Motor.
+  //
+  // Motor es booleano: '1' = habilitado (Iniciado, blanco), cualquier otro
+  // valor = detenido (rojo). Semantica en cloud/jobs/datacount_comprobantes_autorizar.php.
   cards[0].textContent = fmtNum(s.total      ?? 0);
   cards[1].textContent = fmtNum(s.aceptadas  ?? 0);
   cards[2].textContent = fmtNum(s.rechazadas ?? 0);
   cards[3].textContent = fmtNum(s.errores    ?? 0);
+  arcAutMotorActual = String(s.motor ?? '1');
+  const habilitado = arcAutMotorActual === '1';
+  cards[4].textContent = habilitado ? 'Iniciado' : 'Detenido';
+  cards[4].className   = 'stat-value' + (habilitado ? '' : ' red');
 }
 
 function pintarTablaArcAut(rows) {
