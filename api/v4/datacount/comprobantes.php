@@ -9,35 +9,27 @@
 // tipo, punto y fiscal. Todo lo demas es opcional; los renglones definen el
 // importe (neto/iva/total se recalculan server-side).
 //
-// El comprobante se inserta en estado '2' (Pendiente) y se autoriza contra
-// AFIP EN LA MISMA REQUEST, delegando en la lib compartida
-// `cloud/api/lib/datacount_comprobantes_autorizar.php::dccAutAutorizar()` --
-// mismo canal que usa el cron `jobs/datacount_comprobantes_autorizar.php` y
-// el boton "Autorizar" del ABM. Si AFIP responde OK, el comprobante queda
-// en estado '3' con `cae`, `caevto`, `serie` y `autorizado` seteados; la
-// response HTTP incluye esos datos.
+// El endpoint SOLO da de alta el comprobante en estado '2' (Pendiente) y
+// devuelve 201. La autorizacion contra AFIP es 100% asincronica: la hace
+// el cron `cloud/jobs/datacount_comprobantes_autorizar.php` cuando le
+// llega el turno al comprobante. Este endpoint NO llama a AFIP.
 //
-// Si AFIP rechaza o falla, el comprobante queda persistido en estado '2'
-// con el error en `caeres`, y la response es HTTP 422 con el mensaje +
-// el id/uuid para que el caller pueda referenciarlo despues (el cron lo
-// va a reintentar segun su ciclo).
+// Response: siempre 201 con el comprobante creado. Los campos
+// `cae`, `cae_vto`, `cbte_nro`, `serie`, `autorizado` y `caeres` salen
+// en `null` -- todavia no se autorizo. Para conocer el resultado final
+// el caller espera el webhook (ver abajo) o consulta el ABM por `id`/`uuid`.
 //
-// Si el talonario NO es fiscal, o el caller pisa el `estado` con algo
-// distinto de '2' (por ej. '1' Preparacion para un borrador), NO se
-// intenta autorizar -- se devuelve el comprobante como fue creado.
+// El `concepto` por defecto es 3 (Productos + Servicios) -- el uso tipico
+// de esta ingesta v4 es facturacion mixta. Se puede pisar en el body con
+// 1 (Productos) o 2 (Servicios) si el caller sabe que va a facturar puro.
 //
-// El `concepto` por defecto es 3 (Productos + Servicios) — el uso tipico de
-// esta ingesta v4 es facturacion mixta. Se puede pisar en el body con 1
-// (Productos) o 2 (Servicios) si el caller sabe que va a facturar puro.
-//
-// Webhook opcional: si el caller manda `webhook_url` en el body, apenas
-// obtenemos el CAE hacemos POST JSON a esa URL con el snapshot del
-// comprobante (mismo shape que la response 201). Best-effort: si el POST
-// falla, el comprobante ya quedo autorizado y la 201 al caller original
-// no se toca -- `webhook_estado` queda en 'pendiente' y el cron
-// cloud/jobs/datacount_comprobantes_notificar.php lo reintenta hasta
-// que el receptor devuelva 2xx. El disparo online (este endpoint) y el
-// de retry (cron) comparten `dccWebhookDisparar` para no divergir.
+// Webhook opcional: si el caller manda `webhook_url` en el body, el
+// comprobante queda con `webhook_estado = 'pendiente'`. Cuando el cron de
+// autorizacion logre el CAE, el cron
+// `cloud/jobs/datacount_comprobantes_notificar.php` hace POST JSON al
+// receptor con el snapshot final del comprobante, reintentando hasta que
+// devuelva 2xx. Ni el alta ni la autorizacion disparan el webhook -- todo
+// pasa por el cron de notificacion.
 //
 // Auth: Bearer con apikey de la tabla `aplicaciones` (mismo esquema que el
 // resto de los microservicios v4).
@@ -48,9 +40,6 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
-require_once dirname(__DIR__, 3) . '/cloud/api/lib/datacount_comprobantes_autorizar.php';
-require_once dirname(__DIR__, 3) . '/cloud/api/lib/datacount_comprobantes_webhook.php';
-require_once dirname(__DIR__, 3) . '/cloud/api/lib/parametros.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/sucesos.php';
 
 // ---------------------------------------------------------------------------
@@ -71,14 +60,14 @@ function dcReadBearer(): string {
 
 function dcRequireApp(): array {
     $token = dcReadBearer();
-    if ($token === '') jsonError('Bearer token ausente', 401);
+    if ($token === '') dcErrorAlta('Bearer token ausente', 401);
 
     $pdo = db();
     $st  = $pdo->prepare('SELECT id, nombre, habilitada FROM aplicaciones WHERE apikey = :k LIMIT 1');
     $st->execute([':k' => $token]);
     $app = $st->fetch();
-    if (!$app)                              jsonError('API key desconocida', 401);
-    if ((string)$app['habilitada'] !== '1') jsonError('Aplicacion deshabilitada', 401);
+    if (!$app)                              dcErrorAlta('API key desconocida', 401);
+    if ((string)$app['habilitada'] !== '1') dcErrorAlta('Aplicacion deshabilitada', 401);
 
     // Contador de uso -- best effort, un fallo aca no debe tumbar el request.
     try {
@@ -96,11 +85,32 @@ function dcRequireApp(): array {
 try {
     dcRequireApp();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-    if ($method !== 'POST') jsonError('Metodo no soportado', 405);
+    if ($method !== 'POST') dcErrorAlta('Metodo no soportado', 405);
 
     handleCreate(readJsonBody());
 } catch (Throwable $e) {
+    // Cualquier excepcion no controlada durante el alta se registra como
+    // suceso 'error' antes de responder al caller, para dejar traza en el
+    // visor.
+    try {
+        registrarSuceso(db(), 'v4/datacount.comprobantes', 'error',
+            'excepcion en alta: ' . $e->getMessage());
+    } catch (Throwable $_) { /* no romper el flujo */ }
     jsonError($e->getMessage(), 500);
+}
+
+/**
+ * Wrapper de `jsonError` que ademas registra el fallo como suceso 'error'
+ * en el visor. Se usa para todos los rechazos de alta (400/401/404/405/etc.)
+ * para que quede constancia de cada intento fallido de registrar un
+ * comprobante.
+ */
+function dcErrorAlta(string $msg, int $code = 400): void {
+    try {
+        registrarSuceso(db(), 'v4/datacount.comprobantes', 'error',
+            "alta rechazada (HTTP {$code}): {$msg}");
+    } catch (Throwable $_) { /* no romper el flujo */ }
+    jsonError($msg, $code);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +120,7 @@ try {
 function handleCreate(array $in): void {
     $talonarioId = isset($in['talonario']) && $in['talonario'] !== ''
                         ? (int)$in['talonario'] : 0;
-    if ($talonarioId <= 0) jsonError('Falta `talonario` (id > 0).', 400);
+    if ($talonarioId <= 0) dcErrorAlta('Falta `talonario` (id > 0).', 400);
 
     $pdo = db();
 
@@ -122,16 +132,16 @@ function handleCreate(array $in): void {
     );
     $tSt->execute([':id' => $talonarioId]);
     $tal = $tSt->fetch();
-    if (!$tal) jsonError("Talonario {$talonarioId} no existe.", 404);
+    if (!$tal) dcErrorAlta("Talonario {$talonarioId} no existe.", 404);
 
     // Renglones son obligatorios: sin ellos no hay como calcular neto/iva/total.
     $renglones = $in['renglones'] ?? null;
     if (!is_array($renglones) || !$renglones) {
-        jsonError('Falta `renglones` (array con al menos 1 item).', 400);
+        dcErrorAlta('Falta `renglones` (array con al menos 1 item).', 400);
     }
     $r = dcSanitizeRenglones($renglones);
     if (!$r['lineas']) {
-        jsonError('`renglones` no contiene items validos.', 400);
+        dcErrorAlta('`renglones` no contiene items validos.', 400);
     }
 
     // Defaults: emision = hoy AR, vencimiento = hoy+7, concepto = 1 (Productos).
@@ -142,7 +152,7 @@ function handleCreate(array $in): void {
                     ?? (clone $ahora)->modify('+7 days')->format('Y-m-d');
     $concepto = isset($in['concepto']) && $in['concepto'] !== '' ? (int)$in['concepto'] : 3;
     if (!in_array($concepto, [1, 2, 3], true)) {
-        jsonError('`concepto` debe ser 1 (Productos), 2 (Servicios) o 3 (Prod+Serv).', 400);
+        dcErrorAlta('`concepto` debe ser 1 (Productos), 2 (Servicios) o 3 (Prod+Serv).', 400);
     }
 
     // Estado inicial = '2' (Pendiente) -- el comprobante entra directo a la
@@ -219,9 +229,11 @@ function handleCreate(array $in): void {
         throw $e;
     }
 
-    // Base de la response -- lo que devolvemos SIEMPRE, haya o no autorizacion.
-    // Los campos de CAE (cae, cae_vto, cbte_nro, autorizado, serie, caeres) y
-    // el estado final ('3' Autorizado) se pisan mas abajo si autorizamos.
+    // Response: comprobante recien creado, todavia sin CAE. La autorizacion
+    // AFIP la hace el cron `datacount_comprobantes_autorizar.php` en su
+    // proximo tick; si el caller cargo `webhook_url`, el cron
+    // `datacount_comprobantes_notificar.php` avisara con el snapshot final
+    // cuando se logre el CAE.
     $out = [
         'id'          => $id,
         'uuid'        => $uuid,
@@ -249,130 +261,7 @@ function handleCreate(array $in): void {
         'caeres'      => null,
     ];
 
-    // Autorizacion sincronica -- solo si el comprobante es fiscal y quedo
-    // en estado '2' (Pendiente). Si el caller dejo el estado en '1'
-    // (Preparacion) o el talonario no es fiscal, devolvemos sin CAE y punto.
-    if ((string)$tal['fiscal'] === '1' && $estado === '2') {
-        dcAutorizarSincrono($pdo, $id, $out);
-        return; // dcAutorizarSincrono() ya emitio la response (OK o error).
-    }
-
     jsonOk($out, 201);
-}
-
-// ---------------------------------------------------------------------------
-// Autorizacion sincronica AFIP
-// ---------------------------------------------------------------------------
-//
-// Delega en la lib compartida `dccAutAutorizar` -- mismo canal que el cron
-// batch (`jobs/datacount_comprobantes_autorizar.php`) y el boton "Autorizar"
-// del ABM (`cloud/api/datacount_comprobantes.php action=autorizar`). Asi las
-// tres rutas convergen y no puede haber divergencia entre ellas.
-//
-// Politica de errores (espeja al ABM manual):
-//   - `caeres` se graba siempre con el mensaje del ultimo intento (evidencia).
-//   - Si el error es PERMANENTE, se detiene el motor automatico
-//     (parametros.datacount.comprobantes.autorizar='0'), porque un fallo
-//     sistemico (cert vencido, empresa mal configurada, rechazo AFIP) va a
-//     romper igual al cron del proximo minuto.
-//   - Se registra suceso 'info' / 'alerta' / 'error' segun corresponda.
-//   - Se responde HTTP 422 con el mensaje + el id/uuid ya persistido para
-//     que el caller pueda referenciarlo (el cron va a reintentar solo si
-//     el error es transitorio; si es permanente, hay que rehabilitar).
-
-function dcAutorizarSincrono(PDO $pdo, int $id, array $out): void {
-    $c = dccAutLoadComprobante($pdo, $id);
-    if ($c === null) {
-        // Practicamente imposible -- lo acabamos de insertar. Pero si llega
-        // a pasar, respondemos con lo que tenemos y sin CAE.
-        jsonOk($out, 201);
-    }
-
-    $apikey = dccAutObtenerApikey($pdo);
-    if ($apikey === null) {
-        // Sin apikey no podemos hacer el loopback. Comprobante queda en '2';
-        // el cron tampoco va a poder, pero al menos avisamos al caller.
-        dcResponderErrorAuth($id, $out,
-            'No hay ninguna aplicacion habilitada con apikey para el loopback',
-            'validacion');
-    }
-
-    $r = dccAutAutorizar($pdo, $apikey, $c);
-
-    if (!$r['ok']) {
-        $errMsg = (string)$r['error'];
-        dccAutMarcarCaeres($pdo, $id, $errMsg);
-
-        // Circuit breaker igual que el cron y el endpoint manual: los
-        // permanentes detienen el motor automatico.
-        if (!dccAutEsTransitorio($errMsg)) {
-            parametroEscribir($pdo, 'datacount.comprobantes.autorizar', '0');
-            try {
-                registrarSuceso($pdo, 'v4/datacount.comprobantes', 'error',
-                    "cbte#{$id}: MOTOR DETENIDO tras alta v4 con error permanente ({$r['fuente']}): {$errMsg}");
-            } catch (Throwable $_) { /* no romper el flujo */ }
-        } else {
-            try {
-                registrarSuceso($pdo, 'v4/datacount.comprobantes', 'alerta',
-                    "cbte#{$id}: alta v4 fallo autorizar transitoriamente ({$r['fuente']}): {$errMsg}");
-            } catch (Throwable $_) { /* no romper el flujo */ }
-        }
-        dcResponderErrorAuth($id, $out, $errMsg, (string)$r['fuente']);
-    }
-
-    // Exito: dccAutAutorizar ya escribio estado='3', caenro, caevto, serie,
-    // autorizado, caeres en la BD. Releemos los campos system-managed
-    // (autorizado se seteo con NOW() del server MySQL, no en PHP).
-    try {
-        registrarSuceso($pdo, 'v4/datacount.comprobantes', 'info',
-            "cbte#{$id} autorizado en alta v4 - CAE={$r['cae']} nro={$r['cbte_nro']} vto={$r['cae_vto']}");
-    } catch (Throwable $_) { /* no romper el flujo */ }
-
-    $st = $pdo->prepare('SELECT autorizado FROM datacount_comprobantes WHERE id = :id LIMIT 1');
-    $st->execute([':id' => $id]);
-    $autorizado = (string)($st->fetchColumn() ?: '');
-
-    $out['estado']     = '3';
-    $out['cae']        = $r['cae'];
-    $out['cae_vto']    = $r['cae_vto'];
-    $out['cbte_nro']   = $r['cbte_nro'];
-    $out['serie']      = $r['cbte_nro'];
-    $out['autorizado'] = $autorizado;
-    $out['caeres']     = "OK CAE {$r['cae']} (vto {$r['cae_vto']})";
-
-    // Webhook post-autorizacion: si el caller cargo `webhook_url`, notificamos
-    // ahora que ya tenemos el CAE. Best-effort -- si el POST falla el
-    // comprobante ya quedo autorizado y `webhook_estado` queda en 'pendiente'
-    // para reintento por el cron cloud/jobs/datacount_comprobantes_notificar.
-    // El disparo online y el de retry comparten `dccWebhookDisparar` para que
-    // no puedan divergir.
-    if (!empty($out['webhook_url'])) {
-        $out['webhook_estado'] = dccWebhookDisparar(
-            $pdo, $id, (string)$out['webhook_url'], $out,
-            'v4/datacount.comprobantes'
-        );
-    }
-
-    jsonOk($out, 201);
-}
-
-/**
- * Emite HTTP 422 con {ok:false, error, fuente, data:{id, uuid, ...}} para que
- * el caller sepa que el comprobante quedo persistido en estado '2' aunque
- * la autorizacion AFIP fallo. `caeres` en `data` refleja el mensaje que se
- * grabo en BD.
- */
-function dcResponderErrorAuth(int $id, array $out, string $errMsg, string $fuente): void {
-    http_response_code(422);
-    header('Content-Type: application/json; charset=utf-8');
-    $out['caeres'] = $errMsg;
-    echo json_encode([
-        'ok'     => false,
-        'error'  => $errMsg,
-        'fuente' => $fuente,
-        'data'   => $out,
-    ], JSON_UNESCAPED_UNICODE);
-    exit;
 }
 
 // ---------------------------------------------------------------------------

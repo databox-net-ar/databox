@@ -241,6 +241,10 @@ function dccAutEsTransitorio(string $msg): bool {
         '/Server was unable to process/i',
         '/Ya existe TA valido/i',
         '/^\(60[01]\)/',
+        // Advisory lock saturado: otro proceso lleva > DCC_AUT_TIMEOUT_S sin
+        // soltar el lock del cbte. Reintento en el proximo tick -- casi seguro
+        // ya solto (o murio la sesion y MySQL solto por nosotros).
+        '/^Lock timeout:/i',
     ];
     foreach ($patrones as $p) {
         if (preg_match($p, $msg)) return true;
@@ -290,116 +294,193 @@ function dccAutMarcarCaeres(PDO $pdo, int $id, string $msg): void {
 function dccAutAutorizar(PDO $pdo, string $apikey, array $c): array {
     $id = (int)$c['id'];
 
-    // --- sanity checks previos a llamar al microservicio ---
-    $slug = trim((string)($c['empresa_slug'] ?? ''));
-    if ($slug === '') {
-        return ['ok' => false, 'error' => 'Empresa sin slug en datacount_empresas', 'fuente' => 'validacion'];
+    // --- Claim atomico ---
+    // Advisory lock por cbte para evitar la race entre los tres caminos que
+    // convergen aca: (1) POST sincronico del endpoint v4/datacount/comprobantes
+    // -> dcAutorizarSincrono, (2) cron batch jobs/datacount_comprobantes_autorizar,
+    // (3) boton "Autorizar" del ABM. Sin el lock, dos de los tres pueden llamar
+    // a AFIP en paralelo para el mismo cbte -- AFIP autonumera y cada uno recibe
+    // un CAE distinto; el UPDATE que llega ultimo pisa al primero, dejando en
+    // AFIP un CAE fantasma que NADIE tiene guardado en su BD (bug 2026-08-01).
+    //
+    // Semantica del wait:
+    //   - GET_LOCK con timeout = DCC_AUT_TIMEOUT_S: bloqueamos hasta lo mismo
+    //     que damos al POST a AFIP en si -- si el otro proceso se colgo mas de
+    //     eso, es un problema aparte y devolvemos error transitorio.
+    //   - Al obtener el lock releemos el estado: si el ganador termino OK
+    //     (estado='3' con CAE), devolvemos SU CAE en vez de disparar una
+    //     segunda autorizacion contra AFIP -- caller sincronico y cron obtienen
+    //     el mismo resultado sin duplicar.
+    //   - RELEASE_LOCK en finally: se dispara aunque haya excepcion adentro; si
+    //     el proceso muere sin llegar al finally, MySQL suelta el lock al cerrar
+    //     la sesion.
+    $lockName = "dcc_aut:{$id}";
+    $lockSt   = $pdo->prepare('SELECT GET_LOCK(?, ?)');
+    $lockSt->execute([$lockName, DCC_AUT_TIMEOUT_S]);
+    $got = (int)$lockSt->fetchColumn();
+    if ($got !== 1) {
+        // Timeout esperando: el otro proceso lleva > DCC_AUT_TIMEOUT_S sin
+        // soltar. Devolvemos transitorio -- el cron va a reintentar en el
+        // proximo tick, cuando el ganador ya haya terminado (OK o error) o
+        // MySQL haya soltado el lock por muerte de sesion.
+        return ['ok'    => false,
+                'error' => 'Lock timeout: cbte#' . $id . ' sigue siendo autorizado por otro proceso tras ' . DCC_AUT_TIMEOUT_S . 's',
+                'fuente' => 'validacion'];
     }
 
-    $tipoCod  = strtoupper(trim((string)($c['tipo'] ?? '')));
-    $tipoAfip = DCC_TIPO_A_AFIP[$tipoCod] ?? 0;
-    if ($tipoAfip === 0) {
-        return ['ok' => false, 'error' => "Tipo '{$tipoCod}' sin mapeo AFIP", 'fuente' => 'validacion'];
-    }
-
-    $punto = (int)($c['punto'] ?? 0);
-    if ($punto <= 0) {
-        return ['ok' => false, 'error' => 'Punto de venta invalido', 'fuente' => 'validacion'];
-    }
-
-    // Documento del comprador. CF o sin CUIT -> Consumidor Final; resto = CUIT.
-    $cond    = strtoupper(trim((string)($c['condicion'] ?? '')));
-    $cuitS   = preg_replace('/\D+/', '', (string)($c['cuit'] ?? ''));
-    $docTipo = ($cond === 'CF' || $cuitS === '') ? 99 : 80;
-    $docNro  = $docTipo === 99 ? 0 : (int)$cuitS;
-
-    // Fecha de emision -> YYYYMMDD (formato que exige AFIP CbteFch).
-    $cbteFch = null;
-    $emision = (string)($c['emision'] ?? '');
-    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $emision, $m)) {
-        $cbteFch = "{$m[1]}{$m[2]}{$m[3]}";
-    }
-
-    // IVA discriminado.
-    $iva = dccAutCalcularIva($pdo, $id);
-    if (isset($iva['error'])) {
-        return ['ok' => false, 'error' => $iva['error'], 'fuente' => 'validacion'];
-    }
-
-    $body = [
-        'empresa'   => $slug,
-        'punto'     => $punto,
-        'tipo'      => $tipoAfip,
-        'concepto'  => 1,                     // Productos. TODO: derivar si aparece columna.
-        'imp_neto'  => (float)($c['neto']  ?? 0),
-        'imp_iva'   => (float)($c['iva']   ?? 0),
-        'imp_total' => (float)($c['total'] ?? 0),
-        'doc_tipo'  => $docTipo,
-        'doc_nro'   => (string)$docNro,
-        'iva'       => $iva['items'],
-    ];
-    if ($cbteFch !== null) $body['cbte_fch'] = $cbteFch;
-
-    // Notas de credito: AFIP exige `cbtes_asoc` con los datos del comprobante
-    // original. Lo derivamos de `asociado` (id del comprobante que se acredita).
-    // El asociado tiene que estar autorizado (estado='3') y ser factura fiscal.
-    if (in_array($tipoCod, DCC_TIPOS_NC, true)) {
-        $asocId = (int)($c['asociado'] ?? 0);
-        if ($asocId <= 0) {
-            return ['ok' => false, 'error' => 'NC sin `asociado` -- no se puede armar cbtes_asoc', 'fuente' => 'validacion'];
-        }
-        $asoc = dccAutBuscarAsociado($pdo, $asocId);
-        if ($asoc === null) {
-            return ['ok' => false,
-                    'error' => "NC apunta a asociado#{$asocId} inexistente o no autorizado (requiere estado='3', fiscal='1', tipo factura)",
+    try {
+        // Re-check bajo lock: si el ganador ya cerro y libero, aca vemos
+        // estado='3' con caenro. Devolvemos SU CAE en vez de disparar una
+        // segunda autorizacion. Si sigue en '2', autorizamos nosotros.
+        // Cualquier otro estado es raro (borrado, anulado manualmente); cortamos
+        // con error de validacion sin llamar a AFIP.
+        $checkSt = $pdo->prepare(
+            'SELECT estado, caenro, caevto, serie
+               FROM datacount_comprobantes
+              WHERE id = :id
+              LIMIT 1'
+        );
+        $checkSt->execute([':id' => $id]);
+        $post = $checkSt->fetch();
+        if ($post === false) {
+            return ['ok'    => false,
+                    'error' => "cbte#{$id} desaparecio antes de autorizar",
                     'fuente' => 'validacion'];
         }
-        $body['cbtes_asoc'] = [[
-            'tipo'  => DCC_TIPO_A_AFIP[$asoc['tipo']],
-            'punto' => (int)$asoc['punto'],
-            'nro'   => (int)$asoc['serie'],
-        ]];
+        $estActual = (string)($post['estado'] ?? '');
+        $caeActual = (string)($post['caenro'] ?? '');
+        if ($estActual === '3' && $caeActual !== '') {
+            // El otro proceso gano la race y ya autorizo -- devolvemos su CAE.
+            return [
+                'ok'       => true,
+                'cae'      => $caeActual,
+                'cae_vto'  => (string)($post['caevto'] ?? ''),
+                'cbte_nro' => (int)($post['serie'] ?? 0),
+            ];
+        }
+        if ($estActual !== '2') {
+            return ['ok'    => false,
+                    'error' => "cbte#{$id} no esta pendiente (estado='{$estActual}')",
+                    'fuente' => 'validacion'];
+        }
+
+        // --- sanity checks previos a llamar al microservicio ---
+        $slug = trim((string)($c['empresa_slug'] ?? ''));
+        if ($slug === '') {
+            return ['ok' => false, 'error' => 'Empresa sin slug en datacount_empresas', 'fuente' => 'validacion'];
+        }
+
+        $tipoCod  = strtoupper(trim((string)($c['tipo'] ?? '')));
+        $tipoAfip = DCC_TIPO_A_AFIP[$tipoCod] ?? 0;
+        if ($tipoAfip === 0) {
+            return ['ok' => false, 'error' => "Tipo '{$tipoCod}' sin mapeo AFIP", 'fuente' => 'validacion'];
+        }
+
+        $punto = (int)($c['punto'] ?? 0);
+        if ($punto <= 0) {
+            return ['ok' => false, 'error' => 'Punto de venta invalido', 'fuente' => 'validacion'];
+        }
+
+        // Documento del comprador. CF o sin CUIT -> Consumidor Final; resto = CUIT.
+        $cond    = strtoupper(trim((string)($c['condicion'] ?? '')));
+        $cuitS   = preg_replace('/\D+/', '', (string)($c['cuit'] ?? ''));
+        $docTipo = ($cond === 'CF' || $cuitS === '') ? 99 : 80;
+        $docNro  = $docTipo === 99 ? 0 : (int)$cuitS;
+
+        // Fecha de emision -> YYYYMMDD (formato que exige AFIP CbteFch).
+        $cbteFch = null;
+        $emision = (string)($c['emision'] ?? '');
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $emision, $m)) {
+            $cbteFch = "{$m[1]}{$m[2]}{$m[3]}";
+        }
+
+        // IVA discriminado.
+        $iva = dccAutCalcularIva($pdo, $id);
+        if (isset($iva['error'])) {
+            return ['ok' => false, 'error' => $iva['error'], 'fuente' => 'validacion'];
+        }
+
+        $body = [
+            'empresa'   => $slug,
+            'punto'     => $punto,
+            'tipo'      => $tipoAfip,
+            'concepto'  => 1,                     // Productos. TODO: derivar si aparece columna.
+            'imp_neto'  => (float)($c['neto']  ?? 0),
+            'imp_iva'   => (float)($c['iva']   ?? 0),
+            'imp_total' => (float)($c['total'] ?? 0),
+            'doc_tipo'  => $docTipo,
+            'doc_nro'   => (string)$docNro,
+            'iva'       => $iva['items'],
+        ];
+        if ($cbteFch !== null) $body['cbte_fch'] = $cbteFch;
+
+        // Notas de credito: AFIP exige `cbtes_asoc` con los datos del comprobante
+        // original. Lo derivamos de `asociado` (id del comprobante que se acredita).
+        // El asociado tiene que estar autorizado (estado='3') y ser factura fiscal.
+        if (in_array($tipoCod, DCC_TIPOS_NC, true)) {
+            $asocId = (int)($c['asociado'] ?? 0);
+            if ($asocId <= 0) {
+                return ['ok' => false, 'error' => 'NC sin `asociado` -- no se puede armar cbtes_asoc', 'fuente' => 'validacion'];
+            }
+            $asoc = dccAutBuscarAsociado($pdo, $asocId);
+            if ($asoc === null) {
+                return ['ok' => false,
+                        'error' => "NC apunta a asociado#{$asocId} inexistente o no autorizado (requiere estado='3', fiscal='1', tipo factura)",
+                        'fuente' => 'validacion'];
+            }
+            $body['cbtes_asoc'] = [[
+                'tipo'  => DCC_TIPO_A_AFIP[$asoc['tipo']],
+                'punto' => (int)$asoc['punto'],
+                'nro'   => (int)$asoc['serie'],
+            ]];
+        }
+
+        $resp = dccAutPostAutorizar($apikey, $body);
+        if (!$resp['ok']) {
+            return ['ok' => false, 'error' => (string)$resp['error'], 'fuente' => 'microservicio'];
+        }
+
+        $d      = $resp['data'];
+        $cae    = (string)($d['cae']     ?? '');
+        $vto    = (string)($d['cae_vto'] ?? '');
+        $nroAf  = (int)($d['cbte_nro']  ?? 0);
+        $upd = $pdo->prepare("
+            UPDATE datacount_comprobantes
+               SET estado     = '3',
+                   caenro     = :cae,
+                   caevto     = :vto,
+                   serie      = :nro,
+                   autorizado = NOW(),
+                   caeres     = :res
+             WHERE id = :id
+        ");
+        $upd->execute([
+            ':cae' => $cae,
+            ':vto' => $vto,
+            ':nro' => $nroAf,
+            ':res' => "OK CAE {$cae} (vto {$vto})",
+            ':id'  => $id,
+        ]);
+
+        // Adelantamos el correlativo del talonario. GREATEST protege contra
+        // reintentos concurrentes que pudieran subir el numero primero.
+        $talId = (int)($c['talonario'] ?? 0);
+        if ($talId > 0 && $nroAf > 0) {
+            $pdo->prepare('UPDATE datacount_talonarios SET serie = GREATEST(COALESCE(serie, 0), :nro) WHERE id = :id')
+                ->execute([':nro' => $nroAf, ':id' => $talId]);
+        }
+
+        return [
+            'ok'       => true,
+            'cae'      => $cae,
+            'cae_vto'  => $vto,
+            'cbte_nro' => $nroAf,
+        ];
+    } finally {
+        // Best-effort: si la conexion ya murio esto va a fallar silenciosamente;
+        // MySQL suelta el lock al cerrar la sesion, asi que no bloqueamos nada.
+        try {
+            $pdo->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
+        } catch (Throwable $_) { /* ignore */ }
     }
-
-    $resp = dccAutPostAutorizar($apikey, $body);
-    if (!$resp['ok']) {
-        return ['ok' => false, 'error' => (string)$resp['error'], 'fuente' => 'microservicio'];
-    }
-
-    $d      = $resp['data'];
-    $cae    = (string)($d['cae']     ?? '');
-    $vto    = (string)($d['cae_vto'] ?? '');
-    $nroAf  = (int)($d['cbte_nro']  ?? 0);
-    $upd = $pdo->prepare("
-        UPDATE datacount_comprobantes
-           SET estado     = '3',
-               caenro     = :cae,
-               caevto     = :vto,
-               serie      = :nro,
-               autorizado = NOW(),
-               caeres     = :res
-         WHERE id = :id
-    ");
-    $upd->execute([
-        ':cae' => $cae,
-        ':vto' => $vto,
-        ':nro' => $nroAf,
-        ':res' => "OK CAE {$cae} (vto {$vto})",
-        ':id'  => $id,
-    ]);
-
-    // Adelantamos el correlativo del talonario. GREATEST protege contra
-    // reintentos concurrentes que pudieran subir el numero primero.
-    $talId = (int)($c['talonario'] ?? 0);
-    if ($talId > 0 && $nroAf > 0) {
-        $pdo->prepare('UPDATE datacount_talonarios SET serie = GREATEST(COALESCE(serie, 0), :nro) WHERE id = :id')
-            ->execute([':nro' => $nroAf, ':id' => $talId]);
-    }
-
-    return [
-        'ok'       => true,
-        'cae'      => $cae,
-        'cae_vto'  => $vto,
-        'cbte_nro' => $nroAf,
-    ];
 }
