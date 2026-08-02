@@ -8,6 +8,14 @@
 #   bash deploy.sh           # sync + recreate
 #   bash deploy.sh --rebuild # ademas reconstruye la imagen Docker
 #                            # (necesario si cambio docker/Dockerfile)
+#
+# IMPORTANTE: este deploy NO tiene nada que ver con git. No mira ramas,
+# no mira staging, no mira commits, no mira working tree vs HEAD. Toma
+# la carpeta del proyecto TAL COMO ESTA en disco y hace que prod refleje
+# exactamente ese estado -- incluidos los archivos renombrados o borrados
+# en dev, que tambien tienen que desaparecer en prod. Si un archivo existe
+# localmente pero no esta commiteado, se sube igual. Si un archivo fue
+# borrado localmente pero sigue commiteado, se borra en prod igual.
 # ============================================================
 
 set -e
@@ -79,6 +87,19 @@ done
 # (bind-monteado por el docker-compose.prod.yml). Si falta localmente, se
 # avisa y se sigue: el deploy funciona sin certs (solo el modulo de SIMs
 # Movistar queda fuera de linea).
+#
+# Estrategia:
+#   3a. tar+ssh el contenido a un staging remoto (Git Bash en Windows no
+#       trae rsync; tar si). El staging esta fuera de $BASE_REMOTE para no
+#       interferir con archivos generados por el server (docker-compose.prod.yml).
+#   3b. Sobre el server, rsync --delete de cada subdir manejado
+#       (staging/cloud -> $BASE_REMOTE/cloud, staging/api -> ...) para que
+#       los archivos borrados en dev tambien desaparezcan en prod. Antes
+#       usabamos "tar -xzf -" directo sobre $BASE_REMOTE, que solo agregaba
+#       o sobrescribia: los borrados nunca se propagaban (p.ej. jobs
+#       renombrados a snake_case dejaban el nombre viejo vivo en prod).
+#   3c. api/v4/telegram/canales/ se excluye del --delete: contiene sesiones
+#       MadelineProto generadas en el server que no deben tocarse.
 echo "  Subiendo cloud/, api/, robot/, docker/, db/, env.php, .env.production, certs/..."
 cd "$BASE_LOCAL"
 
@@ -101,6 +122,13 @@ else
     echo "  AVISO: no existe $BASE_LOCAL/certs/ -- se omite; Kite Platform no va a funcionar en prod."
 fi
 
+STAGING_REMOTE="/tmp/databox-deploy-staging"
+
+# 3a. Preparar staging limpio
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
+    "rm -rf '$STAGING_REMOTE' && mkdir -p '$STAGING_REMOTE'"
+
+# 3b. Subir tarball al staging
 tar \
     --exclude='./cloud/.git' \
     --exclude='./cloud/node_modules' \
@@ -113,7 +141,23 @@ tar \
     -czf - cloud api robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
-    "tar --no-overwrite-dir -xzf - -C '$BASE_REMOTE/'"
+    "tar --no-overwrite-dir -xzf - -C '$STAGING_REMOTE/'"
+
+# 3c. Server-side rsync --delete por subdir. Iteramos por subdir y no hacemos
+# --delete sobre $BASE_REMOTE porque a nivel raiz vive docker-compose.prod.yml
+# generado por aprovisionar_server.sh, que no debe tocarse.
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" bash <<EOF
+set -e
+for d in cloud api robot docker db certs; do
+    if [ -d "$STAGING_REMOTE/\$d" ]; then
+        mkdir -p "$BASE_REMOTE/\$d"
+        rsync -a --delete --exclude='v4/telegram/canales/' "$STAGING_REMOTE/\$d/" "$BASE_REMOTE/\$d/"
+    fi
+done
+[ -f "$STAGING_REMOTE/env.php" ] && cp -f "$STAGING_REMOTE/env.php" "$BASE_REMOTE/env.php"
+[ -f "$STAGING_REMOTE/.env.production" ] && cp -f "$STAGING_REMOTE/.env.production" "$BASE_REMOTE/.env.production"
+rm -rf "$STAGING_REMOTE"
+EOF
 echo "  OK"
 echo ""
 
