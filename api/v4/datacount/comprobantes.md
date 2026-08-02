@@ -33,30 +33,119 @@ tal como fue creado, con `cae`/`cae_vto`/`cbte_nro`/etc. en `null`.
 ## Webhook post-autorizacion
 
 Si el caller pasa `webhook_url` en el body, el microservicio hace un `POST`
-JSON a esa URL **apenas obtiene el CAE**, con el mismo shape que el `data`
-de la response 201 (ver ejemplo). Esto evita que el caller tenga que
-pollear el ABM para conciliar el resultado.
+JSON a esa URL **apenas obtiene el CAE**. Esto evita que el caller tenga
+que pollear el ABM para conciliar el resultado.
 
-- La columna `webhook_estado` de `datacount_comprobantes` refleja el
-  estado:
-  - `'pendiente'` — se cargo `webhook_url` pero todavia no se disparo o
-    el disparo fallo (timeout, HTTP != 2xx, cURL error, comprobante sin
-    autorizar aun).
-  - `'completado'` — el receptor devolvio HTTP 2xx.
-  - `NULL` — el caller no configuro webhook.
+### Request que recibe el receptor
+
+- **Metodo**: `POST`
+- **URL**: la que se paso en `webhook_url` (tal cual, con query string y
+  path que hubiera).
+- **Headers**:
+  - `Content-Type: application/json; charset=utf-8`
+  - `Accept: application/json`
+  - `User-Agent: databox/datacount-comprobantes-webhook`
+- **Body**: JSON con el mismo shape que el `data` de la response 201 del
+  endpoint (mismo objeto, mismos nombres de campos, mismos tipos). El
+  receptor no tiene que distinguir si el disparo vino del alta online o
+  del cron de retry — el shape es identico.
+
+Campos del body JSON:
+
+| Campo             | Tipo                    | Detalle |
+|-------------------|-------------------------|---------|
+| `id`              | int                     | Id interno del comprobante en `datacount_comprobantes`. |
+| `uuid`            | string                  | UUID publico del comprobante. |
+| `talonario`       | int \| null             | Id del talonario. |
+| `proyecto`        | int \| null             | Heredado del talonario. |
+| `empresa`         | int \| null             | Heredado del talonario. |
+| `tipo`            | string(2)               | FA/FB/FC/FM/NA/NB/NC/NM. |
+| `punto`           | int \| null             | Punto de venta. |
+| `fiscal`          | string(1)               | Siempre `'1'` cuando llega webhook (los no-fiscales no autorizan). |
+| `concepto`        | int \| null             | 1=Productos, 2=Servicios, 3=Prod+Serv. |
+| `emision`         | date (`YYYY-MM-DD`)     | Fecha de emision. |
+| `vencimiento`     | date (`YYYY-MM-DD`)     | Fecha de vencimiento. |
+| `neto`            | string (decimal 2)      | Neto gravado. Formato `"100.00"`. |
+| `iva`             | string (decimal 2)      | IVA total. Formato `"21.00"`. |
+| `total`           | string (decimal 2)      | Total. Formato `"121.00"`. |
+| `estado`          | string(1)               | Siempre `'3'` (Autorizado) cuando llega webhook. |
+| `registrado`      | datetime                | Cuando se dio de alta en la BD (`YYYY-MM-DD HH:MM:SS`). |
+| `webhook_url`     | string                  | Eco de la URL configurada. |
+| `webhook_estado`  | string                  | Al momento del disparo puede ser `'pendiente'` (primer intento) o `'pendiente'` en reintentos previos fallidos. **No es indicativo del intento actual** — el estado final se actualiza recien despues de recibir la response. |
+| `cae`             | string(14)              | CAE otorgado por AFIP. |
+| `cae_vto`         | string (`YYYYMMDD`)     | Vencimiento del CAE (formato AFIP, sin guiones). |
+| `cbte_nro`        | int                     | Numero de comprobante autorizado por AFIP. |
+| `serie`           | int                     | Mismo valor que `cbte_nro`. |
+| `autorizado`      | datetime                | Cuando se registro el CAE (`YYYY-MM-DD HH:MM:SS`). |
+| `caeres`          | string                  | Mensaje descriptivo, ej. `"OK CAE 76234567890123 (vto 20260811)"`. |
+
+Ejemplo del body que llega al receptor:
+
+```json
+{
+  "id": 24682,
+  "uuid": "3a1b7c9d02",
+  "talonario": 42,
+  "proyecto": 5,
+  "empresa": 12,
+  "tipo": "FA",
+  "punto": 1,
+  "fiscal": "1",
+  "concepto": 3,
+  "emision": "2026-08-01",
+  "vencimiento": "2026-08-08",
+  "neto": "100.00",
+  "iva": "21.00",
+  "total": "121.00",
+  "estado": "3",
+  "registrado": "2026-08-01 10:15:34",
+  "webhook_url": "https://mi-app.ejemplo.com/hooks/facturas?token=abc123",
+  "webhook_estado": "pendiente",
+  "cae": "76234567890123",
+  "cae_vto": "20260811",
+  "cbte_nro": 4271,
+  "serie": 4271,
+  "autorizado": "2026-08-01 10:15:35",
+  "caeres": "OK CAE 76234567890123 (vto 20260811)"
+}
+```
+
+### Response que espera el receptor
+
+- **Cualquier HTTP 2xx** marca el webhook como `'completado'` y el
+  comprobante deja de aparecer en el pool de reintentos.
+- **Cualquier otra cosa** (HTTP != 2xx, timeout, DNS, cURL error) deja
+  `webhook_estado` en `'pendiente'` para que el cron de retry lo levante
+  en el proximo tick.
+- **El body de la response se descarta** — solo importa el status code.
+  El receptor puede devolver `204 No Content` o un JSON con lo que sea.
+
+### Estado del webhook
+
+La columna `webhook_estado` de `datacount_comprobantes` refleja el estado:
+
+- `'pendiente'` — se cargo `webhook_url` pero todavia no se disparo o el
+  disparo fallo (timeout, HTTP != 2xx, cURL error, comprobante sin
+  autorizar aun).
+- `'completado'` — el receptor devolvio HTTP 2xx.
+- `NULL` — el caller no configuro webhook.
+
+### Comportamiento
+
 - **Best-effort**: si el POST al webhook falla, el comprobante ya quedo
   autorizado y la response HTTP al caller original sigue siendo 201. El
-  fallo se registra como suceso `'alerta'` con el motivo y `webhook_estado`
-  queda en `'pendiente'`.
+  fallo se registra como suceso `'alerta'` con el motivo y
+  `webhook_estado` queda en `'pendiente'`.
 - **Retry automatico**: los `'pendiente'` los levanta el cron
   `cloud/jobs/datacount_comprobantes_notificar.php`, que reintenta el POST
   cada corrida hasta que el receptor devuelva 2xx. Esto cubre tambien los
   comprobantes autorizados por el cron `datacount_comprobantes_autorizar`
   o por el boton "Autorizar" del ABM (que no pasan por el disparo online
   del v4).
-- Timeouts: conexion 3s, total 8s. Sigue hasta 3 redirects.
-- Headers: `Content-Type: application/json`, `Accept: application/json`,
-  `User-Agent: databox/datacount-comprobantes-webhook`.
+- **Idempotencia**: el receptor puede recibir el mismo POST varias veces
+  para el mismo comprobante (cada reintento del cron dispara uno). Usar
+  `id` o `uuid` como clave de deduplicacion.
+- **Timeouts**: conexion 3s, total 8s. Sigue hasta 3 redirects.
 - **No hay auth** en el POST al webhook — el caller debe usar una URL con
   token/secret en el path o query si necesita autenticar el origen.
 
