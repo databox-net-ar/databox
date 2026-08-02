@@ -98,8 +98,11 @@ done
 #       usabamos "tar -xzf -" directo sobre $BASE_REMOTE, que solo agregaba
 #       o sobrescribia: los borrados nunca se propagaban (p.ej. jobs
 #       renombrados a snake_case dejaban el nombre viejo vivo en prod).
-#   3c. api/v4/telegram/canales/ se excluye del --delete: contiene sesiones
-#       MadelineProto generadas en el server que no deben tocarse.
+#   3c. api/v4/telegram/canales/ y api/v4/telegram/session_*/ se excluyen del
+#       --delete: contienen sesiones MadelineProto generadas por el proceso PHP
+#       del contenedor (owner distinto, archivos lockeados). Si el --delete
+#       las alcanza, rsync aborta con "Permission denied" -- son runtime state
+#       del server, no artefactos del repo.
 echo "  Subiendo cloud/, api/, robot/, docker/, db/, env.php, .env.production, certs/..."
 cd "$BASE_LOCAL"
 
@@ -138,6 +141,7 @@ tar \
     --exclude='./api/vendor' \
     --exclude='*.log' \
     --exclude='api/v4/telegram/canales' \
+    --exclude='api/v4/telegram/session_*' \
     -czf - cloud api robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
@@ -151,7 +155,18 @@ set -e
 for d in cloud api robot docker db certs; do
     if [ -d "$STAGING_REMOTE/\$d" ]; then
         mkdir -p "$BASE_REMOTE/\$d"
-        rsync -a --delete --exclude='v4/telegram/canales/' "$STAGING_REMOTE/\$d/" "$BASE_REMOTE/\$d/"
+        # --no-o --no-g --no-p: no intentar preservar owner/group/perms.
+        # El origen viene de Windows (IDs Unix ficticios). Ademas, algunos
+        # archivos del destino tienen owner/group/perms modificados por
+        # el contenedor a traves del bind mount (p.ej. robot/crontab pasa
+        # a root:root 0644 porque el entrypoint del cron lo chown-ea).
+        # Si rsync intenta chgrp/chmod de vuelta a ec2-user, falla con
+        # "Operation not permitted" y aborta el deploy con exit 23
+        # (incidente prod 2026-08-02).
+        rsync -a --no-o --no-g --no-p --delete \
+              --exclude='v4/telegram/canales/' \
+              --exclude='v4/telegram/session_*/' \
+              "$STAGING_REMOTE/\$d/" "$BASE_REMOTE/\$d/"
     fi
 done
 [ -f "$STAGING_REMOTE/env.php" ] && cp -f "$STAGING_REMOTE/env.php" "$BASE_REMOTE/env.php"

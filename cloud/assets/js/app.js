@@ -411,9 +411,9 @@ const ROUTE_PERMS = {
   '/dashboard':                { perm:   'inicio.dashboard.consultar' },
 
   '/datacount':                { prefix: 'datacount.' },
+  '/datacount_analiticas':      { perm:   'datacount.analiticas.consultar' },
   '/datacount_comprobantes':    { perm:   'datacount.comprobantes.consultar' },
   '/datacount_pagos':           { perm:   'datacount.pagos.consultar' },
-  '/datacount_facturacion':     { perm:   'datacount.facturacion.consultar' },
   '/datacount_asientos':        { perm:   'datacount.asientos.consultar' },
   '/datacount_empleados':       { perm:   'datacount.empleados.consultar' },
   '/datacount_recurrentes':     { perm:   'datacount.recurrentes.consultar' },
@@ -10282,6 +10282,11 @@ route('/datacount', async (mount) => {
     </div>
 
     <div class="tile-grid">
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_analiticas'">
+        <span class="tile-icon">📊</span>
+        <span class="tile-title">Analíticas</span>
+        <span class="tile-desc">Vista analítica multi-pestaña con gráficos por facturación, cobranzas y demás indicadores.</span>
+      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datacount_comprobantes'">
         <span class="tile-icon">🧾</span>
         <span class="tile-title">Comprobantes</span>
@@ -10289,13 +10294,8 @@ route('/datacount', async (mount) => {
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datacount_pagos'">
         <span class="tile-icon">💵</span>
-        <span class="tile-title">Pagos</span>
+        <span class="tile-title">Órdenes de pago</span>
         <span class="tile-desc">Facturas recibidas y demás documentos digitalizados con período, monto, moneda y estado de contabilización.</span>
-      </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datacount_facturacion'">
-        <span class="tile-icon">🤖</span>
-        <span class="tile-title">Facturación</span>
-        <span class="tile-desc">Motor de facturación automática con log de corridas y estado de emisión.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datacount_asientos'">
         <span class="tile-icon">📖</span>
@@ -10340,6 +10340,495 @@ route('/datacount', async (mount) => {
     </div>
   `;
 }, 'Datacount');
+
+// ------------------------- Vista: Datacount > Analíticas -------------------------
+// Vista analítica multi-pestaña, solo lectura. Comparte el selector de empresa
+// (localStorage `datacount:empresaId`) con el resto de los módulos Datacount, y
+// pide series ya agregadas al endpoint `api/datacount_analiticas.php` — cada
+// pestaña dispara `?action=<nombre>` con su propio filtro.
+//
+// Pestañas (config-driven — agregar una nueva es sumar una entrada en DCA_TABS
+// y una acción en el PHP; el resto del scaffolding es común):
+//   - facturas: `datacount_comprobantes` autorizados, tipo LIKE 'F%'.
+//   - notas:    `datacount_comprobantes` autorizados, tipo LIKE 'N%'.
+//   - pagos:    `datacount_pagos` contabilizados.
+//
+// Los gráficos son SVG plano (sin librerías, coherente con "sin build step").
+
+// Config estático por pestaña. `key` se usa como prefijo de IDs y como nombre
+// de acción del endpoint (el PHP dispatcher espera exactamente estos valores).
+const DCA_TABS = [
+  {
+    key: 'facturas',
+    label: 'Facturas',
+    icon: 'fa-file-invoice-dollar',
+    tituloChart: 'Facturación mensual autorizada por AFIP',
+    unidadSing: 'factura',
+    unidadPlur: 'facturas',
+    statLabelTotalRango: 'Facturado en el rango',
+    statLabelCantRango:  'Facturas del rango',
+    statLabelTotalHist:  'Facturado histórico',
+    statLabelCantHist:   'Facturas históricas',
+    sinFechaMsg: 'factura(s) autorizada(s) sin fecha de emisión',
+  },
+  {
+    key: 'notas',
+    label: 'Notas de crédito',
+    icon: 'fa-file-invoice',
+    tituloChart: 'Notas de crédito mensuales autorizadas por AFIP',
+    unidadSing: 'nota de crédito',
+    unidadPlur: 'notas de crédito',
+    statLabelTotalRango: 'Notas de crédito en el rango',
+    statLabelCantRango:  'Cantidad en el rango',
+    statLabelTotalHist:  'Notas de crédito histórico',
+    statLabelCantHist:   'Cantidad histórica',
+    sinFechaMsg: 'nota(s) de crédito autorizada(s) sin fecha de emisión',
+  },
+  {
+    key: 'pagos',
+    label: 'Órdenes de pago',
+    icon: 'fa-money-check-dollar',
+    tituloChart: 'Órdenes de pago mensuales contabilizadas',
+    unidadSing: 'orden de pago',
+    unidadPlur: 'órdenes de pago',
+    statLabelTotalRango: 'Pagado en el rango',
+    statLabelCantRango:  'Órdenes del rango',
+    statLabelTotalHist:  'Pagado histórico',
+    statLabelCantHist:   'Órdenes históricas',
+    sinFechaMsg: 'orden(es) de pago contabilizada(s) sin fecha de emisión',
+  },
+];
+
+// Estado runtime por pestaña. Se conserva entre navegaciones para que la
+// pestaña recuerde su rango/año elegidos y no vuelva a pegarle al server
+// cuando el usuario alterna entre pestañas.
+const dcaState = Object.fromEntries(DCA_TABS.map((t) => [t.key, {
+  rango:      'all',   // 'all' | '12' | '24' | '36' | 'year'
+  anio:       null,    // solo cuando rango === 'year'
+  ultimaData: null,    // cache del último payload para redibujar en resize
+}]));
+
+let dcaTabActual   = DCA_TABS[0].key;
+let dcaResizeTimer = null;
+let dcaResizeWired = false;
+
+function dcaGetCfg(key) {
+  return DCA_TABS.find((t) => t.key === key) || DCA_TABS[0];
+}
+
+function dcaFmtMoney(n) {
+  return Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function dcaFmtMoneyCompacto(n) {
+  const v = Number(n || 0);
+  const abs = Math.abs(v);
+  if (abs >= 1e9) return (v / 1e9).toLocaleString('es-AR', { maximumFractionDigits: 1 }) + ' MM';
+  if (abs >= 1e6) return (v / 1e6).toLocaleString('es-AR', { maximumFractionDigits: 1 }) + ' M';
+  if (abs >= 1e3) return (v / 1e3).toLocaleString('es-AR', { maximumFractionDigits: 1 }) + ' k';
+  return v.toLocaleString('es-AR', { maximumFractionDigits: 0 });
+}
+
+// 'YYYY-MM' → 'ene 24'  (mes abreviado + año 2 dígitos, para el eje X).
+const DCA_MESES_ABREV = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function dcaMesLabel(mes) {
+  if (!mes || typeof mes !== 'string') return '';
+  const [y, m] = mes.split('-');
+  const idx = Math.max(0, Math.min(11, Number(m) - 1));
+  return `${DCA_MESES_ABREV[idx]} ${String(y).slice(-2)}`;
+}
+
+route('/datacount_analiticas', async (mount) => {
+  const tabButtonsHtml = DCA_TABS.map((t, i) => `
+    <button type="button" class="modal-tab ${i === 0 ? 'active' : ''}" role="tab"
+            data-dca-tab="${t.key}">
+      <i class="fa-solid ${t.icon}"></i> ${esc(t.label)}
+    </button>
+  `).join('');
+
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datacount" onclick="location.hash='#/datacount'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📊</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Vista analítica de Datacount. Los datos siempre corresponden a la empresa
+            seleccionada arriba a la izquierda. Cada pestaña muestra una serie propia
+            calculada en el servidor a partir de las tablas transaccionales.
+          </div>
+        </div>
+      </div>
+
+      <div class="toolbar" style="margin-bottom:12px">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcaEmpresaSel" style="min-width:220px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="modal-tabs" role="tablist" style="margin-bottom:16px">
+        ${tabButtonsHtml}
+      </div>
+
+      <div id="dcaTabPanel"></div>
+    </div>
+  `;
+
+  // Restaurar la pestaña marcada como activa por si el estado global cambió.
+  document.querySelectorAll('#view [data-dca-tab]').forEach((b) =>
+    b.classList.toggle('active', b.dataset.dcaTab === dcaTabActual));
+
+  const selEmp = $('#dcaEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', async (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    // Al cambiar de empresa, invalidamos cache de TODAS las pestañas
+    // (los datos son por-empresa) para forzar un refetch al entrar.
+    DCA_TABS.forEach((t) => { dcaState[t.key].ultimaData = null; });
+    await dcaCargarTabActual();
+  });
+
+  // Redibujar el gráfico activo cuando cambia el tamaño de la ventana
+  // (para que las barras y labels vuelvan a acomodarse al ancho disponible).
+  if (!dcaResizeWired) {
+    window.addEventListener('resize', () => {
+      clearTimeout(dcaResizeTimer);
+      dcaResizeTimer = setTimeout(() => {
+        if (!location.hash.startsWith('#/datacount_analiticas')) return;
+        const cfg   = dcaGetCfg(dcaTabActual);
+        const st    = dcaState[cfg.key];
+        if (!st.ultimaData) return;
+        const chart = document.getElementById(`dca_${cfg.key}_Chart`);
+        const inner = document.getElementById(`dca_${cfg.key}_ChartInner`);
+        const tip   = document.getElementById(`dca_${cfg.key}_Tooltip`);
+        if (chart && inner) inner.innerHTML = dcaRenderBarChart(st.ultimaData.serie, chart.clientWidth);
+        if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
+      }, 150);
+    });
+    dcaResizeWired = true;
+  }
+
+  // Wiring de las pestañas
+  document.querySelectorAll('#view [data-dca-tab]').forEach((b) => {
+    b.addEventListener('click', () => {
+      dcaTabActual = b.dataset.dcaTab;
+      document.querySelectorAll('#view [data-dca-tab]').forEach((x) =>
+        x.classList.toggle('active', x.dataset.dcaTab === dcaTabActual));
+      dcaCargarTabActual();
+    });
+  });
+
+  await dcaCargarTabActual();
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Analíticas');
+
+async function dcaCargarTabActual() {
+  const panel = document.getElementById('dcaTabPanel');
+  if (!panel) return;
+  const cfg = dcaGetCfg(dcaTabActual);
+  await dcaRenderTab(panel, cfg);
+}
+
+// --------------------------- Render genérico de pestaña ---------------------------
+//
+// Cada pestaña tiene el mismo shell: chips de rango + selector de año + 4
+// stat-cards + card con título/subtítulo/gráfico/aviso "sin fecha". Sólo
+// cambian los IDs (con prefijo `dca_${key}_`) y los labels (de la cfg).
+
+async function dcaRenderTab(panel, cfg) {
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    panel.innerHTML = `<div class="table-empty" style="padding:40px 20px;text-align:center;color:var(--muted)">No hay empresas registradas — creá una en Datacount &gt; Empresas antes de ver analíticas.</div>`;
+    return;
+  }
+
+  const p  = `dca_${cfg.key}_`;   // prefijo de IDs de esta pestaña
+  const st = dcaState[cfg.key];
+
+  panel.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px">
+      <div class="toolbar-left" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.85rem;color:var(--muted)">Rango:</label>
+        <div id="${p}RangoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button type="button" class="filter-chip" data-val="all">Histórico completo</button>
+          <button type="button" class="filter-chip" data-val="12">Últimos 12 meses</button>
+          <button type="button" class="filter-chip" data-val="24">Últimos 24 meses</button>
+          <button type="button" class="filter-chip" data-val="36">Últimos 36 meses</button>
+          <button type="button" class="filter-chip" data-val="year">Año…</button>
+        </div>
+        <select id="${p}AnioSel" style="min-width:110px;display:none" title="Año">
+          <option value="">—</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-card"><span class="stat-label">${esc(cfg.statLabelTotalRango)}</span><span class="stat-value blue" id="${p}StatTotalRango">—</span></div>
+      <div class="stat-card"><span class="stat-label">${esc(cfg.statLabelCantRango)}</span><span class="stat-value" id="${p}StatCantRango">—</span></div>
+      <div class="stat-card"><span class="stat-label">${esc(cfg.statLabelTotalHist)}</span><span class="stat-value" id="${p}StatTotalHist">—</span></div>
+      <div class="stat-card"><span class="stat-label">${esc(cfg.statLabelCantHist)}</span><span class="stat-value" id="${p}StatCantHist">—</span></div>
+    </div>
+
+    <div class="table-card" style="padding:16px 20px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div style="font-weight:600;font-size:.95rem">${esc(cfg.tituloChart)}</div>
+        <div id="${p}Subtitulo" style="font-size:.8rem;color:var(--muted)">—</div>
+      </div>
+      <div id="${p}Chart" style="width:100%;min-height:320px;position:relative">
+        <div id="${p}ChartInner">
+          <div style="text-align:center;padding:80px 0"><div class="spin"></div></div>
+        </div>
+        <div id="${p}Tooltip" hidden
+             style="position:absolute;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow-lg);font-size:.82rem;pointer-events:none;z-index:5;white-space:nowrap;transform:translate(-50%,-100%);margin-top:-8px;line-height:1.35"></div>
+      </div>
+      <div id="${p}SinFecha" style="margin-top:8px;font-size:.78rem;color:var(--muted)"></div>
+    </div>
+  `;
+
+  // Wiring de los chips de rango
+  const chips   = panel.querySelectorAll(`#${p}RangoChips .filter-chip`);
+  const selAnio = document.getElementById(`${p}AnioSel`);
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.val || 'all') === st.rango);
+    b.addEventListener('click', () => {
+      st.rango = b.dataset.val || 'all';
+      chips.forEach((x) => x.classList.toggle('active', x.dataset.val === st.rango));
+      selAnio.style.display = (st.rango === 'year') ? '' : 'none';
+      dcaCargarTabData(cfg);
+    });
+  });
+  if (st.rango === 'year') selAnio.style.display = '';
+  selAnio.addEventListener('change', () => {
+    st.anio = Number(selAnio.value) || null;
+    if (st.anio) dcaCargarTabData(cfg);
+  });
+
+  // Click en una barra: muestra un tooltip flotante con mes, total y
+  // cantidad, posicionado en el tope de la barra visible. Volver a
+  // clickear la misma barra o clickear el fondo lo oculta.
+  const chart = document.getElementById(`${p}Chart`);
+  chart.addEventListener('click', (ev) => {
+    const rect = ev.target.closest('.dca-bar');
+    const tip  = document.getElementById(`${p}Tooltip`);
+    if (!tip) return;
+    if (!rect) { tip.hidden = true; tip.dataset.mes = ''; return; }
+
+    const mes  = rect.dataset.mes  || '';
+    const tot  = Number(rect.dataset.total || 0);
+    const cant = Number(rect.dataset.cant  || 0);
+
+    if (tip.dataset.mes === mes && !tip.hidden) {
+      tip.hidden = true;
+      tip.dataset.mes = '';
+      return;
+    }
+
+    // La `.dca-bar` es la zona clickeable transparente (banda completa).
+    // El rect coloreado — hermano anterior — nos da el tope real de la barra.
+    // Para meses vacíos (h=0), su .top coincide con la línea del eje X.
+    const visible   = rect.previousElementSibling || rect;
+    const barBox    = visible.getBoundingClientRect();
+    const chartBox  = chart.getBoundingClientRect();
+    const cx = barBox.left - chartBox.left + barBox.width / 2;
+    const cy = barBox.top  - chartBox.top;
+
+    const unidad = cant === 1 ? cfg.unidadSing : cfg.unidadPlur;
+    tip.innerHTML = `
+      <div style="font-weight:600;margin-bottom:2px">${esc(dcaMesLabel(mes))}</div>
+      <div style="color:var(--primary);font-weight:700">$ ${dcaFmtMoney(tot)}</div>
+      <div style="color:var(--muted);font-size:.75rem">${fmtNum(cant)} ${esc(unidad)}</div>
+    `;
+    tip.dataset.mes = mes;
+    tip.hidden = false;
+
+    tip.style.left = cx + 'px';
+    tip.style.top  = cy + 'px';
+    const tipBox = tip.getBoundingClientRect();
+    let dx = 0;
+    if (tipBox.left < chartBox.left + 4)         dx = (chartBox.left + 4) - tipBox.left;
+    else if (tipBox.right > chartBox.right - 4)  dx = (chartBox.right - 4) - tipBox.right;
+    if (dx !== 0) tip.style.left = (cx + dx) + 'px';
+  });
+
+  await dcaCargarTabData(cfg);
+}
+
+async function dcaCargarTabData(cfg) {
+  const p        = `dca_${cfg.key}_`;
+  const st       = dcaState[cfg.key];
+  const chart    = document.getElementById(`${p}Chart`);
+  const cont     = document.getElementById(`${p}ChartInner`);
+  const subtit   = document.getElementById(`${p}Subtitulo`);
+  const sinFecha = document.getElementById(`${p}SinFecha`);
+  const tip      = document.getElementById(`${p}Tooltip`);
+  if (!cont) return;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) return;
+
+  if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
+
+  cont.innerHTML = `<div style="text-align:center;padding:80px 0"><div class="spin"></div></div>`;
+
+  const qs = new URLSearchParams();
+  qs.set('action',  cfg.key);
+  qs.set('empresa', String(empresaId));
+  qs.set('rango',   st.rango);
+  if (st.rango === 'year' && st.anio) qs.set('anio', String(st.anio));
+
+  try {
+    const data = await apiGet('api/datacount_analiticas.php?' + qs.toString());
+    st.ultimaData = data;
+
+    // Poblar el selector de año con los años que efectivamente tienen datos.
+    const selAnio = document.getElementById(`${p}AnioSel`);
+    if (selAnio) {
+      const anios = (data.anios || []).slice();
+      if (st.rango === 'year' && st.anio && !anios.includes(st.anio)) {
+        anios.push(st.anio);
+        anios.sort();
+      }
+      const anioActual = st.anio || (anios.length ? anios[anios.length - 1] : new Date().getFullYear());
+      if (!st.anio) st.anio = anioActual;
+      selAnio.innerHTML = anios.length
+        ? anios.map((y) => `<option value="${y}">${y}</option>`).join('')
+        : `<option value="${new Date().getFullYear()}">${new Date().getFullYear()}</option>`;
+      selAnio.value = String(st.anio);
+    }
+
+    // Stats
+    const r = data.resumen || {};
+    document.getElementById(`${p}StatTotalRango`).textContent = '$ ' + dcaFmtMoney(r.total_rango ?? 0);
+    document.getElementById(`${p}StatCantRango`).textContent  = fmtNum(r.cantidad_rango ?? 0);
+    document.getElementById(`${p}StatTotalHist`).textContent  = '$ ' + dcaFmtMoney(r.total ?? 0);
+    document.getElementById(`${p}StatCantHist`).textContent   = fmtNum(r.cantidad ?? 0);
+
+    // Subtítulo con la ventana efectiva
+    if (data.rango && data.rango.desde && data.rango.hasta) {
+      const modoTxt = data.rango.modo === 'year'
+        ? `Año ${data.rango.desde.slice(0, 4)}`
+        : (data.rango.modo === 'ultimos'
+            ? `Últimos ${data.rango.meses} meses`
+            : 'Histórico completo');
+      subtit.textContent = `${modoTxt} · ${dcaMesLabel(data.rango.desde)} → ${dcaMesLabel(data.rango.hasta)}`;
+    } else {
+      subtit.textContent = 'Sin registros con fecha de emisión.';
+    }
+
+    // Aviso de registros sin fecha (caso raro).
+    if (r.sin_fecha_cant > 0) {
+      sinFecha.innerHTML = `<i class="fa-solid fa-circle-info"></i> ${fmtNum(r.sin_fecha_cant)} ${esc(cfg.sinFechaMsg)} (no entran en la serie mensual).`;
+    } else {
+      sinFecha.innerHTML = '';
+    }
+
+    // Gráfico
+    if (!data.serie || !data.serie.length) {
+      cont.innerHTML = `<div class="table-empty" style="text-align:center;padding:60px 20px;color:var(--muted)">Sin datos para el rango elegido.</div>`;
+      return;
+    }
+    cont.innerHTML = dcaRenderBarChart(data.serie, chart.clientWidth);
+  } catch (e) {
+    cont.innerHTML = `<div class="table-empty" style="text-align:center;padding:40px 20px;color:var(--danger)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// Barras verticales en SVG plano. Devuelve un string HTML con el <svg>
+// dimensionado al ancho recibido (o 800 como fallback). El alto es fijo
+// (320px). Cada barra lleva data-mes/data-total/data-cant + class .dca-bar
+// para que el click handler del contenedor pueda mostrar un tooltip con
+// el mes, total y cantidad de comprobantes.
+function dcaRenderBarChart(serie, anchoDisponible) {
+  const W = Math.max(320, Math.floor(anchoDisponible || 800));
+  const H = 320;
+  const PAD = { top: 20, right: 16, bottom: 44, left: 76 };
+  const plotW = W - PAD.left - PAD.right;
+  const plotH = H - PAD.top - PAD.bottom;
+
+  const maxVal = serie.reduce((m, s) => Math.max(m, Number(s.total) || 0), 0);
+  // Redondea el máximo del eje Y hacia arriba a un número "lindo" (2 cifras significativas).
+  const yMax = dcaNiceMax(maxVal);
+
+  // Grid horizontal + labels del eje Y (5 divisiones)
+  const yTicks = 5;
+  const gridLines = [];
+  const yLabels   = [];
+  for (let i = 0; i <= yTicks; i++) {
+    const val = (yMax / yTicks) * i;
+    const y   = PAD.top + plotH - (plotH * i / yTicks);
+    gridLines.push(`<line x1="${PAD.left}" y1="${y.toFixed(1)}" x2="${(PAD.left + plotW).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="1" ${i === 0 ? '' : 'stroke-dasharray="2,3"'}/>`);
+    yLabels.push(`<text x="${PAD.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)" font-family="inherit">$ ${dcaFmtMoneyCompacto(val)}</text>`);
+  }
+
+  // Barras
+  const n         = serie.length;
+  const bandW     = plotW / n;
+  const barW      = Math.max(2, Math.min(48, bandW * 0.7));
+  const barGap    = (bandW - barW) / 2;
+
+  // Densidad de labels del eje X: si hay muchos meses, mostrar cada K
+  // para que no se solapen. Objetivo: no más de ~14 labels visibles.
+  const stepX = Math.max(1, Math.ceil(n / 14));
+
+  const bars   = [];
+  const xLabs  = [];
+  serie.forEach((s, i) => {
+    const val = Number(s.total) || 0;
+    const h   = yMax > 0 ? (plotH * val / yMax) : 0;
+    const x   = PAD.left + i * bandW + barGap;
+    const y   = PAD.top + plotH - h;
+    // Ancho de la zona clickeable: usar el ancho de la banda completa (no
+    // sólo el rect visible) para que sea fácil pegarle en meses con barra muy
+    // fina o barra vacía. Se pinta encima del rect coloreado, transparente.
+    const hitX = PAD.left + i * bandW;
+    const hitY = PAD.top;
+    const hitH = plotH;
+    bars.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="var(--primary)" opacity="${val > 0 ? '.92' : '0'}"/>`);
+    bars.push(`<rect class="dca-bar" x="${hitX.toFixed(1)}" y="${hitY.toFixed(1)}" width="${bandW.toFixed(1)}" height="${hitH.toFixed(1)}" fill="transparent" style="cursor:pointer" data-mes="${esc(s.mes)}" data-total="${val}" data-cant="${s.cantidad}"/>`);
+    if (i % stepX === 0 || i === n - 1) {
+      const cx = x + barW / 2;
+      xLabs.push(`<text x="${cx.toFixed(1)}" y="${(PAD.top + plotH + 14).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">${esc(dcaMesLabel(s.mes))}</text>`);
+    }
+  });
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block">
+      ${gridLines.join('')}
+      ${yLabels.join('')}
+      ${bars.join('')}
+      ${xLabs.join('')}
+    </svg>
+  `;
+}
+
+// Redondea `v` al siguiente número "lindo" (1, 2, 5, 10 × 10^k) para el
+// tope del eje Y. Si v === 0 devuelve 1 (para evitar división por cero).
+function dcaNiceMax(v) {
+  const x = Math.max(1, Number(v) || 0);
+  const exp  = Math.floor(Math.log10(x));
+  const base = Math.pow(10, exp);
+  const norm = x / base;
+  let nice;
+  if      (norm <= 1)   nice = 1;
+  else if (norm <= 2)   nice = 2;
+  else if (norm <= 2.5) nice = 2.5;
+  else if (norm <= 5)   nice = 5;
+  else                  nice = 10;
+  return nice * base;
+}
 
 // ------------------------- Vista: Datacount > Comprobantes (ABM) -------------------------
 const dcCompFiltrosDefaults = {
@@ -11849,7 +12338,7 @@ async function cambiarEstadoDcComp(id, nuevo) {
   }
 }
 
-// ------------------------- Vista: Datacount > Pagos (ABM) -------------------------
+// ------------------------- Vista: Datacount > Órdenes de pago (ABM) -------------------------
 // Cada fila representa un documento digitalizado (factura recibida, VEP,
 // comprobante de transferencia, etc.). Los campos `tipo`, `moneda`, `estado`
 // y `clasificado` guardan valores crudos que se traducen a texto amigable
@@ -12186,7 +12675,7 @@ route('/datacount_pagos', async (mount) => {
     dcPagoPintarChips('fDcPagoEstadoChips', 'datacount_pago_estado', dcPagoFiltros.estado, 'estado');
   }).catch(() => {});
   await cargarDcPago();
-}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Pagos');
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Órdenes de pago');
 
 async function cargarDcPago() {
   const tbody = $('#dcPagoTbody');
@@ -12587,8 +13076,8 @@ function renderConsultaDcPago(p) {
 
     ${seccion('Contexto')}
     <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Empresa (ID)',   p.empresa)}
-      ${card('Proyecto (ID)',  p.proyecto)}
+      ${card('Empresa',        p.empresa_nombre  || (p.empresa  ? `#${p.empresa}`  : null))}
+      ${card('Proyecto',       p.proyecto_nombre || (p.proyecto ? `#${p.proyecto}` : null))}
       ${card('Comprobante',    p.comprobante)}
       ${card('Transacción',    p.transaccion)}
       ${card('Remuneración',   p.remuneracion)}
@@ -12870,154 +13359,6 @@ async function eliminarDcPago(id) {
     toast(e.message, { error: true });
   }
 }
-
-// ------------------------- Vista: Datacount > Facturación (motor + log) -------------------------
-// El motor de facturación corre por fuera de esta app (proceso externo); lee el
-// parámetro `datacount.motor` de la tabla `parametros` para saber si tiene que
-// trabajar. Esta vista solo prende/apaga ese parámetro y muestra el log que el
-// motor va dejando. El log todavía no tiene fuente real (ver api/datacount_facturacion.php).
-
-const FACT_REFRESH_MS = 1000;
-let factPollTimer  = null;
-let factLastLogId  = 0;
-let factMotorPrev  = null;   // ultimo valor confirmado por el server, para revertir si falla el toggle
-
-function factDetener() {
-  if (factPollTimer) { clearInterval(factPollTimer); factPollTimer = null; }
-}
-
-function factSetMotorUI(motor) {
-  factMotorPrev = motor;
-  const badge = document.getElementById('factMotorBadge');
-  const sw    = document.getElementById('factMotorSwitch');
-  const lbl   = document.getElementById('factMotorLabel');
-  if (badge) {
-    if (motor === '1') {
-      badge.className = 'badge badge-success';
-      badge.textContent = 'Encendido';
-    } else {
-      badge.className = 'badge badge-danger';
-      badge.textContent = 'Apagado';
-    }
-  }
-  if (sw) sw.checked = (motor === '1');
-  if (lbl) lbl.textContent = motor === '1' ? 'Encendido' : 'Apagado';
-}
-
-async function factCargarStatus() {
-  try {
-    const s = await apiGet('api/datacount_facturacion.php?action=status');
-    factSetMotorUI(s.motor);
-  } catch (e) { /* silencioso: es polling */ }
-}
-
-async function factCargarLog() {
-  try {
-    const d = await apiGet('api/datacount_facturacion.php?action=log&since=' + factLastLogId);
-    if (!Array.isArray(d.items) || d.items.length === 0) return;
-    factAppendLineas(d.items);
-    if (d.last_id) factLastLogId = Math.max(factLastLogId, Number(d.last_id) || 0);
-  } catch (e) { /* silencioso */ }
-}
-
-function factAppendLineas(items) {
-  const cont = document.getElementById('factLog');
-  if (!cont) return;
-  const placeholder = cont.querySelector('.term-log-empty');
-  if (placeholder) placeholder.remove();
-  const stickToBottom = (cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 20);
-  const html = items.map((it) => {
-    const ts  = it.fecha   ? esc(it.fecha)   : '';
-    const lvl = String(it.nivel || 'info').toLowerCase();
-    const lvlCls = ['info','ok','warn','error'].includes(lvl) ? lvl : 'info';
-    const msg = esc(it.mensaje || '');
-    return `<span class="term-log-line"><span class="ts">${ts}</span><span class="lvl-${lvlCls}">${msg}</span></span>`;
-  }).join('');
-  cont.insertAdjacentHTML('beforeend', html);
-  if (stickToBottom) cont.scrollTop = cont.scrollHeight;
-}
-
-async function factToggleMotor(ev) {
-  const sw = ev.target;
-  const nuevo = sw.checked ? '1' : '0';
-  const anterior = factMotorPrev;
-  factSetMotorUI(nuevo); // optimista
-  try {
-    const r = await apiSend('api/datacount_facturacion.php?action=motor', 'POST', { valor: nuevo });
-    factSetMotorUI(r.motor);
-    toast(r.motor === '1' ? 'Motor de facturación encendido.' : 'Motor de facturación apagado.');
-  } catch (e) {
-    factSetMotorUI(anterior || (nuevo === '1' ? '0' : '1'));
-    toast(e.message, { error: true });
-  }
-}
-
-route('/datacount_facturacion', async (mount) => {
-  factDetener();
-  factLastLogId = 0;
-  factMotorPrev = null;
-
-  mount.innerHTML = `
-    <div class="section">
-      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
-        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
-                title="Volver a Datacount" onclick="location.hash='#/datacount'">
-          <i class="fa-solid fa-chevron-left"></i>
-        </button>
-        <div class="module-help" style="flex:1;margin-bottom:0">
-          <div class="module-help-icon">🤖</div>
-          <div class="module-help-text">
-            El motor de facturación es el proceso que registra automáticamente los comprobantes
-            de Datacount ante AFIP. Desde acá se lo prende o apaga y se sigue su actividad en vivo.
-          </div>
-        </div>
-      </div>
-
-      <div class="fact-controls">
-        <span class="fact-controls-title">Motor de facturación</span>
-        <span class="badge" id="factMotorBadge">…</span>
-        <label class="toggle-switch" title="Encender / Apagar motor">
-          <input type="checkbox" id="factMotorSwitch">
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          <span class="toggle-label" id="factMotorLabel">—</span>
-        </label>
-        <div class="fact-controls-right">
-          <button class="btn btn-ghost btn-icon" id="factLimpiarBtn" title="Limpiar pantalla">
-            <i class="fa-solid fa-eraser"></i>
-          </button>
-          <button class="btn btn-ghost btn-icon" id="factRefrescarBtn" title="Refrescar">
-            <i class="fa-solid fa-rotate"></i>
-          </button>
-        </div>
-      </div>
-
-      <div class="term-log" id="factLog">
-        <span class="term-log-empty">Sin registros aún.</span>
-      </div>
-    </div>
-  `;
-
-  document.getElementById('factMotorSwitch').addEventListener('change', factToggleMotor);
-  document.getElementById('factRefrescarBtn').addEventListener('click', () => {
-    factCargarStatus();
-    factCargarLog();
-  });
-  document.getElementById('factLimpiarBtn').addEventListener('click', () => {
-    const cont = document.getElementById('factLog');
-    if (cont) cont.innerHTML = '<span class="term-log-empty">Sin registros aún.</span>';
-    factLastLogId = 0;
-  });
-
-  await factCargarStatus();
-  await factCargarLog();
-  // Polling 1s. Si el usuario navega a otra vista, render() reemplaza #view y el
-  // elemento #factLog desaparece — el propio tick se autodetiene.
-  factPollTimer = setInterval(() => {
-    if (!document.getElementById('factLog')) { factDetener(); return; }
-    factCargarStatus();
-    factCargarLog();
-  }, FACT_REFRESH_MS);
-}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Facturación');
 
 // ------------------------- Contexto compartido: empresa activa -------------------------
 // Contexto de "empresa activa" para todos los módulos de Datacount (Plan de

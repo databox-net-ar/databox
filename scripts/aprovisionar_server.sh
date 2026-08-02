@@ -239,8 +239,10 @@ server {
         # Backend Apache detras del proxy corre en :8300; sin este redirect
         # cualquier Location absoluto que emita (p.ej. mod_dir DirectorySlash)
         # se filtra a "http://admin.databox.net.ar:8300/...". Lo convertimos
-        # a relativo y nginx lo re-expande contra la URL publica.
-        proxy_redirect     ~^https?://[^/]+(/.*)\$ \$1;
+        # a relativo y nginx lo re-expande contra la URL publica. Restringimos
+        # a URLs con puerto (:\d+) para no reescribir Location legitimos a
+        # otros hosts publicos (p.ej. https://www.vigicom.net.ar/...).
+        proxy_redirect     ~^https?://[^/:]+:\d+(/.*)\$ \$1;
         client_max_body_size 50M;
         proxy_read_timeout 120s;
     }
@@ -260,7 +262,11 @@ server {
         proxy_set_header   X-Real-IP \$remote_addr;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto \$scheme;
-        proxy_redirect     ~^https?://[^/]+(/.*)\$ \$1;
+        # Ver comentario del bloque admin arriba: reescribimos solo Location con
+        # puerto (p.ej. http://api.databox.net.ar:8301/...) para no romper
+        # redirects legitimos a otros hosts publicos (p.ej. aprobado.php
+        # redirige a https://www.vigicom.net.ar/... y ese URL debe pasar tal cual).
+        proxy_redirect     ~^https?://[^/:]+:\d+(/.*)\$ \$1;
         client_max_body_size 50M;
         proxy_read_timeout 120s;
     }

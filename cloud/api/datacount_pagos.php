@@ -135,7 +135,22 @@ function handleListDcPago(PDO $pdo, array $q): void {
 }
 
 function handleGetOneDcPago(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . DCP_COLS . " FROM datacount_pagos WHERE id = :id");
+    // JOIN a `datacount_empresas` y `proyectos` para traer los nombres y que
+    // el modal de Consulta pueda mostrar texto en lugar de ID (mismo patron
+    // que datacount_comprobantes.php::handleGetOneDcComp).
+    $stmt = $pdo->prepare("
+        SELECT p.id, p.uuid, p.empresa, p.proyecto, p.periodo, p.tipo, p.emision, p.cancelacion,
+               p.razon, p.cuit, p.numero, p.moneda, p.monto, p.cotizacion, p.valor,
+               p.medio___ AS medio_legacy, p.billetera, p.descripcion,
+               p.comprobante, p.transaccion, p.contabilizado, p.registrador, p.registrado,
+               p.remuneracion, p.clasificado, p.estado,
+               e.nombre  AS empresa_nombre,
+               pr.nombre AS proyecto_nombre
+        FROM datacount_pagos p
+        LEFT JOIN datacount_empresas e  ON e.id  = p.empresa
+        LEFT JOIN proyectos           pr ON pr.id = p.proyecto
+        WHERE p.id = :id
+    ");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Pago no encontrado', 404);
