@@ -11302,14 +11302,20 @@ function renderConsultaDcComp(c) {
       <div style="display:grid;grid-template-columns:1fr;gap:12px;align-items:start">
         ${card('Comentarios',   c.comentarios)}
       </div>
-      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-        ${card('Concepto',      c.concepto == null || c.concepto === '' ? null : (DC_COMP_CONCEPTOS[String(c.concepto)] || c.concepto))}
-        ${card('Medio de pago', c.medio)}
-        ${card('Asociado',      c.asociado)}
-        ${card('Contrato',      c.contrato)}
-        ${card('Registrado',    fmtFecha(c.registrado))}
-        ${card('Autorizado',    fmtFecha(c.autorizado))}
-      </dl>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+          ${card('Concepto',      c.concepto == null || c.concepto === '' ? null : (DC_COMP_CONCEPTOS[String(c.concepto)] || c.concepto))}
+          ${card('Medio de pago', c.medio)}
+          ${card('Asociado',      c.asociado)}
+          ${card('Contrato',      c.contrato)}
+          ${card('Registrado',    fmtFecha(c.registrado))}
+          ${card('Autorizado',    fmtFecha(c.autorizado))}
+        </dl>
+        <dl class="data-list" style="grid-template-columns:minmax(0,1fr) 220px">
+          ${card('Webhook URL',    c.webhook_url, false, true)}
+          ${card('Webhook estado', c.webhook_estado)}
+        </dl>
+      </div>
     </div>
   `;
 }

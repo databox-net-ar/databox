@@ -30,6 +30,15 @@
 // esta ingesta v4 es facturacion mixta. Se puede pisar en el body con 1
 // (Productos) o 2 (Servicios) si el caller sabe que va a facturar puro.
 //
+// Webhook opcional: si el caller manda `webhook_url` en el body, apenas
+// obtenemos el CAE hacemos POST JSON a esa URL con el snapshot del
+// comprobante (mismo shape que la response 201). Best-effort: si el POST
+// falla, el comprobante ya quedo autorizado y la 201 al caller original
+// no se toca -- `webhook_estado` queda en 'pendiente' y el cron
+// cloud/jobs/datacount_comprobantes_notificar.php lo reintenta hasta
+// que el receptor devuelva 2xx. El disparo online (este endpoint) y el
+// de retry (cron) comparten `dccWebhookDisparar` para no divergir.
+//
 // Auth: Bearer con apikey de la tabla `aplicaciones` (mismo esquema que el
 // resto de los microservicios v4).
 
@@ -40,6 +49,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/datacount_comprobantes_autorizar.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/datacount_comprobantes_webhook.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/parametros.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/sucesos.php';
 
@@ -142,6 +152,13 @@ function handleCreate(array $in): void {
     // para dejarlo en borrador y no dispararlo automaticamente).
     $estado = dcNullableStr($in['estado'] ?? null, 1) ?? '2';
 
+    // Webhook opcional -- si el caller manda `webhook_url`, dejamos el
+    // comprobante marcado con `webhook_estado = 'pendiente'` para que el
+    // proceso que dispara la notificacion post-autorizacion sepa que tiene
+    // que hacer POST a esa URL cuando el comprobante quede en estado '3'.
+    $webhookUrl    = dcNullableStr($in['webhook_url'] ?? null, 500);
+    $webhookEstado = $webhookUrl !== null ? 'pendiente' : null;
+
     $uuid       = substr(bin2hex(random_bytes(8)), 0, 10);
     $registrado = $ahora->format('Y-m-d H:i:s');
 
@@ -153,43 +170,45 @@ function handleCreate(array $in): void {
                  caenro, caevto, caeres, emision, vencimiento, concepto,
                  asociado, contrato, cliente, razon, condicion, cuit, domicilio,
                  correo, celular, neto, iva, total, observaciones, comentarios,
-                 medio, registrado, autorizado, estado)
+                 medio, registrado, autorizado, estado, webhook_url, webhook_estado)
             VALUES
                 (:uuid, :talonario, :proyecto, :empresa, :tipo, :punto, NULL, :fiscal,
                  NULL, NULL, NULL, :emision, :vencimiento, :concepto,
                  :asociado, :contrato, :cliente, :razon, :condicion, :cuit, :domicilio,
                  :correo, :celular, :neto, :iva, :total, :observaciones, :comentarios,
-                 :medio, :registrado, NULL, :estado)
+                 :medio, :registrado, NULL, :estado, :webhook_url, :webhook_estado)
         ";
         $ins = $pdo->prepare($sql);
         $ins->execute([
-            ':uuid'          => $uuid,
-            ':talonario'     => $talonarioId,
-            ':proyecto'      => $tal['proyecto'] !== null ? (int)$tal['proyecto'] : null,
-            ':empresa'       => $tal['empresa']  !== null ? (int)$tal['empresa']  : null,
-            ':tipo'          => $tal['tipo'],
-            ':punto'         => $tal['punto']    !== null ? (int)$tal['punto']    : null,
-            ':fiscal'        => $tal['fiscal'],
-            ':emision'       => $emision,
-            ':vencimiento'   => $vto,
-            ':concepto'      => $concepto,
-            ':asociado'      => dcNullableInt($in['asociado'] ?? null),
-            ':contrato'      => dcNullableInt($in['contrato'] ?? null),
-            ':cliente'       => dcNullableInt($in['cliente']  ?? null),
-            ':razon'         => dcNullableStr($in['razon']     ?? null, 250),
-            ':condicion'     => dcNullableStr($in['condicion'] ?? null, 2),
-            ':cuit'          => dcNullableStr($in['cuit']      ?? null, 50),
-            ':domicilio'     => dcNullableStr($in['domicilio'] ?? null, 250),
-            ':correo'        => dcNullableStr($in['correo']    ?? null, 100),
-            ':celular'       => dcNullableStr($in['celular']   ?? null, 100),
-            ':neto'          => $r['neto'],
-            ':iva'           => $r['iva'],
-            ':total'         => $r['total'],
-            ':observaciones' => dcNullableStr($in['observaciones'] ?? null, 2000),
-            ':comentarios'   => dcNullableStr($in['comentarios']   ?? null, 2000),
-            ':medio'         => dcNullableInt($in['medio'] ?? null),
-            ':registrado'    => $registrado,
-            ':estado'        => $estado,
+            ':uuid'           => $uuid,
+            ':talonario'      => $talonarioId,
+            ':proyecto'       => $tal['proyecto'] !== null ? (int)$tal['proyecto'] : null,
+            ':empresa'        => $tal['empresa']  !== null ? (int)$tal['empresa']  : null,
+            ':tipo'           => $tal['tipo'],
+            ':punto'          => $tal['punto']    !== null ? (int)$tal['punto']    : null,
+            ':fiscal'         => $tal['fiscal'],
+            ':emision'        => $emision,
+            ':vencimiento'    => $vto,
+            ':concepto'       => $concepto,
+            ':asociado'       => dcNullableInt($in['asociado'] ?? null),
+            ':contrato'       => dcNullableInt($in['contrato'] ?? null),
+            ':cliente'        => dcNullableInt($in['cliente']  ?? null),
+            ':razon'          => dcNullableStr($in['razon']     ?? null, 250),
+            ':condicion'      => dcNullableStr($in['condicion'] ?? null, 2),
+            ':cuit'           => dcNullableStr($in['cuit']      ?? null, 50),
+            ':domicilio'      => dcNullableStr($in['domicilio'] ?? null, 250),
+            ':correo'         => dcNullableStr($in['correo']    ?? null, 100),
+            ':celular'        => dcNullableStr($in['celular']   ?? null, 100),
+            ':neto'           => $r['neto'],
+            ':iva'            => $r['iva'],
+            ':total'          => $r['total'],
+            ':observaciones'  => dcNullableStr($in['observaciones'] ?? null, 2000),
+            ':comentarios'    => dcNullableStr($in['comentarios']   ?? null, 2000),
+            ':medio'          => dcNullableInt($in['medio'] ?? null),
+            ':registrado'     => $registrado,
+            ':estado'         => $estado,
+            ':webhook_url'    => $webhookUrl,
+            ':webhook_estado' => $webhookEstado,
         ]);
         $id = (int)$pdo->lastInsertId();
 
@@ -218,8 +237,10 @@ function handleCreate(array $in): void {
         'neto'        => $r['neto'],
         'iva'         => $r['iva'],
         'total'       => $r['total'],
-        'estado'      => $estado,
-        'registrado'  => $registrado,
+        'estado'         => $estado,
+        'registrado'     => $registrado,
+        'webhook_url'    => $webhookUrl,
+        'webhook_estado' => $webhookEstado,
         'cae'         => null,
         'cae_vto'     => null,
         'cbte_nro'    => null,
@@ -318,6 +339,19 @@ function dcAutorizarSincrono(PDO $pdo, int $id, array $out): void {
     $out['serie']      = $r['cbte_nro'];
     $out['autorizado'] = $autorizado;
     $out['caeres']     = "OK CAE {$r['cae']} (vto {$r['cae_vto']})";
+
+    // Webhook post-autorizacion: si el caller cargo `webhook_url`, notificamos
+    // ahora que ya tenemos el CAE. Best-effort -- si el POST falla el
+    // comprobante ya quedo autorizado y `webhook_estado` queda en 'pendiente'
+    // para reintento por el cron cloud/jobs/datacount_comprobantes_notificar.
+    // El disparo online y el de retry comparten `dccWebhookDisparar` para que
+    // no puedan divergir.
+    if (!empty($out['webhook_url'])) {
+        $out['webhook_estado'] = dccWebhookDisparar(
+            $pdo, $id, (string)$out['webhook_url'], $out,
+            'v4/datacount.comprobantes'
+        );
+    }
 
     jsonOk($out, 201);
 }

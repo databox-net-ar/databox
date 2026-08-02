@@ -30,6 +30,36 @@ Cuando NO se intenta autorizar (talonario no fiscal, o el caller pisa el
 `estado` con `'1'` para dejarlo en borrador), el comprobante se devuelve
 tal como fue creado, con `cae`/`cae_vto`/`cbte_nro`/etc. en `null`.
 
+## Webhook post-autorizacion
+
+Si el caller pasa `webhook_url` en el body, el microservicio hace un `POST`
+JSON a esa URL **apenas obtiene el CAE**, con el mismo shape que el `data`
+de la response 201 (ver ejemplo). Esto evita que el caller tenga que
+pollear el ABM para conciliar el resultado.
+
+- La columna `webhook_estado` de `datacount_comprobantes` refleja el
+  estado:
+  - `'pendiente'` — se cargo `webhook_url` pero todavia no se disparo o
+    el disparo fallo (timeout, HTTP != 2xx, cURL error, comprobante sin
+    autorizar aun).
+  - `'completado'` — el receptor devolvio HTTP 2xx.
+  - `NULL` — el caller no configuro webhook.
+- **Best-effort**: si el POST al webhook falla, el comprobante ya quedo
+  autorizado y la response HTTP al caller original sigue siendo 201. El
+  fallo se registra como suceso `'alerta'` con el motivo y `webhook_estado`
+  queda en `'pendiente'`.
+- **Retry automatico**: los `'pendiente'` los levanta el cron
+  `cloud/jobs/datacount_comprobantes_notificar.php`, que reintenta el POST
+  cada corrida hasta que el receptor devuelva 2xx. Esto cubre tambien los
+  comprobantes autorizados por el cron `datacount_comprobantes_autorizar`
+  o por el boton "Autorizar" del ABM (que no pasan por el disparo online
+  del v4).
+- Timeouts: conexion 3s, total 8s. Sigue hasta 3 redirects.
+- Headers: `Content-Type: application/json`, `Accept: application/json`,
+  `User-Agent: databox/datacount-comprobantes-webhook`.
+- **No hay auth** en el POST al webhook — el caller debe usar una URL con
+  token/secret en el path o query si necesita autenticar el origen.
+
 ## Auth
 
 Bearer con `apikey` de la tabla `aplicaciones` (mismo esquema que el resto
@@ -63,6 +93,7 @@ Authorization: Bearer <apikey>
 | `observaciones` | string(2000) | no          | |
 | `comentarios`   | string(2000) | no          | |
 | `estado`        | string(1)    | no          | Default: `'2'` (Pendiente) — dispara la autorizacion sincronica. Pasar `'1'` (Preparacion) para dejarlo como borrador sin llamar a AFIP. |
+| `webhook_url`   | string(500)  | no          | URL a la que hacer POST JSON cuando el comprobante logre autorizarse contra AFIP (ver seccion "Webhook post-autorizacion"). Si viene, `webhook_estado` arranca en `'pendiente'`. |
 
 `neto`, `iva` y `total` se **recalculan siempre server-side** desde
 `renglones` — cualquier valor en el body para esas claves se ignora.
@@ -91,6 +122,8 @@ Authorization: Bearer <apikey>
     "total": "121.00",
     "estado": "3",
     "registrado": "2026-08-01 10:15:34",
+    "webhook_url": "https://mi-app.ejemplo.com/hooks/facturas",
+    "webhook_estado": "completado",
     "cae": "76234567890123",
     "cae_vto": "20260811",
     "cbte_nro": 4271,
@@ -101,10 +134,17 @@ Authorization: Bearer <apikey>
 }
 ```
 
+Si el caller no mando `webhook_url`, ambos campos `webhook_url` y
+`webhook_estado` salen en `null`. Si mando `webhook_url` pero el POST al
+receptor fallo (timeout, HTTP != 2xx), la response al caller original
+sigue siendo 201 pero `webhook_estado` queda en `'pendiente'`.
+
 ### 201 Created — sin autorizacion (no fiscal o estado != '2')
 
 Los campos `cae`, `cae_vto`, `cbte_nro`, `serie`, `autorizado`, `caeres`
-salen en `null`, `estado` refleja lo que se pidio (default `'2'`).
+salen en `null`, `estado` refleja lo que se pidio (default `'2'`). El
+webhook **no se dispara** en este caso — se dispara sola cuando el
+comprobante obtiene el CAE, cosa que aca no paso.
 
 ### 422 Unprocessable Entity — autorizacion AFIP fallo
 
@@ -154,6 +194,7 @@ curl -X POST https://api.databox.net.ar/v4/datacount/comprobantes \
        "cuit": "20111111112",
        "condicion": "RI",
        "concepto": 2,
+       "webhook_url": "https://mi-app.ejemplo.com/hooks/facturas?token=abc123",
        "renglones": [
          {"cantidad": 1, "detalle": "Servicio mensual", "unitario": 100, "iva": 21}
        ]

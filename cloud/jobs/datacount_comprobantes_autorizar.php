@@ -6,9 +6,12 @@
  *
  *   POST http://localhost:8114/v4/arca/autorizar  (Bearer con apikey de `aplicaciones`)
  *
- * Selecciona comprobantes con:
- *   fiscal = '1'                   (los no-fiscales -- prefacturas, presupuestos, remitos X -- no van a AFIP)
- *   estado = '2'                   (Pendiente segun DC_TRANSICIONES_ESTADO)
+ * =========================================================================
+ * Criterio de seleccion (SQL)
+ * =========================================================================
+ *   fiscal = '1'   (los no-fiscales -- prefacturas, presupuestos, remitos X
+ *                   -- no van a AFIP)
+ *   estado = '2'   (Pendiente segun DC_TRANSICIONES_ESTADO)
  *
  * `caeres` NO se filtra -- un valor previo (transitorio o permanente) es solo
  * evidencia del ultimo intento; no bloquea reintentos. La proteccion contra
@@ -16,17 +19,25 @@
  * motor, y no vuelve a correr hasta que un humano rehabilite despues de
  * arreglar la causa del fallo.
  *
- * Los `tipo` fiscales admitidos son facturas (FA/FB/FC/FM) y notas de credito
- * (NA/NB/NC/NM). Para las NC, AFIP exige `cbtes_asoc` con los datos del
- * comprobante que se esta acreditando -- los tomamos del comprobante apuntado
- * por la columna `asociado`, que debe estar autorizado (estado='3') y ser una
- * factura fiscal. Si falta o no esta autorizado, se cierra con error permanente.
+ * =========================================================================
+ * Tipos AFIP admitidos
+ * =========================================================================
+ * Facturas (FA/FB/FC/FM) y notas de credito (NA/NB/NC/NM). Para las NC, AFIP
+ * exige `cbtes_asoc` con los datos del comprobante que se esta acreditando
+ * -- los tomamos del comprobante apuntado por la columna `asociado`, que
+ * debe estar autorizado (estado='3') y ser una factura fiscal. Si falta o no
+ * esta autorizado, se cierra con error permanente.
  *
- * Por corrida procesa hasta DCC_AUT_LOTE comprobantes (arranca en 1; el cron
+ * =========================================================================
+ * Batching
+ * =========================================================================
+ * Por corrida procesa hasta `DCC_AUT_LOTE` comprobantes (arranca en 1; el cron
  * define la cadencia). El microservicio autonumera el CbteNro pidiendo el
  * ultimo autorizado + 1 -- no le mandamos cbte_desde/hasta.
  *
- * Reglas de cierre por comprobante (ver cerrarConError + esTransitorio):
+ * =========================================================================
+ * Reglas de cierre por comprobante (ver cerrarConError + esTransitorio)
+ * =========================================================================
  *   OK:    estado='3', caenro=CAE, caevto=CAEFchVto, serie=cbte_nro,
  *          autorizado=NOW(), caeres="OK CAE <n>"
  *   ERR TRANSITORIO (AFIP/Apache caidos, TA stale, timeout de red):
@@ -38,10 +49,31 @@
  *          vuelve a autorizar hasta que un humano reactive desde el ABM
  *          de Parametros (o Herramientas > motor). Suceso 'error'.
  *
+ * =========================================================================
+ * Webhook: NO se dispara desde aca
+ * =========================================================================
+ * Este cron autoriza contra AFIP pero NO notifica al webhook del caller
+ * (`webhook_url` de la tabla). El disparo de webhook solo lo hace:
+ *   - el microservicio v4 (`api/v4/datacount/comprobantes.php`), en el
+ *     mismo request en que se logra el CAE (online); y
+ *   - el cron de retry `cloud/jobs/datacount_comprobantes_notificar.php`,
+ *     que barre los `estado='3' AND webhook_estado='pendiente'` y reintenta
+ *     hasta que el receptor devuelva 2xx.
+ * O sea: los comprobantes que este cron autoriza (que venian en '2' desde
+ * un alta que NO paso por el v4) quedan con `webhook_estado='pendiente'`
+ * y los cierra el `notificar` en su proximo tick. No hay que hacer nada
+ * especial aca.
+ *
+ * =========================================================================
+ * Auditoria
+ * =========================================================================
  * El microservicio tambien registra cada intento en `arca_autorizaciones`, por
  * lo que la auditoria tecnica vive alli; aca solo dejamos rastro en el log del
  * cron y en `sucesos` con el resumen humano.
  *
+ * =========================================================================
+ * Programador
+ * =========================================================================
  * Se registra desde el Programador de tareas (tabla `tareas`) apuntando
  * `script` = "datacount_comprobantes_autorizar".
  */

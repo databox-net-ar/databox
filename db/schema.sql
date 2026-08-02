@@ -454,6 +454,11 @@ CREATE TABLE `datacount_comprobantes`  (
   `registrado` datetime(0) NULL DEFAULT NULL,
   `autorizado` datetime(0) NULL DEFAULT NULL,
   `estado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  -- URL a la que la ingesta v4 (api/v4/datacount/comprobantes.php) va a notificar
+  -- cuando el comprobante logre autorizarse contra AFIP. NULL = sin webhook.
+  `webhook_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  -- 'pendiente' | 'completado' | NULL (sin webhook configurado)
+  `webhook_estado` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 24682 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 

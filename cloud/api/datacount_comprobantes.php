@@ -279,7 +279,7 @@ function handleGetOne(PDO $pdo, int $id): void {
                c.vencimiento, c.concepto, c.asociado, c.contrato, c.cliente, c.razon,
                c.condicion, c.cuit, c.domicilio, c.correo, c.celular, c.neto,
                c.iva, c.total, c.observaciones, c.comentarios, c.medio,
-               c.registrado, c.autorizado, c.estado,
+               c.registrado, c.autorizado, c.estado, c.webhook_url, c.webhook_estado,
                t.nombre AS talonario_nombre,
                p.nombre AS proyecto_nombre,
                e.nombre AS empresa_nombre
