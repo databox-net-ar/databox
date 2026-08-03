@@ -14,6 +14,11 @@ require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/datacount_comprobantes_autorizar.php';
 require_once __DIR__ . '/lib/parametros.php';
 require_once __DIR__ . '/lib/sucesos.php';
+require_once __DIR__ . '/lib/s3.php';
+
+// Prefijo S3 donde `datacount_talonarios_fondo.php` sube las imagenes de fondo
+// de cada talonario. Debe matchear el de datacount_talonarios.php.
+const DC_COMP_FONDO_PREFIX = 'datacount/talonarios/';
 
 // Columnas SELECT comunes (debe declararse ANTES del dispatch porque PHP procesa
 // los `const` a nivel de archivo secuencialmente).
@@ -281,8 +286,15 @@ function handleGetOne(PDO $pdo, int $id): void {
                c.iva, c.total, c.observaciones, c.comentarios, c.medio,
                c.registrado, c.autorizado, c.estado, c.webhook_url, c.webhook_estado,
                t.nombre AS talonario_nombre,
+               t.fondo  AS talonario_fondo,
                p.nombre AS proyecto_nombre,
-               e.nombre AS empresa_nombre
+               e.nombre    AS empresa_nombre,
+               e.razon     AS emisor_razon,
+               e.domicilio AS emisor_domicilio,
+               e.condicion AS emisor_condicion,
+               e.cuit      AS emisor_cuit,
+               e.iibb      AS emisor_iibb,
+               e.inicio    AS emisor_inicio
         FROM datacount_comprobantes c
         LEFT JOIN datacount_talonarios t ON t.id = c.talonario
         LEFT JOIN proyectos           p ON p.id = c.proyecto
@@ -292,6 +304,11 @@ function handleGetOne(PDO $pdo, int $id): void {
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Comprobante no encontrado', 404);
+
+    $fondo = $row['talonario_fondo'] !== null ? trim((string)$row['talonario_fondo']) : '';
+    $row['talonario_fondo_url'] = $fondo !== ''
+        ? s3_public_url(DC_COMP_FONDO_PREFIX . $fondo)
+        : null;
 
     // Renglones (datacount_comprobantes_renglones) asociados al comprobante.
     $stmtR = $pdo->prepare("

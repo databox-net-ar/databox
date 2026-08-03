@@ -1,0 +1,243 @@
+/* ============================================================
+   Vista previa e impresión de comprobantes Datacount
+
+   Todas las posiciones son porcentajes relativos a `.print-page`
+   porque el fondo se sirve con `background-size:100% 100%`.
+
+   Portado del monorepo `dex` (cloud/assets/css/cloud.css:822-1086),
+   con las siguientes adaptaciones para databox:
+   - Sin fondo por defecto: en databox el fondo lo pone el talonario
+     (`t.fondo` -> S3 URL) via `background` inline desde el JS. Si el
+     talonario no tiene fondo cargado, la hoja queda en blanco.
+   - IDs del backdrop / clase de body renombrados a *DcComp / *dccomp
+     para no colisionar con otros modales de impresion futuros.
+   ============================================================ */
+
+.print-modal .print-body { padding: 20px; background: #eef2f7; }
+
+.print-page {
+  position: relative;
+  width: 210mm;
+  height: 297mm;
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: var(--shadow-lg);
+  color: #111;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 10pt;
+  overflow: hidden;
+}
+
+/* Colores del comprobante: uso #333/#555/#777 dark-gray-on-white porque el PDF
+   NO debe adaptarse a dark mode — siempre se imprime en papel blanco con tinta
+   oscura. */
+
+/* Cuadro blanco de la esquina superior derecha del template:
+   [X] TIPO_COMPROBANTE / Nº ... / bloque emisor. */
+.pp-header-right {
+  position: absolute;
+  top: 2.2%; left: 50%; width: 39.5%; height: calc(14.8% - 25px);
+  display: flex; flex-direction: column; justify-content: flex-start;
+  color: #555;
+  transform: translate(50px, -5px);
+}
+.pp-header-right .pp-hr-top    { display: flex; align-items: flex-start; gap: 5px; }
+
+/* Contenedor separado para la letra fiscal del comprobante.
+   Se posiciona arriba, centrado horizontalmente sobre la hoja A4. */
+.pp-letra-block {
+  position: absolute;
+  top: 2.2%; left: 50%;
+  transform: translate(-50%, -12px);
+  width: 30px;
+  display: flex; align-items: center; justify-content: center;
+  color: #555;
+}
+.pp-letra-block .pp-letra {
+  font-size: 22pt; font-weight: 800; line-height: 1;
+  color: #555;
+}
+.pp-header-right .pp-hr-titles { display: flex; flex-direction: column; min-width: 0; }
+.pp-header-right .pp-tipo      { font-size: 16pt; font-weight: 800; letter-spacing: .04em; color: #555; line-height: 1.05; margin-top: 5px; }
+.pp-header-right .pp-nro       { font-size: 11pt; font-weight: 700; line-height: 1.15; margin-top: 6px; }
+.pp-header-right .pp-emisor    { margin-top: 13px; }
+.pp-header-right .pp-emisor-line { font-size: 8pt; line-height: 1.25; color: #7a7a7a; }
+
+/* Segundo rectángulo del template: datos del cliente (izq) + fechas / id (der). */
+.pp-cliente {
+  position: absolute;
+  top: 18.7%; left: 3%; width: calc(94% - 5px); height: calc(12% - 45px);
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;
+  color: #555;
+  transform: translateY(-8px);
+}
+.pp-cli-left,
+.pp-cli-right              { display: flex; flex-direction: column; }
+.pp-cli-right              { text-align: right; }
+.pp-cli-row                { font-size: 8pt; line-height: 1.35; color: #555; }
+.pp-cli-row strong         { color: #555; }
+
+/* Rectángulo grande: tabla de ítems + total al pie. */
+.pp-items {
+  position: absolute;
+  top: 33.5%; left: 3%; width: calc(94% - 5px); height: 600px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  color: #555;
+  transform: translateY(-45px);
+}
+.pp-items-table {
+  width: 745px; table-layout: fixed; border-collapse: collapse; font-size: 8pt;
+  background: transparent;
+}
+.pp-items-table thead tr {
+  background: transparent !important;
+}
+.pp-items-table thead th {
+  padding: 6px 8px; text-align: left;
+  font-size: 8pt; font-weight: 700; color: #555;
+  background: transparent !important;
+  border-bottom: 1px solid transparent;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.pp-items-table tbody tr           { background: transparent !important; }
+.pp-items-table tbody tr:hover     { background: transparent !important; }
+.pp-items-table tbody td {
+  padding: 4px 8px; vertical-align: top; color: #555;
+  background: transparent;
+  border-bottom: none;
+}
+.pp-items-table tbody tr:last-child td { padding-bottom: 14px; }
+.pp-items-table .pp-c-cant    { width: 55px;  text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pp-items-table .pp-c-desc    { width: 460px; text-align: justify; }
+.pp-items-table .pp-c-pu      { width: 90px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pp-items-table .pp-c-monto   { width: 90px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pp-items-table thead .pp-c-cant  { text-align: left; }
+.pp-items-table thead .pp-c-pu,
+.pp-items-table thead .pp-c-monto { text-align: right; }
+
+.pp-total-row {
+  position: relative;
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 3px;
+  font-size: 8pt;
+  color: #555;
+}
+.pp-total-line {
+  display: flex; justify-content: space-between; gap: 24px;
+  min-width: 240px;
+}
+.pp-total-line-final {
+  border-top: 1px solid #7a7a7a;
+  margin-top: 3px;
+  padding-top: 4px;
+  font-weight: 700;
+}
+.pp-total-row .pp-total-label { color: #555; }
+.pp-total-row .pp-total-value { font-variant-numeric: tabular-nums; color: #555; }
+
+/* Contenedor separado para el bloque Subtotal / IVA / Total. */
+.pp-total-block {
+  position: absolute;
+  top: 980px; right: 3%;
+  width: 260px;
+}
+
+/* Debug: teñir los contenedores de la vista previa + bordes en las
+   celdas de la tabla y las columnas del cliente. Se activa/desactiva
+   toggleando la clase `.pp-debug` sobre `.print-page` (atajo: F9). */
+.print-page.pp-debug .pp-letra-block,
+.print-page.pp-debug .pp-header-right,
+.print-page.pp-debug .pp-cliente,
+.print-page.pp-debug .pp-items,
+.print-page.pp-debug .pp-total-block,
+.print-page.pp-debug .pp-totales {
+  background-color: rgba(255, 235, 59, 0.4);
+  border: 1px solid #ff9800;
+}
+.print-page.pp-debug .pp-cli-left,
+.print-page.pp-debug .pp-cli-right,
+.print-page.pp-debug .pp-items-table th,
+.print-page.pp-debug .pp-items-table td {
+  border: 1px solid #22c55e;
+}
+.pp-total-row .pp-total-line-final .pp-total-value { font-weight: 800; }
+
+/* Cuadro inferior derecho del template: observaciones. */
+.pp-totales {
+  position: absolute;
+  top: 980px; left: 3%; width: calc(55% - 85px); height: calc(9% - 13px);
+  display: flex; align-items: flex-start;
+  color: #555;
+  overflow: hidden;
+}
+.pp-totales .pp-observ-inline {
+  font-size: 8pt; line-height: 1.4; color: #555;
+  text-align: justify;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+}
+
+/* En pantalla, el modal se adapta al ancho para que la hoja quede visible completa */
+@media (max-width: 960px) {
+  .print-modal { max-width: 96vw !important; }
+  .print-page  { transform-origin: top left; }
+}
+
+/* ---------- Impresión real ----------
+   Al imprimir montamos `body.printing-dccomp`. Debemos ocultar toda la app y
+   dejar SOLO la `.print-page`, sin scrollbars ni márgenes que corran el
+   contenido. */
+@media print {
+  @page { size: A4 portrait; margin: 0; }
+
+  html, body {
+    width: 210mm !important; height: 297mm !important;
+    margin: 0 !important; padding: 0 !important;
+    background: #fff !important;
+    overflow: hidden !important;
+  }
+
+  body.printing-dccomp > *:not(#imprimirDcCompBackdrop) { display: none !important; }
+
+  body.printing-dccomp #imprimirDcCompBackdrop {
+    position: static !important; inset: auto !important;
+    background: #fff !important; opacity: 1 !important; pointer-events: auto !important;
+    display: block !important;
+    overflow: visible !important;
+    width: 210mm !important; height: 297mm !important;
+    padding: 0 !important; margin: 0 !important;
+  }
+
+  body.printing-dccomp .print-modal {
+    max-width: none !important; width: 210mm !important; height: 297mm !important;
+    max-height: none !important; min-height: 0 !important;
+    margin: 0 !important; padding: 0 !important;
+    box-shadow: none !important; border: none !important; border-radius: 0 !important;
+    background: #fff !important;
+    transform: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+  body.printing-dccomp .no-print { display: none !important; }
+  body.printing-dccomp .print-body {
+    padding: 0 !important; margin: 0 !important;
+    background: #fff !important;
+    overflow: visible !important;
+    height: auto !important; max-height: none !important;
+  }
+  body.printing-dccomp .print-page {
+    width: 210mm !important; height: 297mm !important;
+    margin: 0 !important; padding: 0 !important;
+    box-shadow: none !important; border: none !important;
+    overflow: hidden !important;
+    page-break-after: avoid;
+    page-break-inside: avoid;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

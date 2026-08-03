@@ -24,12 +24,14 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/sucesos.php';
+require_once __DIR__ . '/lib/s3.php';
 
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
-const DCT_ORDENES = ['id', 'nombre', 'empresa', 'tipo', 'punto', 'serie', 'estado'];
-const DCT_COLS    = 'id, nombre, proyecto, empresa, tipo, punto, serie, discriminar, fiscal, correo, web, fondo, terminos, estado';
+const DCT_ORDENES     = ['id', 'nombre', 'empresa', 'tipo', 'punto', 'serie', 'estado'];
+const DCT_COLS        = 'id, nombre, proyecto, empresa, tipo, punto, serie, discriminar, fiscal, correo, web, fondo, terminos, estado';
+const DCT_FONDO_PREFIX = 'datacount/talonarios/';
 
 try {
     requirePermCrud('datacount.talonarios');
@@ -63,6 +65,7 @@ try {
 // ----------------------------------------------------------------------------
 
 function normalizarFilaTalonario(array $r): array {
+    $fondo = $r['fondo'] !== null ? (string)$r['fondo'] : null;
     return [
         'id'          => (int)($r['id'] ?? 0),
         'nombre'      => $r['nombre']   !== null ? (string)$r['nombre']   : null,
@@ -75,7 +78,10 @@ function normalizarFilaTalonario(array $r): array {
         'fiscal'      => $r['fiscal']   !== null ? (string)$r['fiscal']   : null,
         'correo'      => $r['correo']   !== null ? (string)$r['correo']   : null,
         'web'         => $r['web']      !== null ? (string)$r['web']      : null,
-        'fondo'       => $r['fondo']    !== null ? (string)$r['fondo']    : null,
+        'fondo'       => $fondo,
+        'fondo_url'   => ($fondo !== null && $fondo !== '')
+                            ? s3_public_url(DCT_FONDO_PREFIX . $fondo)
+                            : null,
         'terminos'    => $r['terminos'] !== null ? (string)$r['terminos'] : null,
         'estado'      => $r['estado']   !== null ? (int)$r['estado']      : null,
     ];

@@ -13,6 +13,8 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
   <title>Databox Cloud</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <link rel="stylesheet" href="assets/css/style.css?v=<?= $cssVer ?>">
+  <?php $printCssVer = @filemtime(__DIR__ . '/assets/css/print.css') ?: $cssVer; ?>
+  <link rel="stylesheet" href="assets/css/print.css?v=<?= $printCssVer ?>">
 </head>
 <body class="auth-checking">
   <div id="versionBanner" class="version-banner" style="display:none">
@@ -1403,6 +1405,37 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
     <button type="button" data-action="detener" class="ctx-menu-danger" role="menuitem">
       <i class="fa-solid fa-stop"></i><span>Detener</span>
     </button>
+  </div>
+
+  <!-- ====== Modal de impresión (vista previa) de Comprobantes Datacount ====== -->
+  <div class="modal-backdrop" id="imprimirDcCompBackdrop"
+       onclick="if(event.target===this)cerrarImprimirDcComp()">
+    <div class="modal print-modal" style="max-width:900px">
+      <div class="modal-header no-print">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px">
+          <i class="fa-solid fa-print"></i>
+          <span id="imprimirDcCompTitulo">Vista previa</span>
+        </div>
+        <button class="btn btn-ghost" onclick="cerrarImprimirDcComp()" title="Cerrar">✕</button>
+      </div>
+      <div class="modal-body print-body">
+        <div class="print-page" id="printDcCompPage">
+          <!-- Datos posicionados sobre el fondo del talonario -->
+          <div class="pp-letra-block" id="ppDcCompLetraBlock"></div>
+          <div class="pp-header-right" id="ppDcCompHeaderRight"></div>
+          <div class="pp-cliente"      id="ppDcCompCliente"></div>
+          <div class="pp-items"        id="ppDcCompItems"></div>
+          <div class="pp-total-block"  id="ppDcCompTotalBlock"></div>
+          <div class="pp-totales"      id="ppDcCompTotales"></div>
+        </div>
+      </div>
+      <div class="modal-footer no-print">
+        <button class="btn btn-ghost" onclick="cerrarImprimirDcComp()">Cerrar</button>
+        <button class="btn btn-primary" id="btnImprimirDcCompAceptar" onclick="ejecutarImpresionDcComp()">
+          <i class="fa-solid fa-print"></i> Imprimir
+        </button>
+      </div>
+    </div>
   </div>
 
   <script src="assets/js/app.js?v=<?= $jsVer ?>"></script>

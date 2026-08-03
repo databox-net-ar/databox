@@ -176,20 +176,46 @@ EOF
 echo "  OK"
 echo ""
 
-# ---- 4. Rebuild (opcional) + force-recreate del contenedor ----
-# force-recreate siempre: Docker bind-montea .env.production por inodo, no por
-# path. El tar del paso 3 crea un inodo nuevo, asi que sin --force-recreate
-# el contenedor sigue viendo el .env.production viejo. Es barato (~2s).
+# ---- 4. Rebuild (opcional) / restart selectivo del contenedor ----
+# Por defecto NO se recrea el contenedor: el codigo PHP entra por bind mount
+# (./cloud, ./api, ./robot -> /var/www/...) y se sirve fresco en cada request,
+# asi que un deploy que solo toca PHP no necesita interrumpir el servicio.
+#
+# Casos que SI requieren recrear el contenedor:
+#   a) --rebuild explicito (cambio de Dockerfile / dependencias del sistema).
+#   b) env.php o .env.production cambiaron: estan bind-montados como ARCHIVOS
+#      individuales (no como dir), y rsync los reemplaza creando inodo nuevo.
+#      El bind mount de Docker resuelve por inodo, no por path, asi que sin
+#      recreate el contenedor sigue viendo el env viejo.
 if [ "$REBUILD" = true ]; then
     echo "  Reconstruyendo imagen Docker y recreando contenedor..."
     ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
         "cd '$BASE_REMOTE' && docker compose -f $COMPOSE_FILE build && docker compose -f $COMPOSE_FILE up -d --force-recreate"
     echo "  OK -- imagen reconstruida y contenedor levantado"
 else
-    echo "  Recreando contenedor..."
-    ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
-        "cd '$BASE_REMOTE' && docker compose -f $COMPOSE_FILE up -d --force-recreate"
-    echo "  OK -- contenedor actualizado"
+    # Detectar si env.php o .env.production quedaron con inodo distinto al
+    # que el contenedor tiene bind-monteado. Si cualquiera cambio, recreate.
+    ENV_CHANGED=$(ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" bash <<EOF
+set -e
+changed=0
+for f in env.php .env.production; do
+    host_ino=\$(stat -c '%i' "$BASE_REMOTE/\$f" 2>/dev/null || echo "0")
+    cont_ino=\$(docker exec databox-apache stat -c '%i' "/var/www/\$f" 2>/dev/null || echo "0")
+    if [ "\$host_ino" != "\$cont_ino" ]; then
+        changed=1
+    fi
+done
+echo \$changed
+EOF
+)
+    if [ "$ENV_CHANGED" = "1" ]; then
+        echo "  env.php / .env.production cambiaron -- recreando contenedor..."
+        ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
+            "cd '$BASE_REMOTE' && docker compose -f $COMPOSE_FILE up -d --force-recreate"
+        echo "  OK -- contenedor recreado con env nuevo"
+    else
+        echo "  Sin cambios de env ni imagen -- contenedor sigue arriba (sin interrupcion)"
+    fi
 fi
 echo ""
 
