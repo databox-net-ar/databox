@@ -27,24 +27,55 @@ const DCPOAI_S3_PREFIX = 'datacount/pagos/';
 const DCPOAI_MODEL     = 'gpt-4o';
 const DCPOAI_TIMEOUT   = 90;
 
-// Prompt copiado literal del legacy — cualquier cambio de campos hay que
-// coordinarlo con lo que espera el frontend en la UI del modal Magia.
+// Prompt para gpt-4o. Aprende de la experiencia con el legacy:
+//   - El modelo se confundia entre EMISOR (quien vende / emite) y CLIENTE
+//     (quien recibe y paga). Cargaba los datos del cliente en `empresa_*` y
+//     viceversa, sobre todo en tickets fiscales chicos donde ambos aparecen
+//     apilados. Para evitarlo aca damos una regla operativa que funciona en
+//     TODO comprobante fiscal argentino (factura, nota de venta, ticket):
+//     el CUIT del EMISOR es el que esta en el mismo bloque que el numero de
+//     comprobante, la fecha de emision y la letra A/B/C — porque AFIP lo
+//     exige asi. El CUIT del cliente, en cambio, aparece en una seccion
+//     aparte con etiquetas explicitas ("Cliente:", "Señor/es:", "Razón
+//     social:", "Facturar a:", "Información del cliente", etc.).
+//   - Cualquier cambio de campos hay que coordinarlo con lo que espera el
+//     frontend en el modal Magia (DCP_MAGIA_CAMPOS en app.js).
 const DCPOAI_PROMPT = <<<'EOT'
-Eres un experto en facturación electrónica. Examina el archivo adjunto y extrae los datos del ejemplo de la factura. Devuelve únicamente el JSON plano, sin ningún texto adicional antes o después, sin etiquetas Markdown ni explicaciones. El JSON debe ser de un solo nivel, incluir solamente los siguientes campos con exactamente estos nombres, y respetar los formatos especificados. Es importante quitar los separadores de miles y reemplazar la coma por punto como separador decimal.:
+Eres un experto en comprobantes fiscales argentinos. Analiza el archivo adjunto (factura, nota de venta o ticket) y extrae los datos en JSON.
+
+DISTINCIÓN CRÍTICA — EMISOR vs. CLIENTE:
+El comprobante siempre tiene dos partes con datos fiscales, y hay que ubicar cada una en su lugar:
+
+  • EMISOR (quien vende, quien emitió el comprobante):
+      - Aparece en el encabezado, generalmente con logotipo.
+      - Su CUIT figura junto al NÚMERO de comprobante, la FECHA de emisión, la LETRA (A / B / C / M) y los datos fiscales propios del comprobante como "Ingresos Brutos", "IIBB" o "Inicio de Actividades".
+      - Regla práctica: si un CUIT está en el mismo bloque visual que "Nº 0001-00000123" + fecha + letra A/B/C, ese CUIT es SIEMPRE del EMISOR.
+
+  • CLIENTE (quien recibe el comprobante y paga):
+      - Sus datos están en una sección aparte, precedida por etiquetas explícitas: "Cliente", "Cliente Nº", "Razón social", "Señor/es", "Facturar a", "Información del cliente", "Comprobantes asociados", etc.
+      - Los datos del cliente NO tienen alrededor los datos fiscales del comprobante (nº, fecha, letra).
+
+Los campos `empresa_*` corresponden SIEMPRE al EMISOR.
+Los campos `cliente_*` corresponden SIEMPRE al CLIENTE.
+Jamás intercambies los dos bloques.
+
+FORMATO DE SALIDA — devolvé únicamente este JSON plano, sin Markdown, sin texto antes o después, sin comentarios. Todos los valores son string; usá "" cuando un dato no aparezca. Los importes van sin separador de miles y con punto como separador decimal.
+
 {
-  "factura_fecha": "fecha de emision en formato YYYY-MM-DD",
-  "factura_tipo": "tipo de factura (una letra A, B, C)",
-  "factura_numero": "prefijo y sufijo",
-  "empresa_razon": "razon social del empresa",
-  "empresa_cuit": "cuit del empresa, sin guiones",
-  "cliente_razon": "nombre del cliente",
-  "cliente_cuit": "cuit del cliente, sin guiones",
-  "concepto": "extracto del producto o servicio",
-  "iva": "monto iva de la factura, con punto como separador decimal",
-  "total": "monto total de la factura, con punto como separador decimal",
-  "moneda": "devuelve P para pesos y D para dolares"
+  "factura_fecha": "fecha de emisión en formato YYYY-MM-DD",
+  "factura_tipo": "letra del comprobante: A, B, C, M, E o \"\" si no tiene",
+  "factura_numero": "prefijo-sufijo (ej: 0001-00032005)",
+  "empresa_razon": "razón social del EMISOR",
+  "empresa_cuit": "CUIT del EMISOR, solo dígitos, sin guiones",
+  "cliente_razon": "razón social del CLIENTE",
+  "cliente_cuit": "CUIT del CLIENTE, solo dígitos, sin guiones",
+  "concepto": "producto o servicio principal (breve)",
+  "iva": "monto IVA (decimal con punto)",
+  "total": "monto total final (decimal con punto)",
+  "moneda": "P para pesos, D para dólares"
 }
-Devuelve solo el JSON, sin ningún tipo de envoltorio, explicación ni comentarios.
+
+Devolvé SOLO el JSON.
 EOT;
 
 header('Content-Type: application/json; charset=utf-8');
@@ -89,6 +120,10 @@ try {
         jsonError('El binario descargado esta vacio o es invalido', 500);
     }
 
+    // Inicializado a array vacio para que el linter estatico vea que siempre
+    // esta definido; en la practica la rama else llama a jsonError() que
+    // termina el request antes de llegar al payload.
+    $userContent = [];
     if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'], true)) {
         $mime    = $ext === 'jpg' ? 'jpeg' : $ext;
         $dataUri = 'data:image/' . $mime . ';base64,' . base64_encode($bytes);
@@ -119,25 +154,27 @@ try {
         'temperature' => 0.2,
     ];
 
+    // constant() en vez de OPENAI_API_KEY directo: el analizador estatico
+    // no ve las constantes definidas dinamicamente por env.php desde .env,
+    // pero en runtime funciona igual y ya validamos defined() arriba.
     $ch = curl_init('https://api.openai.com/v1/chat/completions');
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST           => true,
         CURLOPT_TIMEOUT        => DCPOAI_TIMEOUT,
         CURLOPT_HTTPHEADER     => [
-            'Authorization: Bearer ' . OPENAI_API_KEY,
+            'Authorization: Bearer ' . constant('OPENAI_API_KEY'),
             'Content-Type: application/json',
         ],
         CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
     ]);
     $response = curl_exec($ch);
+    // curl_close() es un no-op deprecado desde PHP 8.0 — el handle se libera
+    // al salir de scope.
     if ($response === false) {
-        $err = curl_error($ch);
-        curl_close($ch);
-        jsonError('Error cURL contra OpenAI: ' . $err, 502);
+        jsonError('Error cURL contra OpenAI: ' . curl_error($ch), 502);
     }
     $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
     if ($httpcode < 200 || $httpcode >= 300) {
         jsonError('OpenAI respondio HTTP ' . $httpcode . ': ' . $response, 502);
     }
