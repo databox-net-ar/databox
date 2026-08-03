@@ -833,3 +833,50 @@ tbody tr.row-clickable { cursor: pointer; }
 .dcp-adj-fallback { display: flex; flex-direction: column; align-items: center;
                     gap: 12px; color: var(--muted); font-size: .88rem; padding: 30px; }
 
+/* Layout split (lista izq + visor der) para la pestaña Adjuntos del modal
+   Editar. La lista scrollea vertical si sobran items; el visor se estira
+   para llenar el espacio restante. El botón "Subir archivo" fluye a
+   continuación del último item (no queda pegado al bottom). */
+.dcp-adj-split    { flex: 1; min-height: 0;
+                    display: grid; grid-template-columns: 280px 1fr;
+                    grid-template-rows: 1fr; gap: 12px; }
+.dcp-adj-list-col { min-height: 0; display: flex; flex-direction: column; }
+.dcp-adj-list     { flex: 1; min-height: 0; overflow-y: auto;
+                    display: flex; flex-direction: column; gap: 4px;
+                    padding-right: 4px; align-content: flex-start; }
+.dcp-adj-list-empty { color: var(--muted); font-style: italic; font-size: .82rem;
+                      padding: 12px 4px; text-align: center; }
+.dcp-adj-subir-btn { margin-top: 8px; justify-content: center; align-self: stretch;
+                     flex-shrink: 0; }
+.dcp-adj-item     { display: flex; align-items: center; gap: 8px;
+                    padding: 8px 10px; border-radius: var(--radius);
+                    border: 1px solid var(--border); background: var(--surface);
+                    cursor: pointer; transition: background .12s, border-color .12s;
+                    flex-shrink: 0; }
+.dcp-adj-item:hover  { background: var(--bg); }
+.dcp-adj-item.active { border-color: var(--primary);
+                       background: color-mix(in srgb, var(--primary) 12%, var(--surface)); }
+.dcp-adj-item-body    { flex: 1; min-width: 0; }
+.dcp-adj-item-name    { font-size: .85rem; font-weight: 600; color: var(--text);
+                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcp-adj-item-meta    { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+
+/* Overlay fullscreen (no reusa openModal para no cerrar el modal Editar). */
+.dcp-adj-fs-backdrop { position: fixed; inset: 0; z-index: 10000;
+                       background: rgba(0, 0, 0, .82);
+                       display: flex; flex-direction: column; }
+.dcp-adj-fs-header   { display: flex; align-items: center; gap: 12px;
+                       padding: 10px 16px; background: var(--surface);
+                       border-bottom: 1px solid var(--border); }
+.dcp-adj-fs-title    { flex: 1; min-width: 0; font-weight: 600;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcp-adj-fs-actions  { display: flex; gap: 6px; flex-shrink: 0; }
+.dcp-adj-fs-viewer   { flex: 1; min-height: 0; display: flex;
+                       align-items: center; justify-content: center;
+                       overflow: hidden; }
+.dcp-adj-fs-viewer iframe,
+.dcp-adj-fs-viewer embed { width: 100%; height: 100%; border: 0;
+                           background: #fff; }
+.dcp-adj-fs-viewer img   { max-width: 100%; max-height: 100%;
+                           object-fit: contain; display: block; }
+

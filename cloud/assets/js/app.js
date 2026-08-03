@@ -371,6 +371,22 @@ function abrirCtxMenu(menuEl, x, y, data) {
   if (ny + h > window.innerHeight - 8) ny = window.innerHeight - h - 8;
   if (nx < 8) nx = 8;
   if (ny < 8) ny = 8;
+  // El menú es position:fixed, pero un ancestro con `transform` se convierte
+  // en su containing block y hace que las coords dejen de ser de viewport
+  // (caso típico: `.modal` usa transform para su animación de apertura, lo
+  // que corría el menú ~300px lejos del puntero). Compensamos restando el
+  // offset del ancestro transformado si existe.
+  let ancestro = menuEl.parentElement;
+  while (ancestro) {
+    const t = getComputedStyle(ancestro).transform;
+    if (t && t !== 'none') {
+      const r = ancestro.getBoundingClientRect();
+      nx -= r.left;
+      ny -= r.top;
+      break;
+    }
+    ancestro = ancestro.parentElement;
+  }
   menuEl.style.left = nx + 'px';
   menuEl.style.top  = ny + 'px';
 }
@@ -12466,6 +12482,9 @@ route('/datacount_pagos', async (mount) => {
 
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcPagoEmpresaSel" style="min-width:200px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
           <div class="search-wrap">
             <input type="search" class="search-input" id="dcPagoSearch"
                    placeholder="🔍 Buscar razón, CUIT, número o descripción…">
@@ -12531,14 +12550,10 @@ route('/datacount_pagos', async (mount) => {
           <button class="btn btn-ghost" onclick="cancelarFiltrosDcPago()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
-          <div class="form-row form-row-3">
+          <div class="form-row">
             <div class="form-group">
               <label>Código</label>
               <input type="number" id="fDcPagoCodigo" min="1" placeholder="ID …" oninput="onFiltroDcPago('codigo', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Empresa (ID)</label>
-              <input type="number" id="fDcPagoEmpresa" min="1" oninput="onFiltroDcPago('empresa', this.value)">
             </div>
             <div class="form-group">
               <label>Proyecto (ID)</label>
@@ -12674,6 +12689,32 @@ route('/datacount_pagos', async (mount) => {
     dcPagoPintarChips('fDcPagoMonedaChips', 'datacount_pago_moneda', dcPagoFiltros.moneda, 'moneda');
     dcPagoPintarChips('fDcPagoEstadoChips', 'datacount_pago_estado', dcPagoFiltros.estado, 'estado');
   }).catch(() => {});
+
+  // Selector de empresa (contexto compartido con otros módulos Datacount vía
+  // dcSetEmpresaId/dcGetEmpresaId). Debe fijar `dcPagoFiltros.empresa` antes
+  // del primer `cargarDcPago()` para que el listado arranque scopeado.
+  const selEmp = $('#dcPagoEmpresaSel');
+  const [empresas, empresaId] = await Promise.all([
+    dcGetEmpresas(),
+    dcAsegurarEmpresaId(),
+  ]);
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    const seleccionada = String(empresaId || empresas[0].id);
+    selEmp.value = seleccionada;
+    dcPagoFiltros.empresa = seleccionada;
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+    dcPagoFiltros.empresa = '';
+  }
+  selEmp.addEventListener('change', (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    dcPagoFiltros.empresa = ev.target.value;
+    cargarDcPago();
+  });
+
   await cargarDcPago();
 }, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Órdenes de pago');
 
@@ -12757,7 +12798,9 @@ function refrescarBadgeFiltrosDcPago() {
   if (!btn || !badge) return;
   let count = 0;
   for (const k of Object.keys(dcPagoFiltrosDefaults)) {
-    if (k === 'q') continue;
+    // `q` (buscador rápido) y `empresa` (selector del toolbar) no cuentan
+    // porque no viven en el modal de filtros.
+    if (k === 'q' || k === 'empresa') continue;
     if (String(dcPagoFiltros[k]) !== String(dcPagoFiltrosDefaults[k])) count++;
   }
   if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
@@ -12767,7 +12810,6 @@ function refrescarBadgeFiltrosDcPago() {
 function sincronizarControlesFiltrosDcPago() {
   const f = dcPagoFiltros;
   $('#fDcPagoCodigo').value   = f.codigo;
-  $('#fDcPagoEmpresa').value  = f.empresa;
   $('#fDcPagoProyecto').value = f.proyecto;
   $('#fDcPagoRazon').value    = f.razon;
   $('#fDcPagoCuit').value     = f.cuit;
@@ -12855,39 +12897,271 @@ function dcPagoTabsHeaderHtml() {
   `;
 }
 
-// Tabla read-only de adjuntos (para la pestaña Adjuntos del modal Editar).
-// Todavia no hay endpoint para subir/borrar adjuntos desde cloud. `hint`
-// permite mostrar "Los adjuntos se cargan una vez guardado el pago" en Alta.
-function dcPagoRenderAdjuntosTabla(adjuntos, hint = '') {
-  if (!adjuntos || !adjuntos.length) {
-    return `<div class="table-empty">${esc(hint || 'Este pago no tiene adjuntos.')}</div>`;
-  }
-  return `
-    <div class="table-card">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Nombre</th>
-            <th>Cargado</th>
-            <th>Tipo</th>
-            <th>Formato</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${adjuntos.map((a) => `
+// Panel de Adjuntos del modal Editar. En alta (pagoId == null) es un mensaje
+// estatico ("cargar despues de guardar"); en edicion arma un layout de dos
+// columnas: a la izquierda la lista de archivos (con boton de borrar por
+// item), a la derecha el visor del archivo seleccionado. Reusa
+// dcPagoTipoVisor() para decidir iframe/img/fallback. Upload contra
+// api/datacount_pagos_adjuntos.php (multipart), borrado contra el mismo
+// endpoint con DELETE.
+function dcPagoRenderAdjuntosTabla(adjuntos, hint = '', pagoId = null) {
+  const editable = pagoId != null;
+  const filas    = adjuntos || [];
+
+  // Caso no-editable (alta o legacy sin pagoId): sin split, sin uploader.
+  if (!editable) {
+    if (!filas.length) {
+      return `<div class="table-empty">${esc(hint || 'Este pago no tiene adjuntos.')}</div>`;
+    }
+    return `
+      <div class="table-card">
+        <table>
+          <thead>
             <tr>
-              <td class="td-id">#${esc(a.id)}</td>
-              <td>${esc(a.nombre || a.archivo || '—')}</td>
-              <td>${esc(fmtFecha(a.cargado) || '—')}</td>
-              <td>${esc(a.tipo || '—')}</td>
-              <td>${esc(a.formato || '—')}</td>
+              <th>#</th><th>Nombre</th><th>Cargado</th><th>Tipo</th><th>Formato</th>
             </tr>
-          `).join('')}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            ${filas.map((a) => {
+              const nombre = a.nombre || a.archivo || '—';
+              const nombreCell = a.url
+                ? `<a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(nombre)}</a>`
+                : esc(nombre);
+              return `
+                <tr>
+                  <td class="td-id">#${esc(a.id)}</td>
+                  <td>${nombreCell}</td>
+                  <td>${esc(fmtFecha(a.cargado) || '—')}</td>
+                  <td>${esc(a.tipo || '—')}</td>
+                  <td>${esc(a.formato || '—')}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  const idxSel = Math.min(dcPagoAdjSelIdx, Math.max(0, filas.length - 1));
+  const items = filas.length ? filas.map((a, i) => `
+    <div class="dcp-adj-item${i === idxSel ? ' active' : ''}"
+         data-dcp-adj-idx="${i}" data-dcp-adj-id="${esc(a.id)}"
+         title="Click derecho para más opciones">
+      <div class="dcp-adj-item-body">
+        <div class="dcp-adj-item-name">${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}</div>
+        <div class="dcp-adj-item-meta">${esc(fmtFecha(a.cargado) || '—')} · ${esc((a.formato || '').toUpperCase() || '—')}</div>
+      </div>
+    </div>
+  `).join('') : `<div class="dcp-adj-list-empty">Sin adjuntos todavía.</div>`;
+
+  // Lista a la izq (items + botón "Subir archivo" a continuación del último),
+  // visor a la der. El menú contextual para acciones por adjunto (abrir a
+  // pantalla completa / eliminar) se dispara con click derecho.
+  return `
+    <div class="dcp-adj-split">
+      <div class="dcp-adj-list-col">
+        <div class="dcp-adj-list" id="dcPagAdjList">
+          ${items}
+          <input type="file" id="dcPagAdjInput" style="display:none">
+          <button type="button" class="btn btn-primary dcp-adj-subir-btn" id="dcPagAdjSubirBtn">
+            <i class="fa-solid fa-plus"></i> Subir archivo
+          </button>
+          <div id="dcPagAdjStatus" style="font-size:.78rem;color:var(--muted);margin-top:2px"></div>
+        </div>
+      </div>
+      <div class="dcp-adj-viewer" id="dcPagoAdjEditViewer">
+        ${filas.length ? '' : `<div class="dcp-adj-empty">Subí un archivo desde la lista para verlo acá.</div>`}
+      </div>
+    </div>
+
+    <div id="dcPagAdjCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-dcp-adj-ctx="full" role="menuitem">
+        <i class="fa-solid fa-up-right-from-square"></i><span>Abrir en pantalla completa</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-dcp-adj-ctx="del" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
     </div>
   `;
+}
+
+// Estado runtime de adjuntos del modal Editar. Se guarda a nivel modulo para
+// que `dcPagoAdjRefrescarTab()` pueda re-pintar la tab sin recargar todo el
+// modal y sin volver a pegarle a `datacount_pagos.php?id=…`.
+let dcPagoAdjuntosEdicion = [];
+let dcPagoAdjuntosPagoId  = null;
+let dcPagoAdjSelIdx       = 0;
+
+function dcPagoAdjRefrescarTab() {
+  const panel = document.querySelector('#modalRoot .modal-tabpanel[data-tab="adjuntos"]');
+  if (!panel) return;
+  panel.innerHTML = dcPagoRenderAdjuntosTabla(
+    dcPagoAdjuntosEdicion,
+    'Este pago no tiene adjuntos.',
+    dcPagoAdjuntosPagoId,
+  );
+  if (dcPagoAdjuntosPagoId != null && dcPagoAdjuntosEdicion.length) {
+    if (dcPagoAdjSelIdx >= dcPagoAdjuntosEdicion.length) dcPagoAdjSelIdx = 0;
+    dcPagoEditMostrarAdjunto(dcPagoAdjSelIdx);
+  }
+}
+
+// Abre el adjunto `idx` de dcPagoAdjuntosEdicion en un overlay a pantalla
+// completa por encima del modal Editar (no usa openModal para no cerrarlo).
+// El overlay se cierra con el boton X, con Esc, o clickeando fuera del visor.
+function dcPagoAdjAbrirFullscreen(idx) {
+  const a = (dcPagoAdjuntosEdicion || [])[idx];
+  if (!a || !a.url) return;
+  // Si por alguna razon quedo uno anterior colgado, lo removemos primero.
+  document.getElementById('dcpAdjFullscreen')?.remove();
+
+  const tipo = dcPagoTipoVisor(a);
+  let viewerHtml;
+  if (tipo === 'pdf') {
+    viewerHtml = `<iframe src="${esc(a.url)}#toolbar=1&navpanes=0" title="${esc(a.nombre || '')}"></iframe>`;
+  } else if (tipo === 'img') {
+    viewerHtml = `<img src="${esc(a.url)}" alt="${esc(a.nombre || '')}">`;
+  } else {
+    viewerHtml = `
+      <div class="dcp-adj-fallback">
+        <div><i class="fa-solid fa-file" style="font-size:2.5rem"></i></div>
+        <div>No se puede previsualizar este formato (${esc(a.formato || 'desconocido')}).</div>
+        <a class="btn btn-primary" href="${esc(a.url)}" target="_blank" rel="noopener">
+          <i class="fa-solid fa-external-link-alt"></i> Abrir en nueva pestaña
+        </a>
+      </div>
+    `;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.id = 'dcpAdjFullscreen';
+  wrap.className = 'dcp-adj-fs-backdrop';
+  wrap.innerHTML = `
+    <div class="dcp-adj-fs-header">
+      <div class="dcp-adj-fs-title" title="${esc(a.nombre || a.archivo || '')}">
+        ${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}
+      </div>
+      <div class="dcp-adj-fs-actions">
+        <a class="btn btn-ghost btn-icon" href="${esc(a.url)}" target="_blank" rel="noopener"
+           title="Abrir en nueva pestaña">
+          <i class="fa-solid fa-external-link-alt"></i>
+        </a>
+        <button type="button" class="btn btn-ghost btn-icon dcp-adj-fs-close-btn" title="Cerrar">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+    </div>
+    <div class="dcp-adj-fs-viewer">${viewerHtml}</div>
+  `;
+  document.body.appendChild(wrap);
+
+  const cerrar = () => {
+    wrap.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (ev) => { if (ev.key === 'Escape') cerrar(); };
+  document.addEventListener('keydown', onKey);
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target.closest('.dcp-adj-fs-close-btn')) cerrar();
+    // Click fuera del viewer/header (sobre el backdrop) tambien cierra.
+    if (ev.target === wrap) cerrar();
+  });
+}
+
+// Renderiza el binario del adjunto `idx` (indice en dcPagoAdjuntosEdicion)
+// dentro del visor del modal Editar. Marca el item de la lista como activo.
+function dcPagoEditMostrarAdjunto(idx) {
+  const cont = document.getElementById('dcPagoAdjEditViewer');
+  if (!cont) return;
+  const a = (dcPagoAdjuntosEdicion || [])[idx];
+  dcPagoAdjSelIdx = idx;
+  document.querySelectorAll('#modalRoot .dcp-adj-list .dcp-adj-item').forEach((el) => {
+    el.classList.toggle('active', Number(el.dataset.dcpAdjIdx) === idx);
+  });
+  if (!a || !a.url) {
+    cont.innerHTML = `<div class="dcp-adj-empty">Este adjunto no tiene archivo.</div>`;
+    return;
+  }
+  const url  = a.url;
+  const tipo = dcPagoTipoVisor(a);
+  if (tipo === 'pdf') {
+    cont.innerHTML = `<iframe src="${esc(url)}#toolbar=1&navpanes=0" title="${esc(a.nombre || '')}"></iframe>`;
+  } else if (tipo === 'img') {
+    cont.innerHTML = `<img src="${esc(url)}" alt="${esc(a.nombre || '')}">`;
+  } else {
+    cont.innerHTML = `
+      <div class="dcp-adj-fallback">
+        <div><i class="fa-solid fa-file" style="font-size:2rem"></i></div>
+        <div>No se puede previsualizar este formato (${esc(a.formato || 'desconocido')}).</div>
+        <a class="btn btn-primary" href="${esc(url)}" target="_blank" rel="noopener">
+          <i class="fa-solid fa-external-link-alt"></i> Abrir en nueva pestaña
+        </a>
+      </div>
+    `;
+  }
+}
+
+async function dcPagoAdjSubir(fileList) {
+  if (!fileList || !fileList.length) return;
+  if (dcPagoAdjuntosPagoId == null) return;
+  const file   = fileList[0];
+  const btn    = $('#dcPagAdjSubirBtn');
+  const input  = $('#dcPagAdjInput');
+  const status = $('#dcPagAdjStatus');
+
+  const fd = new FormData();
+  fd.append('archivo', file);
+
+  if (btn) btn.disabled = true;
+  if (status) {
+    status.style.color = 'var(--muted)';
+    status.textContent = `Subiendo ${file.name}…`;
+  }
+  try {
+    const r = await fetch(`api/datacount_pagos_adjuntos.php?pago=${encodeURIComponent(dcPagoAdjuntosPagoId)}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: fd,
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      if (status) {
+        status.style.color = 'var(--danger)';
+        status.textContent = data.error || 'Error al subir';
+      }
+      return;
+    }
+    dcPagoAdjuntosEdicion.push(data.data);
+    dcPagoAdjRefrescarTab();
+    toast('Adjunto subido.');
+  } catch (e) {
+    if (status) {
+      status.style.color = 'var(--danger)';
+      status.textContent = 'Error de red al subir';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (input) input.value = '';
+  }
+}
+
+async function dcPagoAdjEliminar(adjuntoId) {
+  const ok = await confirmar({
+    title: 'Eliminar adjunto',
+    message: `Se eliminará el adjunto #${adjuntoId}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datacount_pagos_adjuntos.php?id=${adjuntoId}`, 'DELETE');
+    dcPagoAdjuntosEdicion = dcPagoAdjuntosEdicion.filter((a) => Number(a.id) !== Number(adjuntoId));
+    dcPagoAdjRefrescarTab();
+    toast('Adjunto eliminado.');
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
 }
 
 // Determina si un adjunto es imagen o PDF en base a `formato` o extension
@@ -12902,8 +13176,10 @@ function dcPagoTipoVisor(a) {
 }
 
 // Panel de Adjuntos con visor embebido (para la pestaña Adjuntos del modal
-// Consultar). Muestra chips para elegir entre multiples adjuntos y abajo un
-// visor que embebe el binario:
+// Consultar). Layout de dos columnas — igual que el modal Editar, pero
+// read-only: la lista de la izquierda no tiene menú contextual ni botón
+// "Subir archivo"; sólo permite seleccionar cuál adjunto se previsualiza
+// en el visor de la derecha:
 //   - PDF   -> <iframe>
 //   - imagen -> <img> con object-fit: contain
 //   - otros -> tarjeta con link "Abrir en nueva pestaña"
@@ -12913,25 +13189,30 @@ function dcPagoRenderAdjuntosVisor(adjuntos) {
   if (!adjuntos || !adjuntos.length) {
     return `<div class="dcp-adj-empty">Este pago no tiene adjuntos.</div>`;
   }
-  const chips = adjuntos.length <= 1 ? '' : `
-    <div class="dcp-adj-selector">
-      ${adjuntos.map((a, i) => `
-        <button type="button" class="filter-chip${i === 0 ? ' active' : ''}"
-                data-idx="${i}" onclick="dcPagoMostrarAdjunto(${i})"
-                title="${esc(a.nombre || a.archivo || '')}">
-          ${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}
-        </button>
-      `).join('')}
+  const items = adjuntos.map((a, i) => `
+    <div class="dcp-adj-item${i === 0 ? ' active' : ''}"
+         data-idx="${i}" onclick="dcPagoMostrarAdjunto(${i})"
+         title="${esc(a.nombre || a.archivo || '')}">
+      <div class="dcp-adj-item-body">
+        <div class="dcp-adj-item-name">${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}</div>
+        <div class="dcp-adj-item-meta">${esc(fmtFecha(a.cargado) || '—')} · ${esc((a.formato || '').toUpperCase() || '—')}</div>
+      </div>
     </div>
-  `;
+  `).join('');
   return `
-    ${chips}
-    <div class="dcp-adj-viewer" id="dcPagoAdjViewer"></div>
+    <div class="dcp-adj-split">
+      <div class="dcp-adj-list-col">
+        <div class="dcp-adj-list">
+          ${items}
+        </div>
+      </div>
+      <div class="dcp-adj-viewer" id="dcPagoAdjViewer"></div>
+    </div>
   `;
 }
 
 // Renderiza el binario dentro del visor. Se llama al armar la pestaña
-// (indice 0) y al hacer click en un chip.
+// (indice 0) y al hacer click en un item de la lista.
 function dcPagoMostrarAdjunto(idx) {
   const cont = document.getElementById('dcPagoAdjViewer');
   if (!cont) return;
@@ -12940,9 +13221,9 @@ function dcPagoMostrarAdjunto(idx) {
     cont.innerHTML = `<div class="dcp-adj-empty">Este adjunto no tiene archivo.</div>`;
     return;
   }
-  // Marcar chip activo (si hay selector).
-  document.querySelectorAll('#modalRoot .dcp-adj-selector .filter-chip').forEach((c) => {
-    c.classList.toggle('active', Number(c.dataset.idx) === idx);
+  // Marcar item activo en la lista de la izquierda.
+  document.querySelectorAll('#modalRoot .dcp-adj-list .dcp-adj-item').forEach((el) => {
+    el.classList.toggle('active', Number(el.dataset.idx) === idx);
   });
   const url = a.url;
   const tipo = dcPagoTipoVisor(a);
@@ -12975,7 +13256,7 @@ async function abrirConsultarDcPago(id) {
   openModal(`
     <div class="modal dcp-consulta-modal">
       <div class="modal-header">
-        <div class="modal-title">Pago <span class="modal-subtitle">#${id}</span></div>
+        <div class="modal-title">Orden de pago <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
@@ -13028,14 +13309,8 @@ function renderConsultaDcPago(p) {
       </div>`;
   };
 
-  const seccion = (titulo) => `
-    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 -4px">
-      ${esc(titulo)}
-    </div>`;
-
-  const tipoTxt        = dcPagoTraducir('datacount_pago_tipo',        p.tipo);
-  const monedaTxt      = dcPagoTraducir('datacount_pago_moneda',      p.moneda);
-  const clasificadoTxt = dcPagoTraducir('datacount_pago_clasificado', p.clasificado);
+  const tipoTxt   = dcPagoTraducir('datacount_pago_tipo',   p.tipo);
+  const monedaTxt = dcPagoTraducir('datacount_pago_moneda', p.moneda);
 
   return `
     <!-- Encabezado -->
@@ -13048,81 +13323,39 @@ function renderConsultaDcPago(p) {
         <div style="font-size:.78rem;color:var(--muted);margin-top:6px">#${esc(p.id)} · UUID <code>${esc(p.uuid || '—')}</code></div>
       </div>
       <div style="text-align:right;min-width:180px">
-        <div>${dcPagoEstadoBadge(p.estado)}</div>
-        <div style="margin-top:10px;font-size:.85rem;line-height:1.6">
-          <div><span style="color:var(--muted)">Período:</span> ${esc(dcPagoFmtPeriodo(p.periodo))}</div>
+        <div style="font-size:.85rem;line-height:1.6">
           <div><span style="color:var(--muted)">Emisión:</span> ${esc(p.emision || '—')}</div>
-          <div><span style="color:var(--muted)">Cancelación:</span> ${esc(p.cancelacion || '—')}</div>
         </div>
       </div>
     </div>
 
-    ${seccion('Contraparte')}
-    <dl class="data-list">
-      ${card('Razón social', p.razon, true)}
-      ${card('CUIT',         p.cuit)}
-      ${card('Número',       p.numero)}
+    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Proyecto', p.proyecto_nombre || (p.proyecto ? `#${p.proyecto}` : null))}
+      ${card('Empresa',  p.empresa_nombre  || (p.empresa  ? `#${p.empresa}`  : null))}
+      ${card('Período',  dcPagoFmtPeriodo(p.periodo))}
     </dl>
 
-    ${seccion('Importes')}
     <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
+      ${card('Emisión', p.emision)}
+      ${card('Tipo',    tipoTxt || p.tipo)}
+      ${card('Número',  p.numero)}
+    </dl>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Razón social', p.razon)}
+      ${card('CUIT',         p.cuit)}
+    </dl>
+
+    <dl class="data-list" style="grid-template-columns:repeat(4,1fr)">
       ${card('Moneda',     monedaTxt || p.moneda)}
       ${card('Monto',      money(p.monto))}
       ${card('Cotización', p.cotizacion != null && p.cotizacion !== '' ? dcPagoFmtImporte(p.cotizacion) : null)}
       ${card('Valor',      money(p.valor))}
-      ${card('Billetera',  p.billetera)}
-      ${card('Clasificado',clasificadoTxt || p.clasificado)}
     </dl>
 
-    ${seccion('Contexto')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Empresa',        p.empresa_nombre  || (p.empresa  ? `#${p.empresa}`  : null))}
-      ${card('Proyecto',       p.proyecto_nombre || (p.proyecto ? `#${p.proyecto}` : null))}
-      ${card('Comprobante',    p.comprobante)}
-      ${card('Transacción',    p.transaccion)}
-      ${card('Remuneración',   p.remuneracion)}
-      ${card('Medio (legacy)', p.medio_legacy)}
-    </dl>
-
-    ${seccion('Notas')}
     <dl class="data-list">
       ${card('Descripción', p.descripcion, true)}
     </dl>
-
-    ${seccion('Auditoría')}
-    <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
-      ${card('Registrado',     fmtFecha(p.registrado))}
-      ${card('Registrador',    p.registrador)}
-      ${card('Contabilizado',  fmtFecha(p.contabilizado))}
-    </dl>
-
-    ${p.adjuntos && p.adjuntos.length ? `
-      ${seccion('Adjuntos')}
-      <div class="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Nombre</th>
-              <th>Cargado</th>
-              <th>Tipo</th>
-              <th>Formato</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${p.adjuntos.map((a) => `
-              <tr>
-                <td class="td-id">#${esc(a.id)}</td>
-                <td>${esc(a.nombre || a.archivo || '—')}</td>
-                <td>${esc(fmtFecha(a.cargado) || '—')}</td>
-                <td>${esc(a.tipo || '—')}</td>
-                <td>${esc(a.formato || '—')}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    ` : ''}
   `;
 }
 
@@ -13130,9 +13363,9 @@ function renderConsultaDcPago(p) {
 async function abrirAltaEdicionDcPago(id) {
   const esEdicion = id != null;
   openModal(`
-    <div class="modal modal-wide">
+    <div class="modal dcp-consulta-modal">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar pago <span class="modal-subtitle">#${id}</span>` : 'Nuevo pago'}</div>
+        <div class="modal-title">${esEdicion ? `Editar orden de pago <span class="modal-subtitle">#${id}</span>` : 'Nueva orden de pago'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body" style="gap:12px">
@@ -13147,34 +13380,95 @@ async function abrirAltaEdicionDcPago(id) {
 
   try {
     // Nos aseguramos de tener los catalogos antes de renderizar el form (los
-    // selects de tipo/moneda/estado/clasificado dependen de ellos).
-    await dcPagoCargarCatalogosEstados().catch(() => null);
-    const datos = esEdicion ? await apiGet(`api/datacount_pagos.php?id=${id}`) : {};
+    // selects de tipo/moneda dependen de ellos). Empresas y proyectos vienen
+    // de `datacount_empresas` y `proyectos` (tipo='I', mismo criterio que
+    // datacount_comprobantes).
+    const [ , datos, empresas, proyectosResp ] = await Promise.all([
+      dcPagoCargarCatalogosEstados().catch(() => null),
+      esEdicion ? apiGet(`api/datacount_pagos.php?id=${id}`) : Promise.resolve({}),
+      dcGetEmpresas().catch(() => []),
+      apiGet('api/proyectos.php?tipo=I').catch(() => ({ items: [] })),
+    ]);
+    const proyectos = proyectosResp?.items || [];
     const hintAdj = esEdicion
       ? 'Este pago no tiene adjuntos.'
       : 'Los adjuntos se pueden cargar una vez guardado el pago.';
+    // Estado runtime de adjuntos — permite a dcPagoAdjRefrescarTab pintar la
+    // pestaña sin re-fetchear el pago cada vez que se sube o borra un archivo.
+    dcPagoAdjuntosEdicion = esEdicion ? (datos.adjuntos || []) : [];
+    dcPagoAdjuntosPagoId  = esEdicion ? id : null;
+    dcPagoAdjSelIdx       = 0;
     $('#modalRoot .modal-body').innerHTML = `
       ${dcPagoTabsHeaderHtml()}
       <div class="modal-tabpanel" data-tab="general" role="tabpanel">
-        ${formDcPagoHtml(datos)}
+        ${formDcPagoHtml(datos, empresas, proyectos)}
       </div>
       <div class="modal-tabpanel" data-tab="adjuntos" role="tabpanel" hidden>
-        ${dcPagoRenderAdjuntosTabla(datos.adjuntos, hintAdj)}
+        ${dcPagoRenderAdjuntosTabla(dcPagoAdjuntosEdicion, hintAdj, dcPagoAdjuntosPagoId)}
       </div>
     `;
+    // Precargamos el primer adjunto en el visor para que al cambiar a la
+    // pestaña ya se vea sin flash vacio.
+    if (dcPagoAdjuntosPagoId != null && dcPagoAdjuntosEdicion.length) {
+      dcPagoEditMostrarAdjunto(0);
+    }
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
-  $('#modalRoot').addEventListener('click', async (ev) => {
+  const modalRoot = $('#modalRoot');
+  modalRoot.addEventListener('click', async (ev) => {
     const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarDcPago(id, a);
+    if (a) {
+      if (a.dataset.act === 'close')   closeModal();
+      if (a.dataset.act === 'guardar') await guardarDcPago(id, a);
+      return;
+    }
+    // Adjuntos: subir / eliminar. El botón "+ Subir archivo" delega el click
+    // al <input type="file"> escondido; el input dispara `change` y ahí sube.
+    if (ev.target.closest('#dcPagAdjSubirBtn')) {
+      $('#dcPagAdjInput')?.click();
+      return;
+    }
+    // Acciones del menú contextual de adjuntos.
+    const ctxAct = ev.target.closest('[data-dcp-adj-ctx]');
+    if (ctxAct) {
+      const data = getCtxMenuData();
+      cerrarCtxMenu();
+      if (!data) return;
+      if (ctxAct.dataset.dcpAdjCtx === 'full') {
+        dcPagoAdjAbrirFullscreen(data.idx);
+      } else if (ctxAct.dataset.dcpAdjCtx === 'del') {
+        await dcPagoAdjEliminar(data.id);
+      }
+      return;
+    }
+    // Click en un item de la lista → mostrar preview del archivo.
+    const item = ev.target.closest('[data-dcp-adj-idx]');
+    if (item) {
+      dcPagoEditMostrarAdjunto(Number(item.dataset.dcpAdjIdx));
+    }
+  });
+  // Menú contextual (click derecho) sobre un adjunto de la lista.
+  modalRoot.addEventListener('contextmenu', (ev) => {
+    const item = ev.target.closest('[data-dcp-adj-idx]');
+    if (!item) return;
+    ev.preventDefault();
+    const idx = Number(item.dataset.dcpAdjIdx);
+    const id  = Number(item.dataset.dcpAdjId);
+    // Marcamos el item como seleccionado y actualizamos el preview antes de
+    // abrir el menú (más natural que operar sobre uno no seleccionado).
+    dcPagoEditMostrarAdjunto(idx);
+    abrirCtxMenu($('#dcPagAdjCtxMenu'), ev.clientX, ev.clientY, { idx, id });
+  });
+  modalRoot.addEventListener('change', (ev) => {
+    if (ev.target && ev.target.id === 'dcPagAdjInput') {
+      dcPagoAdjSubir(ev.target.files);
+    }
   });
 }
 
-function formDcPagoHtml(p) {
+function formDcPagoHtml(p, empresas, proyectos) {
   const v  = (k) => esc(p?.[k] ?? '');
   const dt = (k) => {
     const raw = p?.[k];
@@ -13182,21 +13476,32 @@ function formDcPagoHtml(p) {
     return esc(String(raw).replace(' ', 'T').slice(0, 16));
   };
   // periodo es DATE en BD (YYYY-MM-DD) pero se maneja como mes calendario.
+  // Para altas nuevas se prefilla con el mes actual (YYYY-MM).
   const periodoValor = (() => {
     const raw = p?.periodo;
-    if (!raw) return '';
-    return esc(String(raw).slice(0, 7));
+    if (raw) return esc(String(raw).slice(0, 7));
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    return `${y}-${m}`;
   })();
+  const opcionesLookup = (items, actual) => {
+    const cur = actual == null || actual === '' ? '' : String(actual);
+    return `<option value="">—</option>` +
+      (items || []).map((r) =>
+        `<option value="${esc(r.id)}"${cur === String(r.id) ? ' selected' : ''}>${esc(r.nombre)}</option>`
+      ).join('');
+  };
 
   return `
     <div class="form-row form-row-3">
       <div class="form-group">
-        <label>Empresa (ID)</label>
-        <input type="number" id="dcPagEmpresa" min="1" value="${v('empresa')}">
+        <label>Proyecto</label>
+        <select id="dcPagProyecto">${opcionesLookup(proyectos, p?.proyecto)}</select>
       </div>
       <div class="form-group">
-        <label>Proyecto (ID)</label>
-        <input type="number" id="dcPagProyecto" min="1" value="${v('proyecto')}">
+        <label>Empresa *</label>
+        <select id="dcPagEmpresa">${opcionesLookup(empresas, p?.empresa)}</select>
       </div>
       <div class="form-group">
         <label>Período (YYYY-MM)</label>
@@ -13205,88 +13510,57 @@ function formDcPagoHtml(p) {
     </div>
     <div class="form-row form-row-3">
       <div class="form-group">
-        <label>Tipo</label>
-        <select id="dcPagTipo">${dcPagoOpcionesSelect('datacount_pago_tipo', p?.tipo)}</select>
-      </div>
-      <div class="form-group">
-        <label>Emisión</label>
+        <label>Emisión *</label>
         <input type="date" id="dcPagEmision" value="${v('emision')}">
       </div>
       <div class="form-group">
-        <label>Cancelación</label>
-        <input type="date" id="dcPagCancelacion" value="${v('cancelacion')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Razón social</label>
-      <input type="text" id="dcPagRazon" maxlength="255" value="${v('razon')}">
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>CUIT</label>
-        <input type="text" id="dcPagCuit" maxlength="20" value="${v('cuit')}">
+        <label>Tipo *</label>
+        <select id="dcPagTipo">${dcPagoOpcionesSelect('datacount_pago_tipo', p?.tipo)}</select>
       </div>
       <div class="form-group">
         <label>Número</label>
         <input type="text" id="dcPagNumero" maxlength="50" value="${v('numero')}">
       </div>
     </div>
-    <div class="form-row form-row-3">
+    <div class="form-row">
       <div class="form-group">
-        <label>Moneda</label>
-        <select id="dcPagMoneda">${dcPagoOpcionesSelect('datacount_pago_moneda', p?.moneda)}</select>
+        <label>Razón social *</label>
+        <input type="text" id="dcPagRazon" maxlength="255" value="${v('razon')}">
       </div>
       <div class="form-group">
-        <label>Monto</label>
-        <input type="number" id="dcPagMonto" step="0.01" value="${v('monto')}">
-      </div>
-      <div class="form-group">
-        <label>Cotización</label>
-        <input type="number" id="dcPagCotizacion" step="0.01" value="${v('cotizacion')}">
+        <label>CUIT</label>
+        <input type="text" id="dcPagCuit" maxlength="20" value="${v('cuit')}">
       </div>
     </div>
-    <div class="form-row form-row-3">
+    <div class="form-row">
       <div class="form-group">
-        <label>Valor</label>
-        <input type="number" id="dcPagValor" step="0.01" value="${v('valor')}">
+        <label>Moneda</label>
+        <select id="dcPagMoneda">${dcPagoOpcionesSelect('datacount_pago_moneda', p?.moneda ?? 'P')}</select>
       </div>
       <div class="form-group">
-        <label>Billetera (ID)</label>
-        <input type="number" id="dcPagBilletera" min="1" value="${v('billetera')}">
-      </div>
-      <div class="form-group">
-        <label>Remuneración (ID)</label>
-        <input type="number" id="dcPagRemuneracion" min="1" value="${v('remuneracion')}">
+        <label>Monto *</label>
+        <input type="number" id="dcPagMonto" step="0.01" value="${v('monto')}">
       </div>
     </div>
     <div class="form-group">
       <label>Descripción</label>
       <textarea id="dcPagDescripcion" maxlength="255">${v('descripcion')}</textarea>
     </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Comprobante (ID)</label>
-        <input type="number" id="dcPagComprobante" min="1" value="${v('comprobante')}">
-      </div>
-      <div class="form-group">
-        <label>Transacción (ID)</label>
-        <input type="number" id="dcPagTransaccion" min="1" value="${v('transaccion')}">
-      </div>
-      <div class="form-group">
-        <label>Contabilizado</label>
-        <input type="datetime-local" id="dcPagContabilizado" value="${dt('contabilizado')}">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Clasificado</label>
-        <select id="dcPagClasificado">${dcPagoOpcionesSelect('datacount_pago_clasificado', p?.clasificado)}</select>
-      </div>
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="dcPagEstado">${dcPagoOpcionesSelect('datacount_pago_estado', p?.estado)}</select>
-      </div>
-    </div>
+    <!-- Campos ocultos: cotizacion/valor/billetera/remuneracion/clasificado/
+         estado/comprobante/transaccion/contabilizado/cancelacion se sacaron
+         del formulario visible pero se preservan en el payload para no pisar
+         los valores existentes cuando se edita un pago. Para altas quedan en
+         '' → NULL en la BD. -->
+    <input type="hidden" id="dcPagCotizacion"    value="${v('cotizacion')}">
+    <input type="hidden" id="dcPagValor"         value="${v('valor')}">
+    <input type="hidden" id="dcPagBilletera"     value="${v('billetera')}">
+    <input type="hidden" id="dcPagRemuneracion"  value="${v('remuneracion')}">
+    <input type="hidden" id="dcPagClasificado"   value="${v('clasificado')}">
+    <input type="hidden" id="dcPagEstado"        value="${v('estado')}">
+    <input type="hidden" id="dcPagComprobante"   value="${v('comprobante')}">
+    <input type="hidden" id="dcPagTransaccion"   value="${v('transaccion')}">
+    <input type="hidden" id="dcPagContabilizado" value="${dt('contabilizado')}">
+    <input type="hidden" id="dcPagCancelacion"   value="${v('cancelacion')}">
     <div class="field-error" id="dcPagError" style="display:none"></div>
   `;
 }
@@ -13294,6 +13568,37 @@ function formDcPagoHtml(p) {
 async function guardarDcPago(id, btn) {
   const err = $('#dcPagError');
   err.style.display = 'none';
+
+  // Validación de campos obligatorios (client-side). El backend hoy no los
+  // exige, pero el modal cloud sí: empresa, tipo, razón social, emisión y
+  // monto deben venir cargados. Cada campo que quede vacío se marca con
+  // `.input-invalid` (rojo) y se limpia apenas el user vuelve a escribir.
+  const requeridos = [
+    { id: 'dcPagEmpresa', label: 'Empresa'      },
+    { id: 'dcPagTipo',    label: 'Tipo'         },
+    { id: 'dcPagRazon',   label: 'Razón social' },
+    { id: 'dcPagEmision', label: 'Emisión'      },
+    { id: 'dcPagMonto',   label: 'Monto'        },
+  ];
+  requeridos.forEach((f) => $('#' + f.id)?.classList.remove('input-invalid'));
+  const faltantes = requeridos.filter((f) => !String($('#' + f.id).value || '').trim());
+  if (faltantes.length) {
+    faltantes.forEach((f) => {
+      const el = $('#' + f.id);
+      if (!el) return;
+      el.classList.add('input-invalid');
+      const limpiar = () => {
+        el.classList.remove('input-invalid');
+        el.removeEventListener('input',  limpiar);
+        el.removeEventListener('change', limpiar);
+      };
+      el.addEventListener('input',  limpiar);
+      el.addEventListener('change', limpiar);
+    });
+    err.textContent = 'Completá los campos obligatorios: ' + faltantes.map((f) => f.label).join(', ') + '.';
+    err.style.display = '';
+    return;
+  }
 
   // periodo viene como YYYY-MM (input type="month"); el schema espera DATE, asi
   // que le pegamos el dia 01 antes de mandarlo.

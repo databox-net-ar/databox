@@ -15,6 +15,7 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/s3.php';
 
 // Columnas SELECT comunes. `medio___` esta deprecated (ver comentario en el
 // schema: "desde 831 hacia atras era id de medio"), pero se mantiene disponible
@@ -25,10 +26,11 @@ const DCP_COLS = "id, uuid, empresa, proyecto, periodo, tipo, emision, cancelaci
                   comprobante, transaccion, contabilizado, registrador, registrado,
                   remuneracion, clasificado, estado";
 
-// URL publica donde vive el binario de cada adjunto. Es el mismo prefijo que
-// usaba el admin legacy (mcDatacountPago::$url). Se sirve por CDN detras de
-// https://media.databox.net.ar → S3.
-const DCPAGO_MEDIA_URL = 'https://media.databox.net.ar/datacount/pagos';
+// Prefijo S3 donde viven los binarios de los adjuntos (mismo layout que usaba
+// el admin legacy `mcDatacountPago::$url`). La URL publica de cada adjunto se
+// arma con `s3_public_url()`, que lee `AWS_S3_URL` del .env — nada de
+// dominios hardcodeados aca.
+const DCPAGO_S3_PREFIX = 'datacount/pagos/';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -169,7 +171,9 @@ function handleGetOneDcPago(PDO $pdo, int $id): void {
     foreach ($adjuntos as &$a) {
         // URL publica del binario. El front la usa para embeber el PDF o la
         // imagen directamente sin pasar por el back.
-        $a['url'] = !empty($a['archivo']) ? DCPAGO_MEDIA_URL . '/' . $a['archivo'] : null;
+        $a['url'] = !empty($a['archivo'])
+            ? s3_public_url(DCPAGO_S3_PREFIX . $a['archivo'])
+            : null;
     }
     unset($a);
     $row['adjuntos'] = $adjuntos;
