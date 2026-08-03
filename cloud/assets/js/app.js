@@ -19447,7 +19447,7 @@ route('/datacount_talonarios', async (mount) => {
             <tr>
               <th style="width:80px">Código</th>
               <th>Nombre</th>
-              <th style="width:140px">Tipo</th>
+              <th style="width:180px;white-space:nowrap">Tipo</th>
               <th style="width:150px;font-family:monospace">Punto-Serie</th>
               <th style="width:70px;text-align:center">Fondo</th>
               <th style="width:110px">Estado</th>
