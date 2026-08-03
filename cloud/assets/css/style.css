@@ -861,17 +861,51 @@ tbody tr.row-clickable { cursor: pointer; }
                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dcp-adj-item-meta    { font-size: .72rem; color: var(--muted); margin-top: 2px; }
 
-/* Overlay fullscreen (no reusa openModal para no cerrar el modal Editar). */
+/* Barra flotante de acciones sobre el visor (bottom-center). Los 3 botones
+   son circulares (IA, Trash, Pantalla completa). El visor ya tiene position
+   relative en el bloque .dcp-adj-viewer de arriba; el contenido del visor
+   se envuelve en .dcp-adj-viewer-content para poder resetear su innerHTML
+   sin borrar la barra. */
+.dcp-adj-viewer-content  { position: absolute; inset: 0; display: flex;
+                           align-items: center; justify-content: center;
+                           overflow: hidden; }
+.dcp-adj-fab-bar         { position: absolute; left: 50%; bottom: 16px;
+                           transform: translateX(-50%);
+                           display: flex; gap: 10px; z-index: 5;
+                           padding: 6px 10px; border-radius: 999px;
+                           background: rgba(30, 30, 32, .78);
+                           backdrop-filter: blur(6px);
+                           -webkit-backdrop-filter: blur(6px);
+                           border: 1px solid var(--border);
+                           box-shadow: var(--shadow-lg);
+                           /* Semi-transparente por defecto — pasa a opaco
+                              cuando el mouse entra al pill. */
+                           opacity: .5; transition: opacity .18s ease; }
+.dcp-adj-fab-bar:hover   { opacity: 1; }
+/* Variante "pair": el pill ocupa siempre el ancho de 2 botones (aun con 1
+   solo boton dentro). Se usa cuando queremos una silueta consistente para
+   la barra flotante independientemente de cuantos botones tenga.
+   Cuenta: 2×40px + 10px gap + 2×10px padding = 110px. */
+.dcp-adj-fab-bar--pair   { min-width: 110px; justify-content: center; }
+.dcp-adj-fab             { width: 40px; height: 40px; border-radius: 50%;
+                           border: 1px solid var(--border);
+                           background: var(--surface); color: var(--text);
+                           cursor: pointer; display: inline-flex;
+                           align-items: center; justify-content: center;
+                           font-size: .95rem; padding: 0;
+                           transition: background .12s, color .12s, border-color .12s, transform .1s;
+                           font-family: inherit; }
+.dcp-adj-fab:hover       { background: var(--bg); color: var(--primary);
+                           border-color: var(--primary); }
+.dcp-adj-fab:active      { transform: scale(.94); }
+.dcp-adj-fab-danger:hover { color: var(--danger); border-color: var(--danger); }
+
+/* Overlay fullscreen (no reusa openModal para no cerrar el modal Editar).
+   El visor ocupa TODO el viewport — no hay header arriba. Para cerrar hay
+   una pill flotante centrada abajo con un solo botón (X), estilo FAB. */
 .dcp-adj-fs-backdrop { position: fixed; inset: 0; z-index: 10000;
-                       background: rgba(0, 0, 0, .82);
-                       display: flex; flex-direction: column; }
-.dcp-adj-fs-header   { display: flex; align-items: center; gap: 12px;
-                       padding: 10px 16px; background: var(--surface);
-                       border-bottom: 1px solid var(--border); }
-.dcp-adj-fs-title    { flex: 1; min-width: 0; font-weight: 600;
-                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dcp-adj-fs-actions  { display: flex; gap: 6px; flex-shrink: 0; }
-.dcp-adj-fs-viewer   { flex: 1; min-height: 0; display: flex;
+                       background: rgba(0, 0, 0, .9); }
+.dcp-adj-fs-viewer   { position: absolute; inset: 0; display: flex;
                        align-items: center; justify-content: center;
                        overflow: hidden; }
 .dcp-adj-fs-viewer iframe,
@@ -879,4 +913,63 @@ tbody tr.row-clickable { cursor: pointer; }
                            background: #fff; }
 .dcp-adj-fs-viewer img   { max-width: 100%; max-height: 100%;
                            object-fit: contain; display: block; }
+.dcp-adj-fs-pill     { position: absolute; left: 50%; bottom: 20px;
+                       transform: translateX(-50%);
+                       display: flex; gap: 10px; z-index: 5;
+                       padding: 6px 10px; border-radius: 999px;
+                       background: rgba(30, 30, 32, .82);
+                       backdrop-filter: blur(6px);
+                       -webkit-backdrop-filter: blur(6px);
+                       border: 1px solid var(--border);
+                       box-shadow: var(--shadow-lg);
+                       /* Ancho fijo equivalente a 2 botones circulares +
+                          gap + padding (2×40 + 10 + 2×10 = 110px), aunque
+                          adentro haya un solo botón — para mantener la
+                          silueta consistente. */
+                       min-width: 110px; justify-content: center;
+                       /* Semi-transparente por defecto — se solidifica al
+                          pasar el mouse por encima. */
+                       opacity: .5; transition: opacity .18s ease; }
+.dcp-adj-fs-pill:hover { opacity: 1; }
+
+/* Modal "Magia" - datos extraidos por OpenAI a la izq + preview a la der.
+   Es un overlay independiente (append a body, no usa openModal) para poder
+   sobreponerse al modal Editar sin cerrarlo. */
+.dcp-magia-backdrop { position: fixed; inset: 0; z-index: 9000;
+                      background: rgba(0, 0, 0, .78);
+                      display: flex; align-items: center; justify-content: center;
+                      padding: 24px; }
+.dcp-magia-modal    { background: var(--surface); border: 1px solid var(--border);
+                      border-radius: var(--radius); box-shadow: var(--shadow-lg);
+                      width: 100%; max-width: 1200px; height: 100%; max-height: calc(100vh - 48px);
+                      display: flex; flex-direction: column; overflow: hidden; }
+.dcp-magia-header   { display: flex; align-items: center; gap: 12px;
+                      padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.dcp-magia-title    { flex: 1; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+.dcp-magia-title .modal-subtitle { color: var(--muted); font-weight: 400; font-size: .85rem;
+                                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Estilo grande sólo para la X del header. El botón "Cancelar" del footer
+   comparte la misma clase (para el handler de cerrar) pero conserva su
+   apariencia de .btn — por eso el scope estricto. */
+.dcp-magia-header .dcp-magia-close { font-size: 1.4rem; line-height: 1; padding: 0 10px; }
+.dcp-magia-body     { flex: 1; min-height: 0; display: grid;
+                      grid-template-columns: 380px 1fr; gap: 12px; padding: 12px; }
+.dcp-magia-datos    { min-height: 0; overflow-y: auto; padding-right: 4px;
+                      display: flex; flex-direction: column; gap: 8px; position: relative; }
+.dcp-magia-loader   { display: flex; flex-direction: column; align-items: center;
+                      justify-content: center; padding: 40px 20px; }
+.dcp-magia-loader[hidden] { display: none; }
+.dcp-magia-form     { display: flex; flex-direction: column; gap: 10px; }
+.dcp-magia-form[hidden] { display: none; }
+.dcp-magia-form .form-group input { background: var(--bg); }
+.dcp-magia-preview  { min-height: 0; background: var(--bg);
+                      border: 1px solid var(--border); border-radius: var(--radius);
+                      display: flex; align-items: center; justify-content: center;
+                      overflow: hidden; }
+.dcp-magia-preview iframe,
+.dcp-magia-preview embed { width: 100%; height: 100%; border: 0; background: #fff; }
+.dcp-magia-preview img   { max-width: 100%; max-height: 100%;
+                           object-fit: contain; display: block; }
+.dcp-magia-footer   { display: flex; justify-content: flex-end; gap: 8px;
+                      padding: 10px 16px; border-top: 1px solid var(--border); }
 

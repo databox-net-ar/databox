@@ -12946,8 +12946,7 @@ function dcPagoRenderAdjuntosTabla(adjuntos, hint = '', pagoId = null) {
   const idxSel = Math.min(dcPagoAdjSelIdx, Math.max(0, filas.length - 1));
   const items = filas.length ? filas.map((a, i) => `
     <div class="dcp-adj-item${i === idxSel ? ' active' : ''}"
-         data-dcp-adj-idx="${i}" data-dcp-adj-id="${esc(a.id)}"
-         title="Click derecho para más opciones">
+         data-dcp-adj-idx="${i}" data-dcp-adj-id="${esc(a.id)}">
       <div class="dcp-adj-item-body">
         <div class="dcp-adj-item-name">${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}</div>
         <div class="dcp-adj-item-meta">${esc(fmtFecha(a.cargado) || '—')} · ${esc((a.formato || '').toUpperCase() || '—')}</div>
@@ -12956,8 +12955,8 @@ function dcPagoRenderAdjuntosTabla(adjuntos, hint = '', pagoId = null) {
   `).join('') : `<div class="dcp-adj-list-empty">Sin adjuntos todavía.</div>`;
 
   // Lista a la izq (items + botón "Subir archivo" a continuación del último),
-  // visor a la der. El menú contextual para acciones por adjunto (abrir a
-  // pantalla completa / eliminar) se dispara con click derecho.
+  // visor a la der. Las acciones por adjunto (eliminar, pantalla completa,
+  // nueva pestaña) viven en la barra flotante del visor.
   return `
     <div class="dcp-adj-split">
       <div class="dcp-adj-list-col">
@@ -12971,18 +12970,24 @@ function dcPagoRenderAdjuntosTabla(adjuntos, hint = '', pagoId = null) {
         </div>
       </div>
       <div class="dcp-adj-viewer" id="dcPagoAdjEditViewer">
-        ${filas.length ? '' : `<div class="dcp-adj-empty">Subí un archivo desde la lista para verlo acá.</div>`}
+        <div class="dcp-adj-viewer-content" id="dcPagoAdjEditViewerContent">
+          ${filas.length ? '' : `<div class="dcp-adj-empty">Subí un archivo desde la lista para verlo acá.</div>`}
+        </div>
+        <div class="dcp-adj-fab-bar" id="dcPagoAdjEditFab" ${filas.length ? '' : 'hidden'}>
+          <button type="button" class="dcp-adj-fab" data-dcp-adj-fab="ia" title="Asistente IA (próximamente)">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+          </button>
+          <button type="button" class="dcp-adj-fab" data-dcp-adj-fab="full" title="Abrir en pantalla completa">
+            <i class="fa-solid fa-expand"></i>
+          </button>
+          <button type="button" class="dcp-adj-fab" data-dcp-adj-fab="tab" title="Abrir en nueva pestaña">
+            <i class="fa-solid fa-up-right-from-square"></i>
+          </button>
+          <button type="button" class="dcp-adj-fab dcp-adj-fab-danger" data-dcp-adj-fab="del" title="Eliminar adjunto">
+            <i class="fa-solid fa-trash"></i>
+          </button>
+        </div>
       </div>
-    </div>
-
-    <div id="dcPagAdjCtxMenu" class="ctx-menu" role="menu">
-      <button type="button" data-dcp-adj-ctx="full" role="menuitem">
-        <i class="fa-solid fa-up-right-from-square"></i><span>Abrir en pantalla completa</span>
-      </button>
-      <div class="ctx-menu-sep"></div>
-      <button type="button" data-dcp-adj-ctx="del" class="ctx-menu-danger" role="menuitem">
-        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
-      </button>
     </div>
   `;
 }
@@ -13008,11 +13013,179 @@ function dcPagoAdjRefrescarTab() {
   }
 }
 
-// Abre el adjunto `idx` de dcPagoAdjuntosEdicion en un overlay a pantalla
-// completa por encima del modal Editar (no usa openModal para no cerrarlo).
-// El overlay se cierra con el boton X, con Esc, o clickeando fuera del visor.
-function dcPagoAdjAbrirFullscreen(idx) {
-  const a = (dcPagoAdjuntosEdicion || [])[idx];
+// Ordenado + labels de los campos que devuelve
+// api/datacount_pagos_openai_extraer.php. Cada entrada es
+// [key_backend, label_ui, hint_placeholder].
+const DCP_MAGIA_CAMPOS = [
+  ['factura_fecha',  'Fecha',           'YYYY-MM-DD'],
+  ['factura_tipo',   'Tipo',            'A / B / C'],
+  ['factura_numero', 'Número',          'prefijo-sufijo'],
+  ['empresa_razon',  'Empresa (razón)', ''],
+  ['empresa_cuit',   'Empresa (CUIT)',  ''],
+  ['cliente_razon',  'Cliente (razón)', ''],
+  ['cliente_cuit',   'Cliente (CUIT)',  ''],
+  ['moneda',         'Moneda',          'P / D'],
+  ['iva',            'IVA',             '0.00'],
+  ['total',          'Total',           '0.00'],
+  ['concepto',       'Concepto',        ''],
+];
+
+// Modal "Magia": abre un overlay independiente (no usa openModal, para no
+// cerrar el modal Editar de fondo) que muestra a la izq los datos extraidos
+// por OpenAI del comprobante y a la der la vista previa del archivo. La
+// extraccion se dispara automaticamente al abrirse.
+function dcPagoAdjAbrirMagia(a) {
+  if (!a || !a.url) return;
+  document.getElementById('dcpAdjMagia')?.remove();
+
+  const tipo = dcPagoTipoVisor(a);
+  let viewerHtml;
+  if (tipo === 'pdf') {
+    viewerHtml = `<iframe src="${esc(a.url)}#toolbar=1&navpanes=0" title="${esc(a.nombre || '')}"></iframe>`;
+  } else if (tipo === 'img') {
+    viewerHtml = `<img src="${esc(a.url)}" alt="${esc(a.nombre || '')}">`;
+  } else {
+    viewerHtml = `
+      <div class="dcp-adj-fallback">
+        <div><i class="fa-solid fa-file" style="font-size:2rem"></i></div>
+        <div>No se puede previsualizar este formato (${esc(a.formato || 'desconocido')}).</div>
+      </div>
+    `;
+  }
+
+  const camposHtml = DCP_MAGIA_CAMPOS.map(([k, label, hint]) => `
+    <div class="form-group">
+      <label>${esc(label)}</label>
+      <input type="text" id="dcpMagia_${esc(k)}" placeholder="${esc(hint)}">
+    </div>
+  `).join('');
+
+  const wrap = document.createElement('div');
+  wrap.id = 'dcpAdjMagia';
+  wrap.className = 'dcp-magia-backdrop';
+  wrap.innerHTML = `
+    <div class="dcp-magia-modal">
+      <div class="dcp-magia-header">
+        <div class="dcp-magia-title">
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+          Datos extraídos con IA
+          <span class="modal-subtitle">${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}</span>
+        </div>
+        <button type="button" class="btn-icon-sm dcp-magia-close" title="Cerrar">×</button>
+      </div>
+      <div class="dcp-magia-body">
+        <div class="dcp-magia-datos">
+          <div class="dcp-magia-loader" id="dcpMagiaLoader">
+            <div class="spin"></div>
+            <div style="margin-top:12px;color:var(--muted);font-size:.85rem">
+              Procesando el comprobante con OpenAI…
+            </div>
+          </div>
+          <div class="dcp-magia-form" id="dcpMagiaForm" hidden>
+            ${camposHtml}
+          </div>
+          <div class="dcp-magia-error field-error" id="dcpMagiaError" hidden></div>
+        </div>
+        <div class="dcp-magia-preview">${viewerHtml}</div>
+      </div>
+      <div class="dcp-magia-footer">
+        <button type="button" class="btn btn-ghost dcp-magia-close">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="dcpMagiaGuardar" disabled>
+          <i class="fa-solid fa-floppy-disk"></i> Aplicar y guardar
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+
+  const cerrar = () => {
+    wrap.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (ev) => { if (ev.key === 'Escape') cerrar(); };
+  document.addEventListener('keydown', onKey);
+  wrap.addEventListener('click', async (ev) => {
+    if (ev.target.closest('.dcp-magia-close')) { cerrar(); return; }
+    if (ev.target === wrap) { cerrar(); return; }
+    if (ev.target.closest('#dcpMagiaGuardar')) {
+      await dcPagoAdjMagiaGuardar();
+      cerrar();
+    }
+  });
+
+  // Disparo automatico al abrir. El endpoint puede tardar 5-20s por PDF.
+  (async () => {
+    try {
+      const data = await apiSend(
+        `api/datacount_pagos_openai_extraer.php?adjunto=${encodeURIComponent(a.id)}`,
+        'POST',
+      );
+      $('#dcpMagiaLoader')?.setAttribute('hidden', '');
+      $('#dcpMagiaForm')?.removeAttribute('hidden');
+      for (const [k] of DCP_MAGIA_CAMPOS) {
+        const el = document.getElementById(`dcpMagia_${k}`);
+        if (!el) continue;
+        const v = data?.[k];
+        el.value = v == null ? '' : String(v);
+      }
+      // Habilitar Guardar solo una vez que hay datos cargados.
+      const btn = $('#dcpMagiaGuardar');
+      if (btn) btn.disabled = false;
+    } catch (e) {
+      const loader = $('#dcpMagiaLoader');
+      const errEl  = $('#dcpMagiaError');
+      if (loader) loader.hidden = true;
+      if (errEl) {
+        errEl.textContent = 'No se pudo extraer los datos: ' + e.message;
+        errEl.hidden = false;
+      }
+    }
+  })();
+}
+
+// Aplica los valores del modal Magia al formulario del modal Editar (los
+// inputs del general tab) y dispara el Save del pago programaticamente.
+// Mapeo campo IA → campo del form:
+//   factura_fecha  → dcPagEmision
+//   factura_tipo   → dcPagTipo        (valor directo — puede no matchear el
+//                                       catalogo, en cuyo caso el select queda vacio)
+//   factura_numero → dcPagNumero
+//   cliente_razon  → dcPagRazon
+//   cliente_cuit   → dcPagCuit
+//   concepto       → dcPagDescripcion
+//   total          → dcPagMonto
+//   moneda         → dcPagMoneda      (P/D matchea 1:1 el catalogo)
+// Los campos empresa_razon, empresa_cuit e iva no tienen destino directo
+// en el schema y se ignoran.
+async function dcPagoAdjMagiaGuardar() {
+  const setVal = (formId, valor) => {
+    const el = document.getElementById(formId);
+    if (!el) return;
+    el.value = valor == null ? '' : String(valor);
+  };
+  const get = (k) => document.getElementById('dcpMagia_' + k)?.value?.trim() ?? '';
+
+  setVal('dcPagEmision',     get('factura_fecha'));
+  setVal('dcPagTipo',        get('factura_tipo'));
+  setVal('dcPagNumero',      get('factura_numero'));
+  setVal('dcPagRazon',       get('cliente_razon'));
+  setVal('dcPagCuit',        get('cliente_cuit'));
+  setVal('dcPagDescripcion', get('concepto'));
+  setVal('dcPagMonto',       get('total'));
+  setVal('dcPagMoneda',      get('moneda'));
+
+  // Disparar el guardar del modal Editar (mismo boton que el usuario ve al pie
+  // del modal). Reusa validacion + PUT + toast + refresh de listado.
+  const btnGuardar = document.querySelector('#modalRoot [data-act="guardar"]');
+  if (btnGuardar) btnGuardar.click();
+}
+
+// Abre un adjunto en un overlay a pantalla completa por encima del modal
+// actual (no usa openModal para no cerrarlo). Acepta el objeto adjunto
+// directamente para poder llamarse desde el modal Editar
+// (dcPagoAdjuntosEdicion) o Consultar (dcPagoAdjuntosCache). El overlay se
+// cierra con el boton X, con Esc, o clickeando fuera del visor.
+function dcPagoAdjAbrirFullscreen(a) {
   if (!a || !a.url) return;
   // Si por alguna razon quedo uno anterior colgado, lo removemos primero.
   document.getElementById('dcpAdjFullscreen')?.remove();
@@ -13039,21 +13212,12 @@ function dcPagoAdjAbrirFullscreen(idx) {
   wrap.id = 'dcpAdjFullscreen';
   wrap.className = 'dcp-adj-fs-backdrop';
   wrap.innerHTML = `
-    <div class="dcp-adj-fs-header">
-      <div class="dcp-adj-fs-title" title="${esc(a.nombre || a.archivo || '')}">
-        ${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}
-      </div>
-      <div class="dcp-adj-fs-actions">
-        <a class="btn btn-ghost btn-icon" href="${esc(a.url)}" target="_blank" rel="noopener"
-           title="Abrir en nueva pestaña">
-          <i class="fa-solid fa-external-link-alt"></i>
-        </a>
-        <button type="button" class="btn btn-ghost btn-icon dcp-adj-fs-close-btn" title="Cerrar">
-          <i class="fa-solid fa-xmark"></i>
-        </button>
-      </div>
-    </div>
     <div class="dcp-adj-fs-viewer">${viewerHtml}</div>
+    <div class="dcp-adj-fs-pill">
+      <button type="button" class="dcp-adj-fab dcp-adj-fs-close-btn" title="Cerrar">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
   `;
   document.body.appendChild(wrap);
 
@@ -13065,15 +13229,18 @@ function dcPagoAdjAbrirFullscreen(idx) {
   document.addEventListener('keydown', onKey);
   wrap.addEventListener('click', (ev) => {
     if (ev.target.closest('.dcp-adj-fs-close-btn')) cerrar();
-    // Click fuera del viewer/header (sobre el backdrop) tambien cierra.
+    // Click fuera del viewer/pill (sobre el backdrop) tambien cierra. El
+    // link externo tiene su propio target="_blank" y no debe cerrar el visor.
     if (ev.target === wrap) cerrar();
   });
 }
 
 // Renderiza el binario del adjunto `idx` (indice en dcPagoAdjuntosEdicion)
-// dentro del visor del modal Editar. Marca el item de la lista como activo.
+// dentro del visor del modal Editar. Marca el item de la lista como activo
+// y muestra/oculta la barra flotante de acciones (FAB) segun corresponda.
 function dcPagoEditMostrarAdjunto(idx) {
-  const cont = document.getElementById('dcPagoAdjEditViewer');
+  const cont = document.getElementById('dcPagoAdjEditViewerContent');
+  const fab  = document.getElementById('dcPagoAdjEditFab');
   if (!cont) return;
   const a = (dcPagoAdjuntosEdicion || [])[idx];
   dcPagoAdjSelIdx = idx;
@@ -13082,8 +13249,10 @@ function dcPagoEditMostrarAdjunto(idx) {
   });
   if (!a || !a.url) {
     cont.innerHTML = `<div class="dcp-adj-empty">Este adjunto no tiene archivo.</div>`;
+    if (fab) fab.hidden = true;
     return;
   }
+  if (fab) fab.hidden = false;
   const url  = a.url;
   const tipo = dcPagoTipoVisor(a);
   if (tipo === 'pdf') {
@@ -13206,7 +13375,19 @@ function dcPagoRenderAdjuntosVisor(adjuntos) {
           ${items}
         </div>
       </div>
-      <div class="dcp-adj-viewer" id="dcPagoAdjViewer"></div>
+      <div class="dcp-adj-viewer" id="dcPagoAdjViewer">
+        <div class="dcp-adj-viewer-content" id="dcPagoAdjViewerContent"></div>
+        <div class="dcp-adj-fab-bar" id="dcPagoAdjViewerFab" hidden>
+          <button type="button" class="dcp-adj-fab" data-dcp-adj-consulta-fab="full"
+                  title="Abrir en pantalla completa">
+            <i class="fa-solid fa-expand"></i>
+          </button>
+          <button type="button" class="dcp-adj-fab" data-dcp-adj-consulta-fab="tab"
+                  title="Abrir en nueva pestaña">
+            <i class="fa-solid fa-up-right-from-square"></i>
+          </button>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -13214,17 +13395,21 @@ function dcPagoRenderAdjuntosVisor(adjuntos) {
 // Renderiza el binario dentro del visor. Se llama al armar la pestaña
 // (indice 0) y al hacer click en un item de la lista.
 function dcPagoMostrarAdjunto(idx) {
-  const cont = document.getElementById('dcPagoAdjViewer');
+  const cont = document.getElementById('dcPagoAdjViewerContent');
+  const fab  = document.getElementById('dcPagoAdjViewerFab');
   if (!cont) return;
   const a = (dcPagoAdjuntosCache || [])[idx];
-  if (!a || !a.url) {
-    cont.innerHTML = `<div class="dcp-adj-empty">Este adjunto no tiene archivo.</div>`;
-    return;
-  }
+  dcPagoAdjConsultaSelIdx = idx;
   // Marcar item activo en la lista de la izquierda.
   document.querySelectorAll('#modalRoot .dcp-adj-list .dcp-adj-item').forEach((el) => {
     el.classList.toggle('active', Number(el.dataset.idx) === idx);
   });
+  if (!a || !a.url) {
+    cont.innerHTML = `<div class="dcp-adj-empty">Este adjunto no tiene archivo.</div>`;
+    if (fab) fab.hidden = true;
+    return;
+  }
+  if (fab) fab.hidden = false;
   const url = a.url;
   const tipo = dcPagoTipoVisor(a);
   if (tipo === 'pdf') {
@@ -13244,6 +13429,8 @@ function dcPagoMostrarAdjunto(idx) {
   }
 }
 window.dcPagoMostrarAdjunto = dcPagoMostrarAdjunto;
+
+let dcPagoAdjConsultaSelIdx = 0;
 
 // Cache de los adjuntos del pago actualmente abierto en Consultar. Se popula
 // en abrirConsultarDcPago() y se lee desde dcPagoMostrarAdjunto(). Se limpia
@@ -13269,6 +13456,15 @@ async function abrirConsultarDcPago(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcPago(id); }
+    // FAB del visor: acciones sobre el adjunto actualmente en preview.
+    const fabBtn = ev.target.closest('[data-dcp-adj-consulta-fab]');
+    if (fabBtn) {
+      const a = (dcPagoAdjuntosCache || [])[dcPagoAdjConsultaSelIdx];
+      if (!a) return;
+      const accion = fabBtn.dataset.dcpAdjConsultaFab;
+      if (accion === 'full') dcPagoAdjAbrirFullscreen(a);
+      else if (accion === 'tab' && a.url) window.open(a.url, '_blank', 'noopener');
+    }
   });
 
   try {
@@ -13430,16 +13626,21 @@ async function abrirAltaEdicionDcPago(id) {
       $('#dcPagAdjInput')?.click();
       return;
     }
-    // Acciones del menú contextual de adjuntos.
-    const ctxAct = ev.target.closest('[data-dcp-adj-ctx]');
-    if (ctxAct) {
-      const data = getCtxMenuData();
-      cerrarCtxMenu();
-      if (!data) return;
-      if (ctxAct.dataset.dcpAdjCtx === 'full') {
-        dcPagoAdjAbrirFullscreen(data.idx);
-      } else if (ctxAct.dataset.dcpAdjCtx === 'del') {
-        await dcPagoAdjEliminar(data.id);
+    // Barra flotante de acciones del visor (bottom-center).
+    const fab = ev.target.closest('[data-dcp-adj-fab]');
+    if (fab) {
+      ev.stopPropagation();
+      const accion = fab.dataset.dcpAdjFab;
+      const a = (dcPagoAdjuntosEdicion || [])[dcPagoAdjSelIdx];
+      if (!a) return;
+      if (accion === 'full') {
+        dcPagoAdjAbrirFullscreen(a);
+      } else if (accion === 'tab') {
+        if (a.url) window.open(a.url, '_blank', 'noopener');
+      } else if (accion === 'del') {
+        await dcPagoAdjEliminar(a.id);
+      } else if (accion === 'ia') {
+        dcPagoAdjAbrirMagia(a);
       }
       return;
     }
@@ -13448,18 +13649,6 @@ async function abrirAltaEdicionDcPago(id) {
     if (item) {
       dcPagoEditMostrarAdjunto(Number(item.dataset.dcpAdjIdx));
     }
-  });
-  // Menú contextual (click derecho) sobre un adjunto de la lista.
-  modalRoot.addEventListener('contextmenu', (ev) => {
-    const item = ev.target.closest('[data-dcp-adj-idx]');
-    if (!item) return;
-    ev.preventDefault();
-    const idx = Number(item.dataset.dcpAdjIdx);
-    const id  = Number(item.dataset.dcpAdjId);
-    // Marcamos el item como seleccionado y actualizamos el preview antes de
-    // abrir el menú (más natural que operar sobre uno no seleccionado).
-    dcPagoEditMostrarAdjunto(idx);
-    abrirCtxMenu($('#dcPagAdjCtxMenu'), ev.clientX, ev.clientY, { idx, id });
   });
   modalRoot.addEventListener('change', (ev) => {
     if (ev.target && ev.target.id === 'dcPagAdjInput') {
