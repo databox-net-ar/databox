@@ -73,6 +73,8 @@ function normalizarFilaEmpleado(array $r): array {
         'cuenta_id'      => $r['cuenta_id'] !== null ? (int)$r['cuenta_id'] : null,
         'cuenta_codigo'  => $r['cuenta_codigo'] ?? null,
         'cuenta_nombre'  => $r['cuenta_nombre'] ?? null,
+        'cuenta_saldo'   => array_key_exists('cuenta_saldo', $r) && $r['cuenta_saldo'] !== null
+                              ? (float)$r['cuenta_saldo'] : null,
         'sueldo'         => (float)($r['sueldo'] ?? 0),
         'cvu'            => $r['cvu'] ?? null,
         'activo'         => (string)($r['activo'] ?? 'si'),
@@ -211,7 +213,8 @@ function handleListEmpleados(PDO $pdo, array $q): void {
     $sql = 'SELECT ' . DCE_COLS . ",
                    emp.nombre AS empresa_nombre,
                    c.codigo   AS cuenta_codigo,
-                   c.nombre   AS cuenta_nombre
+                   c.nombre   AS cuenta_nombre,
+                   c.saldo    AS cuenta_saldo
             FROM datacount_empleados e
             LEFT JOIN datacount_empresas emp ON emp.id = e.empresa_id
             LEFT JOIN datacount_cuentas  c   ON c.id   = e.cuenta_id
@@ -242,7 +245,8 @@ function handleGetOneEmpleado(PDO $pdo, int $id): void {
     $sql = 'SELECT ' . DCE_COLS . ",
                    emp.nombre AS empresa_nombre,
                    c.codigo   AS cuenta_codigo,
-                   c.nombre   AS cuenta_nombre
+                   c.nombre   AS cuenta_nombre,
+                   c.saldo    AS cuenta_saldo
             FROM datacount_empleados e
             LEFT JOIN datacount_empresas emp ON emp.id = e.empresa_id
             LEFT JOIN datacount_cuentas  c   ON c.id   = e.cuenta_id

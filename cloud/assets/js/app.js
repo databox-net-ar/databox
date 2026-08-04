@@ -14207,6 +14207,9 @@ let dccColapsadas    = new Set();
 let dccEditandoId    = null;
 let dccBuscadorTimer = null;
 
+let dccParentPickerBusqueda   = '';
+let dccParentPickerColapsadas = new Set();
+
 function dccFmtMoney(n) {
   return Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -14511,30 +14514,220 @@ function dccExpandirTodo(expandir) {
 }
 
 // ---- Modal Alta / Edición ----
-function dccPoblarSelectPadre(sel, excludeId, seleccionado) {
-  sel.innerHTML = `<option value="">— Sin padre (cuenta raíz) —</option>`;
-  // Excluir la cuenta editada + sus descendientes (previene ciclos).
-  const excluidos = new Set();
-  if (excludeId) {
-    excluidos.add(excludeId);
-    let hubo = true;
-    while (hubo) {
-      hubo = false;
-      dccCuentas.forEach((c) => {
-        if (c.parent_id && excluidos.has(c.parent_id) && !excluidos.has(c.id)) {
-          excluidos.add(c.id); hubo = true;
-        }
-      });
-    }
-  }
-  dccCuentas.forEach((c) => {
-    if (excluidos.has(c.id)) return;
-    const opt = document.createElement('option');
-    opt.value = c.id;
-    opt.textContent = `${c.codigo} — ${c.nombre}`;
-    sel.appendChild(opt);
+// Sugiere el próximo código libre para una nueva subcuenta del padre dado.
+// Toma el segmento final más alto entre los hermanos existentes, le suma 1 y
+// respeta el zero-padding usado (ej. hijos "01","02" → siguiente "03"). Si el
+// padre no tiene hijos aún, infiere el ancho desde la profundidad del padre
+// (padre "1" → hijos ancho 1; padre "1.1" o más → hijos ancho 2). Devuelve ''
+// si algún hermano tiene sufijo no numérico (no arriesgamos).
+function dccSiguienteCodigo(parentId) {
+  const padre = dccCuentas.find((x) => x.id === parentId);
+  if (!padre || !padre.codigo) return '';
+  const prefijo = padre.codigo + '.';
+
+  const hijos = dccCuentas.filter((c) => c.parent_id === parentId);
+  const sufijos = hijos.map((c) => {
+    const idx = c.codigo.lastIndexOf('.');
+    return idx >= 0 ? c.codigo.slice(idx + 1) : c.codigo;
   });
-  if (seleccionado != null) sel.value = String(seleccionado);
+  if (sufijos.some((s) => !/^\d+$/.test(s))) return '';
+
+  let maxN  = 0;
+  let width = 0;
+  sufijos.forEach((s) => {
+    const n = parseInt(s, 10);
+    if (n > maxN)      maxN  = n;
+    if (s.length > width) width = s.length;
+  });
+  if (!sufijos.length) width = padre.codigo.includes('.') ? 2 : 1;
+
+  return prefijo + String(maxN + 1).padStart(width, '0');
+}
+
+// Calcula el set de ids a excluir del picker de padre: la cuenta editada +
+// todos sus descendientes (previene ciclos).
+function dccPadreExcluidos() {
+  const excluidos = new Set();
+  if (!dccEditandoId) return excluidos;
+  excluidos.add(dccEditandoId);
+  let hubo = true;
+  while (hubo) {
+    hubo = false;
+    dccCuentas.forEach((c) => {
+      if (c.parent_id && excluidos.has(c.parent_id) && !excluidos.has(c.id)) {
+        excluidos.add(c.id); hubo = true;
+      }
+    });
+  }
+  return excluidos;
+}
+
+// Refleja el padre elegido en el botón: guarda el id en `data-cuenta-id` y
+// muestra el label con código y nombre. Si el id es null/0, deja el placeholder
+// "Sin padre (cuenta raíz)".
+function dccSetPadreSeleccionado(parentId) {
+  const btn   = $('#dccParentBtn');
+  const label = $('#dccParentLabel');
+  if (!btn || !label) return;
+  const c = parentId ? dccCuentas.find((x) => x.id === parentId) : null;
+  if (c) {
+    btn.dataset.cuentaId = String(c.id);
+    label.style.color = '';
+    label.innerHTML =
+      `<code style="font-family:monospace;font-size:.85rem;margin-right:6px">${esc(c.codigo)}</code>${esc(c.nombre)}`;
+  } else {
+    btn.dataset.cuentaId = '';
+    label.style.color = 'var(--muted)';
+    label.textContent = '— Sin padre (cuenta raíz) —';
+  }
+}
+
+// ---- Picker jerárquico de cuenta padre (modal secundario del alta/edición) ----
+function dccCerrarPickerPadre() {
+  const p = $('#dccParentPickerRoot');
+  if (p) { p.classList.remove('open'); setTimeout(() => p.remove(), 150); }
+}
+
+function dccAbrirPickerPadre() {
+  dccCerrarPickerPadre();
+  dccParentPickerBusqueda = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'dccParentPickerRoot';
+  wrap.style.zIndex = '160';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
+      <div class="modal-header">
+        <div class="modal-title">Seleccionar cuenta padre</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+        <input type="search" id="dccParentPickerSearch" class="search-input"
+               style="width:100%;box-sizing:border-box"
+               placeholder="🔍 Buscar por código o nombre…">
+      </div>
+      <div id="dccParentPickerArbol"
+           style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="limpiar">Sin padre (cuenta raíz)</button>
+        <button class="btn btn-ghost" data-act="close">Cancelar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target === wrap) { dccCerrarPickerPadre(); return; }
+    if (ev.target.closest('[data-act="close"]')) { dccCerrarPickerPadre(); return; }
+    if (ev.target.closest('[data-act="limpiar"]')) {
+      dccSetPadreSeleccionado(null);
+      dccCerrarPickerPadre();
+      return;
+    }
+
+    const it = ev.target.closest('[data-cuenta-id]');
+    if (it) {
+      const id = Number(it.dataset.cuentaId);
+      dccSetPadreSeleccionado(id);
+      dccCerrarPickerPadre();
+      return;
+    }
+    const tog = ev.target.closest('[data-toggle-id]');
+    if (tog) {
+      ev.stopPropagation();
+      const id = Number(tog.dataset.toggleId);
+      if (dccParentPickerColapsadas.has(id)) dccParentPickerColapsadas.delete(id);
+      else dccParentPickerColapsadas.add(id);
+      dccRenderArbolPickerPadre();
+    }
+  });
+
+  $('#dccParentPickerSearch').addEventListener('input', (ev) => {
+    dccParentPickerBusqueda = ev.target.value.trim();
+    dccRenderArbolPickerPadre();
+  });
+
+  dccRenderArbolPickerPadre();
+  setTimeout(() => $('#dccParentPickerSearch')?.focus(), 50);
+}
+
+function dccRenderArbolPickerPadre() {
+  const container = $('#dccParentPickerArbol');
+  if (!container) return;
+  const busq       = dccParentPickerBusqueda.toLowerCase();
+  const excluidos  = dccPadreExcluidos();
+  const cuentaSel  = Number($('#dccParentBtn')?.dataset.cuentaId) || 0;
+  const elegibles  = dccCuentas.filter((c) => !excluidos.has(c.id));
+
+  if (!elegibles.length) {
+    container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">No hay cuentas disponibles como padre</div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (busq) {
+    // En modo búsqueda aplanamos: cualquier cuenta elegible que matchee.
+    const matches = elegibles.filter((c) =>
+      (c.codigo + ' ' + c.nombre).toLowerCase().includes(busq)
+    );
+    if (!matches.length) {
+      container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted)">Sin resultados para "${esc(dccParentPickerBusqueda)}"</div>`;
+      return;
+    }
+    matches.forEach((c) => {
+      const sel = cuentaSel === c.id;
+      html += `
+        <div data-cuenta-id="${c.id}"
+             style="display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;border-radius:6px;${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;font-weight:600' : ''}">
+          <code style="font-size:.78rem;flex-shrink:0">${esc(c.codigo)}</code>
+          <span style="flex:1">${esc(c.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0">✓</span>' : ''}
+        </div>`;
+    });
+  } else {
+    // Vista árbol: cualquier cuenta elegible es seleccionable (imputables y
+    // agrupaciones), a diferencia del picker de empleados.
+    const byId = {};
+    elegibles.forEach((c) => { byId[c.id] = Object.assign({}, c, { children: [] }); });
+    const raices = [];
+    elegibles.forEach((c) => {
+      if (c.parent_id && byId[c.parent_id]) byId[c.parent_id].children.push(byId[c.id]);
+      else raices.push(byId[c.id]);
+    });
+
+    const walk = (nodo, depth) => {
+      const tieneHijos = nodo.children.length > 0;
+      const colapsado  = dccParentPickerColapsadas.has(nodo.id);
+      const sel        = cuentaSel === nodo.id;
+      const pl         = 8 + depth * 20;
+
+      const toggle = tieneHijos
+        ? `<span data-toggle-id="${nodo.id}" style="width:18px;text-align:center;display:inline-block;flex-shrink:0;cursor:pointer">${colapsado ? '▶' : '▼'}</span>`
+        : `<span style="width:18px;display:inline-block;flex-shrink:0"></span>`;
+
+      html += `
+        <div data-cuenta-id="${nodo.id}"
+             style="display:flex;align-items:center;gap:4px;padding:7px 8px 7px ${pl}px;border-radius:6px;
+                    cursor:pointer;
+                    ${sel ? 'background:rgba(59,130,246,.18);color:#93c5fd;' : ''}
+                    font-weight:${Number(nodo.imputable) === 0 ? '700' : '400'}">
+          ${toggle}
+          <code style="font-size:.78rem;flex-shrink:0;margin-right:4px">${esc(nodo.codigo)}</code>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nodo.nombre)}</span>
+          ${sel ? '<span style="flex-shrink:0;margin-left:4px">✓</span>' : ''}
+        </div>`;
+
+      if (tieneHijos && !colapsado) {
+        nodo.children.forEach((h) => walk(h, depth + 1));
+      }
+    };
+    raices.forEach((r) => walk(r, 0));
+  }
+
+  container.innerHTML = html;
 }
 
 function abrirAltaEdicionDcc(id, parentIdPreseleccionado) {
@@ -14582,19 +14775,27 @@ function abrirAltaEdicionDcc(id, parentIdPreseleccionado) {
           </div>
         </div>
         <div class="form-group">
-          <label for="dccParent">Cuenta padre</label>
-          <select id="dccParent"></select>
+          <label>Cuenta padre</label>
+          <button type="button" id="dccParentBtn" data-cuenta-id=""
+                  style="text-align:left;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:8px">
+            <span id="dccParentLabel" style="flex:1;color:var(--muted)">— Sin padre (cuenta raíz) —</span>
+            <i class="fa-solid fa-chevron-down" style="color:var(--muted);flex-shrink:0"></i>
+          </button>
         </div>
         <div class="form-group">
           <label for="dccDescripcion">Descripción <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
           <textarea id="dccDescripcion" rows="2" placeholder="Detalle u observaciones"></textarea>
         </div>
-        <div class="form-group" style="display:flex;gap:18px;align-items:center">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="dccImputable" checked> Permite movimientos (imputable)
+        <div class="form-group" style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
+          <label class="toggle-switch">
+            <input type="checkbox" id="dccImputable" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Permite movimientos (imputable)</span>
           </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="dccActiva" checked> Activa
+          <label class="toggle-switch">
+            <input type="checkbox" id="dccActiva" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Activa</span>
           </label>
         </div>
       </div>
@@ -14605,8 +14806,7 @@ function abrirAltaEdicionDcc(id, parentIdPreseleccionado) {
     </div>
   `);
 
-  const sel = $('#dccParent');
-  dccPoblarSelectPadre(sel, editando ? id : null, null);
+  dccSetPadreSeleccionado(null);
 
   if (editando && c) {
     $('#dccCodigo').value      = c.codigo || '';
@@ -14616,22 +14816,29 @@ function abrirAltaEdicionDcc(id, parentIdPreseleccionado) {
     $('#dccDescripcion').value = c.descripcion || '';
     $('#dccImputable').checked = Number(c.imputable) === 1;
     $('#dccActiva').checked    = Number(c.activa) === 1;
-    sel.value = c.parent_id != null ? String(c.parent_id) : '';
+    dccSetPadreSeleccionado(c.parent_id != null ? Number(c.parent_id) : null);
   } else if (parentIdPreseleccionado) {
-    // Nueva subcuenta: heredar tipo/naturaleza del padre para ahorrar clicks.
+    // Nueva subcuenta: heredar tipo/naturaleza del padre para ahorrar clicks
+    // y sugerir el próximo código de la serie.
     const padre = dccCuentas.find((x) => x.id === parentIdPreseleccionado);
     if (padre) {
-      sel.value = String(parentIdPreseleccionado);
+      dccSetPadreSeleccionado(parentIdPreseleccionado);
       $('#dccTipo').value       = padre.tipo;
       $('#dccNaturaleza').value = padre.naturaleza;
+      const sugerido = dccSiguienteCodigo(parentIdPreseleccionado);
+      if (sugerido) $('#dccCodigo').value = sugerido;
     }
   }
 
-  setTimeout(() => $('#dccCodigo')?.focus(), 50);
+  // Si el código ya viene sugerido, el usuario típicamente quiere tipear el
+  // nombre; si no, arranca en código.
+  const focusEl = $('#dccCodigo')?.value ? $('#dccNombre') : $('#dccCodigo');
+  setTimeout(() => focusEl?.focus(), 50);
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))   closeModal();
     if (ev.target.closest('[data-act="guardar"]')) guardarDcc();
+    if (ev.target.closest('#dccParentBtn'))        dccAbrirPickerPadre();
   });
 }
 
@@ -14640,7 +14847,8 @@ async function guardarDcc() {
   const nombre      = $('#dccNombre').value.trim();
   const tipo        = $('#dccTipo').value;
   const naturaleza  = $('#dccNaturaleza').value;
-  const parent_id   = $('#dccParent').value || null;
+  const parentRaw   = $('#dccParentBtn')?.dataset.cuentaId || '';
+  const parent_id   = parentRaw ? Number(parentRaw) : null;
   const descripcion = $('#dccDescripcion').value.trim();
   const imputable   = $('#dccImputable').checked ? 1 : 0;
   const activa      = $('#dccActiva').checked ? 1 : 0;
@@ -17317,7 +17525,7 @@ route('/datacount_empleados', async (mount) => {
               <th style="width:120px">Documento</th>
               <th>Correo</th>
               <th style="width:130px">Celular</th>
-              <th style="width:140px;text-align:right">Sueldo</th>
+              <th style="width:140px;text-align:right">Saldo</th>
               <th style="width:90px;text-align:center">Activo</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
@@ -17560,9 +17768,15 @@ function renderDcm() {
     const activoBadge = r.activo === 'si'
       ? '<span class="badge badge-success">Activo</span>'
       : '<span class="badge">Inactivo</span>';
-    const sueldoHtml = Number(r.sueldo) > 0
-      ? `<span style="color:var(--success);font-weight:600">$ ${dcmFmtMoney(r.sueldo)}</span>`
-      : `<span style="color:var(--muted)">—</span>`;
+    let saldoHtml;
+    if (r.cuenta_id == null) {
+      saldoHtml = `<span style="color:var(--muted)" title="Sin cuenta contable asociada">—</span>`;
+    } else {
+      const saldoVal   = Number(r.cuenta_saldo || 0);
+      const saldoColor = saldoVal > 0 ? 'var(--success)' : saldoVal < 0 ? 'var(--danger)' : 'var(--muted)';
+      const cuentaTip  = r.cuenta_codigo ? `${r.cuenta_codigo} — ${r.cuenta_nombre || ''}`.trim() : '';
+      saldoHtml = `<span style="font-weight:600;color:${saldoColor}"${cuentaTip ? ` title="${esc(cuentaTip)}"` : ''}>${saldoVal < 0 ? '-' : ''}$ ${dcmFmtMoney(Math.abs(saldoVal))}</span>`;
+    }
     return `
       <tr data-id="${r.id}" class="row-clickable">
         <td><code style="font-size:.82rem">${r.id}</code></td>
@@ -17570,7 +17784,7 @@ function renderDcm() {
         <td><code style="font-family:monospace;font-size:.82rem">${esc(r.documento || '—')}</code></td>
         <td>${r.correo ? esc(r.correo) : '<span style="color:var(--muted)">—</span>'}</td>
         <td>${r.celular ? esc(r.celular) : '<span style="color:var(--muted)">—</span>'}</td>
-        <td style="text-align:right;font-family:monospace">${sueldoHtml}</td>
+        <td style="text-align:right;font-family:monospace">${saldoHtml}</td>
         <td style="text-align:center">${activoBadge}</td>
         <td style="text-align:center">
           <div class="actions" style="justify-content:center">
@@ -18044,7 +18258,7 @@ function abrirConsultaDcm(id) {
   const activoHtml = r.activo === 'si'
     ? `<span class="badge badge-success">Activo</span>`
     : `<span class="badge">Inactivo</span>`;
-  const cvuHtml = r.cvu
+  const aliasHtml = r.cvu
     ? `<code style="font-family:monospace">${esc(r.cvu)}</code>`
     : '<span style="color:var(--muted)">—</span>';
 
@@ -18057,22 +18271,34 @@ function abrirConsultaDcm(id) {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        <div style="display:flex;flex-wrap:wrap;gap:12px">
-          ${card('Empresa',     esc(r.empresa_nombre || '#' + r.empresa_id), 'full')}
-          ${card('Nombre',      esc(r.nombre || '—'), 'full')}
-          ${card('Documento',   r.documento ? `<code>${esc(r.documento)}</code>` : '<span style="color:var(--muted)">—</span>')}
-          ${card('Nacimiento',  r.nacimiento ? esc(fmtFecha(r.nacimiento)) : '<span style="color:var(--muted)">—</span>')}
-          ${card('Celular',     r.celular ? esc(r.celular) : '<span style="color:var(--muted)">—</span>')}
-          ${card('Correo',      r.correo ? esc(r.correo) : '<span style="color:var(--muted)">—</span>')}
-          ${card('Domicilio',   r.domicilio ? esc(r.domicilio) : '<span style="color:var(--muted)">—</span>', 'full')}
-          ${card('Cuenta',      cuentaLabel, 'full')}
-          ${card('Sueldo',      sueldoHtml)}
-          ${card('CVU / CBU',   cvuHtml, 'full')}
-          ${card('Estado',      activoHtml)}
-          ${card('Observaciones', r.observaciones ? esc(r.observaciones) : '<span style="color:var(--muted)">—</span>', 'full')}
-          ${card('Código',      `<code>${r.id}</code>`)}
-          ${card('Alta',        esc(fmtFecha(r.created_at)))}
-          ${card('Modificación', esc(fmtFecha(r.updated_at)))}
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" data-tab="general">General</button>
+          <button type="button" class="modal-tab"        data-tab="cuenta">Cuenta</button>
+        </div>
+
+        <div class="modal-tabpanel" data-panel="general">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Nombre',        esc(r.nombre || '—'), 'full')}
+            ${card('Documento',     r.documento ? `<code>${esc(r.documento)}</code>` : '<span style="color:var(--muted)">—</span>')}
+            ${card('Nacimiento',    r.nacimiento ? esc(fmtFecha(r.nacimiento)) : '<span style="color:var(--muted)">—</span>')}
+            ${card('Celular',       r.celular ? esc(r.celular) : '<span style="color:var(--muted)">—</span>')}
+            ${card('Correo',        r.correo ? esc(r.correo) : '<span style="color:var(--muted)">—</span>')}
+            ${card('Domicilio',     r.domicilio ? esc(r.domicilio) : '<span style="color:var(--muted)">—</span>', 'full')}
+            ${card('Alias',         aliasHtml, 'full')}
+            ${card('Observaciones', r.observaciones ? esc(r.observaciones) : '<span style="color:var(--muted)">—</span>', 'full')}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-panel="cuenta" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Empresa',       esc(r.empresa_nombre || '#' + r.empresa_id), 'full')}
+            ${card('Cuenta',        cuentaLabel, 'full')}
+            ${card('Sueldo',        sueldoHtml)}
+            ${card('Estado',        activoHtml)}
+            ${card('Código',        `<code>${r.id}</code>`)}
+            ${card('Alta',          esc(fmtFecha(r.created_at)))}
+            ${card('Modificación',  esc(fmtFecha(r.updated_at)))}
+          </div>
         </div>
       </div>
       <div class="modal-footer">
@@ -18085,6 +18311,13 @@ function abrirConsultaDcm(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcm(id); }
+
+    const tabBtn = ev.target.closest('#modalRoot [data-tab]');
+    if (tabBtn) {
+      const target = tabBtn.dataset.tab;
+      $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+      $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
+    }
   });
 }
 
