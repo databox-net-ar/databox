@@ -26,12 +26,17 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/s3.php';
 require_once __DIR__ . '/lib/sucesos.php';
 
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
 const DCA_COLS = 'id, empresa_id, numero, fecha, descripcion, total, created_at';
+
+// Prefijo S3 de los adjuntos del asiento. Compartido con
+// `datacount_asientos_adjuntos.php` — cambiarlo aca implica migrar el bucket.
+const DCA_ADJ_S3_PREFIX = 'datacount/asientos/';
 
 try {
     requirePermCrud('datacount.asientos');
@@ -43,6 +48,11 @@ try {
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
         handleList($pdo, $_GET);
+    } elseif ($method === 'POST' && !empty($_GET['anular']) && $id > 0) {
+        // POST /?id=N&anular=1 crea un asiento inverso al #id (mismas lineas,
+        // debe/haber invertidos). Reusa el permiso `.agregar` del recurso
+        // porque efectivamente esta dando de alta un asiento nuevo.
+        handleAnular($pdo, $id);
     } elseif ($method === 'POST') {
         handleSave($pdo, readJsonBody(), null);
     } elseif ($method === 'PUT') {
@@ -177,6 +187,25 @@ function handleGetOne(PDO $pdo, int $id): void {
     $stD->execute([':id' => $id]);
     $detalle = array_map('normalizarLineaDetalle', $stD->fetchAll());
 
+    // Adjuntos (mismo patron que datacount_pagos.php::handleGetOne). Cada
+    // adjunto trae la URL publica precomputada asi el front puede embeber el
+    // PDF/imagen sin proxy.
+    $stA = $pdo->prepare(
+        'SELECT id, uuid, nombre, cargado, tipo, archivo, formato
+         FROM datacount_asientos_adjuntos
+         WHERE asiento = :id
+         ORDER BY cargado ASC, id ASC'
+    );
+    $stA->execute([':id' => $id]);
+    $adjuntos = $stA->fetchAll();
+    foreach ($adjuntos as &$adj) {
+        $adj['id']  = (int)$adj['id'];
+        $adj['url'] = !empty($adj['archivo'])
+            ? s3_public_url(DCA_ADJ_S3_PREFIX . $adj['archivo'])
+            : null;
+    }
+    unset($adj);
+
     jsonOk([
         'id'          => (int)$a['id'],
         'empresa_id'  => (int)$a['empresa_id'],
@@ -186,6 +215,7 @@ function handleGetOne(PDO $pdo, int $id): void {
         'total'       => (float)$a['total'],
         'created_at'  => $a['created_at'],
         'detalle'     => $detalle,
+        'adjuntos'    => $adjuntos,
     ]);
 }
 
@@ -348,6 +378,92 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
         " asiento #{$asientoId} — empresa {$empresaId} — {$descripcion} — total {$total}");
 
     handleGetOne($pdo, $asientoId);
+}
+
+// Crea un asiento nuevo que anula al #origenId: mismas cuentas y montos, pero
+// con debe/haber invertidos. Fecha = fecha del original, descripcion =
+// "Anulacion asiento N° X — <descripcion original>". No modifica ni marca al
+// asiento original — solo agrega el contra-asiento; los saldos del plan de
+// cuentas quedan compensados (0 neto) tras el recalculo.
+function handleAnular(PDO $pdo, int $origenId): void {
+    $st = $pdo->prepare(
+        'SELECT id, empresa_id, numero, fecha, descripcion, total
+         FROM datacount_asientos WHERE id = :id LIMIT 1'
+    );
+    $st->execute([':id' => $origenId]);
+    $origen = $st->fetch();
+    if (!$origen) jsonError('Asiento no encontrado', 404);
+
+    $stD = $pdo->prepare(
+        'SELECT cuenta_id, debe, haber, descripcion, orden
+         FROM datacount_asientos_detalles
+         WHERE asiento_id = :id
+         ORDER BY orden ASC, id ASC'
+    );
+    $stD->execute([':id' => $origenId]);
+    $lineasOrig = $stD->fetchAll();
+    if (!$lineasOrig) jsonError('El asiento no tiene detalle para anular', 400);
+
+    $empresaId = (int)$origen['empresa_id'];
+    $numOrig   = (int)$origen['numero'];
+    $descrAnul = 'Anulación asiento N° ' . $numOrig
+               . ($origen['descripcion'] !== '' ? ' — ' . $origen['descripcion'] : '');
+    // Cap defensivo por el varchar(255) del campo descripcion.
+    if (strlen($descrAnul) > 255) $descrAnul = substr($descrAnul, 0, 255);
+
+    $cuentasAfectadas = [];
+    $pdo->beginTransaction();
+    try {
+        // Numero autoincrementable por empresa (mismo criterio que handleSave).
+        $stMax = $pdo->prepare(
+            'SELECT COALESCE(MAX(numero),0) + 1 FROM datacount_asientos WHERE empresa_id = :e'
+        );
+        $stMax->execute([':e' => $empresaId]);
+        $nextNum = (int)$stMax->fetchColumn();
+
+        $ins = $pdo->prepare(
+            'INSERT INTO datacount_asientos (empresa_id, numero, fecha, descripcion, total)
+             VALUES (:e, :n, :f, :d, :t)'
+        );
+        $ins->execute([
+            ':e' => $empresaId,
+            ':n' => $nextNum,
+            ':f' => $origen['fecha'],
+            ':d' => $descrAnul,
+            ':t' => (float)$origen['total'],
+        ]);
+        $nuevoId = (int)$pdo->lastInsertId();
+
+        $insD = $pdo->prepare(
+            'INSERT INTO datacount_asientos_detalles
+                (asiento_id, cuenta_id, debe, haber, descripcion, orden)
+             VALUES (:a, :c, :d, :h, :desc, :o)'
+        );
+        foreach ($lineasOrig as $l) {
+            // Invertimos: lo que iba en Debe ahora va en Haber y viceversa.
+            $insD->execute([
+                ':a'    => $nuevoId,
+                ':c'    => (int)$l['cuenta_id'],
+                ':d'    => (float)$l['haber'],
+                ':h'    => (float)$l['debe'],
+                ':desc' => $l['descripcion'],
+                ':o'    => (int)$l['orden'],
+            ]);
+            $cuentasAfectadas[] = (int)$l['cuenta_id'];
+        }
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+
+    recalcularSaldoCuentas($pdo, $cuentasAfectadas);
+
+    registrarSuceso($pdo, 'datacount_asientos', 'info',
+        "Anulacion asiento #{$origenId} (N°{$numOrig}) — se creo asiento #{$nuevoId} (N°{$nextNum}) con debe/haber invertidos");
+
+    handleGetOne($pdo, $nuevoId);
 }
 
 function handleDelete(PDO $pdo, int $id): void {

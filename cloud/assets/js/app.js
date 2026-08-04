@@ -14270,7 +14270,7 @@ route('/datacount_cuentas', async (mount) => {
         <table>
           <thead>
             <tr>
-              <th style="width:160px">Código</th>
+              <th style="width:240px">Código</th>
               <th>Nombre</th>
               <th style="width:130px">Tipo</th>
               <th style="width:100px;text-align:center">Naturaleza</th>
@@ -14456,11 +14456,11 @@ function renderDcc() {
 }
 
 function renderFilaDcc(c, depth, tieneHijos, colapsada) {
-  const indent = depth * 22;
+  const indent = depth * 20;
   const toggle = tieneHijos
     ? `<span class="dcc-toggle" data-act="toggle" data-id="${c.id}"
              style="cursor:pointer;display:inline-block;width:18px;text-align:center;user-select:none;color:var(--muted)">${colapsada ? '▶' : '▼'}</span>`
-    : `<span style="display:inline-block;width:18px"></span>`;
+    : `<span style="display:inline-block;width:18px;text-align:center;color:var(--muted);opacity:.35">·</span>`;
 
   const tipoBadge = `<span class="badge ${DCC_TIPO_BADGE[c.tipo] || 'badge-info'}">${esc(DCC_TIPO_LABEL[c.tipo] || c.tipo)}</span>`;
 
@@ -15825,12 +15825,11 @@ route('/datacount_asientos', async (mount) => {
       <button type="button" data-action="ver" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Ver detalle</span>
       </button>
-      <button type="button" data-action="editar" role="menuitem">
-        <i class="fa-solid fa-pen"></i><span>Editar</span>
-      </button>
       <div class="ctx-menu-sep"></div>
-      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
-        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      <!-- Los asientos no se pueden editar ni eliminar (integridad contable):
+           en su lugar se crea un asiento inverso con "Anular". -->
+      <button type="button" data-action="anular" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-ban"></i><span>Anular</span>
       </button>
     </div>
   `;
@@ -15888,9 +15887,8 @@ route('/datacount_asientos', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'ver')      abrirDetalleAsientoDca(data.id);
-    if (b.dataset.action === 'editar')   abrirEditarAsientoDca(data.id);
-    if (b.dataset.action === 'eliminar') eliminarAsientoDca(data.id, data.numero);
+    if (b.dataset.action === 'ver')    abrirDetalleAsientoDca(data.id);
+    if (b.dataset.action === 'anular') anularAsientoDca(data.id, data.numero);
   });
 
   $('#dcaTbody').addEventListener('click', (ev) => {
@@ -16175,35 +16173,6 @@ async function abrirNuevoAsientoDca() {
   setTimeout(() => $('#dcaDescripcion')?.focus(), 50);
 }
 
-async function abrirEditarAsientoDca(id) {
-  try {
-    const a = await apiGet(`${DCA_API}?id=${id}`);
-    // La empresa del asiento manda: cargamos el plan de esa empresa aunque
-    // el usuario tenga otra seleccionada en el contexto compartido.
-    const empresaId = Number(a.empresa_id) || (await dcAsegurarEmpresaId());
-    await dcaAsegurarCuentas(empresaId);
-    dcaEditandoId        = id;
-    dcaEditandoEmpresaId = empresaId;
-    dcaLineas = (a.detalle || []).map((d) => ({
-      cuenta_id:   d.cuenta_id,
-      debe:        Number(d.debe)  || '',
-      haber:       Number(d.haber) || '',
-      descripcion: d.descripcion || '',
-    }));
-    while (dcaLineas.length < 2) {
-      dcaLineas.push({ cuenta_id: '', debe: '', haber: '', descripcion: '' });
-    }
-    const empresas = await dcGetEmpresas();
-    const empresaObj = empresas.find((e) => e.id === empresaId);
-    dcaAbrirModalAlta(`Editar asiento N° ${a.numero}`, empresaObj);
-    $('#dcaFecha').value       = a.fecha || '';
-    $('#dcaDescripcion').value = a.descripcion || '';
-    dcaRenderLineas();
-  } catch (e) {
-    toast(e.message, { error: true });
-  }
-}
-
 function dcaRenderLineas() {
   const tbody = $('#dcaLineasBody');
   if (!tbody) return;
@@ -16326,83 +16295,347 @@ async function guardarAsientoDca() {
   }
 }
 
-// ---- Modal Detalle ----
+// ---- Modal Detalle (Consultar) ----
+// Estado runtime de adjuntos del asiento actualmente abierto en Consultar.
+// Se popula al abrir el modal y permite re-pintar la tab sin re-fetchear el
+// asiento cada vez que se sube o borra un archivo (mismo patron que
+// dcPagoAdjuntosEdicion en el modal de pagos).
+let dcaAdjuntos     = [];
+let dcaAdjAsientoId = null;
+let dcaAdjSelIdx    = 0;
+
+// Reusa el naming data-tab="general|adjuntos" del modal de pagos para heredar
+// los estilos de `.dcp-consulta-modal .modal-tabpanel[data-tab="..."]` (que
+// hacen que General scrollee y Adjuntos se estire para ocupar el resto). Los
+// modales no coexisten (solo uno abierto a la vez), asi que reusar el atributo
+// no colisiona con dcPagoCambiarTab().
+function dcaTabsHeaderHtml() {
+  return `
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-tab="general" onclick="dcaCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-tab="adjuntos" onclick="dcaCambiarTab('adjuntos')">
+        <i class="fa-solid fa-paperclip"></i> Adjuntos
+      </button>
+    </div>
+  `;
+}
+
+function dcaCambiarTab(tab) {
+  if (tab !== 'general' && tab !== 'adjuntos') return;
+  document.querySelectorAll('#modalRoot .modal-tab[data-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-tab]').forEach((p) => {
+    p.hidden = p.dataset.tab !== tab;
+  });
+}
+window.dcaCambiarTab = dcaCambiarTab;
+
+// Panel de Adjuntos del modal Consultar. Layout de dos columnas: a la izq
+// la lista con boton "+ Subir archivo" al pie, a la der el visor del archivo
+// seleccionado. Reusa dcPagoTipoVisor() para decidir iframe/img/fallback.
+// Upload contra api/datacount_asientos_adjuntos.php (multipart), borrado
+// contra el mismo endpoint con DELETE.
+function dcaRenderAdjuntosTabla(adjuntos, asientoId) {
+  const filas = adjuntos || [];
+  const idxSel = Math.min(dcaAdjSelIdx, Math.max(0, filas.length - 1));
+  const items = filas.length ? filas.map((a, i) => `
+    <div class="dcp-adj-item${i === idxSel ? ' active' : ''}"
+         data-dca-adj-idx="${i}" data-dca-adj-id="${esc(a.id)}">
+      <div class="dcp-adj-item-body">
+        <div class="dcp-adj-item-name">${esc(a.nombre || a.archivo || `Adjunto #${a.id}`)}</div>
+        <div class="dcp-adj-item-meta">${esc(fmtFecha(a.cargado) || '—')} · ${esc((a.formato || '').toUpperCase() || '—')}</div>
+      </div>
+    </div>
+  `).join('') : `<div class="dcp-adj-list-empty">Sin adjuntos todavía.</div>`;
+
+  return `
+    <div class="dcp-adj-split">
+      <div class="dcp-adj-list-col">
+        <div class="dcp-adj-list" id="dcaAdjList">
+          ${items}
+          <input type="file" id="dcaAdjInput" style="display:none">
+          <button type="button" class="btn btn-primary dcp-adj-subir-btn" id="dcaAdjSubirBtn">
+            <i class="fa-solid fa-plus"></i> Subir archivo
+          </button>
+          <div id="dcaAdjStatus" style="font-size:.78rem;color:var(--muted);margin-top:2px"></div>
+        </div>
+      </div>
+      <div class="dcp-adj-viewer" id="dcaAdjViewer">
+        <div class="dcp-adj-viewer-content" id="dcaAdjViewerContent">
+          ${filas.length ? '' : `<div class="dcp-adj-empty">Subí un archivo desde la lista para verlo acá.</div>`}
+        </div>
+        <div class="dcp-adj-fab-bar" id="dcaAdjFab" ${filas.length ? '' : 'hidden'}>
+          <button type="button" class="dcp-adj-fab" data-dca-adj-fab="full" title="Abrir en pantalla completa">
+            <i class="fa-solid fa-expand"></i>
+          </button>
+          <button type="button" class="dcp-adj-fab" data-dca-adj-fab="tab" title="Abrir en nueva pestaña">
+            <i class="fa-solid fa-up-right-from-square"></i>
+          </button>
+          <button type="button" class="dcp-adj-fab dcp-adj-fab-danger" data-dca-adj-fab="del" title="Eliminar adjunto">
+            <i class="fa-solid fa-trash"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function dcaAdjRefrescarTab() {
+  const panel = document.querySelector('#modalRoot .modal-tabpanel[data-tab="adjuntos"]');
+  if (!panel) return;
+  panel.innerHTML = dcaRenderAdjuntosTabla(dcaAdjuntos, dcaAdjAsientoId);
+  if (dcaAdjuntos.length) {
+    if (dcaAdjSelIdx >= dcaAdjuntos.length) dcaAdjSelIdx = 0;
+    dcaAdjMostrar(dcaAdjSelIdx);
+  }
+}
+
+function dcaAdjMostrar(idx) {
+  const cont = document.getElementById('dcaAdjViewerContent');
+  const fab  = document.getElementById('dcaAdjFab');
+  if (!cont) return;
+  const a = (dcaAdjuntos || [])[idx];
+  dcaAdjSelIdx = idx;
+  document.querySelectorAll('#modalRoot .dcp-adj-list .dcp-adj-item').forEach((el) => {
+    el.classList.toggle('active', Number(el.dataset.dcaAdjIdx) === idx);
+  });
+  if (!a || !a.url) {
+    cont.innerHTML = `<div class="dcp-adj-empty">Este adjunto no tiene archivo.</div>`;
+    if (fab) fab.hidden = true;
+    return;
+  }
+  if (fab) fab.hidden = false;
+  // Reusa el clasificador generico (pdf / img / otro) del modal de pagos.
+  const tipo = dcPagoTipoVisor(a);
+  if (tipo === 'pdf') {
+    cont.innerHTML = `<iframe src="${esc(a.url)}#toolbar=1&navpanes=0" title="${esc(a.nombre || '')}"></iframe>`;
+  } else if (tipo === 'img') {
+    cont.innerHTML = `<img src="${esc(a.url)}" alt="${esc(a.nombre || '')}">`;
+  } else {
+    cont.innerHTML = `
+      <div class="dcp-adj-fallback">
+        <div><i class="fa-solid fa-file" style="font-size:2rem"></i></div>
+        <div>No se puede previsualizar este formato (${esc(a.formato || 'desconocido')}).</div>
+        <a class="btn btn-primary" href="${esc(a.url)}" target="_blank" rel="noopener">
+          <i class="fa-solid fa-external-link-alt"></i> Abrir en nueva pestaña
+        </a>
+      </div>
+    `;
+  }
+}
+
+async function dcaAdjSubir(fileList) {
+  if (!fileList || !fileList.length) return;
+  if (dcaAdjAsientoId == null) return;
+  const file   = fileList[0];
+  const btn    = $('#dcaAdjSubirBtn');
+  const input  = $('#dcaAdjInput');
+  const status = $('#dcaAdjStatus');
+
+  const fd = new FormData();
+  fd.append('archivo', file);
+
+  if (btn) btn.disabled = true;
+  if (status) {
+    status.style.color = 'var(--muted)';
+    status.textContent = `Subiendo ${file.name}…`;
+  }
+  try {
+    const r = await fetch(`api/datacount_asientos_adjuntos.php?asiento=${encodeURIComponent(dcaAdjAsientoId)}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: fd,
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      if (status) {
+        status.style.color = 'var(--danger)';
+        status.textContent = data.error || 'Error al subir';
+      }
+      return;
+    }
+    dcaAdjuntos.push(data.data);
+    dcaAdjSelIdx = dcaAdjuntos.length - 1;
+    dcaAdjRefrescarTab();
+    toast('Adjunto subido.');
+  } catch (e) {
+    if (status) {
+      status.style.color = 'var(--danger)';
+      status.textContent = 'Error de red al subir';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (input) input.value = '';
+  }
+}
+
+async function dcaAdjEliminar(adjuntoId) {
+  const ok = await confirmar({
+    title:       'Eliminar adjunto',
+    message:     `Se eliminará el adjunto #${adjuntoId}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datacount_asientos_adjuntos.php?id=${adjuntoId}`, 'DELETE');
+    dcaAdjuntos = dcaAdjuntos.filter((a) => Number(a.id) !== Number(adjuntoId));
+    if (dcaAdjSelIdx >= dcaAdjuntos.length) dcaAdjSelIdx = Math.max(0, dcaAdjuntos.length - 1);
+    dcaAdjRefrescarTab();
+    toast('Adjunto eliminado.');
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+function dcaRenderConsultaGeneral(a) {
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="form-row">
+        <div>
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Fecha</div>
+          <div style="font-weight:600">${esc(dcaFmtFechaAR(a.fecha))}</div>
+        </div>
+        <div>
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Total</div>
+          <div style="font-weight:600;font-family:monospace">$ ${dcaFmtMoney(a.total)}</div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Descripción</div>
+        <div style="font-weight:600">${esc(a.descripcion || '—')}</div>
+      </div>
+      <div>
+        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Detalle</div>
+        <div class="table-card">
+          <table style="font-size:.85rem">
+            <thead>
+              <tr>
+                <th>Cuenta</th>
+                <th style="width:130px;text-align:right">Debe</th>
+                <th style="width:130px;text-align:right">Haber</th>
+                <th>Detalle</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(a.detalle || []).map((d) => `
+                <tr>
+                  <td>${d.cuenta_codigo ? `<code style="font-size:.78rem;color:var(--muted)">${esc(d.cuenta_codigo)}</code> ` : ''}${esc(d.cuenta_nombre || '—')}</td>
+                  <td style="text-align:right">${Number(d.debe)  > 0 ? '$ ' + dcaFmtMoney(d.debe)  : '—'}</td>
+                  <td style="text-align:right">${Number(d.haber) > 0 ? '$ ' + dcaFmtMoney(d.haber) : '—'}</td>
+                  <td>${esc(d.descripcion || '')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 async function abrirDetalleAsientoDca(id) {
+  // Reset del estado runtime de adjuntos antes de traer el asiento.
+  dcaAdjuntos     = [];
+  dcaAdjAsientoId = null;
+  dcaAdjSelIdx    = 0;
   try {
     const a = await apiGet(`${DCA_API}?id=${id}`);
+    dcaAdjuntos     = a.adjuntos || [];
+    dcaAdjAsientoId = a.id;
     openModal(`
-      <div class="modal" style="max-width:820px">
+      <div class="modal dcp-consulta-modal" style="max-width:820px">
         <div class="modal-header">
           <div class="modal-title">Asiento N° ${a.numero}</div>
           <button class="btn-icon-sm" data-act="close">×</button>
         </div>
-        <div class="modal-body" style="display:flex;flex-direction:column;gap:14px">
-          <div class="form-row">
-            <div>
-              <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Fecha</div>
-              <div style="font-weight:600">${esc(dcaFmtFechaAR(a.fecha))}</div>
-            </div>
-            <div>
-              <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Total</div>
-              <div style="font-weight:600;font-family:monospace">$ ${dcaFmtMoney(a.total)}</div>
-            </div>
+        <div class="modal-body">
+          ${dcaTabsHeaderHtml()}
+          <div class="modal-tabpanel" data-tab="general" role="tabpanel">
+            ${dcaRenderConsultaGeneral(a)}
           </div>
-          <div>
-            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Descripción</div>
-            <div style="font-weight:600">${esc(a.descripcion || '—')}</div>
-          </div>
-          <div>
-            <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Detalle</div>
-            <div class="table-card">
-              <table style="font-size:.85rem">
-                <thead>
-                  <tr>
-                    <th>Cuenta</th>
-                    <th style="width:130px;text-align:right">Debe</th>
-                    <th style="width:130px;text-align:right">Haber</th>
-                    <th>Detalle</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${(a.detalle || []).map((d) => `
-                    <tr>
-                      <td>${d.cuenta_codigo ? `<code style="font-size:.78rem;color:var(--muted)">${esc(d.cuenta_codigo)}</code> ` : ''}${esc(d.cuenta_nombre || '—')}</td>
-                      <td style="text-align:right">${Number(d.debe)  > 0 ? '$ ' + dcaFmtMoney(d.debe)  : '—'}</td>
-                      <td style="text-align:right">${Number(d.haber) > 0 ? '$ ' + dcaFmtMoney(d.haber) : '—'}</td>
-                      <td>${esc(d.descripcion || '')}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
+          <div class="modal-tabpanel" data-tab="adjuntos" role="tabpanel" hidden>
+            ${dcaRenderAdjuntosTabla(dcaAdjuntos, dcaAdjAsientoId)}
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-          <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+          <button class="btn btn-ghost"  data-act="close">Cerrar</button>
+          <button class="btn btn-danger" data-act="anular">
+            <i class="fa-solid fa-ban"></i> Anular
+          </button>
         </div>
       </div>
     `);
-    $('#modalRoot').addEventListener('click', (ev) => {
-      if (ev.target.closest('[data-act="close"]'))  closeModal();
-      if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirEditarAsientoDca(id); }
+    // Precargar el primer adjunto asi al cambiar a la pestaña ya se ve.
+    if (dcaAdjuntos.length) dcaAdjMostrar(0);
+
+    const modalRoot = $('#modalRoot');
+    modalRoot.addEventListener('click', async (ev) => {
+      const act = ev.target.closest('[data-act]');
+      if (act) {
+        if (act.dataset.act === 'close') closeModal();
+        if (act.dataset.act === 'anular') {
+          closeModal();
+          await anularAsientoDca(a.id, a.numero);
+        }
+        return;
+      }
+      // Boton "+ Subir archivo" → dispara el <input type="file"> escondido.
+      if (ev.target.closest('#dcaAdjSubirBtn')) {
+        $('#dcaAdjInput')?.click();
+        return;
+      }
+      // Barra flotante del visor (full / tab / delete).
+      const fab = ev.target.closest('[data-dca-adj-fab]');
+      if (fab) {
+        ev.stopPropagation();
+        const accion = fab.dataset.dcaAdjFab;
+        const adj = (dcaAdjuntos || [])[dcaAdjSelIdx];
+        if (!adj) return;
+        if (accion === 'full') {
+          // Reusa el fullscreen generico de datacount_pagos (acepta {url,...}).
+          dcPagoAdjAbrirFullscreen(adj);
+        } else if (accion === 'tab') {
+          if (adj.url) window.open(adj.url, '_blank', 'noopener');
+        } else if (accion === 'del') {
+          await dcaAdjEliminar(adj.id);
+        }
+        return;
+      }
+      // Click en un item de la lista → mostrar preview.
+      const item = ev.target.closest('[data-dca-adj-idx]');
+      if (item) {
+        dcaAdjMostrar(Number(item.dataset.dcaAdjIdx));
+      }
+    });
+    modalRoot.addEventListener('change', (ev) => {
+      if (ev.target && ev.target.id === 'dcaAdjInput') {
+        dcaAdjSubir(ev.target.files);
+      }
     });
   } catch (e) {
     toast(e.message, { error: true });
   }
 }
 
-async function eliminarAsientoDca(id, numero) {
+// Anula un asiento creando uno nuevo con las mismas cuentas pero debe/haber
+// invertidos. No se modifica el original — queda como registro historico.
+async function anularAsientoDca(id, numero) {
   const ok = await confirmar({
-    title:       'Eliminar asiento',
-    message:     `¿Eliminás el asiento N° ${numero}? Esto recalcula los saldos afectados.`,
-    confirmText: 'Eliminar',
+    title:       'Anular asiento',
+    message:     `¿Anulás el asiento N° ${numero}? Se creará un asiento nuevo con las líneas invertidas; el original se conserva.`,
+    confirmText: 'Anular',
     danger:      true,
   });
   if (!ok) return;
   try {
-    await apiSend(`${DCA_API}?id=${id}`, 'DELETE');
-    toast('Asiento eliminado');
+    await apiSend(`${DCA_API}?id=${id}&anular=1`, 'POST');
+    toast('Asiento anulado — se creó el contra-asiento.');
+    // Invalidar cache local del plan de cuentas: los saldos cambian.
     dcaCuentasImputables = [];
     dcaTodasCuentas      = [];
     dcaCuentasCacheEmp   = null;
@@ -17543,6 +17776,13 @@ route('/datacount_empleados', async (mount) => {
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
       <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="pago-pendiente" role="menuitem">
+        <i class="fa-solid fa-hourglass-half"></i><span>Registrar pago pendiente</span>
+      </button>
+      <button type="button" data-action="pago-realizado" role="menuitem">
+        <i class="fa-solid fa-money-bill-transfer"></i><span>Registrar pago realizado</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
       <button type="button" data-action="copiar" role="menuitem">
         <i class="fa-solid fa-copy"></i><span>Copiar</span>
       </button>
@@ -17677,10 +17917,12 @@ route('/datacount_empleados', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultaDcm(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionDcm(data.id);
-    if (b.dataset.action === 'copiar')    abrirCopiarDcm(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarDcm(data.id);
+    if (b.dataset.action === 'consultar')       abrirConsultaDcm(data.id);
+    if (b.dataset.action === 'editar')          abrirAltaEdicionDcm(data.id);
+    if (b.dataset.action === 'copiar')          abrirCopiarDcm(data.id);
+    if (b.dataset.action === 'eliminar')        eliminarDcm(data.id);
+    if (b.dataset.action === 'pago-pendiente')  abrirPagoPendienteDcm(data.id);
+    if (b.dataset.action === 'pago-realizado')  abrirPagoRealizadoDcm(data.id);
   });
 
   $('#dcmTbody').addEventListener('click', (ev) => {
@@ -18420,6 +18662,248 @@ async function eliminarDcm(id) {
   try {
     await apiSend(`${DCM_API}?id=${id}`, 'DELETE');
     toast('Empleado eliminado');
+    await cargarDcm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modales de pagos (crean asientos contables) ----
+// Regla contable acordada con el usuario:
+//   Pago pendiente:  DEBE "Sueldos y Jornales" (codigo 5.2.01) / HABER cuenta del empleado.
+//   Pago realizado:  DEBE cuenta del empleado / HABER cuenta seleccionada de Caja y Bancos (1.1.01.*).
+// El id de la cuenta 5.2.01 se resuelve por empresa desde el cache de cuentas.
+async function dcmAsegurarEmpleadoConCuenta(id) {
+  const r = dcmItems.find((x) => x.id === id);
+  if (!r) return null;
+  if (!r.cuenta_id) {
+    toast('Este empleado no tiene cuenta contable asociada — editalo y asignale una.', { error: true });
+    return null;
+  }
+  await dcmCargarCuentasEmpresa(Number(r.empresa_id));
+  return r;
+}
+
+function dcmBuscarCuentaPorCodigo(codigo) {
+  return dcmTodasCuentasCache.find((c) => c.codigo === codigo) || null;
+}
+
+function dcmCuentasHijasDe(codigoPrefijo) {
+  const pref = codigoPrefijo + '.';
+  return dcmTodasCuentasCache
+    .filter((c) => Number(c.imputable) === 1 && Number(c.activa) === 1 && c.codigo.startsWith(pref))
+    .sort((a, b) => a.codigo.localeCompare(b.codigo, 'es'));
+}
+
+async function abrirPagoPendienteDcm(id) {
+  const r = await dcmAsegurarEmpleadoConCuenta(id);
+  if (!r) return;
+
+  const cuentaEmpleado = dcmTodasCuentasCache.find((c) => c.id === Number(r.cuenta_id));
+  if (!cuentaEmpleado) { toast('No se encontró la cuenta del empleado en el plan.', { error: true }); return; }
+  if (Number(cuentaEmpleado.imputable) !== 1 || Number(cuentaEmpleado.activa) !== 1) {
+    toast('La cuenta del empleado no es imputable o está inactiva.', { error: true });
+    return;
+  }
+
+  const cuentaSueldos = dcmBuscarCuentaPorCodigo('5.2.01');
+  if (!cuentaSueldos) {
+    toast('Falta la cuenta 5.2.01 (Sueldos y Jornales) en esta empresa.', { error: true });
+    return;
+  }
+  if (Number(cuentaSueldos.imputable) !== 1 || Number(cuentaSueldos.activa) !== 1) {
+    toast('La cuenta 5.2.01 no es imputable o está inactiva — ajustala en el plan.', { error: true });
+    return;
+  }
+
+  const saldo    = Number(cuentaEmpleado.saldo || 0);
+  const saldoCol = saldo > 0 ? 'var(--success)' : saldo < 0 ? 'var(--danger)' : 'var(--muted)';
+
+  openModal(`
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <div class="modal-title">⏳ <span class="modal-subtitle">Pago pendiente — ${esc(r.nombre)}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Cuenta asociada</label>
+          <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius)">
+            <code style="font-family:monospace;font-size:.85rem;margin-right:6px">${esc(cuentaEmpleado.codigo)}</code>${esc(cuentaEmpleado.nombre)}
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Saldo actual</label>
+          <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+                      font-family:monospace;text-align:right;font-weight:600;color:${saldoCol}">
+            ${saldo < 0 ? '-' : ''}$ ${dcmFmtMoney(Math.abs(saldo))}
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcmPPConcepto">Concepto *</label>
+          <input type="text" id="dcmPPConcepto" maxlength="255"
+                 placeholder="Ej. Sueldo de julio 2026" value="Sueldo ${esc(r.nombre)}">
+        </div>
+        <div class="form-group">
+          <label for="dcmPPMonto">Monto *</label>
+          <input type="number" id="dcmPPMonto" min="0.01" step="0.01" placeholder="0.00"
+                 style="font-family:monospace;text-align:right"
+                 value="${Number(r.sueldo) > 0 ? r.sueldo : ''}">
+        </div>
+        <div style="font-size:.78rem;color:var(--muted);line-height:1.4;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-top:8px">
+          <i class="fa-solid fa-circle-info"></i>
+          Se creará un asiento:
+          <strong>DEBE</strong> <code>${esc(cuentaSueldos.codigo)}</code> ${esc(cuentaSueldos.nombre)}
+          <strong>a HABER</strong> <code>${esc(cuentaEmpleado.codigo)}</code> ${esc(cuentaEmpleado.nombre)}.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="aceptar">Aceptar</button>
+      </div>
+    </div>
+  `);
+
+  setTimeout(() => $('#dcmPPMonto')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="aceptar"]')) confirmarPagoPendienteDcm(r, cuentaSueldos, cuentaEmpleado);
+  });
+}
+
+async function confirmarPagoPendienteDcm(empleado, cuentaSueldos, cuentaEmpleado) {
+  const concepto = ($('#dcmPPConcepto').value || '').trim();
+  const monto    = Number($('#dcmPPMonto').value) || 0;
+  if (!concepto) { toast('El concepto es obligatorio', { error: true }); return; }
+  if (monto <= 0) { toast('El monto debe ser mayor a 0', { error: true }); return; }
+
+  const hoy = new Date().toISOString().slice(0, 10);
+  const body = {
+    empresa:     Number(empleado.empresa_id),
+    fecha:       hoy,
+    descripcion: concepto,
+    detalle: [
+      { cuenta_id: cuentaSueldos.id,  debe: monto, haber: 0,     descripcion: concepto },
+      { cuenta_id: cuentaEmpleado.id, debe: 0,    haber: monto,  descripcion: concepto },
+    ],
+  };
+  try {
+    await apiSend('api/datacount_asientos.php', 'POST', body);
+    toast('Pago pendiente registrado');
+    closeModal();
+    dcmCuentasCacheEmp = null; // invalidar cache para refrescar saldos
+    await dcmCargarCuentasEmpresa(Number(empleado.empresa_id));
+    await cargarDcm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function abrirPagoRealizadoDcm(id) {
+  const r = await dcmAsegurarEmpleadoConCuenta(id);
+  if (!r) return;
+
+  const cuentaEmpleado = dcmTodasCuentasCache.find((c) => c.id === Number(r.cuenta_id));
+  if (!cuentaEmpleado) { toast('No se encontró la cuenta del empleado en el plan.', { error: true }); return; }
+  if (Number(cuentaEmpleado.imputable) !== 1 || Number(cuentaEmpleado.activa) !== 1) {
+    toast('La cuenta del empleado no es imputable o está inactiva.', { error: true });
+    return;
+  }
+
+  const cajaCuentas = dcmCuentasHijasDe('1.1.01');
+  if (!cajaCuentas.length) {
+    toast('No hay cuentas imputables dentro de 1.1.01 (Caja y Bancos) en esta empresa.', { error: true });
+    return;
+  }
+
+  const saldo    = Number(cuentaEmpleado.saldo || 0);
+  const saldoCol = saldo > 0 ? 'var(--success)' : saldo < 0 ? 'var(--danger)' : 'var(--muted)';
+  const opts     = cajaCuentas.map((c) =>
+    `<option value="${c.id}">${esc(c.codigo)} — ${esc(c.nombre)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:520px">
+      <div class="modal-header">
+        <div class="modal-title">💸 <span class="modal-subtitle">Pago realizado — ${esc(r.nombre)}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Cuenta asociada</label>
+          <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius)">
+            <code style="font-family:monospace;font-size:.85rem;margin-right:6px">${esc(cuentaEmpleado.codigo)}</code>${esc(cuentaEmpleado.nombre)}
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Saldo actual</label>
+          <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+                      font-family:monospace;text-align:right;font-weight:600;color:${saldoCol}">
+            ${saldo < 0 ? '-' : ''}$ ${dcmFmtMoney(Math.abs(saldo))}
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcmPRCaja">Cuenta de pago (Caja y Bancos) *</label>
+          <select id="dcmPRCaja">${opts}</select>
+        </div>
+        <div class="form-group">
+          <label for="dcmPRConcepto">Concepto *</label>
+          <input type="text" id="dcmPRConcepto" maxlength="255"
+                 placeholder="Ej. Pago sueldo julio 2026"
+                 value="Pago a ${esc(r.nombre)}">
+        </div>
+        <div class="form-group">
+          <label for="dcmPRMonto">Monto *</label>
+          <input type="number" id="dcmPRMonto" min="0.01" step="0.01" placeholder="0.00"
+                 style="font-family:monospace;text-align:right"
+                 value="${saldo > 0 ? saldo : ''}">
+        </div>
+        <div style="font-size:.78rem;color:var(--muted);line-height:1.4;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-top:8px">
+          <i class="fa-solid fa-circle-info"></i>
+          Se creará un asiento:
+          <strong>DEBE</strong> <code>${esc(cuentaEmpleado.codigo)}</code> ${esc(cuentaEmpleado.nombre)}
+          <strong>a HABER</strong> la cuenta de Caja y Bancos que elijas.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="aceptar">Aceptar</button>
+      </div>
+    </div>
+  `);
+
+  setTimeout(() => $('#dcmPRMonto')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="aceptar"]')) confirmarPagoRealizadoDcm(r, cuentaEmpleado);
+  });
+}
+
+async function confirmarPagoRealizadoDcm(empleado, cuentaEmpleado) {
+  const cajaId   = Number($('#dcmPRCaja').value) || 0;
+  const concepto = ($('#dcmPRConcepto').value || '').trim();
+  const monto    = Number($('#dcmPRMonto').value) || 0;
+  if (!cajaId)   { toast('Elegí la cuenta de pago', { error: true }); return; }
+  if (!concepto) { toast('El concepto es obligatorio', { error: true }); return; }
+  if (monto <= 0) { toast('El monto debe ser mayor a 0', { error: true }); return; }
+
+  const hoy = new Date().toISOString().slice(0, 10);
+  const body = {
+    empresa:     Number(empleado.empresa_id),
+    fecha:       hoy,
+    descripcion: concepto,
+    detalle: [
+      { cuenta_id: cuentaEmpleado.id, debe: monto, haber: 0,    descripcion: concepto },
+      { cuenta_id: cajaId,            debe: 0,    haber: monto, descripcion: concepto },
+    ],
+  };
+  try {
+    await apiSend('api/datacount_asientos.php', 'POST', body);
+    toast('Pago realizado registrado');
+    closeModal();
+    dcmCuentasCacheEmp = null;
+    await dcmCargarCuentasEmpresa(Number(empleado.empresa_id));
     await cargarDcm();
   } catch (err) {
     toast(err.message, { error: true });
