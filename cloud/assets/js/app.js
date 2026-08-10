@@ -483,9 +483,11 @@ const ROUTE_PERMS = {
 
   '/movistar':                 { prefix: 'plataformas.movistar.' },
   '/movistar_sims':             { perm:   'plataformas.movistar.sims.consultar' },
+  '/movistar_cobertura':        { perm:   'plataformas.movistar.cobertura.consultar' },
 
   '/claro':                    { prefix: 'plataformas.claro.' },
   '/claro_sims':                { perm:   'plataformas.claro.sims.consultar' },
+  '/claro_cobertura':           { perm:   'plataformas.claro.cobertura.consultar' },
 
   '/openai':                   { prefix: 'plataformas.openai.' },
   '/openaiconsumos':           { perm:   'plataformas.openai.consumos.consultar' },
@@ -29885,6 +29887,11 @@ route('/movistar', async (mount) => {
         <span class="tile-title">SIMs</span>
         <span class="tile-desc">Catálogo de SIMs M2M administradas vía Kite Platform: línea, ICC, estado, IMEI, MSISDN y sincronización desde Kite.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/movistar_cobertura'">
+        <span class="tile-icon">🗺️</span>
+        <span class="tile-title">Zona de cobertura</span>
+        <span class="tile-desc">Mapa de antenas y cobertura celular de OpenCellID: visualización de torres y señal en la zona.</span>
+      </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://mimovistarempresas.movistar.com.ar/', '_blank', 'noopener')">
         <span class="tile-icon">💼</span>
@@ -30764,6 +30771,236 @@ async function cambiarEnUsoMsim(id, valor) {
   }
 }
 
+// ------------------------- Vista: Movistar > Zona de cobertura ---------------
+// Mapa Leaflet propio (base tiles CartoDB Dark Matter + capa de antenas via
+// api/cobertura_cells.php, que proxea OpenCellID). Reemplaza al iframe original
+// para (1) sacar el chrome de opencellid.org y (2) mantener el token en el
+// servidor.
+//
+// El estado del mapa es cross-ruta: si el usuario salta entre las dos vistas de
+// cobertura Movistar<->Claro, `_coberturaMap.remove()` desmonta la instancia
+// vieja antes de crear la nueva, para no dejar handlers colgados.
+
+let _leafletReady = null;
+function _ensureLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  if (_leafletReady) return _leafletReady;
+  _leafletReady = new Promise((resolve, reject) => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.appendChild(css);
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    s.async = true;
+    s.onload  = () => resolve(window.L);
+    s.onerror = () => { _leafletReady = null; reject(new Error('No se pudo cargar Leaflet desde unpkg.')); };
+    document.head.appendChild(s);
+  });
+  return _leafletReady;
+}
+
+let _coberturaMap = null;
+
+// Render principal del mapa. Compartido entre Movistar y Claro; solo cambian
+// el operador (para textos + link "volver") y el MNC/color de las antenas.
+//
+// La vista tiene dos pestañas:
+//   - Antenas: mapa Leaflet propio con los pins de OpenCellID (via proxy).
+//   - Zonas  : iframe con la vista nativa de opencellid.org, que ademas
+//              muestra las zonas de cobertura y los otros overlays propios
+//              del sitio. Se lazy-carga la primera vez que se abre la
+//              pestaña para no gastar bandwidth de arranque.
+async function renderCobertura(mount, opts) {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a ${opts.operador}" onclick="location.hash='#/${opts.slug}'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🗺️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Cobertura celular <strong style="color:var(--text)">${opts.operador}</strong>
+            (<strong style="color:var(--text)">OpenCellID</strong>). La pestaña
+            <em>Antenas</em> es un mapa propio con las celdas LAC/CID reportadas
+            por dispositivos moviles (filtradas por MNC ${opts.mnc}). La pestaña
+            <em>Zonas</em> embebe la vista nativa de opencellid.org con los
+            overlays de cobertura por zona.
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-tabs cobertura-tabs" style="margin:0 0 12px 0;padding:0">
+        <button type="button" class="modal-tab active" data-tab="antenas">
+          <i class="fa-solid fa-tower-cell"></i> Antenas
+        </button>
+        <button type="button" class="modal-tab" data-tab="zonas">
+          <i class="fa-solid fa-map"></i> Zonas
+        </button>
+      </div>
+
+      <div class="cobertura-panel" data-panel="antenas">
+        <div style="position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden">
+          <div id="coberturaMap" style="width:100%;height:calc(100vh - 300px);min-height:500px;background:#0b0f14"></div>
+          <div id="coberturaStatus" style="position:absolute;top:10px;right:10px;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.78rem;color:var(--muted);box-shadow:var(--shadow);pointer-events:none">
+            Cargando mapa…
+          </div>
+        </div>
+      </div>
+
+      <div class="cobertura-panel" data-panel="zonas" hidden>
+        <div id="coberturaZonasCard" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden">
+          <!-- iframe se inyecta on-demand la primera vez que se abre la pestaña -->
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Wiring de las pestañas — mismo patron que los tabs de modales pero
+  // scopeado al contenedor de esta vista (no a #modalRoot).
+  const tabsBar     = mount.querySelector('.cobertura-tabs');
+  const panels      = mount.querySelectorAll('.cobertura-panel');
+  const zonasCard   = mount.querySelector('#coberturaZonasCard');
+  let zonasLoaded   = false;
+  tabsBar.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-tab]');
+    if (!btn) return;
+    const target = btn.dataset.tab;
+    tabsBar.querySelectorAll('.modal-tab').forEach((b) =>
+      b.classList.toggle('active', b.dataset.tab === target));
+    panels.forEach((p) => p.hidden = p.dataset.panel !== target);
+
+    if (target === 'zonas' && !zonasLoaded) {
+      // Lazy-inject del iframe para no gastar bandwidth si el usuario nunca
+      // abre esta pestaña. La URL viene del pedido del usuario original.
+      zonasCard.innerHTML = `
+        <iframe
+          src="https://opencellid.org/#zoom=12&lat=-31.5354&lon=-68.5501"
+          style="display:block;width:100%;height:calc(100vh - 300px);min-height:500px;border:0"
+          allowfullscreen=""
+          loading="lazy"
+          referrerpolicy="no-referrer-when-downgrade">
+        </iframe>
+      `;
+      zonasLoaded = true;
+    }
+    if (target === 'antenas' && _coberturaMap) {
+      // Al volver a Antenas, Leaflet necesita recomputar el tamaño del
+      // contenedor: mientras estuvo `hidden`, `display:none` le devolvia 0x0.
+      setTimeout(() => _coberturaMap.invalidateSize(), 50);
+    }
+  });
+
+  const statusEl = mount.querySelector('#coberturaStatus');
+
+  let L;
+  try {
+    L = await _ensureLeaflet();
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
+    return;
+  }
+
+  // Si venia de la otra vista de cobertura, desmontar la instancia previa
+  // antes de crear la nueva. Leaflet no libera handlers si dejamos el div
+  // ir por innerHTML sin llamar remove().
+  if (_coberturaMap) { try { _coberturaMap.remove(); } catch (_) {} _coberturaMap = null; }
+
+  const map = L.map('coberturaMap', {
+    center: [-31.5347, -68.5416],  // San Juan, AR (misma pos que el iframe original)
+    zoom:   13,
+    minZoom: 4,
+    maxZoom: 18,
+  });
+  _coberturaMap = map;
+
+  // Base tiles: CartoDB Dark Matter — combina con el theme dark del panel,
+  // gratuito y sin token. La atribucion es obligatoria por licencia (OSM + CARTO).
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> &copy; <a href="https://carto.com">CARTO</a> · celdas <a href="https://opencellid.org">OpenCellID</a>',
+    subdomains: 'abcd',
+    maxZoom: 20,
+  }).addTo(map);
+
+  const cellLayer = L.layerGroup().addTo(map);
+
+  // reqId monotonico: si el usuario mueve el mapa mientras un fetch anterior
+  // sigue en vuelo, descartamos la respuesta vieja para no pisar la actual.
+  let reqId = 0;
+  let debouncer = null;
+
+  async function refrescarCeldas() {
+    if (map.getZoom() < 10) {
+      cellLayer.clearLayers();
+      statusEl.textContent = 'Zoom muy bajo — acercate para ver antenas';
+      return;
+    }
+    const b = map.getBounds();
+    const bbox = [
+      b.getSouth().toFixed(5),
+      b.getWest().toFixed(5),
+      b.getNorth().toFixed(5),
+      b.getEast().toFixed(5),
+    ].join(',');
+    const myReq = ++reqId;
+    statusEl.textContent = 'Cargando antenas…';
+    try {
+      const qs = new URLSearchParams({ bbox, mcc: '722', mnc: String(opts.mnc), limit: '1000' });
+      const r  = await apiGet('api/cobertura_cells.php?' + qs.toString());
+      if (myReq !== reqId) return;   // llegue tarde, ignoro
+      cellLayer.clearLayers();
+      const cells = Array.isArray(r.cells) ? r.cells : [];
+      for (const c of cells) {
+        const lat = Number(c.lat), lon = Number(c.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const m = L.circleMarker([lat, lon], {
+          radius: 5,
+          color: opts.color,
+          weight: 1,
+          fillColor: opts.color,
+          fillOpacity: 0.65,
+        });
+        m.bindPopup(`
+          <div style="font-size:.85rem;line-height:1.45">
+            <div style="font-weight:700;margin-bottom:4px">${opts.operador} · ${esc(c.radio || '—')}</div>
+            <div><b>MCC-MNC:</b> ${esc(c.mcc)}-${esc(c.mnc)}</div>
+            <div><b>LAC:</b> ${esc(c.lac ?? '—')}</div>
+            <div><b>CID:</b> ${esc(c.cellid ?? '—')}</div>
+            <div><b>Rango:</b> ${esc(c.range ?? '—')} m</div>
+            <div><b>Muestras:</b> ${esc(c.samples ?? 0)}</div>
+          </div>
+        `);
+        cellLayer.addLayer(m);
+      }
+      const total = Number.isFinite(r.count) ? r.count : cells.length;
+      statusEl.textContent = `${total} antena${total === 1 ? '' : 's'}${total >= 1000 ? ' (limite alcanzado)' : ''}`;
+    } catch (e) {
+      if (myReq !== reqId) return;
+      statusEl.innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
+    }
+  }
+
+  map.on('moveend', () => {
+    clearTimeout(debouncer);
+    debouncer = setTimeout(refrescarCeldas, 300);
+  });
+
+  // Primer refresco despues del layout inicial (Leaflet necesita el tick para
+  // calcular el tamaño real del contenedor).
+  setTimeout(refrescarCeldas, 100);
+}
+
+route('/movistar_cobertura', async (mount) => {
+  await renderCobertura(mount, {
+    operador: 'Movistar',
+    slug:     'movistar',
+    mnc:      7,          // 722-07 = Movistar Argentina
+    color:    '#22c55e',  // verde
+  });
+}, 'Movistar &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Cobertura');
+
 // ------------------------- Vista: Claro (landing) -------------------------
 route('/claro', async (mount) => {
   mount.innerHTML = `
@@ -30777,6 +31014,11 @@ route('/claro', async (mount) => {
         <span class="tile-icon">📶</span>
         <span class="tile-title">SIMs</span>
         <span class="tile-desc">Catálogo de SIMs M2M administradas vía Autogestión Empresas: línea, ICC, estado, IMEI, MSISDN.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/claro_cobertura'">
+        <span class="tile-icon">🗺️</span>
+        <span class="tile-title">Zona de cobertura</span>
+        <span class="tile-desc">Mapa de antenas y cobertura celular de OpenCellID: visualización de torres y señal en la zona.</span>
       </button>
       <button type="button" class="tile-card"
               onclick="window.open('https://autogestion-empresas.claro.com.ar/sites/launchpad#Shell-home', '_blank', 'noopener')">
@@ -32952,6 +33194,17 @@ async function cambiarEnUsoCsim(id, valor) {
     toast(e.message, { error: true });
   }
 }
+
+// ------------------------- Vista: Claro > Zona de cobertura ------------------
+// Misma logica que Movistar > Zona de cobertura — ver `renderCobertura`.
+route('/claro_cobertura', async (mount) => {
+  await renderCobertura(mount, {
+    operador: 'Claro',
+    slug:     'claro',
+    mnc:      310,        // 722-310 = Claro Argentina (primaria)
+    color:    '#ef4444',  // rojo
+  });
+}, 'Claro &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Cobertura');
 
 // ------------------------- Vista: Dolarhoy > Cotizaciones (ABM) -------------------------
 const dhCotFiltrosDefaults = {
