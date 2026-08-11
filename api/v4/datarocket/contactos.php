@@ -66,11 +66,16 @@ function requireApp(): array {
 // Ruteo
 // ---------------------------------------------------------------------------
 
-const DR_CT_COLS = "id, uuid, origen, nombre, empresa, rubro, actividad, cargo,
+const DR_CT_COLS = "id, uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo,
                     persona, genero, nacimiento, dni, domicilio, ciudad, ubicacion,
                     localidad, provincia, pais, telefono, celular, whatsapp, correo,
-                    web, facebook, instagram, tiktok, comentarios, tags, suscripciones,
-                    listas, registrado, completado, error, estado, verificacion";
+                    web, facebook, instagram, tiktok, comentarios, suscripciones,
+                    registrado, completado, error, estado, verificacion";
+
+// Valores validos para `datarocket_contactos.tipo`. Se rechazan alta y
+// modificacion que no traigan uno de estos valores; las filas historicas
+// quedan en NULL hasta ser editadas.
+const DR_CT_TIPOS_VALIDOS = ['persona', 'empresa'];
 
 try {
     requireApp();
@@ -162,6 +167,12 @@ function handleList(PDO $pdo, array $q): void {
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
 
+    // Anexa `lista_ids` y `etiqueta_ids` (int[]) a cada contacto — batch
+    // queries contra las puentes `datarocket_contactos_listas` (20260811_1400)
+    // y `datarocket_contactos_etiquetas` (20260811_1600). Sin N+1.
+    drCtAttachListaIds($pdo, $rows);
+    drCtAttachEtiquetaIds($pdo, $rows);
+
     jsonOk([
         'total' => count($rows),
         'items' => $rows,
@@ -173,7 +184,89 @@ function handleGetOne(PDO $pdo, int $id): void {
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Contacto no encontrado', 404);
+
+    $lists = $pdo->prepare("
+        SELECT dl.id, dl.nombre
+          FROM datarocket_contactos_listas dcl
+          JOIN datarocket_listas dl ON dl.id = dcl.lista_id
+         WHERE dcl.contacto_id = :id
+      ORDER BY dl.nombre
+    ");
+    $lists->execute([':id' => $id]);
+    $rowsLi = $lists->fetchAll();
+    $row['lista_ids']     = array_map(fn($r) => (int)$r['id'],     $rowsLi);
+    $row['lista_nombres'] = array_map(fn($r) => (string)$r['nombre'], $rowsLi);
+
+    $etiqs = $pdo->prepare("
+        SELECT de.id, de.nombre
+          FROM datarocket_contactos_etiquetas dce
+          JOIN datarocket_etiquetas de ON de.id = dce.etiqueta_id
+         WHERE dce.contacto_id = :id
+      ORDER BY de.nombre
+    ");
+    $etiqs->execute([':id' => $id]);
+    $rowsEt = $etiqs->fetchAll();
+    $row['etiqueta_ids']     = array_map(fn($r) => (int)$r['id'],     $rowsEt);
+    $row['etiqueta_nombres'] = array_map(fn($r) => (string)$r['nombre'], $rowsEt);
+
     jsonOk($row);
+}
+
+// Batch: anexa `lista_ids` (int[]) a cada fila con una unica query
+// GROUP_CONCAT contra la puente. Evita N+1. MySQL 8 / MariaDB 10.11 OK.
+function drCtAttachListaIds(PDO $pdo, array &$rows): void {
+    if (!$rows) return;
+    $ids = array_map(fn($r) => (int)$r['id'], $rows);
+    $in  = implode(',', $ids);
+    // Nombres viajan junto a los ids para que los clientes del microservicio
+    // puedan pintar pills sin un fetch extra del catalogo. Separador
+    // `||~||` — literal imprimible que GROUP_CONCAT acepta y que no puede
+    // aparecer de forma natural en un nombre.
+    $mapIds = $mapNombres = [];
+    foreach ($pdo->query("
+        SELECT dcl.contacto_id,
+               GROUP_CONCAT(dcl.lista_id ORDER BY dl.nombre)                       AS lista_ids,
+               GROUP_CONCAT(dl.nombre    ORDER BY dl.nombre SEPARATOR '||~||')    AS lista_nombres
+          FROM datarocket_contactos_listas dcl
+          JOIN datarocket_listas dl ON dl.id = dcl.lista_id
+         WHERE dcl.contacto_id IN ({$in})
+      GROUP BY dcl.contacto_id
+    ") as $r) {
+        $cid = (int)$r['contacto_id'];
+        $mapIds[$cid]     = array_map('intval', explode(',',     (string)$r['lista_ids']));
+        $mapNombres[$cid] = explode('||~||', (string)$r['lista_nombres']);
+    }
+    foreach ($rows as &$row) {
+        $cid = (int)$row['id'];
+        $row['lista_ids']     = $mapIds[$cid]     ?? [];
+        $row['lista_nombres'] = $mapNombres[$cid] ?? [];
+    }
+}
+
+// Idem para `etiqueta_ids` contra `datarocket_contactos_etiquetas`.
+function drCtAttachEtiquetaIds(PDO $pdo, array &$rows): void {
+    if (!$rows) return;
+    $ids = array_map(fn($r) => (int)$r['id'], $rows);
+    $in  = implode(',', $ids);
+    $mapIds = $mapNombres = [];
+    foreach ($pdo->query("
+        SELECT dce.contacto_id,
+               GROUP_CONCAT(dce.etiqueta_id ORDER BY de.nombre)                       AS etiqueta_ids,
+               GROUP_CONCAT(de.nombre       ORDER BY de.nombre SEPARATOR '||~||')    AS etiqueta_nombres
+          FROM datarocket_contactos_etiquetas dce
+          JOIN datarocket_etiquetas de ON de.id = dce.etiqueta_id
+         WHERE dce.contacto_id IN ({$in})
+      GROUP BY dce.contacto_id
+    ") as $r) {
+        $cid = (int)$r['contacto_id'];
+        $mapIds[$cid]     = array_map('intval', explode(',',     (string)$r['etiqueta_ids']));
+        $mapNombres[$cid] = explode('||~||', (string)$r['etiqueta_nombres']);
+    }
+    foreach ($rows as &$row) {
+        $cid = (int)$row['id'];
+        $row['etiqueta_ids']     = $mapIds[$cid]     ?? [];
+        $row['etiqueta_nombres'] = $mapNombres[$cid] ?? [];
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +321,7 @@ function drCtNullableDateTime(mixed $v): ?string {
 
 function drCtSanitize(array $in): array {
     return [
+        'tipo'          => drCtNullableStr($in['tipo']          ?? null, 20),
         'origen'        => drCtNullableStr($in['origen']        ?? null, 255),
         'nombre'        => drCtNullableStr($in['nombre']        ?? null, 255),
         'empresa'       => drCtNullableStr($in['empresa']       ?? null, 255),
@@ -253,9 +347,7 @@ function drCtSanitize(array $in): array {
         'instagram'     => drCtNullableStr($in['instagram']     ?? null, 255),
         'tiktok'        => drCtNullableStr($in['tiktok']        ?? null, 255),
         'comentarios'   => drCtNullableStr($in['comentarios']   ?? null, 500),
-        'tags'          => drCtNullableStr($in['tags']          ?? null, 500),
         'suscripciones' => drCtNullableInt($in['suscripciones'] ?? null),
-        'listas'        => drCtNullableStr($in['listas']        ?? null, 500),
         'registrado'    => drCtNullableDateTime($in['registrado'] ?? null),
         'completado'    => drCtNullableDateTime($in['completado'] ?? null),
         'error'         => drCtNullableStr($in['error']         ?? null, 255),
@@ -266,67 +358,82 @@ function drCtSanitize(array $in): array {
 
 function handleCreate(PDO $pdo, array $in): void {
     $p = drCtSanitize($in);
+    // `tipo` obligatorio en alta — cualquier cliente del microservicio v4
+    // debe indicar persona o empresa. Ver DR_CT_TIPOS_VALIDOS.
+    if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
+        jsonError('El tipo es obligatorio (persona o empresa).', 400);
+    }
     $p['uuid'] = drCtNullableStr($in['uuid'] ?? null, 255) ?? drCtUuidV4();
     if ($p['registrado'] === null) {
         $p['registrado'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                            ->format('Y-m-d H:i:s');
     }
+    $listaIds    = drCtSanitizeListaIds($in['lista_ids']    ?? null);
+    $etiquetaIds = drCtSanitizeEtiquetaIds($in['etiqueta_ids'] ?? null);
 
-    $sql = "INSERT INTO datarocket_contactos
-                (uuid, origen, nombre, empresa, rubro, actividad, cargo, persona,
-                 genero, nacimiento, dni, domicilio, ciudad, ubicacion, localidad,
-                 provincia, pais, telefono, celular, whatsapp, correo, web, facebook,
-                 instagram, tiktok, comentarios, tags, suscripciones, listas,
-                 registrado, completado, error, estado, verificacion)
-            VALUES
-                (:uuid, :origen, :nombre, :empresa, :rubro, :actividad, :cargo, :persona,
-                 :genero, :nacimiento, :dni, :domicilio, :ciudad, :ubicacion, :localidad,
-                 :provincia, :pais, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
-                 :instagram, :tiktok, :comentarios, :tags, :suscripciones, :listas,
-                 :registrado, :completado, :error, :estado, :verificacion)";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-        ':uuid'          => $p['uuid'],
-        ':origen'        => $p['origen'],
-        ':nombre'        => $p['nombre'],
-        ':empresa'       => $p['empresa'],
-        ':rubro'         => $p['rubro'],
-        ':actividad'     => $p['actividad'],
-        ':cargo'         => $p['cargo'],
-        ':persona'       => $p['persona'],
-        ':genero'        => $p['genero'],
-        ':nacimiento'    => $p['nacimiento'],
-        ':dni'           => $p['dni'],
-        ':domicilio'     => $p['domicilio'],
-        ':ciudad'        => $p['ciudad'],
-        ':ubicacion'     => $p['ubicacion'],
-        ':localidad'     => $p['localidad'],
-        ':provincia'     => $p['provincia'],
-        ':pais'          => $p['pais'],
-        ':telefono'      => $p['telefono'],
-        ':celular'       => $p['celular'],
-        ':whatsapp'      => $p['whatsapp'],
-        ':correo'        => $p['correo'],
-        ':web'           => $p['web'],
-        ':facebook'      => $p['facebook'],
-        ':instagram'     => $p['instagram'],
-        ':tiktok'        => $p['tiktok'],
-        ':comentarios'   => $p['comentarios'],
-        ':tags'          => $p['tags'],
-        ':suscripciones' => $p['suscripciones'],
-        ':listas'        => $p['listas'],
-        ':registrado'    => $p['registrado'],
-        ':completado'    => $p['completado'],
-        ':error'         => $p['error'],
-        ':estado'        => $p['estado'],
-        ':verificacion'  => $p['verificacion'],
-    ]);
-
-    jsonOk([
-        'id'         => (int)$pdo->lastInsertId(),
-        'uuid'       => $p['uuid'],
-        'registrado' => $p['registrado'],
-    ], 201);
+    $pdo->beginTransaction();
+    try {
+        $sql = "INSERT INTO datarocket_contactos
+                    (uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo, persona,
+                     genero, nacimiento, dni, domicilio, ciudad, ubicacion, localidad,
+                     provincia, pais, telefono, celular, whatsapp, correo, web, facebook,
+                     instagram, tiktok, comentarios, suscripciones,
+                     registrado, completado, error, estado, verificacion)
+                VALUES
+                    (:uuid, :tipo, :origen, :nombre, :empresa, :rubro, :actividad, :cargo, :persona,
+                     :genero, :nacimiento, :dni, :domicilio, :ciudad, :ubicacion, :localidad,
+                     :provincia, :pais, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
+                     :instagram, :tiktok, :comentarios, :suscripciones,
+                     :registrado, :completado, :error, :estado, :verificacion)";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':uuid'          => $p['uuid'],
+            ':tipo'          => $p['tipo'],
+            ':origen'        => $p['origen'],
+            ':nombre'        => $p['nombre'],
+            ':empresa'       => $p['empresa'],
+            ':rubro'         => $p['rubro'],
+            ':actividad'     => $p['actividad'],
+            ':cargo'         => $p['cargo'],
+            ':persona'       => $p['persona'],
+            ':genero'        => $p['genero'],
+            ':nacimiento'    => $p['nacimiento'],
+            ':dni'           => $p['dni'],
+            ':domicilio'     => $p['domicilio'],
+            ':ciudad'        => $p['ciudad'],
+            ':ubicacion'     => $p['ubicacion'],
+            ':localidad'     => $p['localidad'],
+            ':provincia'     => $p['provincia'],
+            ':pais'          => $p['pais'],
+            ':telefono'      => $p['telefono'],
+            ':celular'       => $p['celular'],
+            ':whatsapp'      => $p['whatsapp'],
+            ':correo'        => $p['correo'],
+            ':web'           => $p['web'],
+            ':facebook'      => $p['facebook'],
+            ':instagram'     => $p['instagram'],
+            ':tiktok'        => $p['tiktok'],
+            ':comentarios'   => $p['comentarios'],
+            ':suscripciones' => $p['suscripciones'],
+            ':registrado'    => $p['registrado'],
+            ':completado'    => $p['completado'],
+            ':error'         => $p['error'],
+            ':estado'        => $p['estado'],
+            ':verificacion'  => $p['verificacion'],
+        ]);
+        $newId = (int)$pdo->lastInsertId();
+        drCtSyncListas($pdo, $newId, $listaIds);
+        drCtSyncEtiquetas($pdo, $newId, $etiquetaIds);
+        $pdo->commit();
+        jsonOk([
+            'id'         => $newId,
+            'uuid'       => $p['uuid'],
+            'registrado' => $p['registrado'],
+        ], 201);
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
@@ -335,86 +442,172 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (!$exists->fetch()) jsonError('Contacto no encontrado', 404);
 
     $p = drCtSanitize($in);
+    // `tipo` obligatorio en edicion — mismas reglas que en el ABM cloud.
+    if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
+        jsonError('El tipo es obligatorio (persona o empresa).', 400);
+    }
+    // `lista_ids` / `etiqueta_ids` opcionales en PUT: si no vienen, no se
+    // toca la puente. Solo cuando el cliente los manda explicitamente (aun
+    // `[]` para desasignar de todo) se sincroniza cada una.
+    $listaIds    = array_key_exists('lista_ids', $in)
+        ? drCtSanitizeListaIds($in['lista_ids'])
+        : null;
+    $etiquetaIds = array_key_exists('etiqueta_ids', $in)
+        ? drCtSanitizeEtiquetaIds($in['etiqueta_ids'])
+        : null;
 
-    $sql = "UPDATE datarocket_contactos SET
-                origen        = :origen,
-                nombre        = :nombre,
-                empresa       = :empresa,
-                rubro         = :rubro,
-                actividad     = :actividad,
-                cargo         = :cargo,
-                persona       = :persona,
-                genero        = :genero,
-                nacimiento    = :nacimiento,
-                dni           = :dni,
-                domicilio     = :domicilio,
-                ciudad        = :ciudad,
-                ubicacion     = :ubicacion,
-                localidad     = :localidad,
-                provincia     = :provincia,
-                pais          = :pais,
-                telefono      = :telefono,
-                celular       = :celular,
-                whatsapp      = :whatsapp,
-                correo        = :correo,
-                web           = :web,
-                facebook      = :facebook,
-                instagram     = :instagram,
-                tiktok        = :tiktok,
-                comentarios   = :comentarios,
-                tags          = :tags,
-                suscripciones = :suscripciones,
-                listas        = :listas,
-                registrado    = :registrado,
-                completado    = :completado,
-                error         = :error,
-                estado        = :estado,
-                verificacion  = :verificacion
-            WHERE id = :id";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-        ':origen'        => $p['origen'],
-        ':nombre'        => $p['nombre'],
-        ':empresa'       => $p['empresa'],
-        ':rubro'         => $p['rubro'],
-        ':actividad'     => $p['actividad'],
-        ':cargo'         => $p['cargo'],
-        ':persona'       => $p['persona'],
-        ':genero'        => $p['genero'],
-        ':nacimiento'    => $p['nacimiento'],
-        ':dni'           => $p['dni'],
-        ':domicilio'     => $p['domicilio'],
-        ':ciudad'        => $p['ciudad'],
-        ':ubicacion'     => $p['ubicacion'],
-        ':localidad'     => $p['localidad'],
-        ':provincia'     => $p['provincia'],
-        ':pais'          => $p['pais'],
-        ':telefono'      => $p['telefono'],
-        ':celular'       => $p['celular'],
-        ':whatsapp'      => $p['whatsapp'],
-        ':correo'        => $p['correo'],
-        ':web'           => $p['web'],
-        ':facebook'      => $p['facebook'],
-        ':instagram'     => $p['instagram'],
-        ':tiktok'        => $p['tiktok'],
-        ':comentarios'   => $p['comentarios'],
-        ':tags'          => $p['tags'],
-        ':suscripciones' => $p['suscripciones'],
-        ':listas'        => $p['listas'],
-        ':registrado'    => $p['registrado'],
-        ':completado'    => $p['completado'],
-        ':error'         => $p['error'],
-        ':estado'        => $p['estado'],
-        ':verificacion'  => $p['verificacion'],
-        ':id'            => $id,
-    ]);
-
-    jsonOk(['id' => $id]);
+    $pdo->beginTransaction();
+    try {
+        $sql = "UPDATE datarocket_contactos SET
+                    tipo          = :tipo,
+                    origen        = :origen,
+                    nombre        = :nombre,
+                    empresa       = :empresa,
+                    rubro         = :rubro,
+                    actividad     = :actividad,
+                    cargo         = :cargo,
+                    persona       = :persona,
+                    genero        = :genero,
+                    nacimiento    = :nacimiento,
+                    dni           = :dni,
+                    domicilio     = :domicilio,
+                    ciudad        = :ciudad,
+                    ubicacion     = :ubicacion,
+                    localidad     = :localidad,
+                    provincia     = :provincia,
+                    pais          = :pais,
+                    telefono      = :telefono,
+                    celular       = :celular,
+                    whatsapp      = :whatsapp,
+                    correo        = :correo,
+                    web           = :web,
+                    facebook      = :facebook,
+                    instagram     = :instagram,
+                    tiktok        = :tiktok,
+                    comentarios   = :comentarios,
+                    suscripciones = :suscripciones,
+                    registrado    = :registrado,
+                    completado    = :completado,
+                    error         = :error,
+                    estado        = :estado,
+                    verificacion  = :verificacion
+                WHERE id = :id";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':tipo'          => $p['tipo'],
+            ':origen'        => $p['origen'],
+            ':nombre'        => $p['nombre'],
+            ':empresa'       => $p['empresa'],
+            ':rubro'         => $p['rubro'],
+            ':actividad'     => $p['actividad'],
+            ':cargo'         => $p['cargo'],
+            ':persona'       => $p['persona'],
+            ':genero'        => $p['genero'],
+            ':nacimiento'    => $p['nacimiento'],
+            ':dni'           => $p['dni'],
+            ':domicilio'     => $p['domicilio'],
+            ':ciudad'        => $p['ciudad'],
+            ':ubicacion'     => $p['ubicacion'],
+            ':localidad'     => $p['localidad'],
+            ':provincia'     => $p['provincia'],
+            ':pais'          => $p['pais'],
+            ':telefono'      => $p['telefono'],
+            ':celular'       => $p['celular'],
+            ':whatsapp'      => $p['whatsapp'],
+            ':correo'        => $p['correo'],
+            ':web'           => $p['web'],
+            ':facebook'      => $p['facebook'],
+            ':instagram'     => $p['instagram'],
+            ':tiktok'        => $p['tiktok'],
+            ':comentarios'   => $p['comentarios'],
+            ':suscripciones' => $p['suscripciones'],
+            ':registrado'    => $p['registrado'],
+            ':completado'    => $p['completado'],
+            ':error'         => $p['error'],
+            ':estado'        => $p['estado'],
+            ':verificacion'  => $p['verificacion'],
+            ':id'            => $id,
+        ]);
+        if ($listaIds    !== null) drCtSyncListas($pdo, $id, $listaIds);
+        if ($etiquetaIds !== null) drCtSyncEtiquetas($pdo, $id, $etiquetaIds);
+        $pdo->commit();
+        jsonOk(['id' => $id]);
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
 }
 
 function handleDelete(PDO $pdo, int $id): void {
+    // Las filas de `datarocket_contactos_listas` y `datarocket_contactos_
+    // etiquetas` se borran solas por el ON DELETE CASCADE de sus FKs.
     $stmt = $pdo->prepare('DELETE FROM datarocket_contactos WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Contacto no encontrado', 404);
     jsonOk(['id' => $id]);
+}
+
+// ---------------------------------------------------------------------------
+// Sincronizacion de suscripciones a listas (tabla puente)
+// ---------------------------------------------------------------------------
+
+function drCtSanitizeListaIds(mixed $raw): array {
+    if (!is_array($raw)) return [];
+    $out = [];
+    foreach ($raw as $v) {
+        $n = (int)$v;
+        if ($n > 0) $out[$n] = true;
+    }
+    return array_keys($out);
+}
+
+// Full replace en `datarocket_contactos_listas` para `$contactoId`. Los ids
+// inexistentes en `datarocket_listas` se descartan (defensa en profundidad)
+// antes del INSERT IGNORE para no violar la FK.
+function drCtSyncListas(PDO $pdo, int $contactoId, array $listaIds): void {
+    $del = $pdo->prepare('DELETE FROM datarocket_contactos_listas WHERE contacto_id = :cid');
+    $del->execute([':cid' => $contactoId]);
+    if (!$listaIds) return;
+    $ph  = implode(',', array_fill(0, count($listaIds), '?'));
+    $val = $pdo->prepare("SELECT id FROM datarocket_listas WHERE id IN ({$ph})");
+    $val->execute($listaIds);
+    $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
+    if (!$validIds) return;
+    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_contactos_listas
+                          (contacto_id, lista_id) VALUES (:cid, :lid)');
+    foreach ($validIds as $lid) {
+        $ins->execute([':cid' => $contactoId, ':lid' => $lid]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sincronizacion de etiquetas asignadas (tabla puente)
+// ---------------------------------------------------------------------------
+
+function drCtSanitizeEtiquetaIds(mixed $raw): array {
+    if (!is_array($raw)) return [];
+    $out = [];
+    foreach ($raw as $v) {
+        $n = (int)$v;
+        if ($n > 0) $out[$n] = true;
+    }
+    return array_keys($out);
+}
+
+// Full replace en `datarocket_contactos_etiquetas` para `$contactoId`. Mismo
+// patron que `drCtSyncListas`.
+function drCtSyncEtiquetas(PDO $pdo, int $contactoId, array $etiquetaIds): void {
+    $del = $pdo->prepare('DELETE FROM datarocket_contactos_etiquetas WHERE contacto_id = :cid');
+    $del->execute([':cid' => $contactoId]);
+    if (!$etiquetaIds) return;
+    $ph  = implode(',', array_fill(0, count($etiquetaIds), '?'));
+    $val = $pdo->prepare("SELECT id FROM datarocket_etiquetas WHERE id IN ({$ph})");
+    $val->execute($etiquetaIds);
+    $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
+    if (!$validIds) return;
+    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_contactos_etiquetas
+                          (contacto_id, etiqueta_id) VALUES (:cid, :eid)');
+    foreach ($validIds as $eid) {
+        $ins->execute([':cid' => $contactoId, ':eid' => $eid]);
+    }
 }

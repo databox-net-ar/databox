@@ -40,15 +40,17 @@ const DC_PAYLOAD_COLS = [
 
 // Maquina de estados admitida por el endpoint PUT ?action=estado.
 // Valores segun catalogo `estados` (campo = 'datacount_comprobante_estado'):
-//   '1' Preparacion, '2' Pendiente, '3' Autorizado, '0' Rechazado, '4' Anulado.
+//   '1' Preparacion, '2' Pendiente, '3' Autorizado, '0' Rechazado,
+//   '4' Anulado, '5' Aprobado (equivalente no-fiscal de Autorizado).
 // La UI muestra u oculta las opciones del menu contextual segun este mismo mapa
-// (ver dcCompItemsCambioEstado en assets/js/app.js).
+// (ver DCCOMP_ACCIONES_POR_ESTADO en assets/js/app.js).
 const DC_TRANSICIONES_ESTADO = [
     '1' => ['2', '4'],  // Preparacion -> Pendiente | Anulado
     '2' => ['1', '4'],  // Pendiente   -> Preparacion | Anulado
-    '3' => [],          // Autorizado  -> (terminal)
+    '3' => [],          // Autorizado  -> (terminal, con CAE)
     '0' => [],          // Rechazado   -> (terminal)
     '4' => ['1'],       // Anulado     -> Preparacion
+    '5' => ['4'],       // Aprobado    -> Anulado (unica salida; el nro ya se emitio)
 ];
 
 header('Content-Type: application/json; charset=utf-8');
@@ -66,6 +68,16 @@ try {
         requirePermission('datacount.comprobantes.autorizar_manual');
         if ($id <= 0) jsonError('Falta id', 400);
         handleAutorizar($pdo, $id);
+        exit;
+    }
+
+    // La accion `aprobar` es el equivalente no-fiscal de `autorizar`: asigna
+    // el proximo correlativo del talonario y cierra el comprobante en estado
+    // '5' Aprobado, sin AFIP. Permiso propio: `datacount.comprobantes.aprobar_manual`.
+    if ($method === 'POST' && $action === 'aprobar') {
+        requirePermission('datacount.comprobantes.aprobar_manual');
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleAprobar($pdo, $id);
         exit;
     }
 
@@ -764,6 +776,118 @@ function handleAutorizar(PDO $pdo, int $id): void {
         'cae_vto'  => $r['cae_vto'],
         'cbte_nro' => $r['cbte_nro'],
     ]);
+}
+
+// Aprueba manualmente UN comprobante NO fiscal (accion "Aprobar" del menu
+// contextual del listado). Es el equivalente no-fiscal de handleAutorizar:
+// asigna el proximo correlativo del talonario y transiciona a estado '5'
+// Aprobado. NO llama a AFIP (no hay CAE ni caenro/caevto que grabar).
+//
+// Serie asignada: MAX de la serie mas alta ya usada por el talonario, tomando
+// el maximo entre `datacount_talonarios.serie` (high water mark) y el MAX(serie)
+// de los comprobantes del mismo talonario, + 1. GET_LOCK por talonario para
+// que dos aprobaciones simultaneas no colisionen en el mismo numero.
+//
+// Validaciones previas: existe, fiscal <> '1', estado='2'. Si no, 400/404/409.
+function handleAprobar(PDO $pdo, int $id): void {
+    $st = $pdo->prepare(
+        'SELECT id, talonario, fiscal, estado, serie
+           FROM datacount_comprobantes
+          WHERE id = :id LIMIT 1'
+    );
+    $st->execute([':id' => $id]);
+    $c = $st->fetch();
+    if (!$c) jsonError('Comprobante no encontrado', 404);
+    if ((string)($c['fiscal'] ?? '') === '1') {
+        jsonError('El comprobante es fiscal, corresponde autorizar contra AFIP', 409);
+    }
+    if ((string)($c['estado'] ?? '') !== '2') {
+        jsonError('Solo se aprueban comprobantes en estado Pendiente', 409);
+    }
+    $talId = (int)($c['talonario'] ?? 0);
+    if ($talId <= 0) {
+        jsonError('El comprobante no tiene talonario asignado', 409);
+    }
+
+    // Lock por talonario: dos aprobaciones simultaneas contra el mismo
+    // talonario podrian calcular el mismo "proximo numero" antes de que el
+    // UPDATE del primero se aplique. Semantica identica al lock por-cbte del
+    // flujo AFIP (dccAutAutorizar), pero granularidad talonario porque el
+    // recurso escaso aca es la serie.
+    $lockName = "dcc_apr_tal:{$talId}";
+    $lockSt   = $pdo->prepare('SELECT GET_LOCK(?, ?)');
+    $lockSt->execute([$lockName, 30]);
+    if ((int)$lockSt->fetchColumn() !== 1) {
+        jsonError('Talonario ocupado por otra aprobacion en curso, reintente', 503);
+    }
+
+    try {
+        // Re-check bajo lock por si otro proceso ya aprobo este cbte mientras
+        // esperabamos el lock (race con otro operador).
+        $post = $pdo->prepare(
+            'SELECT estado, serie FROM datacount_comprobantes WHERE id = :id LIMIT 1'
+        );
+        $post->execute([':id' => $id]);
+        $r2 = $post->fetch();
+        if (!$r2) jsonError('Comprobante desaparecio antes de aprobar', 409);
+        if ((string)($r2['estado'] ?? '') === '5' && (int)($r2['serie'] ?? 0) > 0) {
+            jsonOk(['id' => $id, 'cbte_nro' => (int)$r2['serie']]);
+            return;
+        }
+        if ((string)($r2['estado'] ?? '') !== '2') {
+            jsonError('El comprobante ya no esta en estado Pendiente', 409);
+        }
+
+        // Proximo numero: GREATEST(high water mark del talonario, MAX(serie)
+        // de los comprobantes del talonario) + 1. Cubre el caso en que el
+        // high water mark del talonario haya quedado desactualizado.
+        $q = $pdo->prepare("
+            SELECT GREATEST(
+                COALESCE(t.serie, 0),
+                COALESCE((SELECT MAX(c.serie) FROM datacount_comprobantes c
+                          WHERE c.talonario = t.id AND c.serie IS NOT NULL), 0)
+            ) + 1 AS proximo
+            FROM datacount_talonarios t
+            WHERE t.id = :tal
+        ");
+        $q->execute([':tal' => $talId]);
+        $rowN = $q->fetch();
+        if (!$rowN) jsonError('Talonario no encontrado', 404);
+        $proximo = (int)$rowN['proximo'];
+
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare("
+                UPDATE datacount_comprobantes
+                   SET estado     = '5',
+                       serie      = :nro,
+                       autorizado = NOW()
+                 WHERE id = :id
+            ")->execute([':nro' => $proximo, ':id' => $id]);
+
+            // Adelantamos el high water mark del talonario. GREATEST protege
+            // contra concurrencia por si otro camino subio el numero primero.
+            $pdo->prepare(
+                'UPDATE datacount_talonarios SET serie = GREATEST(COALESCE(serie, 0), :nro) WHERE id = :tal'
+            )->execute([':nro' => $proximo, ':tal' => $talId]);
+
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        try {
+            registrarSuceso($pdo, 'panel/datacount_comprobantes.aprobar', 'info',
+                "cbte#{$id} aprobado manualmente - nro={$proximo} (talonario#{$talId})");
+        } catch (Throwable $_) { /* no romper el flujo */ }
+
+        jsonOk(['id' => $id, 'cbte_nro' => $proximo]);
+    } finally {
+        try {
+            $pdo->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
+        } catch (Throwable $_) { /* ignore */ }
+    }
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {

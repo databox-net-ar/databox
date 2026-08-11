@@ -216,6 +216,190 @@ function attachTagsEditor(container, initialTags) {
   return { getTags: () => state.tags.slice() };
 }
 
+// Selector tipo "chips + typeahead" para elegir entre un CATALOGO CERRADO
+// (a diferencia de `attachTagsEditor`, donde el usuario inventa texto libre).
+// El caller pasa el catalogo completo (`[{id, nombre}, ...]`) y el set de
+// ids ya elegidos. El widget muestra pills con las selecciones y un input;
+// al tipear, un dropdown filtra el catalogo por substring del nombre. Enter
+// confirma la sugerencia resaltada, click tambien la agrega, Backspace con
+// el input vacio borra la ultima pill, la "×" de cada pill la quita.
+// `opts.placeholder` personaliza el texto del input (por defecto generico).
+// Devuelve `{ getIds(): number[] }` para que el caller arme el payload.
+function attachChipsPicker(container, catalogo, initialIds, opts = {}) {
+  const placeholder = opts.placeholder || 'Escribí para buscar…';
+  const cat = Array.isArray(catalogo) ? catalogo : [];
+  const nombreMap = new Map(cat.map(x => [+x.id, String(x.nombre ?? `#${x.id}`)]));
+  const state = {
+    ids: (Array.isArray(initialIds) ? initialIds : []).map(Number).filter(n => nombreMap.has(n)),
+    active: -1,
+    matches: [],
+  };
+  container.innerHTML = `
+    <div data-slot="wrap" style="position:relative;display:flex;flex-wrap:wrap;gap:6px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);min-height:38px;align-items:center;cursor:text">
+      <span data-slot="pills" style="display:contents"></span>
+      <input type="text" data-slot="input" placeholder="${esc(placeholder)}"
+             style="flex:1;min-width:180px;border:0;background:transparent;color:var(--text);outline:none;font-size:.9rem;padding:2px 4px">
+      <div data-slot="drop" hidden
+           style="position:fixed;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow:auto;box-shadow:0 6px 20px rgba(0,0,0,.35)"></div>
+    </div>
+    <div style="font-size:.72rem;color:var(--muted);margin-top:4px">
+      Buscá por nombre y elegí una sugerencia · Enter confirma la resaltada · Backspace borra la última
+    </div>
+  `;
+  const wrap  = container.querySelector('[data-slot="wrap"]');
+  const pills = container.querySelector('[data-slot="pills"]');
+  const input = container.querySelector('[data-slot="input"]');
+  const drop  = container.querySelector('[data-slot="drop"]');
+
+  // Portal: movemos el drop a document.body para escapar del containing-block
+  // que crea `.modal` con su `transform`. Sin esto, position:fixed queda
+  // relativo al modal (no al viewport), rompe el posicionamiento y encima
+  // contribuye al overflow horizontal del modal. Ademas asi tampoco lo
+  // recortan overflow:auto/hidden de ancestros.
+  document.body.appendChild(drop);
+  // Cleanup: cuando el container (que vive dentro del modal) sale del DOM
+  // por closeModal(), removemos el drop huerfano y desconectamos listeners.
+  const orphanObserver = new MutationObserver(() => {
+    if (!container.isConnected) {
+      ocultarDrop();
+      drop.remove();
+      orphanObserver.disconnect();
+    }
+  });
+  orphanObserver.observe(document.body, { childList: true, subtree: true });
+
+  const pintarPills = () => {
+    pills.innerHTML = state.ids.map((id, i) => `
+      <span style="display:inline-flex;align-items:center;gap:2px;padding:2px 4px 2px 10px;background:color-mix(in srgb, var(--primary) 22%, transparent);color:var(--text);border:1px solid color-mix(in srgb, var(--primary) 40%, transparent);border-radius:999px;font-size:.78rem;line-height:1.2;white-space:nowrap">
+        ${esc(nombreMap.get(id) || ('#' + id))}
+        <button type="button" data-remove="${i}" title="Quitar" style="border:0;background:transparent;color:inherit;cursor:pointer;font-size:1rem;line-height:1;padding:0 4px">×</button>
+      </span>
+    `).join('');
+  };
+
+  // Posiciona el dropdown como fixed en viewport para que no lo recorten los
+  // overflow:auto/hidden de ancestros (tipico dentro de un modal-body con
+  // scroll). Elige abrir hacia abajo si hay >=120px libres bajo el input, si
+  // no abre hacia arriba usando el espacio superior. La max-height se ajusta
+  // al espacio real disponible para que la lista tenga scroll propio.
+  const posicionarDrop = () => {
+    const rect = wrap.getBoundingClientRect();
+    drop.style.left  = rect.left  + 'px';
+    drop.style.width = rect.width + 'px';
+    const spaceBelow = window.innerHeight - rect.bottom - 12;
+    const spaceAbove = rect.top - 12;
+    const maxH = 280;
+    if (spaceBelow >= 120 || spaceBelow >= spaceAbove) {
+      drop.style.top       = (rect.bottom + 4) + 'px';
+      drop.style.bottom    = '';
+      drop.style.maxHeight = Math.min(maxH, Math.max(120, spaceBelow)) + 'px';
+    } else {
+      drop.style.top       = '';
+      drop.style.bottom    = (window.innerHeight - rect.top + 4) + 'px';
+      drop.style.maxHeight = Math.min(maxH, Math.max(120, spaceAbove)) + 'px';
+    }
+  };
+
+  // Listener global para reposicionar/cerrar cuando el usuario hace scroll en
+  // un ancestro (modal-body) o cambia el tamaño del viewport. Solo activo
+  // mientras el dropdown esta visible.
+  let onReflow = null;
+  const mostrarDrop = () => {
+    drop.hidden = false;
+    posicionarDrop();
+    if (!onReflow) {
+      onReflow = () => posicionarDrop();
+      window.addEventListener('scroll', onReflow, true);
+      window.addEventListener('resize', onReflow);
+    }
+  };
+  const ocultarDrop = () => {
+    drop.hidden = true;
+    if (onReflow) {
+      window.removeEventListener('scroll', onReflow, true);
+      window.removeEventListener('resize', onReflow);
+      onReflow = null;
+    }
+  };
+
+  const filtrar = () => {
+    const q = input.value.trim().toLowerCase();
+    const yaElegidas = new Set(state.ids);
+    state.matches = cat
+      .filter(x => !yaElegidas.has(+x.id))
+      .filter(x => !q || String(x.nombre ?? '').toLowerCase().includes(q))
+      .slice(0, 50);
+    if (state.matches.length === 0) {
+      ocultarDrop();
+      state.active = -1;
+      return;
+    }
+    if (state.active >= state.matches.length) state.active = state.matches.length - 1;
+    if (state.active < 0) state.active = 0;
+    drop.innerHTML = state.matches.map((x, i) => `
+      <div data-idx="${i}" style="padding:8px 12px;cursor:pointer;font-size:.9rem;color:var(--text);${i === state.active ? 'background:color-mix(in srgb, var(--primary) 18%, transparent)' : ''}">
+        ${esc(x.nombre || ('#' + x.id))}
+      </div>
+    `).join('');
+    mostrarDrop();
+  };
+
+  const agregar = (id) => {
+    const n = +id;
+    if (!nombreMap.has(n) || state.ids.includes(n)) return;
+    state.ids.push(n);
+    input.value = '';
+    pintarPills();
+    filtrar();
+  };
+
+  input.addEventListener('input', filtrar);
+  input.addEventListener('focus', filtrar);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown' && state.matches.length) {
+      ev.preventDefault();
+      state.active = (state.active + 1) % state.matches.length;
+      filtrar();
+    } else if (ev.key === 'ArrowUp' && state.matches.length) {
+      ev.preventDefault();
+      state.active = (state.active - 1 + state.matches.length) % state.matches.length;
+      filtrar();
+    } else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (state.active >= 0 && state.matches[state.active]) agregar(state.matches[state.active].id);
+    } else if (ev.key === 'Escape') {
+      ocultarDrop();
+    } else if (ev.key === 'Backspace' && input.value === '' && state.ids.length) {
+      ev.preventDefault();
+      state.ids.pop();
+      pintarPills();
+      filtrar();
+    }
+  });
+  // Cierre por blur con delay chico para que el mousedown del dropdown pueda
+  // dispararse primero (mousedown en la opcion evita el race con el blur).
+  input.addEventListener('blur', () => { setTimeout(ocultarDrop, 150); });
+  drop.addEventListener('mousedown', (ev) => {
+    const opt = ev.target.closest('[data-idx]');
+    if (!opt) return;
+    ev.preventDefault();
+    const m = state.matches[Number(opt.dataset.idx)];
+    if (m) agregar(m.id);
+    input.focus();
+  });
+  pills.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-remove]');
+    if (!b) return;
+    state.ids.splice(Number(b.dataset.remove), 1);
+    pintarPills();
+    filtrar();
+  });
+  wrap.addEventListener('click', (ev) => { if (ev.target === wrap) input.focus(); });
+
+  pintarPills();
+  return { getIds: () => state.ids.slice() };
+}
+
 async function apiGet(url) {
   const r = await fetch(url, { credentials: 'same-origin' });
   if (r.status === 401) { handleSessionExpired(); throw new Error('Sesión expirada'); }
@@ -442,7 +626,9 @@ const ROUTE_PERMS = {
   '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketinteracciones':    { perm:   'datarocket.interacciones.consultar' },
   '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
+  '/datarocketlistas':         { perm:   'datarocket.listas.consultar' },
   '/datarocketplantillas':     { perm:   'sistemas.datarocket.plantillas.consultar' },
+  '/datarocket_etiquetas':     { perm:   'datarocket.etiquetas.consultar' },
 
   '/datasale':                 { prefix: 'datasale.' },
   '/prospectos':               { perm:   'datasale.prospectos.consultar' },
@@ -10995,25 +11181,45 @@ function dcCompEsEditable(estado) {
 // Maquina de estados del menu contextual del listado. Debe coincidir con
 // DC_TRANSICIONES_ESTADO del backend (cloud/api/datacount_comprobantes.php).
 // Valor -> lista de acciones habilitadas en el menu.
+//
+// En estado '2' Pendiente, `autorizar` y `aprobar` son mutuamente excluyentes
+// segun `datacount_comprobantes.fiscal`: fiscal='1' => Autorizar (AFIP),
+// fiscal <> '1' => Aprobar (sin AFIP, asigna correlativo local). El gate por
+// fiscal se aplica en dcCompAplicarGateEstado.
 const DCCOMP_ACCIONES_POR_ESTADO = {
   '1': ['marcar-pendiente', 'marcar-anulado', 'editar', 'eliminar'],
-  '2': ['autorizar', 'marcar-preparacion', 'marcar-anulado', 'eliminar'],
+  '2': ['autorizar', 'aprobar', 'marcar-preparacion', 'marcar-anulado', 'eliminar'],
   // Autorizado: solo se puede imprimir (vista previa + window.print). El resto
   // de las acciones (editar/eliminar/transicion) queda inhabilitado porque el
   // comprobante ya obtuvo CAE y es inmutable.
   '3': ['imprimir'],
   '0': [],
   '4': ['marcar-preparacion', 'eliminar'],
+  // Aprobado (no fiscal, con correlativo local ya asignado): imprimir y
+  // marcar-anulado. No se puede volver a Preparacion/Pendiente ni editar
+  // porque el numero ya se emitio.
+  '5': ['imprimir', 'marcar-anulado'],
 };
 
 // Aplica el gate del menu contextual: consultar y clonar siempre visibles,
 // el resto segun DCCOMP_ACCIONES_POR_ESTADO. Tambien esconde los separadores
 // cuando no hay ningun item de transicion o de ABM debajo, para no dejar
 // rayas huerfanas.
-function dcCompAplicarGateEstado(estado) {
+//
+// `fiscal` decide, en estado Pendiente, cual de las dos acciones de cierre
+// mostrar: fiscal='1' => Autorizar (AFIP), fiscal <> '1' => Aprobar (local).
+// Nunca se muestran las dos en simultaneo — son mutuamente excluyentes.
+function dcCompAplicarGateEstado(estado, fiscal) {
   const menu = document.getElementById('dcCompCtxMenu');
   if (!menu) return;
-  const permitidas = DCCOMP_ACCIONES_POR_ESTADO[String(estado ?? '')] || [];
+  const permitidas0 = DCCOMP_ACCIONES_POR_ESTADO[String(estado ?? '')] || [];
+  const esFiscal    = String(fiscal ?? '') === '1';
+  // Filtrado por fiscal para la accion de cierre (Pendiente -> terminal).
+  const permitidas = permitidas0.filter((a) => {
+    if (a === 'autorizar') return esFiscal;
+    if (a === 'aprobar')   return !esFiscal;
+    return true;
+  });
   const siempreVisibles = ['consultar', 'clonar'];
   menu.querySelectorAll('[data-action]').forEach((btn) => {
     if (siempreVisibles.includes(btn.dataset.action)) { btn.style.display = ''; return; }
@@ -11031,11 +11237,13 @@ function dcCompEstadoBadge(e) {
   if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
   // Colores por codigo del catalogo `datacount_comprobante_estado`:
   //   '1' Preparacion -> naranja, '2' Pendiente -> azul,
-  //   '3' Autorizado -> verde, '0' Rechazado / '4' Anulado -> rojo.
+  //   '3' Autorizado / '5' Aprobado -> verde,
+  //   '0' Rechazado / '4' Anulado -> rojo.
   const colorMap = {
     '1': 'badge-warn',
     '2': 'badge-info',
     '3': 'badge-success',
+    '5': 'badge-success',
     '0': 'badge-danger',
     '4': 'badge-danger',
   };
@@ -11130,6 +11338,9 @@ route('/datacount_comprobantes', async (mount) => {
       </button>
       <button type="button" data-action="autorizar" role="menuitem">
         <i class="fa-solid fa-file-signature"></i><span>Autorizar</span>
+      </button>
+      <button type="button" data-action="aprobar" role="menuitem">
+        <i class="fa-solid fa-circle-check"></i><span>Aprobar</span>
       </button>
       <div class="ctx-menu-sep" data-role="sep-transiciones"></div>
       <button type="button" data-action="marcar-preparacion" role="menuitem">
@@ -11346,6 +11557,7 @@ route('/datacount_comprobantes', async (mount) => {
     if (b.dataset.action === 'imprimir')           imprimirDcComp(data.id);
     if (b.dataset.action === 'clonar')             clonarDcComp(data.id);
     if (b.dataset.action === 'autorizar')          autorizarDcComp(data.id);
+    if (b.dataset.action === 'aprobar')            aprobarDcComp(data.id);
     if (b.dataset.action === 'editar')             abrirAltaEdicionDcComp(data.id);
     if (b.dataset.action === 'eliminar')           eliminarDcComp(data.id);
     if (b.dataset.action === 'marcar-preparacion') cambiarEstadoDcComp(data.id, '1');
@@ -11363,7 +11575,7 @@ route('/datacount_comprobantes', async (mount) => {
       const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
-      dcCompAplicarGateEstado(tr?.dataset.estado);
+      dcCompAplicarGateEstado(tr?.dataset.estado, tr?.dataset.fiscal);
       abrirCtxMenu($('#dcCompCtxMenu'), r.right - 190, r.bottom + 4, { id, estado: tr?.dataset.estado });
       return;
     }
@@ -11375,7 +11587,7 @@ route('/datacount_comprobantes', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    dcCompAplicarGateEstado(tr.dataset.estado);
+    dcCompAplicarGateEstado(tr.dataset.estado, tr.dataset.fiscal);
     abrirCtxMenu($('#dcCompCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), estado: tr.dataset.estado });
   });
 
@@ -11495,7 +11707,7 @@ function pintarTablaDcComp(rows) {
     return;
   }
   tbody.innerHTML = rows.map((c) => `
-    <tr data-id="${c.id}" data-estado="${esc(c.estado ?? '')}" class="row-clickable">
+    <tr data-id="${c.id}" data-estado="${esc(c.estado ?? '')}" data-fiscal="${esc(c.fiscal ?? '')}" class="row-clickable">
       <td class="td-id">#${esc(c.id)}</td>
       <td>${esc(dcCompFmtTalonario(c.talonario_nombre, c.serie))}</td>
       <td>${esc(c.emision || '—')}</td>
@@ -11987,11 +12199,15 @@ async function imprimirDcComp(id) {
       : '#fff';
   }
 
-  // Doble candado: el ctx menu ya oculta la opcion cuando estado != '3', pero
-  // si alguien invoca imprimirDcComp() desde consola sobre un borrador, el
-  // boton "Imprimir" del footer queda oculto tambien.
+  // Doble candado: el ctx menu ya oculta la opcion cuando estado no es
+  // Autorizado ('3') ni Aprobado ('5'), pero si alguien invoca imprimirDcComp()
+  // desde consola sobre un borrador el boton "Imprimir" del footer queda
+  // oculto tambien.
   const btnImprimir = document.getElementById('btnImprimirDcCompAceptar');
-  if (btnImprimir) btnImprimir.style.display = String(c.estado) === '3' ? '' : 'none';
+  if (btnImprimir) {
+    const est = String(c.estado);
+    btnImprimir.style.display = (est === '3' || est === '5') ? '' : 'none';
+  }
 
   // Bloque emisor (razón social + condición + CUIT + IIBB + inicio de actividades)
   const emisorLineas = [
@@ -12610,11 +12826,33 @@ async function autorizarDcComp(id) {
   }
 }
 
+// Aprueba manualmente UN comprobante no fiscal. Es el equivalente de
+// autorizarDcComp para talonarios que NO van contra AFIP (presupuestos,
+// remitos, notas de entrega): el backend asigna `serie` como el proximo
+// correlativo del talonario y transiciona el comprobante a '5' Aprobado.
+// La operacion es irreversible en cuanto al numero — solo admite Anular
+// como transicion posterior.
+async function aprobarDcComp(id) {
+  const ok = await confirmar({
+    title:       'Aprobar comprobante',
+    message:     `Se asignará el próximo número del talonario al comprobante #${id} y quedará aprobado. La operación es irreversible.`,
+    confirmText: 'Aprobar',
+  });
+  if (!ok) return;
+  try {
+    const r = await apiSend(`api/datacount_comprobantes.php?id=${id}&action=aprobar`, 'POST');
+    toast(`Comprobante aprobado con número ${r?.cbte_nro ?? '?'}.`);
+    cargarDcComp();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 // Dispara la transicion de estado contra el endpoint PUT ?action=estado. El
 // backend valida la transicion contra la maquina DC_TRANSICIONES_ESTADO y
 // rechaza saltos no permitidos (409). Recarga el listado para reflejar el cambio.
 async function cambiarEstadoDcComp(id, nuevo) {
-  const labels = { '1': 'preparación', '2': 'pendiente', '3': 'autorizado', '0': 'rechazado', '4': 'anulado' };
+  const labels = { '1': 'preparación', '2': 'pendiente', '3': 'autorizado', '0': 'rechazado', '4': 'anulado', '5': 'aprobado' };
   const label = labels[nuevo] || nuevo;
   const ok = await confirmar({
     title:       `Marcar como ${label}`,
@@ -18518,6 +18756,7 @@ function abrirConsultaDcm(id) {
         <div class="modal-tabs" role="tablist">
           <button type="button" class="modal-tab active" data-tab="general">General</button>
           <button type="button" class="modal-tab"        data-tab="cuenta">Cuenta</button>
+          <button type="button" class="modal-tab"        data-tab="movimientos">Movimientos</button>
         </div>
 
         <div class="modal-tabpanel" data-panel="general">
@@ -18544,6 +18783,14 @@ function abrirConsultaDcm(id) {
             ${card('Modificación',  esc(fmtFecha(r.updated_at)))}
           </div>
         </div>
+
+        <div class="modal-tabpanel" data-panel="movimientos" hidden>
+          <div id="dcmMovimientosBox" data-loaded="0"
+               data-cuenta="${r.cuenta_id ? Number(r.cuenta_id) : ''}"
+               data-empresa="${Number(r.empresa_id) || ''}">
+            <div style="text-align:center;padding:24px"><div class="spin"></div></div>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cerrar</button>
@@ -18561,8 +18808,80 @@ function abrirConsultaDcm(id) {
       const target = tabBtn.dataset.tab;
       $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
       $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
+      if (target === 'movimientos') dcmCargarMovimientos();
     }
   });
+}
+
+// Carga (una sola vez) el historial de asientos que involucran a la cuenta
+// contable del empleado. Pintado como tabla con Fecha / N° / Descripción /
+// Debe / Haber (limitado a las líneas del asiento que tocan la cuenta).
+async function dcmCargarMovimientos() {
+  const box = document.getElementById('dcmMovimientosBox');
+  if (!box || box.dataset.loaded === '1') return;
+  box.dataset.loaded = '1';
+
+  const cuentaId  = Number(box.dataset.cuenta)  || 0;
+  const empresaId = Number(box.dataset.empresa) || 0;
+  if (!cuentaId) {
+    box.innerHTML = `<div class="table-empty" style="padding:24px">Este empleado no tiene cuenta contable asociada — asignale una en Editar.</div>`;
+    return;
+  }
+  if (!empresaId) {
+    box.innerHTML = `<div class="table-empty" style="padding:24px">Sin empresa asociada.</div>`;
+    return;
+  }
+
+  try {
+    const qs = new URLSearchParams({ empresa: String(empresaId), cuenta_id: String(cuentaId) });
+    const data = await apiGet('api/datacount_asientos.php?' + qs.toString());
+    dcmRenderMovimientos(box, data.items || [], cuentaId);
+  } catch (e) {
+    box.innerHTML = `<div class="table-empty" style="padding:24px">Error: ${esc(e.message)}</div>`;
+    box.dataset.loaded = '0';
+  }
+}
+
+function dcmRenderMovimientos(box, asientos, cuentaId) {
+  if (!asientos.length) {
+    box.innerHTML = `<div class="table-empty" style="padding:24px">Sin movimientos registrados en esta cuenta.</div>`;
+    return;
+  }
+  const filas = asientos.map((a) => {
+    const lineas = (a.detalle || []).filter((d) => Number(d.cuenta_id) === Number(cuentaId));
+    const debe   = lineas.reduce((s, l) => s + Number(l.debe  || 0), 0);
+    const haber  = lineas.reduce((s, l) => s + Number(l.haber || 0), 0);
+    return `
+      <tr>
+        <td style="white-space:nowrap">${esc(dcaFmtFechaAR(a.fecha))}</td>
+        <td><code style="font-size:.82rem">#${Number(a.numero)}</code></td>
+        <td>${esc(a.descripcion || '')}</td>
+        <td style="text-align:right;font-family:monospace">${debe > 0
+          ? '$ ' + dcmFmtMoney(debe)
+          : '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="text-align:right;font-family:monospace">${haber > 0
+          ? '$ ' + dcmFmtMoney(haber)
+          : '<span style="color:var(--muted)">—</span>'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:100px">Fecha</th>
+            <th style="width:70px">N°</th>
+            <th>Descripción</th>
+            <th style="width:120px;text-align:right">Debe</th>
+            <th style="width:120px;text-align:right">Haber</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 // ---- Modal Copiar a otra empresa ----
@@ -21045,9 +21364,562 @@ route('/datarocket', async (mount) => {
         <span class="tile-title">Interacciones</span>
         <span class="tile-desc">Historial de interacciones sobre cada contacto: correos y whatsapps enviados y otros eventos registrados por las APIs de envío.</span>
       </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketlistas'">
+        <span class="tile-icon">📇</span>
+        <span class="tile-title">Listas</span>
+        <span class="tile-desc">Listas de distribución que agrupan contactos por proyecto y sirven de destino para las campañas de envío.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_etiquetas'">
+        <span class="tile-icon">🏷️</span>
+        <span class="tile-title">Etiquetas</span>
+        <span class="tile-desc">Catálogo de etiquetas reutilizables para clasificar plantillas, contactos, interacciones y otros recursos Datarocket.</span>
+      </button>
     </div>
   `;
 }, 'Datarocket');
+
+// ------------------------- Vista: Datarocket > Listas (ABM) -------------------------
+// Listas de distribucion del motor Datarocket. Cada lista pertenece
+// opcionalmente a un proyecto y agrupa contactos suscriptos. `suscriptos`
+// es un contador denormalizado que la UI solo muestra (no lo edita el ABM;
+// lo recalculan las APIs de suscripcion desde afuera).
+const drLiFiltrosDefaults = {
+  q: '', codigo: '', proyecto_id: '',
+  order_by: 'id', dir: 'desc', limite: 100,
+};
+const drLiFiltros = { ...drLiFiltrosDefaults };
+let drLiBuscadorTimer   = null;
+let drLiFiltrosSnapshot = null;
+let drLiProyectosCache  = null;
+
+route('/datarocketlistas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📇</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las listas de Datarocket son agrupaciones de contactos suscriptos
+            a un mismo proyecto que las campañas usan como destino para
+            segmentar los envíos de correo y whatsapp.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drLiStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con proyecto</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Suscriptos</span><span class="stat-value">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drLiSearch"
+                   placeholder="🔍 Buscar nombre o descripción…">
+            <button class="search-clear" id="drLiSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drLiFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drLiFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drLiRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drLiNuevoBtn">+ Nueva lista</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Proyecto</th>
+              <th>Nombre</th>
+              <th>Descripción</th>
+              <th style="text-align:right">Suscriptos</th>
+              <th style="text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drLiTbody">
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="drLiCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="suscriptos" role="menuitem">
+        <i class="fa-solid fa-users"></i><span>Suscriptos</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDrLiBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrLi()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrLi()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrLiCodigo" min="1" placeholder="ID …" oninput="onFiltroDrLi('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fDrLiProyecto" onchange="onFiltroDrLi('proyecto_id', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrLiLimite" min="1" max="1000" value="100" onchange="onFiltroDrLi('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrLiOrderBy" onchange="onFiltroDrLi('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="proyecto_id">Proyecto</option>
+                <option value="suscriptos">Suscriptos</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrLiDir" onchange="onFiltroDrLi('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrLi()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrLi()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrLi()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#drLiNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrLi(null));
+  $('#drLiFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrLi());
+  $('#drLiRefrescarBtn').addEventListener('click', () => cargarDrLi());
+
+  const inp = $('#drLiSearch');
+  const clr = $('#drLiSearchClear');
+  inp.value = drLiFiltros.q || '';
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drLiFiltros.q = inp.value.trim();
+    clearTimeout(drLiBuscadorTimer);
+    drLiBuscadorTimer = setTimeout(() => { cargarDrLi(); refrescarBadgeFiltrosDrLi(); }, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    drLiFiltros.q = '';
+    cargarDrLi();
+    refrescarBadgeFiltrosDrLi();
+  });
+
+  $('#drLiCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')  abrirConsultarDrLi(data.id);
+    if (b.dataset.action === 'suscriptos') verSuscriptosDrLi(data.id);
+    if (b.dataset.action === 'editar')     abrirAltaEdicionDrLi(data.id);
+    if (b.dataset.action === 'eliminar')   eliminarDrLi(data.id);
+  });
+
+  $('#drLiTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#drLiCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultarDrLi(Number(tr.dataset.id));
+  });
+  $('#drLiTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#drLiCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  refrescarBadgeFiltrosDrLi();
+  await cargarDrLi();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Listas');
+
+// Lista de proyectos tipo='I' cacheada por vida del ABM. Se usa tanto para
+// mostrar el nombre en el listado como para poblar los <select> del alta/edicion
+// y del modal de filtros.
+async function drLiCargarProyectos() {
+  if (drLiProyectosCache) return drLiProyectosCache;
+  const resp = await apiGet('api/proyectos.php?tipo=I');
+  drLiProyectosCache = resp.items || [];
+  return drLiProyectosCache;
+}
+
+async function cargarDrLi() {
+  const tbody = $('#drLiTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  Object.entries(drLiFiltros).forEach(([k, v]) => {
+    if (v !== '' && v != null) qs.set(k, v);
+  });
+  try {
+    const [data, proyectos] = await Promise.all([
+      apiGet('api/datarocketlistas.php?' + qs.toString()),
+      drLiCargarProyectos(),
+    ]);
+    poblarProyectosFiltroDrLi(proyectos);
+    pintarStatsDrLi(data.stats);
+    pintarTablaDrLi(data.items || [], proyectos);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function poblarProyectosFiltroDrLi(proyectos) {
+  const sel = $('#fDrLiProyecto');
+  if (!sel || sel.dataset.poblado === '1') return;
+  const actual = drLiFiltros.proyecto_id;
+  sel.innerHTML = `<option value="">— Todos —</option>` + proyectos.map((p) =>
+    `<option value="${esc(p.id)}" ${String(p.id) === String(actual) ? 'selected' : ''}>${esc(p.nombre)}</option>`
+  ).join('');
+  sel.dataset.poblado = '1';
+}
+
+function pintarStatsDrLi(s) {
+  const cards = $$('#drLiStats .stat-card .stat-value');
+  if (cards.length < 3) return;
+  cards[0].textContent = fmtNum(s.total);
+  cards[1].textContent = fmtNum(s.con_proyecto);
+  cards[2].textContent = fmtNum(s.suscriptos_total);
+}
+
+function pintarTablaDrLi(rows, proyectos = []) {
+  const tbody = $('#drLiTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin listas.</td></tr>`;
+    return;
+  }
+  const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
+  tbody.innerHTML = rows.map((l) => {
+    const proyNom = proyMap.get(Number(l.proyecto_id));
+    const proyCell = proyNom
+      ? esc(proyNom)
+      : (l.proyecto_id == null || l.proyecto_id === '' ? '—' : `#${esc(l.proyecto_id)}`);
+    const desc = (l.descripcion || '').toString();
+    const descCorta = desc.length > 80 ? desc.slice(0, 80) + '…' : desc;
+    return `
+    <tr data-id="${l.id}" class="row-clickable">
+      <td class="td-id">#${esc(l.id)}</td>
+      <td>${proyCell}</td>
+      <td class="td-nombre">${esc(l.nombre || '—')}</td>
+      <td style="color:var(--muted)">${desc ? esc(descCorta) : '—'}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${l.suscriptos == null ? '—' : fmtNum(l.suscriptos)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${l.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join('');
+}
+
+function onFiltroDrLi(key, value) {
+  if (['order_by', 'dir'].includes(key)) {
+    drLiFiltros[key] = value;
+  } else if (['codigo', 'proyecto_id'].includes(key)) {
+    const v = String(value).trim();
+    drLiFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'limite') {
+    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
+    drLiFiltros.limite = n;
+  } else {
+    drLiFiltros[key] = value;
+  }
+  refrescarBadgeFiltrosDrLi();
+  cargarDrLi();
+}
+
+function refrescarBadgeFiltrosDrLi() {
+  const btn   = $('#drLiFiltrosBtn');
+  const badge = $('#drLiFiltrosBadge');
+  if (!btn || !badge) return;
+  let count = 0;
+  for (const k of Object.keys(drLiFiltrosDefaults)) {
+    if (k === 'q') continue;
+    if (String(drLiFiltros[k]) !== String(drLiFiltrosDefaults[k])) count++;
+  }
+  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
+  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
+}
+
+function sincronizarControlesFiltrosDrLi() {
+  const f = drLiFiltros;
+  $('#fDrLiCodigo').value   = f.codigo;
+  $('#fDrLiProyecto').value = f.proyecto_id;
+  $('#fDrLiLimite').value   = f.limite;
+  $('#fDrLiOrderBy').value  = f.order_by;
+  $('#fDrLiDir').value      = f.dir;
+}
+
+function abrirModalFiltrosDrLi() {
+  drLiFiltrosSnapshot = { ...drLiFiltros };
+  sincronizarControlesFiltrosDrLi();
+  $('#filtrosDrLiBackdrop').classList.add('open');
+}
+function cerrarModalFiltrosDrLi() { $('#filtrosDrLiBackdrop').classList.remove('open'); }
+function cancelarFiltrosDrLi() {
+  if (drLiFiltrosSnapshot) {
+    Object.assign(drLiFiltros, drLiFiltrosSnapshot);
+    refrescarBadgeFiltrosDrLi();
+    cargarDrLi();
+  }
+  cerrarModalFiltrosDrLi();
+}
+function limpiarFiltrosDrLi() {
+  Object.assign(drLiFiltros, drLiFiltrosDefaults);
+  drLiFiltros.q = $('#drLiSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDrLi();
+  refrescarBadgeFiltrosDrLi();
+  cargarDrLi();
+}
+window.onFiltroDrLi           = onFiltroDrLi;
+window.cancelarFiltrosDrLi    = cancelarFiltrosDrLi;
+window.limpiarFiltrosDrLi     = limpiarFiltrosDrLi;
+window.cerrarModalFiltrosDrLi = cerrarModalFiltrosDrLi;
+
+async function abrirConsultarDrLi(id) {
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:800px">
+      <div class="modal-header">
+        <div class="modal-title">Lista Datarocket <span class="modal-subtitle">#${id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrLi(id); }
+  });
+
+  try {
+    const [l, proyectos] = await Promise.all([
+      apiGet(`api/datarocketlistas.php?id=${id}`),
+      drLiCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrLi(l, proyectos);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderConsultaDrLi(l, proyectos = []) {
+  const card = (label, value, full = false) => {
+    const empty = value == null || value === '';
+    return `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${empty ? 'Sin dato' : esc(value)}</span>
+      </div>`;
+  };
+
+  const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
+  const proyNombre = l.proyecto_id == null || l.proyecto_id === ''
+    ? null
+    : (proyMap.get(Number(l.proyecto_id)) || `#${l.proyecto_id}`);
+
+  return `
+    <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.15rem;font-weight:700">${esc(l.nombre || '—')}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">#${esc(l.id)}${proyNombre ? ` · ${esc(proyNombre)}` : ''}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Suscriptos</div>
+        <div style="font-size:1.4rem;font-weight:700;font-variant-numeric:tabular-nums">${l.suscriptos == null ? '—' : fmtNum(l.suscriptos)}</div>
+      </div>
+    </div>
+
+    <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+      ${card('Código',        l.id)}
+      ${card('Proyecto',      proyNombre)}
+      ${card('Nombre',        l.nombre)}
+      ${card('Suscriptos', l.suscriptos == null ? null : fmtNum(l.suscriptos))}
+    </dl>
+    <dl class="data-list" style="grid-template-columns:1fr">
+      ${card('Descripción', l.descripcion, true)}
+    </dl>
+  `;
+}
+
+async function abrirAltaEdicionDrLi(id) {
+  const esEdicion = id != null;
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:700px">
+      <div class="modal-header">
+        <div class="modal-title">${esEdicion ? `Editar lista <span class="modal-subtitle">#${id}</span>` : 'Nueva lista'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      </div>
+    </div>
+  `);
+
+  try {
+    const [l, proyectos] = await Promise.all([
+      esEdicion ? apiGet(`api/datarocketlistas.php?id=${id}`) : Promise.resolve({}),
+      drLiCargarProyectos(),
+    ]);
+    $('#modalRoot .modal-body').innerHTML = formDrLiHtml(l, proyectos);
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarDrLi(id, a);
+  });
+  const limpiarInvalido = (ev) => ev.target?.classList?.remove('input-invalid');
+  $('#modalRoot').addEventListener('input',  limpiarInvalido);
+  $('#modalRoot').addEventListener('change', limpiarInvalido);
+}
+
+function formDrLiHtml(l, proyectos = []) {
+  const v = (k) => esc(l?.[k] ?? '');
+  const selProy = String(l?.proyecto_id ?? '');
+  const opcs = `<option value="">— Sin proyecto —</option>` + proyectos.map((p) =>
+    `<option value="${esc(p.id)}" ${String(p.id) === selProy ? 'selected' : ''}>${esc(p.nombre)}</option>`
+  ).join('');
+  return `
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre <span style="color:var(--danger)">*</span></label>
+        <input type="text" id="drlNombre" maxlength="255" value="${v('nombre')}" required>
+      </div>
+      <div class="form-group">
+        <label>Proyecto</label>
+        <select id="drlProyecto">${opcs}</select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Descripción</label>
+      <textarea id="drlDescripcion" rows="3" maxlength="500" placeholder="Para qué se usa esta lista…">${v('descripcion')}</textarea>
+    </div>
+    <div class="field-error" id="drlFormError" style="display:none"></div>
+  `;
+}
+
+async function guardarDrLi(id, btn) {
+  const err = $('#drlFormError');
+  err.style.display = 'none';
+
+  const nombre = $('#drlNombre').value.trim();
+  if (nombre === '') {
+    err.textContent = 'El nombre es obligatorio.';
+    err.style.display = '';
+    $('#drlNombre').classList.add('input-invalid');
+    $('#drlNombre').focus();
+    return;
+  }
+
+  const payload = {
+    nombre,
+    proyecto_id: $('#drlProyecto').value,
+    descripcion: $('#drlDescripcion').value,
+  };
+
+  btn.disabled = true;
+  try {
+    if (id == null) {
+      await apiSend('api/datarocketlistas.php', 'POST', payload);
+      toast('Lista creada.');
+    } else {
+      await apiSend(`api/datarocketlistas.php?id=${id}`, 'PUT', payload);
+      toast('Lista actualizada.');
+    }
+    closeModal();
+    cargarDrLi();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function eliminarDrLi(id) {
+  const ok = await confirmar({
+    title: 'Eliminar lista',
+    message: `Se eliminará la lista #${id}. Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`api/datarocketlistas.php?id=${id}`, 'DELETE');
+    toast('Lista eliminada.');
+    cargarDrLi();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Navega al ABM de contactos filtrando por los suscriptos a esta lista.
+// Resetea el resto de los filtros para que la lista aterrice "limpia" con
+// unico filtro activo `lista_id`. El JOIN con datarocket_contactos_listas
+// lo aplica el API (ver handleList() en api/datarocketcontactos.php).
+function verSuscriptosDrLi(id) {
+  Object.assign(drCtFiltros, drCtFiltrosDefaults, { lista_id: id });
+  location.hash = '#/datarocketcontactos';
+}
 
 // ------------------------- Vista: Datainfra > Dominios (ABM) -------------------------
 // Catálogo de dominios DNS administrados por Databox. Vive bajo el módulo
@@ -21884,7 +22756,8 @@ async function cambiarEnUsoDido(id, valor) {
 
 // ------------------------- Vista: Datarocket > Contactos (ABM) -------------------------
 const drCtFiltrosDefaults = {
-  q: '', codigo: '', estado: '', verificacion: '', genero: '',
+  q: '', codigo: '', tipo: '', lista_id: '', etiqueta_id: '',
+  estado: '', verificacion: '', genero: '',
   origen: '', pais: '', provincia: '', correo: '', celular: '',
   desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
@@ -21892,6 +22765,19 @@ const drCtFiltrosDefaults = {
 const drCtFiltros = { ...drCtFiltrosDefaults };
 let drCtBuscadorTimer   = null;
 let drCtFiltrosSnapshot = null;
+let drCtListasCache     = null;
+// Pickers de listas suscriptas y etiquetas asignadas del modal Alta/Edicion.
+// Se remontan en cada apertura del modal y se leen al guardar (via getIds()).
+let drCtListasEditor    = null;
+let drCtEtiquetasEditor = null;
+
+// Cache de listas Datarocket para poblar el select del modal de filtros.
+async function drCtCargarListas() {
+  if (drCtListasCache) return drCtListasCache;
+  const resp = await apiGet('api/datarocketlistas.php?limite=1000&order_by=nombre&dir=asc');
+  drCtListasCache = resp.items || [];
+  return drCtListasCache;
+}
 
 const DR_CT_GENERO_MAP = { M: 'Masculino', F: 'Femenino', X: 'Otro' };
 
@@ -21914,6 +22800,53 @@ function drCtVerificacionBadge(v) {
   return `<span class="badge ${cls}">${esc(labelMap[v] || v)}</span>`;
 }
 
+// Icono del tipo de contacto para el listado y el modal Consultar. Los
+// contactos historicos tienen tipo=NULL — se muestran con un signo neutro y
+// tooltip pidiendo definir; al editarlos, el ABM obliga a elegir uno de los
+// dos valores validos antes de guardar.
+function drCtTipoIcon(t) {
+  if (t === 'persona') return `<i class="fa-solid fa-user"     title="Persona" style="color:var(--primary)"></i>`;
+  if (t === 'empresa') return `<i class="fa-solid fa-building" title="Empresa" style="color:var(--primary)"></i>`;
+  return `<i class="fa-regular fa-circle-question" title="Sin definir — editá el contacto para asignarle un tipo" style="color:var(--muted)"></i>`;
+}
+
+// Etiqueta legible del tipo (para el modal Consultar). El listado usa solo
+// el icono; el detalle muestra el nombre en texto.
+const DR_CT_TIPO_LABELS = { persona: 'Persona', empresa: 'Empresa' };
+
+// Renderizador de pills mini para las columnas Listas/Etiquetas del listado.
+// Texto ~10px (0.65rem) y padding chiquito para que varias pills entren en
+// la fila sin desbordarla. Si el array esta vacio, un guion muted.
+function drCtMiniPills(names) {
+  const arr = Array.isArray(names) ? names : [];
+  if (arr.length === 0) return `<span style="color:var(--muted)">—</span>`;
+  return `<span style="display:inline-flex;flex-wrap:wrap;gap:3px">${arr.map(n =>
+    `<span style="display:inline-block;padding:1px 6px;background:color-mix(in srgb, var(--primary) 22%, transparent);color:var(--text);border:1px solid color-mix(in srgb, var(--primary) 40%, transparent);border-radius:999px;font-size:.65rem;line-height:1.3;white-space:nowrap">${esc(n)}</span>`
+  ).join('')}</span>`;
+}
+
+// HTML de los dos botones del selector de tipo en el modal edicion. Un
+// unico click sobre el boton alterna la seleccion — mas comodo que un
+// <select> con dos opciones. La seleccion se guarda en `data-value` del
+// contenedor padre (`#drcTipoSelector`) y `guardarDrCt` la lee de ahi.
+function drCtTipoBotones(currentTipo) {
+  const btn = (val, iconClass, label) => {
+    const active = currentTipo === val;
+    return `
+      <button type="button" data-tipo="${val}"
+              style="flex:1;padding:14px 16px;border-radius:8px;
+                     border:2px solid ${active ? 'var(--primary)' : 'var(--border)'};
+                     background:${active ? 'color-mix(in srgb, var(--primary) 20%, transparent)' : 'var(--surface)'};
+                     color:${active ? 'var(--primary)' : 'var(--text)'};
+                     font-family:inherit;font-size:.95rem;font-weight:${active ? '700' : '500'};
+                     cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;
+                     transition:all .15s">
+        <i class="fa-solid ${iconClass}" style="font-size:1.15rem"></i> ${label}
+      </button>`;
+  };
+  return `${btn('persona', 'fa-user', 'Persona')}${btn('empresa', 'fa-building', 'Empresa')}`;
+}
+
 route('/datarocketcontactos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
@@ -21933,9 +22866,8 @@ route('/datarocketcontactos', async (mount) => {
       </div>
 
       <div class="stats-bar" id="drCtStats">
+        <div class="stat-card"><span class="stat-label">Mostrados</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Verificados</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Con error</span><span class="stat-value orange">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -21963,12 +22895,12 @@ route('/datarocketcontactos', async (mount) => {
           <thead>
             <tr>
               <th>Código</th>
+              <th style="text-align:center;width:44px" title="Persona o Empresa">Tipo</th>
               <th>Nombre</th>
               <th>Correo</th>
               <th>Celular</th>
-              <th>País</th>
-              <th>Estado</th>
-              <th>Verificación</th>
+              <th>Listas</th>
+              <th>Etiquetas</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
@@ -22000,15 +22932,38 @@ route('/datarocketcontactos', async (mount) => {
           <button class="btn btn-ghost" onclick="cancelarFiltrosDrCt()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
-          <div class="form-row">
+          <div class="form-row form-row-3">
             <div class="form-group">
               <label>Código</label>
               <input type="number" id="fDrCtCodigo" min="1" placeholder="ID …" oninput="onFiltroDrCt('codigo', this.value)">
             </div>
             <div class="form-group">
+              <label>Tipo</label>
+              <select id="fDrCtTipo" onchange="onFiltroDrCt('tipo', this.value)">
+                <option value="">— Todos —</option>
+                <option value="persona">Persona</option>
+                <option value="empresa">Empresa</option>
+                <option value="_null">Sin asignar</option>
+              </select>
+            </div>
+            <div class="form-group">
               <label>Origen</label>
               <input type="text" id="fDrCtOrigen" maxlength="255" placeholder="ej. web, importado…"
                      oninput="onFiltroDrCt('origen', this.value)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Lista</label>
+              <select id="fDrCtLista" onchange="onFiltroDrCt('lista_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Etiqueta</label>
+              <select id="fDrCtEtiqueta" onchange="onFiltroDrCt('etiqueta_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
             </div>
           </div>
           <div class="form-row form-row-3">
@@ -22157,6 +23112,12 @@ route('/datarocketcontactos', async (mount) => {
   });
 
   refrescarBadgeFiltrosDrCt();
+  // Pre-cargar los selects "Lista" y "Etiqueta" del modal de filtros para
+  // que ya esten armados si el usuario abre el modal, y para que reflejen
+  // la seleccion actual si un filtro vino seteado desde afuera (opciones
+  // "Suscriptos" del ABM de listas / "Etiquetados" del ABM de etiquetas).
+  poblarListasFiltroDrCt();
+  poblarEtiquetasFiltroDrCt();
   await cargarDrCt();
 }, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Contactos');
 
@@ -22171,36 +23132,38 @@ async function cargarDrCt() {
   });
   try {
     const data = await apiGet('api/datarocketcontactos.php?' + qs.toString());
-    pintarStatsDrCt(data.stats);
+    pintarStatsDrCt(data.stats, (data.items || []).length);
     pintarTablaDrCt(data.items || []);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
-function pintarStatsDrCt(s) {
+// `mostrados` = filas actualmente pintadas en la tabla (post-filtro + limite),
+// `s.filtrado` = total que matchea los filtros ignorando el limite (viene del
+// backend).
+function pintarStatsDrCt(s, mostrados) {
   const cards = $$('#drCtStats .stat-card .stat-value');
-  if (cards.length < 3) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.verificados);
-  cards[2].textContent = fmtNum(s.con_error);
+  if (cards.length < 2) return;
+  cards[0].textContent = fmtNum(mostrados);
+  cards[1].textContent = fmtNum(s.filtrado ?? s.total);
 }
 
 function pintarTablaDrCt(rows) {
   const tbody = $('#drCtTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin contactos.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin contactos.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
     <tr data-id="${c.id}" class="row-clickable">
       <td class="td-id">#${esc(c.id)}</td>
+      <td style="text-align:center">${drCtTipoIcon(c.tipo)}</td>
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
       <td style="font-family:monospace">${esc(c.correo || '—')}</td>
       <td style="font-family:monospace">${esc(c.celular || '—')}</td>
-      <td>${esc(c.pais || '—')}</td>
-      <td>${drCtEstadoBadge(c.estado)}</td>
-      <td>${drCtVerificacionBadge(c.verificacion)}</td>
+      <td>${drCtMiniPills(c.lista_nombres)}</td>
+      <td>${drCtMiniPills(c.etiqueta_nombres)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
@@ -22213,10 +23176,10 @@ function pintarTablaDrCt(rows) {
 }
 
 function onFiltroDrCt(key, value) {
-  if (['estado', 'verificacion', 'genero', 'origen', 'pais', 'provincia',
+  if (['tipo', 'estado', 'verificacion', 'genero', 'origen', 'pais', 'provincia',
        'correo', 'celular', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drCtFiltros[key] = value;
-  } else if (key === 'codigo') {
+  } else if (['codigo', 'lista_id', 'etiqueta_id'].includes(key)) {
     const v = String(value).trim();
     drCtFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
@@ -22245,7 +23208,10 @@ function refrescarBadgeFiltrosDrCt() {
 function sincronizarControlesFiltrosDrCt() {
   const f = drCtFiltros;
   $('#fDrCtCodigo').value       = f.codigo;
+  $('#fDrCtTipo').value         = f.tipo;
   $('#fDrCtOrigen').value       = f.origen;
+  $('#fDrCtLista').value        = f.lista_id;
+  $('#fDrCtEtiqueta').value     = f.etiqueta_id;
   $('#fDrCtEstado').value       = f.estado;
   $('#fDrCtVerificacion').value = f.verificacion;
   $('#fDrCtGenero').value       = f.genero;
@@ -22260,8 +23226,45 @@ function sincronizarControlesFiltrosDrCt() {
   $('#fDrCtDir').value          = f.dir;
 }
 
+async function poblarListasFiltroDrCt() {
+  const sel = $('#fDrCtLista');
+  if (!sel || sel.dataset.poblado === '1') return;
+  try {
+    const listas = await drCtCargarListas();
+    const actual = String(drCtFiltros.lista_id ?? '');
+    sel.innerHTML = `<option value="">— Todas —</option>` + listas.map((l) =>
+      `<option value="${esc(l.id)}" ${String(l.id) === actual ? 'selected' : ''}>${esc(l.nombre || ('Lista #' + l.id))}</option>`
+    ).join('');
+    sel.dataset.poblado = '1';
+  } catch (_) { /* silencioso: si falla, queda el placeholder */ }
+}
+
+// Cache de etiquetas para poblar el select del modal de filtros y evitar
+// pedir el catalogo cada vez que se abre. Se invalida por refresh de pagina.
+let drCtEtiquetasCache = null;
+async function drCtCargarEtiquetas() {
+  if (drCtEtiquetasCache) return drCtEtiquetasCache;
+  const data = await apiGet('api/datarocket_etiquetas.php?limite=1000&orden=nombre&dir=asc');
+  drCtEtiquetasCache = data.items || [];
+  return drCtEtiquetasCache;
+}
+async function poblarEtiquetasFiltroDrCt() {
+  const sel = $('#fDrCtEtiqueta');
+  if (!sel || sel.dataset.poblado === '1') return;
+  try {
+    const etiquetas = await drCtCargarEtiquetas();
+    const actual = String(drCtFiltros.etiqueta_id ?? '');
+    sel.innerHTML = `<option value="">— Todas —</option>` + etiquetas.map((e) =>
+      `<option value="${esc(e.id)}" ${String(e.id) === actual ? 'selected' : ''}>${esc(e.nombre)}</option>`
+    ).join('');
+    sel.dataset.poblado = '1';
+  } catch (_) { /* silencioso: si falla, queda el placeholder */ }
+}
+
 function abrirModalFiltrosDrCt() {
   drCtFiltrosSnapshot = { ...drCtFiltros };
+  Promise.all([poblarListasFiltroDrCt(), poblarEtiquetasFiltroDrCt()])
+    .then(() => sincronizarControlesFiltrosDrCt());
   sincronizarControlesFiltrosDrCt();
   $('#filtrosDrCtBackdrop').classList.add('open');
 }
@@ -22349,10 +23352,26 @@ function renderConsultaDrCt(c) {
       </div>`;
   };
 
+  // Fila tipo `card` que renderiza un array de nombres como pills. Se arma
+  // como una unica linea (sin newlines dentro del `.data-value`) porque esa
+  // clase tiene `white-space: pre-wrap` global — cualquier salto de linea en
+  // el HTML aparece como espacio real y "hincha" la fila.
+  const pillsRow = (label, nombres) => {
+    const arr = Array.isArray(nombres) ? nombres : [];
+    const pill = (n) => `<span style="display:inline-block;padding:2px 9px;background:color-mix(in srgb, var(--primary) 22%, transparent);color:var(--text);border:1px solid color-mix(in srgb, var(--primary) 40%, transparent);border-radius:999px;font-size:.78rem;line-height:1.4;white-space:nowrap">${esc(n)}</span>`;
+    const inner = arr.length
+      ? `<span style="display:inline-flex;flex-wrap:wrap;gap:5px">${arr.map(pill).join('')}</span>`
+      : 'Sin dato';
+    return `<div class="data-row full"><span class="data-label">${esc(label)}</span><span class="data-value${arr.length ? '' : ' muted'}" style="white-space:normal">${inner}</span></div>`;
+  };
+
   return `
     <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
       <div>
-        <div style="font-size:1.3rem;font-weight:700">${esc(c.nombre || '—')}</div>
+        <div style="font-size:1.3rem;font-weight:700;display:flex;align-items:center;gap:12px">
+          <span title="${esc(DR_CT_TIPO_LABELS[c.tipo] || 'Sin definir')}">${drCtTipoIcon(c.tipo)}</span>
+          <span>${esc(c.nombre || '—')}</span>
+        </div>
         <div style="font-size:.9rem;color:var(--muted);margin-top:4px">${esc(c.empresa || '')}${c.empresa && c.cargo ? ' · ' : ''}${esc(c.cargo || '')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code></div>
       </div>
@@ -22366,9 +23385,9 @@ function renderConsultaDrCt(c) {
     <div class="modal-tabs">
       <button type="button" class="modal-tab active" data-tab="identidad">Identidad</button>
       <button type="button" class="modal-tab"        data-tab="contacto">Contacto</button>
-      <button type="button" class="modal-tab"        data-tab="webredes">Web y redes</button>
+      <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
-      <button type="button" class="modal-tab"        data-tab="comentarios">Comentarios y clasificación</button>
+      <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
       <button type="button" class="modal-tab"        data-tab="estado">Estado y verificación</button>
     </div>
 
@@ -22419,8 +23438,8 @@ function renderConsultaDrCt(c) {
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <dl class="data-list" style="grid-template-columns:1fr">
         ${card('Comentarios', c.comentarios, true)}
-        ${card('Tags',        c.tags,        true)}
-        ${card('Listas',      c.listas,      true)}
+        ${pillsRow('Etiquetas', c.etiqueta_nombres)}
+        ${pillsRow('Listas',    c.lista_nombres)}
       </dl>
     </div>
 
@@ -22438,15 +23457,13 @@ function renderConsultaDrCt(c) {
 async function abrirAltaEdicionDrCt(id) {
   const esEdicion = id != null;
   openModal(`
-    <div class="modal modal-wide">
+    <div class="modal" style="width:80vw;max-width:1000px">
       <div class="modal-header">
         <div class="modal-title">${esEdicion ? `Editar contacto <span class="modal-subtitle">#${id}</span>` : 'Nuevo contacto'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formDrCtHtml({})}
+        <div style="text-align:center;padding:40px"><div class="spin"></div></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
@@ -22455,16 +23472,49 @@ async function abrirAltaEdicionDrCt(id) {
     </div>
   `);
 
-  if (esEdicion) {
-    try {
-      const c = await apiGet(`api/datarocketcontactos.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formDrCtHtml(c);
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
+  // Cargamos catalogos de listas + etiquetas en paralelo con el contacto —
+  // necesarios para los pickers typeahead de suscripciones/etiquetas. Fetch
+  // unico incluso en el alta: son GETs baratos y hace la UI consistente
+  // entre alta y edicion.
+  drCtListasEditor    = null;
+  drCtEtiquetasEditor = null;
+  try {
+    const [c, listasResp, etiqsResp] = await Promise.all([
+      esEdicion ? apiGet(`api/datarocketcontactos.php?id=${id}`) : Promise.resolve({}),
+      apiGet('api/datarocketlistas.php?limite=1000&order_by=nombre&dir=asc'),
+      apiGet('api/datarocket_etiquetas.php?limite=1000&orden=nombre&dir=asc'),
+    ]);
+    const listasCatalogo = listasResp?.items || [];
+    const etiqsCatalogo  = etiqsResp?.items  || [];
+    $('#modalRoot .modal-body').innerHTML = formDrCtHtml(c);
+    drCtListasEditor = attachChipsPicker(
+      $('#drcListasHost'), listasCatalogo, c.lista_ids || [],
+      { placeholder: 'Escribí para buscar una lista…' }
+    );
+    drCtEtiquetasEditor = attachChipsPicker(
+      $('#drcEtiquetasHost'), etiqsCatalogo, c.etiqueta_ids || [],
+      { placeholder: 'Escribí para buscar una etiqueta…' }
+    );
+  } catch (e) {
+    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
+    // Toggle del selector de tipo (persona/empresa) — un click re-renderiza
+    // los botones y actualiza el `data-value` del contenedor que lee al
+    // guardar. Aca (delegado) porque el HTML del form vive dentro del modal
+    // que se re-inyecta al abrir.
+    const tipoBtn = ev.target.closest('#drcTipoSelector [data-tipo]');
+    if (tipoBtn) {
+      const selector = $('#drcTipoSelector');
+      const nuevoTipo = tipoBtn.dataset.tipo;
+      selector.dataset.value = nuevoTipo;
+      selector.innerHTML = drCtTipoBotones(nuevoTipo);
+      return;
+    }
+    // Cambio de pestaña — mismas pestañas que el modal de consulta
+    // (identidad / contacto / web y redes / ubicacion / comentarios / estado).
+    drCtSwitchTab(ev);
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
@@ -22480,171 +23530,210 @@ function formDrCtHtml(c) {
     if (!raw) return '';
     return esc(String(raw).replace(' ', 'T').slice(0, 16));
   };
+  // Pestañas espejan la distribucion del modal de consulta (renderConsultaDrCt)
+  // para que consultar y editar tengan el mismo mapa mental: identidad ·
+  // contacto · web y redes · ubicacion · comentarios y clasificacion · estado
+  // y verificacion. `drCtSwitchTab` (mismo helper que usa el consultar) se
+  // encarga de mostrar/ocultar los paneles desde el listener del modal.
   return `
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Nombre</label>
-        <input type="text" id="drcNombre" maxlength="255" value="${v('nombre')}">
-      </div>
-      <div class="form-group">
-        <label>Empresa</label>
-        <input type="text" id="drcEmpresa" maxlength="255" value="${v('empresa')}">
-      </div>
-      <div class="form-group">
-        <label>Cargo</label>
-        <input type="text" id="drcCargo" maxlength="255" value="${v('cargo')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Rubro</label>
-        <input type="text" id="drcRubro" maxlength="255" value="${v('rubro')}">
-      </div>
-      <div class="form-group">
-        <label>Actividad</label>
-        <input type="text" id="drcActividad" maxlength="255" value="${v('actividad')}">
-      </div>
-      <div class="form-group">
-        <label>Origen</label>
-        <input type="text" id="drcOrigen" maxlength="255" value="${v('origen')}">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Persona</label>
-        <input type="text" id="drcPersona" maxlength="255" value="${v('persona')}">
-      </div>
-      <div class="form-group">
-        <label>Género</label>
-        <select id="drcGenero">
-          <option value=""  ${sel('genero','')}>—</option>
-          <option value="M" ${sel('genero','M')}>Masculino</option>
-          <option value="F" ${sel('genero','F')}>Femenino</option>
-          <option value="X" ${sel('genero','X')}>Otro</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Nacimiento</label>
-        <input type="text" id="drcNacimiento" maxlength="255" value="${v('nacimiento')}" placeholder="AAAA-MM-DD">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>DNI</label>
-      <input type="text" id="drcDni" maxlength="255" value="${v('dni')}" style="font-family:monospace">
+    <div class="modal-tabs">
+      <button type="button" class="modal-tab active" data-tab="identidad">Identidad</button>
+      <button type="button" class="modal-tab"        data-tab="contacto">Contacto</button>
+      <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
+      <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
+      <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
+      <button type="button" class="modal-tab"        data-tab="estado">Estado y verificación</button>
     </div>
 
-    <div class="form-row">
+    <div class="modal-tabpanel" data-panel="identidad">
+      <div class="form-group">
+        <label>Tipo <span style="color:var(--danger)">*</span></label>
+        <div id="drcTipoSelector" data-value="${esc(c?.tipo || '')}" style="display:flex;gap:8px">
+          ${drCtTipoBotones(c?.tipo || '')}
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nombre</label>
+          <input type="text" id="drcNombre" maxlength="255" value="${v('nombre')}">
+        </div>
+        <div class="form-group">
+          <label>Empresa</label>
+          <input type="text" id="drcEmpresa" maxlength="255" value="${v('empresa')}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Rubro</label>
+          <input type="text" id="drcRubro" maxlength="255" value="${v('rubro')}">
+        </div>
+        <div class="form-group">
+          <label>Actividad</label>
+          <input type="text" id="drcActividad" maxlength="255" value="${v('actividad')}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Cargo</label>
+          <input type="text" id="drcCargo" maxlength="255" value="${v('cargo')}">
+        </div>
+        <div class="form-group">
+          <label>Persona</label>
+          <input type="text" id="drcPersona" maxlength="255" value="${v('persona')}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Género</label>
+          <select id="drcGenero">
+            <option value=""  ${sel('genero','')}>—</option>
+            <option value="M" ${sel('genero','M')}>Masculino</option>
+            <option value="F" ${sel('genero','F')}>Femenino</option>
+            <option value="X" ${sel('genero','X')}>Otro</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Nacimiento</label>
+          <input type="text" id="drcNacimiento" maxlength="255" value="${v('nacimiento')}" placeholder="AAAA-MM-DD">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>DNI</label>
+          <input type="text" id="drcDni" maxlength="255" value="${v('dni')}" style="font-family:monospace">
+        </div>
+        <div class="form-group">
+          <label>Origen</label>
+          <input type="text" id="drcOrigen" maxlength="255" value="${v('origen')}">
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="contacto" hidden>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Teléfono</label>
+          <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace">
+        </div>
+        <div class="form-group">
+          <label>Celular</label>
+          <input type="text" id="drcCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>WhatsApp</label>
+          <input type="text" id="drcWhatsapp" maxlength="255" value="${v('whatsapp')}" style="font-family:monospace">
+        </div>
+        <div class="form-group">
+          <label>Correo</label>
+          <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="webredes" hidden>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Web</label>
+          <input type="text" id="drcWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
+        </div>
+        <div class="form-group">
+          <label>Facebook</label>
+          <input type="text" id="drcFacebook" maxlength="255" value="${v('facebook')}" style="font-family:monospace">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Instagram</label>
+          <input type="text" id="drcInstagram" maxlength="255" value="${v('instagram')}" style="font-family:monospace">
+        </div>
+        <div class="form-group">
+          <label>TikTok</label>
+          <input type="text" id="drcTiktok" maxlength="255" value="${v('tiktok')}" style="font-family:monospace">
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="ubicacion" hidden>
       <div class="form-group">
         <label>Domicilio</label>
         <input type="text" id="drcDomicilio" maxlength="255" value="${v('domicilio')}">
       </div>
-      <div class="form-group">
-        <label>Ciudad</label>
-        <input type="text" id="drcCiudad" maxlength="255" value="${v('ciudad')}">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Ciudad</label>
+          <input type="text" id="drcCiudad" maxlength="255" value="${v('ciudad')}">
+        </div>
+        <div class="form-group">
+          <label>Localidad</label>
+          <input type="text" id="drcLocalidad" maxlength="255" value="${v('localidad')}">
+        </div>
       </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Localidad</label>
-        <input type="text" id="drcLocalidad" maxlength="255" value="${v('localidad')}">
-      </div>
-      <div class="form-group">
-        <label>Provincia</label>
-        <input type="text" id="drcProvincia" maxlength="255" value="${v('provincia')}">
-      </div>
-      <div class="form-group">
-        <label>País</label>
-        <input type="text" id="drcPais" maxlength="255" value="${v('pais')}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Ubicación</label>
-      <input type="text" id="drcUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace">
-    </div>
-
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Teléfono</label>
-        <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Provincia</label>
+          <input type="text" id="drcProvincia" maxlength="255" value="${v('provincia')}">
+        </div>
+        <div class="form-group">
+          <label>País</label>
+          <input type="text" id="drcPais" maxlength="255" value="${v('pais')}">
+        </div>
       </div>
       <div class="form-group">
-        <label>Celular</label>
-        <input type="text" id="drcCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
-      </div>
-      <div class="form-group">
-        <label>WhatsApp</label>
-        <input type="text" id="drcWhatsapp" maxlength="255" value="${v('whatsapp')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Correo</label>
-      <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
-    </div>
-
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Web</label>
-        <input type="text" id="drcWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
-      </div>
-      <div class="form-group">
-        <label>Facebook</label>
-        <input type="text" id="drcFacebook" maxlength="255" value="${v('facebook')}" style="font-family:monospace">
-      </div>
-      <div class="form-group">
-        <label>Instagram</label>
-        <input type="text" id="drcInstagram" maxlength="255" value="${v('instagram')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>TikTok</label>
-      <input type="text" id="drcTiktok" maxlength="255" value="${v('tiktok')}" style="font-family:monospace">
-    </div>
-
-    <div class="form-group">
-      <label>Comentarios</label>
-      <textarea id="drcComentarios" rows="3" maxlength="500">${v('comentarios')}</textarea>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Tags</label>
-        <input type="text" id="drcTags" maxlength="500" value="${v('tags')}">
-      </div>
-      <div class="form-group">
-        <label>Listas</label>
-        <input type="text" id="drcListas" maxlength="500" value="${v('listas')}">
+        <label>Ubicación</label>
+        <input type="text" id="drcUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace">
       </div>
     </div>
 
-    <div class="form-row form-row-3">
+    <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <div class="form-group">
-        <label>Estado</label>
-        <input type="text" id="drcEstado" maxlength="1" value="${v('estado')}"
-               style="font-family:monospace" placeholder="A/I/…">
+        <label>Comentarios</label>
+        <textarea id="drcComentarios" rows="3" maxlength="500">${v('comentarios')}</textarea>
       </div>
       <div class="form-group">
-        <label>Verificación</label>
-        <input type="text" id="drcVerificacion" maxlength="1" value="${v('verificacion')}"
-               style="font-family:monospace" placeholder="O/V/E/P…">
+        <label>Etiquetas</label>
+        <div id="drcEtiquetasHost"></div>
       </div>
       <div class="form-group">
-        <label>Suscripciones</label>
-        <input type="number" id="drcSuscripciones" min="0" value="${v('suscripciones')}">
+        <label>Listas suscriptas</label>
+        <div id="drcListasHost"></div>
       </div>
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Registrado</label>
-        <input type="datetime-local" id="drcRegistrado" value="${dt('registrado')}">
+
+    <div class="modal-tabpanel" data-panel="estado" hidden>
+      <div class="form-row form-row-3">
+        <div class="form-group">
+          <label>Estado</label>
+          <input type="text" id="drcEstado" maxlength="1" value="${v('estado')}"
+                 style="font-family:monospace" placeholder="A/I/…">
+        </div>
+        <div class="form-group">
+          <label>Verificación</label>
+          <input type="text" id="drcVerificacion" maxlength="1" value="${v('verificacion')}"
+                 style="font-family:monospace" placeholder="O/V/E/P…">
+        </div>
+        <div class="form-group">
+          <label>Suscripciones</label>
+          <input type="number" id="drcSuscripciones" min="0" value="${v('suscripciones')}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Registrado</label>
+          <input type="datetime-local" id="drcRegistrado" value="${dt('registrado')}">
+        </div>
+        <div class="form-group">
+          <label>Completado</label>
+          <input type="datetime-local" id="drcCompletado" value="${dt('completado')}">
+        </div>
       </div>
       <div class="form-group">
-        <label>Completado</label>
-        <input type="datetime-local" id="drcCompletado" value="${dt('completado')}">
+        <label>Error</label>
+        <textarea id="drcErrorTxt" rows="2" maxlength="255">${v('error')}</textarea>
       </div>
     </div>
-    <div class="form-group">
-      <label>Error</label>
-      <textarea id="drcErrorTxt" rows="2" maxlength="255">${v('error')}</textarea>
-    </div>
+
     <div class="field-error" id="drcFormError" style="display:none"></div>
   `;
 }
@@ -22653,7 +23742,20 @@ async function guardarDrCt(id, btn) {
   const err = $('#drcFormError');
   err.style.display = 'none';
 
+  // Validacion cliente: `tipo` es obligatorio (persona o empresa). El backend
+  // tambien rechaza; se hace aca ademas para dar feedback inmediato sin viaje
+  // ida y vuelta al servidor. Se salta al tab Identidad si esta en otro.
+  const tipoSel = $('#drcTipoSelector')?.dataset.value || '';
+  if (tipoSel !== 'persona' && tipoSel !== 'empresa') {
+    const btnIdentidad = $('#modalRoot .modal-tab[data-tab="identidad"]');
+    if (btnIdentidad) btnIdentidad.click();
+    err.textContent = 'Elegí un tipo (Persona o Empresa) antes de guardar.';
+    err.style.display = '';
+    return;
+  }
+
   const payload = {
+    tipo:          tipoSel,
     nombre:        $('#drcNombre').value.trim(),
     empresa:       $('#drcEmpresa').value.trim(),
     cargo:         $('#drcCargo').value.trim(),
@@ -22679,8 +23781,13 @@ async function guardarDrCt(id, btn) {
     instagram:     $('#drcInstagram').value.trim(),
     tiktok:        $('#drcTiktok').value.trim(),
     comentarios:   $('#drcComentarios').value,
-    tags:          $('#drcTags').value.trim(),
-    listas:        $('#drcListas').value.trim(),
+    // Suscripciones a listas y etiquetas asignadas → tablas puente
+    // `datarocket_contactos_listas` / `datarocket_contactos_etiquetas`. El
+    // API hace full-replace: mandamos el estado deseado (incluido `[]` para
+    // desasignar de todo) y borra/inserta lo que corresponda. Los pickers
+    // (attachChipsPicker) devuelven el array de ids seleccionados.
+    lista_ids:     drCtListasEditor    ? drCtListasEditor.getIds()    : [],
+    etiqueta_ids:  drCtEtiquetasEditor ? drCtEtiquetasEditor.getIds() : [],
     suscripciones: $('#drcSuscripciones').value,
     estado:        $('#drcEstado').value.trim(),
     verificacion:  $('#drcVerificacion').value.trim(),
@@ -23199,6 +24306,492 @@ async function eliminarDrInt(id) {
   } catch (e) {
     toast(e.message, { error: true });
   }
+}
+
+// ------------------------- Vista: Datarocket > Etiquetas (ABM) -------------------------
+// Catalogo de etiquetas reutilizables que despues se aplicaran a otros
+// recursos Datarocket (plantillas, contactos, interacciones, etc.). Este
+// modulo solo administra el catalogo — las relaciones con cada recurso
+// destino viven en tablas de union que se crean al enchufar el uso en
+// cada modulo.
+const DRE_API = 'api/datarocket_etiquetas.php';
+
+let dreItems           = [];
+let dreBusqueda        = '';
+let dreFiltroCodigo    = '';
+let dreFiltroLimite    = 100;
+let dreFiltroOrden     = 'id';
+let dreFiltroDir       = 'desc';
+let dreEditandoId      = null;
+let dreBuscadorTimer   = null;
+let dreFiltrosSnapshot = null;
+
+route('/datarocket_etiquetas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🏷️</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las etiquetas son las marcas reutilizables del catálogo Datarocket que se aplican
+            a otros recursos (plantillas, contactos, interacciones, etc.) para agruparlos y
+            filtrarlos. La columna "Etiquetados" muestra cuántos contactos tiene asignada
+            cada etiqueta.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dreStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dreStatTotal">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dreSearch"
+                   placeholder="🔍 Buscar nombre o descripción…">
+            <button class="search-clear" id="dreSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dreFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dreFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dreRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dreNuevoBtn">+ Nueva etiqueta</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead id="dreThead">
+            <tr>
+              ${thOrdenable('id',          'Código',       'width:80px')}
+              ${thOrdenable('nombre',      'Nombre')}
+              <th>Descripción</th>
+              ${thOrdenable('etiquetados', 'Etiquetados',  'width:120px;text-align:right')}
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dreTbody">
+            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dreCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="etiquetados" role="menuitem">
+        <i class="fa-solid fa-users"></i><span>Etiquetados</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDreBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDre()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDre()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDreCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDre('codigo', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDreLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDre('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDreOrden" onchange="onFiltroDre('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="etiquetados">Etiquetados</option>
+                <option value="fecha_creacion">Alta</option>
+                <option value="fecha_modificacion">Modificada</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDreDir" onchange="onFiltroDre('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDre()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDre()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDre()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dreSearch');
+  const clr = $('#dreSearchClear');
+  inp.value = dreBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dreBusqueda = inp.value.trim();
+    clearTimeout(dreBuscadorTimer);
+    dreBuscadorTimer = setTimeout(cargarDre, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dreBusqueda = ''; cargarDre();
+  });
+
+  $('#dreFiltrosBtn').addEventListener('click', abrirModalFiltrosDre);
+  $('#dreRefrescarBtn').addEventListener('click', cargarDre);
+  $('#dreNuevoBtn').addEventListener('click', () => abrirAltaEdicionDre(null));
+
+  $('#dreThead').addEventListener('click', (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (dreFiltroOrden === col) {
+      dreFiltroDir = dreFiltroDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      dreFiltroOrden = col;
+      dreFiltroDir   = 'asc';
+    }
+    dreActualizarBadgeFiltros();
+    cargarDre();
+  });
+
+  $('#dreCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b || b.disabled) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')   abrirConsultaDre(data.id);
+    if (b.dataset.action === 'etiquetados') verEtiquetadosDre(data.id);
+    if (b.dataset.action === 'editar')      abrirAltaEdicionDre(data.id);
+    if (b.dataset.action === 'eliminar')    eliminarDre(data.id);
+  });
+
+  $('#dreTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dreCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDre(Number(tr.dataset.id));
+  });
+  $('#dreTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dreCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  dreActualizarBadgeFiltros();
+  await cargarDre();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Etiquetas');
+
+async function cargarDre() {
+  const tbody = $('#dreTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dreBusqueda)     qs.set('q', dreBusqueda);
+  if (dreFiltroLimite) qs.set('limite', dreFiltroLimite);
+  if (dreFiltroOrden)  qs.set('orden', dreFiltroOrden);
+  if (dreFiltroDir)    qs.set('dir', dreFiltroDir);
+
+  try {
+    const data = await apiGet(DRE_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dreItems = data.items || [];
+    pintarStatsDre(data.stats || {});
+    renderDre();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDre(s) {
+  $('#dreStatTotal').textContent = fmtNum(s.total ?? dreItems.length);
+}
+
+function renderDre() {
+  const tbody = $('#dreTbody');
+  if (!tbody) return;
+  actualizarSortIndicadores($('#dreThead'), { order_by: dreFiltroOrden, dir: dreFiltroDir });
+  if (!dreItems.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin etiquetas registradas.</td></tr>`;
+    return;
+  }
+
+  let filas = dreItems;
+  if (dreFiltroCodigo) {
+    const cod = Number(dreFiltroCodigo);
+    filas = filas.filter((e) => e.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((e) => `
+    <tr data-id="${e.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${e.id}</code></td>
+      <td style="font-weight:600">${esc(e.nombre)}</td>
+      <td style="color:var(--muted);font-size:.88rem">${esc(e.descripcion || '—')}</td>
+      <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.etiquetados || 0)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function abrirModalFiltrosDre() {
+  dreFiltrosSnapshot = {
+    codigo: dreFiltroCodigo,
+    limite: dreFiltroLimite,
+    orden:  dreFiltroOrden,
+    dir:    dreFiltroDir,
+  };
+  $('#fDreCodigo').value = dreFiltroCodigo || '';
+  $('#fDreLimite').value = dreFiltroLimite || 100;
+  $('#fDreOrden').value  = dreFiltroOrden  || 'id';
+  $('#fDreDir').value    = dreFiltroDir    || 'desc';
+  document.getElementById('filtrosDreBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDre() {
+  document.getElementById('filtrosDreBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDre() {
+  if (dreFiltrosSnapshot) {
+    dreFiltroCodigo = dreFiltrosSnapshot.codigo;
+    dreFiltroLimite = dreFiltrosSnapshot.limite;
+    dreFiltroOrden  = dreFiltrosSnapshot.orden;
+    dreFiltroDir    = dreFiltrosSnapshot.dir;
+    dreActualizarBadgeFiltros();
+    cargarDre();
+  }
+  cerrarModalFiltrosDre();
+}
+
+function limpiarFiltrosDre() {
+  dreFiltroCodigo = '';
+  dreFiltroLimite = 100;
+  dreFiltroOrden  = 'id';
+  dreFiltroDir    = 'desc';
+  $('#fDreCodigo').value = '';
+  $('#fDreLimite').value = 100;
+  $('#fDreOrden').value  = 'id';
+  $('#fDreDir').value    = 'desc';
+  dreActualizarBadgeFiltros();
+  cargarDre();
+}
+
+function onFiltroDre(campo, valor) {
+  if (campo === 'codigo') dreFiltroCodigo = (valor || '').trim();
+  if (campo === 'limite') dreFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dreFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    dreFiltroDir    = valor || 'desc';
+  dreActualizarBadgeFiltros();
+  cargarDre();
+}
+
+function dreActualizarBadgeFiltros() {
+  let n = 0;
+  if (dreFiltroCodigo)                 n++;
+  if (Number(dreFiltroLimite) !== 100) n++;
+  if (dreFiltroOrden !== 'id')         n++;
+  if (dreFiltroDir   !== 'desc')       n++;
+  const badge = $('#dreFiltrosBadge');
+  const btn   = $('#dreFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+function abrirAltaEdicionDre(id) {
+  dreEditandoId = id;
+  const editando = !!id;
+  const e = editando ? dreItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar etiqueta' : 'Nueva etiqueta';
+
+  openModal(`
+    <div class="modal" style="max-width:520px">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="dreNombre">Nombre *</label>
+          <input type="text" id="dreNombre" placeholder="Ej.: VIP, Prospecto, Lead frío"
+                 maxlength="80" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="dreDescripcion">Descripción</label>
+          <textarea id="dreDescripcion" rows="3" maxlength="500"
+                    placeholder="Cuándo aplica esta etiqueta (opcional)"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && e) {
+    $('#dreNombre').value      = e.nombre      || '';
+    $('#dreDescripcion').value = e.descripcion || '';
+  }
+
+  setTimeout(() => $('#dreNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDre();
+  });
+}
+
+async function guardarDre() {
+  const nombre      = $('#dreNombre').value.trim();
+  const descripcion = $('#dreDescripcion').value.trim();
+
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+
+  const body = { nombre, descripcion };
+
+  try {
+    if (dreEditandoId) {
+      await apiSend(`${DRE_API}?id=${dreEditandoId}`, 'PUT', body);
+      toast('Etiqueta actualizada');
+    } else {
+      await apiSend(DRE_API, 'POST', body);
+      toast('Etiqueta creada');
+    }
+    closeModal();
+    dreEditandoId = null;
+    await cargarDre();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+function abrirConsultaDre(id) {
+  const e = dreItems.find((x) => x.id === id);
+  if (!e) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🏷️ <span class="modal-subtitle">${esc(e.nombre)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',      `<code>${e.id}</code>`)}
+          ${card('Etiquetados', `<span style="font-family:monospace">${fmtNum(e.etiquetados || 0)}</span>`)}
+          ${card('Nombre',      esc(e.nombre), 'full')}
+          ${card('Modificada',  esc(fmtFecha(e.fecha_modificacion)))}
+          ${card('Alta',        esc(fmtFecha(e.fecha_creacion)))}
+          ${card('Descripción', esc(e.descripcion || '—'), 'full')}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDre(id); }
+  });
+}
+
+async function eliminarDre(id) {
+  const e = dreItems.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar etiqueta',
+    message:     `¿Eliminás la etiqueta "${e.nombre}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DRE_API}?id=${id}`, 'DELETE');
+    toast('Etiqueta eliminada');
+    await cargarDre();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// Navega al ABM de contactos filtrando por los que tienen esta etiqueta.
+// Mismo patron que `verSuscriptosDrLi`: resetea el resto de los filtros para
+// que la vista aterrice "limpia" con unico filtro activo `etiqueta_id`. El
+// LIKE contra el campo legacy `tags` lo aplica el API (handleList() en
+// api/datarocketcontactos.php).
+function verEtiquetadosDre(id) {
+  Object.assign(drCtFiltros, drCtFiltrosDefaults, { etiqueta_id: id });
+  location.hash = '#/datarocketcontactos';
 }
 
 // ------------------------- Vista: Datasale (landing) -------------------------
