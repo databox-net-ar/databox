@@ -7,11 +7,17 @@
 //
 //   GET    api/datarocket_etiquetas.php[?q=...&limite=100&orden=id&dir=desc]
 //                                          -> listado + stats (incluye
-//                                             `etiquetados` = COUNT de
-//                                             contactos con la etiqueta)
+//                                             `etiquetados` = contador
+//                                             denormalizado de contactos
+//                                             con la etiqueta)
 //   GET    api/datarocket_etiquetas.php?id=N
-//                                          -> registro individual + etiquetados
+//                                          -> registro individual
 //   POST   api/datarocket_etiquetas.php     -> alta (JSON body)
+//   POST   api/datarocket_etiquetas.php?action=recalcular
+//                                          -> recomputa `etiquetados` para
+//                                             TODAS las filas desde la
+//                                             tabla puente. Requiere permiso
+//                                             `datarocket.etiquetas.editar`.
 //   PUT    api/datarocket_etiquetas.php?id=N
 //                                          -> modificacion (JSON body)
 //   DELETE api/datarocket_etiquetas.php?id=N
@@ -26,15 +32,26 @@ require_once __DIR__ . '/lib/sucesos.php';
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
-// `etiquetados` es un campo virtual (COUNT contra la tabla puente); se
-// admite como opcion de orden en el listado.
+// Columnas persistidas + `etiquetados` (contador denormalizado, sync manual
+// via ?action=recalcular). Sirven tanto para SELECT como para el orden.
+const DRE_COLS    = 'id, nombre, descripcion, etiquetados, fecha_creacion, fecha_modificacion';
 const DRE_ORDENES = ['id', 'nombre', 'etiquetados', 'fecha_creacion', 'fecha_modificacion'];
 
 try {
-    requirePermCrud('datarocket.etiquetas');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    $action = (string)($_GET['action'] ?? '');
+
+    // Accion "recalcular" (POST + ?action=recalcular) es una modificacion
+    // masiva — se rige por el permiso .editar (no .agregar del POST default).
+    if ($method === 'POST' && $action === 'recalcular') {
+        requirePermission('datarocket.etiquetas.editar');
+        handleRecalcularEtiquetados($pdo);
+        return;
+    }
+
+    requirePermCrud('datarocket.etiquetas');
 
     if ($method === 'GET' && $id > 0) {
         handleGetOneEtiqueta($pdo, $id);
@@ -111,19 +128,9 @@ function handleListEtiquetas(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    // LEFT JOIN + GROUP BY para calcular `etiquetados` en una sola vuelta
-    // (LEFT para que las etiquetas sin ningun contacto asignado igual
-    // aparezcan con etiquetados = 0).
-    $sql = "
-        SELECT e.id, e.nombre, e.descripcion, e.fecha_creacion, e.fecha_modificacion,
-               COALESCE(COUNT(dce.contacto_id), 0) AS etiquetados
-          FROM datarocket_etiquetas e
-     LEFT JOIN datarocket_contactos_etiquetas dce ON dce.etiqueta_id = e.id
-          {$sqlWhere}
-      GROUP BY e.id
-      ORDER BY {$orden} {$dir}
-         LIMIT {$limite}
-    ";
+    // `etiquetados` es columna persistida — se sincroniza via
+    // ?action=recalcular. Sin JOINs.
+    $sql = 'SELECT ' . DRE_COLS . " FROM datarocket_etiquetas e {$sqlWhere} ORDER BY {$orden} {$dir} LIMIT {$limite}";
     $st = $pdo->prepare($sql);
     $st->execute($params);
     $rows = array_map('normalizarFilaEtiqueta', $st->fetchAll());
@@ -136,22 +143,35 @@ function handleListEtiquetas(PDO $pdo, array $q): void {
 }
 
 function handleGetOneEtiqueta(PDO $pdo, int $id): void {
-    // Subquery escalar para `etiquetados` — mas simple que un GROUP BY para
-    // una sola fila. Con indice PK(etiqueta_id, contacto_id) el COUNT es
-    // O(log n) via index-only scan.
-    $sql = '
-        SELECT e.id, e.nombre, e.descripcion, e.fecha_creacion, e.fecha_modificacion,
-               (SELECT COUNT(*) FROM datarocket_contactos_etiquetas dce
-                 WHERE dce.etiqueta_id = e.id) AS etiquetados
-          FROM datarocket_etiquetas e
-         WHERE e.id = :id
-         LIMIT 1
-    ';
-    $st = $pdo->prepare($sql);
+    $st = $pdo->prepare('SELECT ' . DRE_COLS . ' FROM datarocket_etiquetas e WHERE e.id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $row = $st->fetch();
     if (!$row) jsonError('Etiqueta no encontrada', 404);
     jsonOk(normalizarFilaEtiqueta($row));
+}
+
+// Recomputa `datarocket_etiquetas.etiquetados` para TODAS las filas desde la
+// tabla puente `datarocket_contactos_etiquetas`. Es la operacion que dispara
+// el boton "Recalcular etiquetados" del ABM. Idempotente: correrlo dos veces
+// no cambia los valores. LEFT JOIN + subquery agrupada asegura que las
+// etiquetas sin contactos asignados queden en 0 (no NULL).
+function handleRecalcularEtiquetados(PDO $pdo): void {
+    $st = $pdo->prepare('
+        UPDATE datarocket_etiquetas e
+     LEFT JOIN (
+                SELECT etiqueta_id, COUNT(*) AS c
+                  FROM datarocket_contactos_etiquetas
+                 GROUP BY etiqueta_id
+              ) g ON g.etiqueta_id = e.id
+           SET e.etiquetados = COALESCE(g.c, 0)
+    ');
+    $st->execute();
+    $filas = (int)$pdo->query('SELECT COUNT(*) FROM datarocket_etiquetas')->fetchColumn();
+
+    registrarSuceso($pdo, 'datarocket_etiquetas', 'info',
+        "Recalculo masivo de etiquetados sobre {$filas} etiquetas");
+
+    jsonOk(['recalculadas' => $filas]);
 }
 
 function handleCreateEtiqueta(PDO $pdo, array $body): void {

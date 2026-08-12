@@ -629,6 +629,8 @@ const ROUTE_PERMS = {
   '/datarocketlistas':         { perm:   'datarocket.listas.consultar' },
   '/datarocketplantillas':     { perm:   'sistemas.datarocket.plantillas.consultar' },
   '/datarocket_etiquetas':     { perm:   'datarocket.etiquetas.consultar' },
+  '/datarocket_embudos':       { perm:   'datarocket.embudos.consultar' },
+  '/datarocket_prospectos':    { perm:   'datarocket.prospectos.consultar' },
 
   '/datasale':                 { prefix: 'datasale.' },
   '/prospectos':               { perm:   'datasale.prospectos.consultar' },
@@ -21348,16 +21350,25 @@ route('/datarocket', async (mount) => {
       <div class="page-subtitle">Motor de mensajería masiva multi-canal: contactos y envíos.</div>
     </div>
 
+    <!-- Orden de tarjetas fijado por el usuario (no alfabetico): sigue el flujo
+         CRM "quien" (Contactos, Prospectos) -> "pipeline" (Embudos, Etapas) ->
+         "que paso" (Interacciones) -> "insumos de mensajeria" (Listas,
+         Etiquetas, Plantillas). NO reordenar a alfabetico sin acuerdo. -->
     <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/datarocketplantillas'">
-        <span class="tile-icon">📄</span>
-        <span class="tile-title">Plantillas</span>
-        <span class="tile-desc">Plantillas reutilizables para los envíos Datarocket: remitente, asunto, cuerpo, formato y adjunto por proyecto.</span>
-      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketcontactos'">
         <span class="tile-icon">👥</span>
         <span class="tile-title">Contactos</span>
         <span class="tile-desc">Base de contactos destino con nombre, canal, teléfono, email y estado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_prospectos'">
+        <span class="tile-icon">🎯</span>
+        <span class="tile-title">Prospectos</span>
+        <span class="tile-desc">Interesados que entraron al embudo con producto, estado, asignación, atendido, embudo y etapa actual.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_embudos'">
+        <span class="tile-icon">🪣</span>
+        <span class="tile-title">Embudos</span>
+        <span class="tile-desc">Pipelines de captación / venta por los que avanzan los prospectos. Cada embudo agrupa un conjunto ordenado de etapas configurables desde el mismo embudo.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketinteracciones'">
         <span class="tile-icon">💬</span>
@@ -21373,6 +21384,11 @@ route('/datarocket', async (mount) => {
         <span class="tile-icon">🏷️</span>
         <span class="tile-title">Etiquetas</span>
         <span class="tile-desc">Catálogo de etiquetas reutilizables para clasificar plantillas, contactos, interacciones y otros recursos Datarocket.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketplantillas'">
+        <span class="tile-icon">📄</span>
+        <span class="tile-title">Plantillas</span>
+        <span class="tile-desc">Plantillas reutilizables para los envíos Datarocket: remitente, asunto, cuerpo, formato y adjunto por proyecto.</span>
       </button>
     </div>
   `;
@@ -21430,6 +21446,9 @@ route('/datarocketlistas', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="drLiRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="drLiToolbarMenuBtn" title="Más acciones">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
         <div class="toolbar-right">
           <button class="btn btn-primary" id="drLiNuevoBtn">+ Nueva lista</button>
@@ -21468,6 +21487,15 @@ route('/datarocketlistas', async (mount) => {
       </button>
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
         <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Menu contextual de la toolbar (acciones que aplican al recurso completo,
+         no a una fila). Se abre desde el hamburguesa a la derecha del boton
+         Refrescar. Reutiliza la clase .ctx-menu para heredar el look & feel. -->
+    <div id="drLiToolbarCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="recalcular" role="menuitem">
+        <i class="fa-solid fa-calculator"></i><span>Recalcular suscriptos</span>
       </button>
     </div>
 
@@ -21526,6 +21554,17 @@ route('/datarocketlistas', async (mount) => {
   $('#drLiNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrLi(null));
   $('#drLiFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrLi());
   $('#drLiRefrescarBtn').addEventListener('click', () => cargarDrLi());
+  $('#drLiToolbarMenuBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu($('#drLiToolbarCtxMenu'), r.right - 220, r.bottom + 4, { toolbar: true });
+  });
+  $('#drLiToolbarCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'recalcular') recalcularSuscriptosDrLi();
+  });
 
   const inp = $('#drLiSearch');
   const clr = $('#drLiSearchClear');
@@ -21919,6 +21958,25 @@ async function eliminarDrLi(id) {
 function verSuscriptosDrLi(id) {
   Object.assign(drCtFiltros, drCtFiltrosDefaults, { lista_id: id });
   location.hash = '#/datarocketcontactos';
+}
+
+// Recalcula el contador denormalizado `suscriptos` de TODAS las listas contra
+// la tabla puente datarocket_contactos_listas. Endpoint POST idempotente.
+async function recalcularSuscriptosDrLi() {
+  const ok = await confirmar({
+    title:       'Recalcular suscriptos',
+    message:     'Se recalculará la cantidad de suscriptos de todas las listas contra la tabla de suscripciones. Puede tardar unos segundos.',
+    confirmText: 'Recalcular',
+  });
+  if (!ok) return;
+  try {
+    const r = await apiSend('api/datarocketlistas_recalcular.php', 'POST');
+    toast(`Recalculadas ${fmtNum(r.recalculadas ?? 0)} listas en ${fmtNum(r.duracion_ms ?? 0)} ms.`);
+    drCtListasCache = null; // el select "Lista" del ABM de contactos se re-cachea al reabrir
+    cargarDrLi();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
 }
 
 // ------------------------- Vista: Datainfra > Dominios (ABM) -------------------------
@@ -24363,6 +24421,9 @@ route('/datarocket_etiquetas', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="dreRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="dreMasBtn" title="Más acciones">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
         <div class="toolbar-right">
           <button class="btn btn-primary" id="dreNuevoBtn">+ Nueva etiqueta</button>
@@ -24400,6 +24461,15 @@ route('/datarocket_etiquetas', async (mount) => {
       </button>
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
         <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Menu contextual global de la toolbar (boton hamburguesa a la derecha
+         de "Refrescar"). Alberga acciones que aplican a TODA la tabla, no a
+         una fila puntual. -->
+    <div id="dreMasCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="recalcular" role="menuitem">
+        <i class="fa-solid fa-calculator"></i><span>Recalcular etiquetados</span>
       </button>
     </div>
 
@@ -24469,6 +24539,19 @@ route('/datarocket_etiquetas', async (mount) => {
   $('#dreFiltrosBtn').addEventListener('click', abrirModalFiltrosDre);
   $('#dreRefrescarBtn').addEventListener('click', cargarDre);
   $('#dreNuevoBtn').addEventListener('click', () => abrirAltaEdicionDre(null));
+
+  // Boton hamburguesa de acciones globales del ABM.
+  $('#dreMasBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu($('#dreMasCtxMenu'), r.right - 210, r.bottom + 4, {});
+  });
+  $('#dreMasCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b || b.disabled) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'recalcular') recalcularDre();
+  });
 
   $('#dreThead').addEventListener('click', (ev) => {
     const th = ev.target.closest('th[data-sort]');
@@ -24792,6 +24875,2289 @@ async function eliminarDre(id) {
 function verEtiquetadosDre(id) {
   Object.assign(drCtFiltros, drCtFiltrosDefaults, { etiqueta_id: id });
   location.hash = '#/datarocketcontactos';
+}
+
+// Dispara el recalculo masivo de `datarocket_etiquetas.etiquetados`
+// (contador denormalizado). Es la contraparte del boton hamburguesa de la
+// toolbar; al terminar refresca el listado para que los nuevos numeros se
+// vean sin apretar tambien "Refrescar".
+async function recalcularDre() {
+  try {
+    const r = await apiSend(`${DRE_API}?action=recalcular`, 'POST');
+    toast(`Recalculado (${fmtNum(r.recalculadas || 0)} etiquetas)`);
+    await cargarDre();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datarocket > Embudos (ABM) -------------------------
+// Catalogo de embudos (pipelines) por los que avanzan los prospectos. Un
+// embudo agrupa un conjunto ordenado de etapas (ver ABM de Etapas). Este
+// ABM administra solo el catalogo; las etapas se editan desde su propio
+// modulo. El default del proyecto es un embudo unico 'Captacion general';
+// se pueden agregar mas si distintos productos requieren procesos comerciales
+// distintos.
+const DREM_API = 'api/datarocket_embudos.php';
+
+let dremItems           = [];
+let dremProyectosLookup = [];
+let dremBusqueda        = '';
+let dremFiltroCodigo    = '';
+let dremFiltroProyecto  = '';
+let dremFiltroActivo    = '';
+let dremFiltroLimite    = 100;
+let dremFiltroOrden     = 'id';
+let dremFiltroDir       = 'desc';
+let dremEditandoId      = null;
+let dremBuscadorTimer   = null;
+let dremFiltrosSnapshot = null;
+
+// Cargamos la lista de proyectos una vez por sesion — poco volumen, cambian
+// muy rara vez (~15 filas totales). El endpoint `api/proyectos.php` solo
+// requiere sesion, no un permiso especifico.
+//
+// Filtramos por `tipo=I` (interno): un embudo Datarocket solo aplica a los
+// proyectos internos del grupo Databox — los externos (clientes) no llevan
+// pipeline propio. El campo `tipo` es varchar(1) en la tabla `proyectos`.
+async function dremCargarProyectosLookup() {
+  if (dremProyectosLookup.length) return dremProyectosLookup;
+  try {
+    const data = await apiGet('api/proyectos.php?tipo=I');
+    dremProyectosLookup = (data.items || []).map((p) => ({ id: p.id, nombre: p.nombre }));
+  } catch { dremProyectosLookup = []; }
+  return dremProyectosLookup;
+}
+
+route('/datarocket_embudos', async (mount) => {
+  await dremCargarProyectosLookup();
+
+  const opProy = ['<option value="">— Todos los proyectos —</option>']
+    .concat(dremProyectosLookup.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`))
+    .join('');
+
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🪣</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los embudos son los pipelines de captación / venta por los que avanzan los prospectos.
+            Cada embudo agrupa un conjunto ordenado de etapas y define el proceso comercial de
+            uno o varios productos.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dremStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dremStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value" id="dremStatActivos">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dremSearch"
+                   placeholder="🔍 Buscar nombre o descripción…">
+            <button class="search-clear" id="dremSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dremFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dremFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dremRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dremNuevoBtn">+ Nuevo embudo</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead id="dremThead">
+            <tr>
+              ${thOrdenable('id',          'Código',   'width:80px')}
+              ${thOrdenable('proyecto_id', 'Proyecto', 'width:150px')}
+              ${thOrdenable('nombre',      'Nombre')}
+              <th>Descripción</th>
+              <th style="width:90px;text-align:right">Etapas</th>
+              <th style="width:110px;text-align:right">Prospectos</th>
+              ${thOrdenable('activo',      'Activo',   'width:80px;text-align:center')}
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dremTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dremCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDremBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrem()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrem()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDremCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDrem('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fDremProyecto" onchange="onFiltroDrem('proyecto', this.value)">${opProy}</select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <div id="fDremActivoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-val=""  onclick="onFiltroDrem('activo', '')">Todos</button>
+              <button type="button" class="filter-chip" data-val="1" onclick="onFiltroDrem('activo', '1')">Activos</button>
+              <button type="button" class="filter-chip" data-val="0" onclick="onFiltroDrem('activo', '0')">Inactivos</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDremLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDrem('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDremOrden" onchange="onFiltroDrem('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="proyecto_id">Proyecto</option>
+                <option value="nombre">Nombre</option>
+                <option value="activo">Activo</option>
+                <option value="fecha_creacion">Alta</option>
+                <option value="fecha_modificacion">Modificado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDremDir" onchange="onFiltroDrem('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrem()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrem()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrem()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dremSearch');
+  const clr = $('#dremSearchClear');
+  inp.value = dremBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dremBusqueda = inp.value.trim();
+    clearTimeout(dremBuscadorTimer);
+    dremBuscadorTimer = setTimeout(cargarDrem, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dremBusqueda = ''; cargarDrem();
+  });
+
+  $('#dremFiltrosBtn').addEventListener('click', abrirModalFiltrosDrem);
+  $('#dremRefrescarBtn').addEventListener('click', cargarDrem);
+  $('#dremNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrem(null));
+
+  $('#dremThead').addEventListener('click', (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (dremFiltroOrden === col) {
+      dremFiltroDir = dremFiltroDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      dremFiltroOrden = col;
+      dremFiltroDir   = 'asc';
+    }
+    dremActualizarBadgeFiltros();
+    cargarDrem();
+  });
+
+  $('#dremCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b || b.disabled) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDrem(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDrem(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDrem(data.id);
+  });
+
+  $('#dremTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dremCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDrem(Number(tr.dataset.id));
+  });
+  $('#dremTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dremCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  dremActualizarBadgeFiltros();
+  await cargarDrem();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Embudos');
+
+async function cargarDrem() {
+  const tbody = $('#dremTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dremBusqueda)               qs.set('q', dremBusqueda);
+  if (dremFiltroProyecto)         qs.set('proyecto_id', dremFiltroProyecto);
+  if (dremFiltroActivo !== '')    qs.set('activo', dremFiltroActivo);
+  if (dremFiltroLimite)           qs.set('limite', dremFiltroLimite);
+  if (dremFiltroOrden)            qs.set('orden',  dremFiltroOrden);
+  if (dremFiltroDir)              qs.set('dir',    dremFiltroDir);
+
+  try {
+    const data = await apiGet(DREM_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dremItems = data.items || [];
+    pintarStatsDrem(data.stats || {});
+    renderDrem();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDrem(s) {
+  $('#dremStatTotal').textContent   = fmtNum(s.total   ?? dremItems.length);
+  $('#dremStatActivos').textContent = fmtNum(s.activos ?? 0);
+}
+
+function renderDrem() {
+  const tbody = $('#dremTbody');
+  if (!tbody) return;
+  actualizarSortIndicadores($('#dremThead'), { order_by: dremFiltroOrden, dir: dremFiltroDir });
+  if (!dremItems.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin embudos registrados.</td></tr>`;
+    return;
+  }
+
+  let filas = dremItems;
+  if (dremFiltroCodigo) {
+    const cod = Number(dremFiltroCodigo);
+    filas = filas.filter((e) => e.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((e) => {
+    const activo = Number(e.activo) === 1
+      ? `<i class="fa-solid fa-circle" style="color:#22c55e;font-size:.9rem" title="Activo"></i>`
+      : `<i class="fa-solid fa-circle" style="color:#ef4444;font-size:.9rem" title="Inactivo"></i>`;
+    return `
+      <tr data-id="${e.id}" class="row-clickable">
+        <td><code style="font-size:.82rem">${e.id}</code></td>
+        <td style="font-size:.9rem">${esc(e.proyecto_nombre || (e.proyecto_id ? `#${e.proyecto_id}` : '—'))}</td>
+        <td style="font-weight:600">${esc(e.nombre)}</td>
+        <td style="color:var(--muted);font-size:.88rem">${esc(e.descripcion || '—')}</td>
+        <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.etapas_count || 0)}</td>
+        <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.prospectos_count || 0)}</td>
+        <td style="text-align:center">${activo}</td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${e.id}">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function abrirModalFiltrosDrem() {
+  dremFiltrosSnapshot = {
+    codigo: dremFiltroCodigo, proyecto: dremFiltroProyecto, activo: dremFiltroActivo,
+    limite: dremFiltroLimite, orden: dremFiltroOrden, dir: dremFiltroDir,
+  };
+  $('#fDremCodigo').value   = dremFiltroCodigo   || '';
+  $('#fDremProyecto').value = dremFiltroProyecto || '';
+  $('#fDremLimite').value   = dremFiltroLimite   || 100;
+  $('#fDremOrden').value    = dremFiltroOrden    || 'id';
+  $('#fDremDir').value      = dremFiltroDir      || 'desc';
+  dremReflejarChipsActivo();
+  document.getElementById('filtrosDremBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDrem() {
+  document.getElementById('filtrosDremBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDrem() {
+  if (dremFiltrosSnapshot) {
+    dremFiltroCodigo   = dremFiltrosSnapshot.codigo;
+    dremFiltroProyecto = dremFiltrosSnapshot.proyecto;
+    dremFiltroActivo   = dremFiltrosSnapshot.activo;
+    dremFiltroLimite   = dremFiltrosSnapshot.limite;
+    dremFiltroOrden    = dremFiltrosSnapshot.orden;
+    dremFiltroDir      = dremFiltrosSnapshot.dir;
+    dremActualizarBadgeFiltros();
+    cargarDrem();
+  }
+  cerrarModalFiltrosDrem();
+}
+
+function limpiarFiltrosDrem() {
+  dremFiltroCodigo   = '';
+  dremFiltroProyecto = '';
+  dremFiltroActivo   = '';
+  dremFiltroLimite   = 100;
+  dremFiltroOrden    = 'id';
+  dremFiltroDir      = 'desc';
+  $('#fDremCodigo').value   = '';
+  $('#fDremProyecto').value = '';
+  $('#fDremLimite').value   = 100;
+  $('#fDremOrden').value    = 'id';
+  $('#fDremDir').value      = 'desc';
+  dremReflejarChipsActivo();
+  dremActualizarBadgeFiltros();
+  cargarDrem();
+}
+
+function onFiltroDrem(campo, valor) {
+  if (campo === 'codigo')   dremFiltroCodigo   = (valor || '').trim();
+  if (campo === 'proyecto') dremFiltroProyecto = (valor || '').trim();
+  if (campo === 'activo')   { dremFiltroActivo = valor === '' ? '' : String(valor); dremReflejarChipsActivo(); }
+  if (campo === 'limite')   dremFiltroLimite   = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')    dremFiltroOrden    = valor || 'id';
+  if (campo === 'dir')      dremFiltroDir      = valor || 'desc';
+  dremActualizarBadgeFiltros();
+  cargarDrem();
+}
+
+function dremReflejarChipsActivo() {
+  const cont = document.getElementById('fDremActivoChips');
+  if (!cont) return;
+  cont.querySelectorAll('.filter-chip').forEach((el) => {
+    el.classList.toggle('active', String(el.dataset.val || '') === String(dremFiltroActivo || ''));
+  });
+}
+
+function dremActualizarBadgeFiltros() {
+  let n = 0;
+  if (dremFiltroCodigo)                 n++;
+  if (dremFiltroProyecto)               n++;
+  if (dremFiltroActivo !== '')          n++;
+  if (Number(dremFiltroLimite) !== 100) n++;
+  if (dremFiltroOrden !== 'id')         n++;
+  if (dremFiltroDir   !== 'desc')       n++;
+  const badge = $('#dremFiltrosBadge');
+  const btn   = $('#dremFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ---------- Modales Embudo (con tabs General + Etapas) ----------
+// El sub-modulo standalone de Etapas ya no existe: las etapas de un embudo se
+// configuran ahora entrando al embudo (Consultar o Editar) via la pestaña
+// "Etapas". En "Nuevo embudo" la pestaña queda deshabilitada hasta que el
+// embudo se guarde por primera vez (necesitamos el id para asociar etapas).
+
+const DREM_ETAPAS_API = 'api/datarocket_etapas.php';
+const DREM_ETAPA_TIPOS = [
+  { val: 'activa',  label: 'Activa',  cls: 'badge-info',    color: '#3b82f6' },
+  { val: 'ganada',  label: 'Ganada',  cls: 'badge-success', color: '#22c55e' },
+  { val: 'perdida', label: 'Perdida', cls: 'badge-danger',  color: '#ef4444' },
+];
+
+// Estado del panel Etapas dentro del modal del embudo. Se resetea cada vez
+// que se abre un modal (consulta/edicion) y solo se refresca cuando el
+// usuario efectivamente entra a la pestaña Etapas (lazy load).
+let dremEtapaEmbudoId = null;   // embudo cuyas etapas se estan viendo
+let dremEtapasCache   = [];     // ultimo listado cargado
+let dremEtapaEditandoId = null; // id de la etapa que se esta editando inline
+let dremEtapasReadOnly  = false; // true en modo Consulta (oculta botones)
+
+function dremEtapaTipoBadge(t) {
+  const def = DREM_ETAPA_TIPOS.find((x) => x.val === t) || DREM_ETAPA_TIPOS[0];
+  return `<span class="badge ${def.cls}">${esc(def.label)}</span>`;
+}
+
+// Cambia entre tabs "General" y "Etapas". Registrado en `window` para poder
+// usarse desde el onclick inline de los botones (mismo patron que awsMsgCambiarTab).
+function dremCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-drem-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.dremTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-drem-tab]').forEach((p) => {
+    p.hidden = p.dataset.dremTab !== tab;
+  });
+  // Lazy load al entrar a Etapas (evita el GET si nunca se abre la pestaña).
+  if (tab === 'etapas' && dremEtapaEmbudoId) {
+    dremCargarEtapas(dremEtapaEmbudoId);
+  }
+}
+window.dremCambiarTab = dremCambiarTab;
+
+async function dremCargarEtapas(embudoId) {
+  const tbody = document.getElementById('dremEtapasTbody');
+  if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:16px"><div class="spin"></div></td></tr>`;
+  try {
+    const data = await apiGet(`${DREM_ETAPAS_API}?embudo_id=${embudoId}&limite=1000&orden=orden&dir=asc`);
+    dremEtapasCache = data.items || [];
+    dremRenderEtapasList();
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function dremRenderEtapasList() {
+  const tbody = document.getElementById('dremEtapasTbody');
+  if (!tbody) return;
+  if (!dremEtapasCache.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin etapas. ${dremEtapasReadOnly ? '' : 'Agregá la primera con el botón "+ Nueva etapa".'}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = dremEtapasCache.map((e) => {
+    const swatch = e.color
+      ? `<span title="${esc(e.color)}" style="display:inline-block;width:14px;height:14px;border-radius:4px;background:${esc(e.color)};vertical-align:middle;border:1px solid var(--border)"></span>`
+      : `<span style="color:var(--muted);font-size:.85rem">—</span>`;
+    const prob = (e.probabilidad === null || e.probabilidad === undefined)
+      ? `<span style="color:var(--muted)">—</span>`
+      : `<span style="font-family:monospace">${e.probabilidad}%</span>`;
+    const acciones = dremEtapasReadOnly ? '' : `
+      <button class="btn-icon-sm" title="Editar" data-etapa-act="editar" data-id="${e.id}">
+        <i class="fa-solid fa-pen"></i>
+      </button>
+      <button class="btn-icon-sm" title="Eliminar" data-etapa-act="eliminar" data-id="${e.id}" style="color:var(--danger,#ef4444)">
+        <i class="fa-solid fa-trash"></i>
+      </button>
+    `;
+    return `
+      <tr data-id="${e.id}">
+        <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.orden || 0)}</td>
+        <td style="font-weight:600">${esc(e.nombre)}</td>
+        <td style="text-align:center">${dremEtapaTipoBadge(e.tipo)}</td>
+        <td style="text-align:right">${prob}</td>
+        <td style="text-align:center">${swatch}</td>
+        <td style="text-align:center;white-space:nowrap">${acciones || '<span style="color:var(--muted)">—</span>'}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function dremEtapasPanelHtml(readOnly) {
+  return `
+    <div class="modal-tabpanel" data-drem-tab="etapas" hidden>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:12px">
+        <div style="font-size:.85rem;color:var(--muted)">
+          Etapas de este embudo (Nuevo → Contactado → ... → Ganado / Perdido).
+          Se reordenan cambiando el campo <b>Orden</b>.
+        </div>
+        ${readOnly ? '' : `<button type="button" class="btn btn-primary" id="dremEtapaNuevaBtn" style="flex-shrink:0">+ Nueva etapa</button>`}
+      </div>
+
+      <div class="table-card" style="margin:0">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:70px;text-align:right">Orden</th>
+              <th>Nombre</th>
+              <th style="width:100px;text-align:center">Tipo</th>
+              <th style="width:80px;text-align:right">Prob %</th>
+              <th style="width:70px;text-align:center">Color</th>
+              <th style="width:90px;text-align:center">${readOnly ? '' : 'Acciones'}</th>
+            </tr>
+          </thead>
+          <tbody id="dremEtapasTbody">
+            <tr><td colspan="6" style="text-align:center;padding:16px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// Enlaza los event delegates del panel Etapas al #modalRoot. Idempotente:
+// cada modal genera un panel nuevo, pero el listener global reusa el mismo
+// #modalRoot. Se registra una sola vez (`dremEtapasHandlersReady`).
+let dremEtapasHandlersReady = false;
+function dremEnsureEtapasHandlers() {
+  if (dremEtapasHandlersReady) return;
+  dremEtapasHandlersReady = true;
+
+  document.addEventListener('click', (ev) => {
+    // Solo dentro del modalRoot para no interceptar otros lugares.
+    if (!ev.target.closest('#modalRoot')) return;
+
+    // "+ Nueva etapa" — abre un modal apilado ENCIMA del modal del embudo.
+    if (ev.target.closest('#dremEtapaNuevaBtn')) {
+      ev.preventDefault();
+      dremAbrirModalEtapa(null);
+      return;
+    }
+    // Acciones por fila (editar / eliminar)
+    const b = ev.target.closest('[data-etapa-act]');
+    if (b) {
+      ev.preventDefault();
+      const id = Number(b.dataset.id) || 0;
+      if (b.dataset.etapaAct === 'editar')   dremAbrirModalEtapa(id);
+      if (b.dataset.etapaAct === 'eliminar') dremEliminarEtapa(id);
+      return;
+    }
+  });
+}
+
+// Abre un modal APILADO (por encima del modal del embudo) para alta/edicion
+// de una etapa. No usa openModal() del framework porque ese cierra el modal
+// actual antes de abrir el nuevo — perderiamos el modal del embudo. En su
+// lugar creamos manualmente el backdrop con z-index alto y lo removemos con
+// dremCerrarModalEtapa() al terminar.
+//
+// z-index 250: por encima del modal-backdrop base (100) y del
+// confirm-backdrop (150); por debajo de ctx-menu (300) por si algun handler
+// futuro despliega uno sobre este modal. Los estilos .modal/.modal-backdrop
+// se reusan tal cual (opacity, tamaño, animacion).
+function dremAbrirModalEtapa(id) {
+  dremEtapaEditandoId = id;
+  const e = id ? dremEtapasCache.find((x) => x.id === id) : null;
+  const titulo = id ? 'Editar etapa' : 'Nueva etapa';
+
+  // Idempotencia: si ya hay uno abierto (doble click rapido), lo cerramos.
+  dremCerrarModalEtapa();
+
+  const tiposOpts = DREM_ETAPA_TIPOS.map((t) =>
+    `<option value="${t.val}">${esc(t.label)}</option>`
+  ).join('');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'dremEtapaModalRoot';
+  wrap.style.zIndex = '250';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:520px;overflow-x:hidden">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-etapa-mod-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dremEtapaModalNombre">Nombre *</label>
+            <input type="text" id="dremEtapaModalNombre" maxlength="80" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dremEtapaModalOrden">Orden *</label>
+            <input type="number" id="dremEtapaModalOrden" min="0" step="1" value="0">
+          </div>
+        </div>
+        <div class="form-row form-row-3">
+          <div class="form-group">
+            <label for="dremEtapaModalTipo">Tipo *</label>
+            <select id="dremEtapaModalTipo">${tiposOpts}</select>
+          </div>
+          <div class="form-group">
+            <label for="dremEtapaModalProb">Probabilidad %</label>
+            <input type="number" id="dremEtapaModalProb" min="0" max="100" step="1" placeholder="0-100">
+          </div>
+          <div class="form-group">
+            <label for="dremEtapaModalColor">Color</label>
+            <input type="color" id="dremEtapaModalColor" value="#3b82f6" style="width:100%;height:40px;padding:2px;cursor:pointer">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-etapa-mod-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-etapa-mod-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  // Precargar valores (alta con orden = ultimo + 1 para orden natural).
+  document.getElementById('dremEtapaModalNombre').value = e ? (e.nombre || '') : '';
+  document.getElementById('dremEtapaModalOrden').value  = e ? (e.orden ?? 0)   : (dremEtapasCache.length ? Math.max(...dremEtapasCache.map((x) => x.orden || 0)) + 1 : 0);
+  document.getElementById('dremEtapaModalTipo').value   = e ? (e.tipo || 'activa') : 'activa';
+  document.getElementById('dremEtapaModalProb').value   = e && e.probabilidad !== null && e.probabilidad !== undefined ? e.probabilidad : '';
+  document.getElementById('dremEtapaModalColor').value  = e ? (e.color || '#3b82f6') : '#3b82f6';
+
+  setTimeout(() => document.getElementById('dremEtapaModalNombre')?.focus(), 30);
+
+  wrap.addEventListener('click', (ev) => {
+    // Click en el backdrop (fuera del .modal) cierra.
+    if (ev.target === wrap) { dremCerrarModalEtapa(); return; }
+    const b = ev.target.closest('[data-etapa-mod-act]');
+    if (!b) return;
+    if (b.dataset.etapaModAct === 'close')   dremCerrarModalEtapa();
+    if (b.dataset.etapaModAct === 'guardar') dremGuardarEtapa();
+  });
+}
+
+function dremCerrarModalEtapa() {
+  const m = document.getElementById('dremEtapaModalRoot');
+  if (!m) return;
+  // Liberar el id ya para que un dremAbrirModalEtapa() inmediato no compita
+  // con este nodo durante los 200 ms de animacion de cierre. Mismo patron
+  // que closeModal().
+  m.id = '';
+  m.classList.remove('open');
+  setTimeout(() => m.remove(), 200);
+  dremEtapaEditandoId = null;
+}
+
+async function dremGuardarEtapa() {
+  if (!dremEtapaEmbudoId) { toast('Falta el embudo destino', { error: true }); return; }
+
+  const nombre = document.getElementById('dremEtapaModalNombre').value.trim();
+  const orden  = Number(document.getElementById('dremEtapaModalOrden').value) || 0;
+  const tipo   = document.getElementById('dremEtapaModalTipo').value;
+  const probRaw = document.getElementById('dremEtapaModalProb').value.trim();
+  const probabilidad = probRaw === '' ? null : Math.max(0, Math.min(100, Number(probRaw)));
+  const color  = document.getElementById('dremEtapaModalColor').value.trim();
+
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+
+  const body = { embudo_id: dremEtapaEmbudoId, nombre, orden, tipo, probabilidad, color };
+
+  try {
+    if (dremEtapaEditandoId) {
+      await apiSend(`${DREM_ETAPAS_API}?id=${dremEtapaEditandoId}`, 'PUT', body);
+      toast('Etapa actualizada');
+    } else {
+      await apiSend(DREM_ETAPAS_API, 'POST', body);
+      toast('Etapa creada');
+    }
+    dremCerrarModalEtapa();
+    await dremCargarEtapas(dremEtapaEmbudoId);
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function dremEliminarEtapa(id) {
+  const e = dremEtapasCache.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar etapa',
+    message:     `¿Eliminás la etapa "${e.nombre}"? Si tiene prospectos asignados, la operación se bloquea.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DREM_ETAPAS_API}?id=${id}`, 'DELETE');
+    toast('Etapa eliminada');
+    await dremCargarEtapas(dremEtapaEmbudoId);
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---------- Modal Alta/Edicion (con tabs) ----------
+
+function abrirAltaEdicionDrem(id) {
+  dremEditandoId = id;
+  dremEtapaEmbudoId = id;      // null en alta -> tab Etapas deshabilitado
+  dremEtapasCache = [];
+  dremEtapaEditandoId = null;
+  dremEtapasReadOnly = false;
+  dremEnsureEtapasHandlers();
+
+  const editando = !!id;
+  const e = editando ? dremItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar embudo' : 'Nuevo embudo';
+
+  const opProy = ['<option value="">— Seleccioná un proyecto —</option>']
+    .concat(dremProyectosLookup.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`))
+    .join('');
+
+  const etapasTabAttrs = editando ? '' : 'disabled title="Guardá el embudo primero para configurar sus etapas"';
+
+  // overflow-x:hidden en el .modal es intencional: `.modal` global solo declara
+  // `overflow-y: auto`, y por spec el eje contrario tambien se computa `auto`,
+  // asi que cualquier hijo con `min-content` mas ancho que 720px (typically el
+  // <table> del panel Etapas con `th { white-space: nowrap }`) dispara scroll
+  // horizontal. Cortamos el desborde aca; el `.table-card` interno mantiene su
+  // propio `overflow-x: auto` para permitir scroll dentro de la tabla si hace
+  // falta, sin propagarlo al modal.
+  openModal(`
+    <div class="modal" style="max-width:720px;overflow-x:hidden">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- .modal-tabs va DENTRO de .modal-body para heredar el padding
+             horizontal de 24px (mismo patron que awsMsg y Contacto Datarocket).
+             Si se mueve afuera, las tabs quedan pegadas al borde del modal. -->
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab"
+                  data-drem-tab="general" onclick="dremCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-drem-tab="etapas" onclick="dremCambiarTab('etapas')" ${etapasTabAttrs}>
+            <i class="fa-solid fa-list-ol"></i> Etapas
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" data-drem-tab="general">
+          <div class="form-group">
+            <label for="dremProyectoId">Proyecto *</label>
+            <select id="dremProyectoId">${opProy}</select>
+          </div>
+          <div class="form-group">
+            <label for="dremNombre">Nombre *</label>
+            <input type="text" id="dremNombre" placeholder="Ej.: Captación general, Reactor Empresas"
+                   maxlength="80" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dremDescripcion">Descripción</label>
+            <textarea id="dremDescripcion" rows="3" maxlength="500"
+                      placeholder="Alcance / proceso comercial (opcional)"></textarea>
+          </div>
+          <div class="form-group" style="align-items:flex-start">
+            <label class="toggle-switch" style="align-self:flex-start">
+              <input type="checkbox" id="dremActivo" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Activo <span style="color:var(--muted);font-weight:normal;font-size:.85em">— si está apagado el embudo no aparece en el selector para nuevos prospectos</span></span>
+            </label>
+          </div>
+        </div>
+
+        ${dremEtapasPanelHtml(false)}
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && e) {
+    $('#dremProyectoId').value  = e.proyecto_id || '';
+    $('#dremNombre').value      = e.nombre      || '';
+    $('#dremDescripcion').value = e.descripcion || '';
+    $('#dremActivo').checked    = Number(e.activo) === 1;
+  } else if (dremFiltroProyecto) {
+    // Si hay un filtro de proyecto activo, arrancamos el alta con ese proyecto.
+    $('#dremProyectoId').value = dremFiltroProyecto;
+  }
+
+  setTimeout(() => $('#dremProyectoId')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDrem();
+  });
+}
+
+async function guardarDrem() {
+  const proyecto_id = Number($('#dremProyectoId').value) || 0;
+  const nombre      = $('#dremNombre').value.trim();
+  const descripcion = $('#dremDescripcion').value.trim();
+  const activo      = $('#dremActivo').checked ? 1 : 0;
+
+  if (!proyecto_id) { toast('Seleccioná un proyecto', { error: true }); return; }
+  if (!nombre)      { toast('El nombre es obligatorio', { error: true }); return; }
+
+  // color y orden se sacaron del modal porque conceptualmente pertenecen a las
+  // etapas (definen el color y posicion de cada columna del kanban), no al
+  // embudo mismo. Las columnas siguen en la DB por ahora, se completan con
+  // sus defaults (color=NULL, orden=0) desde el backend cuando no se envian.
+  const body = { proyecto_id, nombre, descripcion, activo };
+
+  try {
+    if (dremEditandoId) {
+      await apiSend(`${DREM_API}?id=${dremEditandoId}`, 'PUT', body);
+      toast('Embudo actualizado');
+    } else {
+      await apiSend(DREM_API, 'POST', body);
+      toast('Embudo creado');
+    }
+    closeModal();
+    dremEditandoId = null;
+    dremEtapaEmbudoId = null;
+    await cargarDrem();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---------- Modal Consultar (con tabs, tab Etapas read-only + botones) ----------
+
+function abrirConsultaDrem(id) {
+  const e = dremItems.find((x) => x.id === id);
+  if (!e) return;
+
+  dremEtapaEmbudoId = id;
+  dremEtapasCache = [];
+  dremEtapaEditandoId = null;
+  // En Consulta las etapas se ven pero NO se editan — para modificar hay que
+  // ir al modal de Edicion via el boton "Editar" del footer. Mantiene la
+  // convencion "Consulta = read-only" del abm_design skill.
+  dremEtapasReadOnly = true;
+  dremEnsureEtapasHandlers();
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  const activoBadge = Number(e.activo) === 1
+    ? `<span class="badge badge-success">Activo</span>`
+    : `<span class="badge badge-danger">Inactivo</span>`;
+
+  // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — mismo motivo.
+  openModal(`
+    <div class="modal" style="max-width:720px;overflow-x:hidden">
+      <div class="modal-header">
+        <div class="modal-title">
+          🪣 <span class="modal-subtitle">${esc(e.nombre)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- .modal-tabs va DENTRO de .modal-body para heredar padding
+             horizontal (ver comentario en abrirAltaEdicionDrem). -->
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab"
+                  data-drem-tab="general" onclick="dremCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-drem-tab="etapas" onclick="dremCambiarTab('etapas')">
+            <i class="fa-solid fa-list-ol"></i> Etapas
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" data-drem-tab="general">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Proyecto',   esc(e.proyecto_nombre || (e.proyecto_id ? `#${e.proyecto_id}` : '—')), 'full')}
+            ${card('Código',     `<code>${e.id}</code>`)}
+            ${card('Estado',     activoBadge)}
+            ${card('Nombre',     esc(e.nombre), 'full')}
+            ${card('Etapas',     `<span style="font-family:monospace">${fmtNum(e.etapas_count || 0)}</span>`)}
+            ${card('Prospectos', `<span style="font-family:monospace">${fmtNum(e.prospectos_count || 0)}</span>`)}
+            ${card('Modificado', esc(fmtFecha(e.fecha_modificacion)))}
+            ${card('Alta',       esc(fmtFecha(e.fecha_creacion)))}
+            ${card('Descripción', esc(e.descripcion || '—'), 'full')}
+          </div>
+        </div>
+
+        ${dremEtapasPanelHtml(true)}
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  { closeModal(); dremEtapaEmbudoId = null; cargarDrem(); }
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrem(id); }
+  });
+}
+
+async function eliminarDrem(id) {
+  const e = dremItems.find((x) => x.id === id);
+  if (!e) return;
+  const ok = await confirmar({
+    title:       'Eliminar embudo',
+    message:     `¿Eliminás el embudo "${e.nombre}"? Sus etapas se eliminarán en cascada.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DREM_API}?id=${id}`, 'DELETE');
+    toast('Embudo eliminado');
+    await cargarDrem();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+
+// ------------------------- Vista: Datarocket > Prospectos (ABM) -------------------------
+// Los prospectos son los interesados que respondieron a una campaña o llegaron
+// por un canal orgánico (web, whatsapp, referido) y estan siendo trabajados en
+// el embudo. Cada fila apunta a un embudo + una etapa y guarda el snapshot
+// de datos de contacto/empresa capturados al momento del alta (mientras no
+// migremos a `datarocket_contactos` via `contacto_id`).
+const DP_API = 'api/datarocket_prospectos.php';
+
+let dpItems           = [];
+let dpLookups         = null;        // { proyectos, usuarios, paises, embudos, etapas, opciones }
+let dpBusqueda        = '';
+let dpFiltroCodigo    = '';
+let dpFiltroEmbudo    = '';
+let dpFiltroEtapa     = '';
+let dpFiltroProyecto  = '';
+let dpFiltroAsignado  = '';
+let dpFiltroAtendido  = '';
+let dpFiltroEstado    = '';
+let dpFiltroSentido   = '';
+let dpFiltroTipo      = '';
+let dpFiltroOrigen    = '';
+let dpFiltroDesde     = '';
+let dpFiltroHasta     = '';
+let dpFiltroLimite    = 100;
+let dpFiltroOrden     = 'id';
+let dpFiltroDir       = 'desc';
+let dpEditandoId      = null;
+let dpBuscadorTimer   = null;
+let dpFiltrosSnapshot = null;
+
+// Mapeo legacy de `estado` tinyint del prospecto (mismo del ABM legacy
+// /prospectos). Se mantiene mientras se conviva con la columna. La nueva
+// dimension viva del embudo va por `etapa_id`, no por este campo.
+const DP_ESTADO_LEGACY = {
+  1: { label: 'Esperando',  cls: 'badge-warn' },
+  2: { label: 'Atendido',   cls: 'badge-info' },
+  3: { label: 'Despachado', cls: 'badge-success' },
+};
+
+function dpEstadoLegacyBadge(v) {
+  if (v === null || v === undefined || v === '') return `<span class="badge badge-info">—</span>`;
+  const def = DP_ESTADO_LEGACY[Number(v)];
+  return def
+    ? `<span class="badge ${def.cls}">${esc(def.label)}</span>`
+    : `<span class="badge badge-info">${esc(String(v))}</span>`;
+}
+
+function dpEtapaPill(e) {
+  if (!e.etapa_id) return `<span style="color:var(--muted)">—</span>`;
+  const color = e.etapa_color || '#3b82f6';
+  const nombre = e.etapa_nombre || `#${e.etapa_id}`;
+  return `<span style="display:inline-flex;align-items:center;gap:6px;font-size:.85rem">
+    <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${esc(color)};border:1px solid var(--border)"></span>
+    ${esc(nombre)}
+  </span>`;
+}
+
+// Devuelve las etapas del embudo indicado (usa dpLookups). Vacio si el
+// embudo no existe o dpLookups no cargo aun.
+function dpEtapasDelEmbudo(embudoId) {
+  if (!dpLookups || !dpLookups.etapas) return [];
+  const eid = Number(embudoId) || 0;
+  if (!eid) return [];
+  return dpLookups.etapas.filter((x) => Number(x.embudo_id) === eid);
+}
+
+async function dpCargarLookups(force = false) {
+  if (dpLookups && !force) return dpLookups;
+  try {
+    dpLookups = await apiGet(`${DP_API}?lookups=1`);
+  } catch {
+    dpLookups = { proyectos: [], usuarios: [], paises: [], embudos: [], etapas: [], opciones: {} };
+  }
+  // Enriquecer cada item con etapa_color / etapa_nombre desde el lookup
+  // (el backend ya devuelve etapa_nombre pero no color).
+  return dpLookups;
+}
+
+// Se ejecuta cada vez que llegan items nuevos: le pega a cada fila los
+// campos `etapa_color` / `embudo_color` que necesita el render, resueltos
+// desde el lookup en memoria (sin round-trip extra al backend).
+function dpEnriquecerConColores() {
+  if (!dpLookups) return;
+  const embMap = new Map(dpLookups.embudos.map((e) => [e.id, e]));
+  const etaMap = new Map(dpLookups.etapas.map((e) => [e.id, e]));
+  for (const it of dpItems) {
+    const em = embMap.get(Number(it.embudo_id));
+    const et = etaMap.get(Number(it.etapa_id));
+    it.embudo_color = em ? em.color : null;
+    it.etapa_color  = et ? et.color : null;
+    it.etapa_tipo   = et ? et.tipo  : null;
+  }
+}
+
+route('/datarocket_prospectos', async (mount) => {
+  await dpCargarLookups();
+
+  const opProy = ['<option value="">— Todos los proyectos —</option>']
+    .concat(dpLookups.proyectos.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`))
+    .join('');
+  const opUsr  = ['<option value="">— Todos —</option>']
+    .concat(dpLookups.usuarios.map((u) => `<option value="${u.id}">${esc(u.nombre)}</option>`))
+    .join('');
+  const opEmb  = ['<option value="">— Todos los embudos —</option>']
+    .concat(dpLookups.embudos.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`))
+    .join('');
+  // Las etapas del filtro se pintan al cambiar el embudo (funcion
+  // `dpReflejarEtapasFiltro`), no las hardcodeamos aca.
+
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🎯</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los prospectos son los interesados que entraron al embudo desde una campaña, la web
+            u otro canal, con sus datos de contacto, producto de interés, embudo y etapa
+            actual, y el usuario asignado para atenderlos.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="dpStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dpStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin atender</span><span class="stat-value" id="dpStatSinAtender">—</span></div>
+        <div class="stat-card"><span class="stat-label">Asignados</span><span class="stat-value" id="dpStatAsignados">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dpSearch"
+                   placeholder="🔍 Buscar nombre, organización, contacto, correo, asunto…">
+            <button class="search-clear" id="dpSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dpFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dpFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dpRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dpNuevoBtn">+ Nuevo prospecto</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead id="dpThead">
+            <tr>
+              ${thOrdenable('id',            'Código',   'width:80px')}
+              ${thOrdenable('ingreso',       'Ingreso',  'width:130px')}
+              ${thOrdenable('proyecto_id',   'Proyecto', 'width:130px')}
+              <th>Nombre / Organización</th>
+              ${thOrdenable('embudo_id',     'Embudo',   'width:150px')}
+              ${thOrdenable('etapa_id',      'Etapa',    'width:150px')}
+              ${thOrdenable('estado',        'Estado',   'width:110px;text-align:center')}
+              <th style="width:130px">Asignado</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dpTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dpCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="cambiar_etapa" role="menuitem">
+        <i class="fa-solid fa-arrows-left-right"></i><span>Cambiar etapa</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Submenu emergente con las etapas del embudo del prospecto seleccionado.
+         Se pobla dinamicamente al hacer click en "Cambiar etapa". -->
+    <div id="dpEtapasCtxMenu" class="ctx-menu" role="menu"></div>
+
+    <div class="modal-backdrop" id="filtrosDpBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDp()">
+      <div class="modal" style="max-width:640px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDp()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDpCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDp('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fDpProyecto" onchange="onFiltroDp('proyecto', this.value)">${opProy}</select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Embudo</label>
+              <select id="fDpEmbudo" onchange="onFiltroDp('embudo', this.value)">${opEmb}</select>
+            </div>
+            <div class="form-group">
+              <label>Etapa</label>
+              <select id="fDpEtapa" onchange="onFiltroDp('etapa', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Asignado</label>
+              <select id="fDpAsignado" onchange="onFiltroDp('asignado', this.value)">${opUsr}</select>
+            </div>
+            <div class="form-group">
+              <label>Atendido</label>
+              <select id="fDpAtendido" onchange="onFiltroDp('atendido', this.value)">${opUsr}</select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado (legacy)</label>
+            <div id="fDpEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-val=""  onclick="onFiltroDp('estado', '')">Todos</button>
+              <button type="button" class="filter-chip" data-val="1" onclick="onFiltroDp('estado', '1')">Esperando</button>
+              <button type="button" class="filter-chip" data-val="2" onclick="onFiltroDp('estado', '2')">Atendidos</button>
+              <button type="button" class="filter-chip" data-val="3" onclick="onFiltroDp('estado', '3')">Despachados</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fDpDesde" onchange="onFiltroDp('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fDpHasta" onchange="onFiltroDp('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDpLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDp('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDpOrden" onchange="onFiltroDp('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="ingreso">Ingreso</option>
+                <option value="etapa_ingreso">Ingreso a la etapa</option>
+                <option value="proyecto_id">Proyecto</option>
+                <option value="embudo_id">Embudo</option>
+                <option value="etapa_id">Etapa</option>
+                <option value="estado">Estado</option>
+                <option value="asignado">Asignado</option>
+                <option value="actualizado">Actualizado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDpDir" onchange="onFiltroDp('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDp()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDp()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDp()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dpSearch');
+  const clr = $('#dpSearchClear');
+  inp.value = dpBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dpBusqueda = inp.value.trim();
+    clearTimeout(dpBuscadorTimer);
+    dpBuscadorTimer = setTimeout(cargarDp, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dpBusqueda = ''; cargarDp();
+  });
+
+  $('#dpFiltrosBtn').addEventListener('click', abrirModalFiltrosDp);
+  $('#dpRefrescarBtn').addEventListener('click', cargarDp);
+  $('#dpNuevoBtn').addEventListener('click', () => abrirAltaEdicionDp(null));
+
+  $('#dpThead').addEventListener('click', (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (dpFiltroOrden === col) {
+      dpFiltroDir = dpFiltroDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      dpFiltroOrden = col;
+      dpFiltroDir   = 'asc';
+    }
+    dpActualizarBadgeFiltros();
+    cargarDp();
+  });
+
+  $('#dpCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b || b.disabled) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar')     abrirConsultaDp(data.id);
+    if (b.dataset.action === 'cambiar_etapa') abrirMenuCambiarEtapaDp(data.id);
+    if (b.dataset.action === 'editar')        abrirAltaEdicionDp(data.id);
+    if (b.dataset.action === 'eliminar')      eliminarDp(data.id);
+  });
+
+  $('#dpEtapasCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-etapa-id]');
+    if (!b) return;
+    const prospectoId = Number(b.dataset.prospectoId) || 0;
+    const etapaId     = Number(b.dataset.etapaId) || 0;
+    cerrarCtxMenu();
+    if (prospectoId && etapaId) cambiarEtapaDp(prospectoId, etapaId);
+  });
+
+  $('#dpTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      abrirCtxMenu($('#dpCtxMenu'), r.right - 220, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDp(Number(tr.dataset.id));
+  });
+  $('#dpTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    abrirCtxMenu($('#dpCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+  });
+
+  dpActualizarBadgeFiltros();
+  await cargarDp();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Prospectos');
+
+async function cargarDp() {
+  const tbody = $('#dpTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  if (dpBusqueda)                 qs.set('q', dpBusqueda);
+  if (dpFiltroCodigo)             qs.set('codigo',      dpFiltroCodigo);
+  if (dpFiltroProyecto)           qs.set('proyecto_id', dpFiltroProyecto);
+  if (dpFiltroEmbudo)             qs.set('embudo_id',   dpFiltroEmbudo);
+  if (dpFiltroEtapa)              qs.set('etapa_id',    dpFiltroEtapa);
+  if (dpFiltroAsignado)           qs.set('asignado',    dpFiltroAsignado);
+  if (dpFiltroAtendido)           qs.set('atendido',    dpFiltroAtendido);
+  if (dpFiltroEstado !== '')      qs.set('estado',      dpFiltroEstado);
+  if (dpFiltroSentido)            qs.set('sentido',     dpFiltroSentido);
+  if (dpFiltroTipo)               qs.set('tipo',        dpFiltroTipo);
+  if (dpFiltroOrigen)             qs.set('origen',      dpFiltroOrigen);
+  if (dpFiltroDesde)              qs.set('desde',       dpFiltroDesde);
+  if (dpFiltroHasta)              qs.set('hasta',       dpFiltroHasta);
+  if (dpFiltroLimite)             qs.set('limite',      dpFiltroLimite);
+  if (dpFiltroOrden)              qs.set('order_by',    dpFiltroOrden);
+  if (dpFiltroDir)                qs.set('dir',         dpFiltroDir);
+
+  try {
+    const data = await apiGet(DP_API + (qs.toString() ? '?' + qs.toString() : ''));
+    dpItems = data.items || [];
+    dpEnriquecerConColores();
+    pintarStatsDp(data.stats || {});
+    renderDp();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDp(s) {
+  $('#dpStatTotal').textContent      = fmtNum(s.total       ?? dpItems.length);
+  $('#dpStatSinAtender').textContent = fmtNum(s.sin_atender ?? 0);
+  $('#dpStatAsignados').textContent  = fmtNum(s.asignados   ?? 0);
+}
+
+function renderDp() {
+  const tbody = $('#dpTbody');
+  if (!tbody) return;
+  actualizarSortIndicadores($('#dpThead'), { order_by: dpFiltroOrden, dir: dpFiltroDir });
+  if (!dpItems.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin prospectos registrados.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = dpItems.map((p) => {
+    const nombre = p.nombre || p.contacto || '—';
+    const org    = p.organizacion || '';
+    const nomOrg = org
+      ? `<div style="font-weight:600">${esc(nombre)}</div><div style="color:var(--muted);font-size:.82rem">${esc(org)}</div>`
+      : `<div style="font-weight:600">${esc(nombre)}</div>`;
+    return `
+      <tr data-id="${p.id}" class="row-clickable">
+        <td><code style="font-size:.82rem">${p.id}</code></td>
+        <td style="font-size:.82rem;color:var(--muted)">${esc(fmtFecha(p.ingreso) || '—')}</td>
+        <td style="font-size:.85rem">${esc(p.proyecto_nombre || (p.proyecto_id ? `#${p.proyecto_id}` : '—'))}</td>
+        <td>${nomOrg}</td>
+        <td style="font-size:.85rem">${esc(p.embudo_nombre || '—')}</td>
+        <td>${dpEtapaPill(p)}</td>
+        <td style="text-align:center">${dpEstadoLegacyBadge(p.estado)}</td>
+        <td style="font-size:.85rem">${esc(p.asignado_nombre || '—')}</td>
+        <td style="text-align:center">
+          <div class="actions" style="justify-content:center">
+            <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ---------- Filtros ----------
+
+function abrirModalFiltrosDp() {
+  dpFiltrosSnapshot = {
+    codigo: dpFiltroCodigo, proyecto: dpFiltroProyecto,
+    embudo: dpFiltroEmbudo, etapa: dpFiltroEtapa,
+    asignado: dpFiltroAsignado, atendido: dpFiltroAtendido,
+    estado: dpFiltroEstado, sentido: dpFiltroSentido, tipo: dpFiltroTipo, origen: dpFiltroOrigen,
+    desde: dpFiltroDesde, hasta: dpFiltroHasta,
+    limite: dpFiltroLimite, orden: dpFiltroOrden, dir: dpFiltroDir,
+  };
+  $('#fDpCodigo').value    = dpFiltroCodigo || '';
+  $('#fDpProyecto').value  = dpFiltroProyecto || '';
+  $('#fDpEmbudo').value    = dpFiltroEmbudo || '';
+  $('#fDpAsignado').value  = dpFiltroAsignado || '';
+  $('#fDpAtendido').value  = dpFiltroAtendido || '';
+  $('#fDpDesde').value     = dpFiltroDesde || '';
+  $('#fDpHasta').value     = dpFiltroHasta || '';
+  $('#fDpLimite').value    = dpFiltroLimite || 100;
+  $('#fDpOrden').value     = dpFiltroOrden  || 'id';
+  $('#fDpDir').value       = dpFiltroDir    || 'desc';
+  dpReflejarChipsEstado();
+  dpReflejarEtapasFiltro();
+  document.getElementById('filtrosDpBackdrop').classList.add('open');
+}
+
+function cerrarModalFiltrosDp() {
+  document.getElementById('filtrosDpBackdrop').classList.remove('open');
+}
+
+function cancelarFiltrosDp() {
+  if (dpFiltrosSnapshot) {
+    dpFiltroCodigo   = dpFiltrosSnapshot.codigo;
+    dpFiltroProyecto = dpFiltrosSnapshot.proyecto;
+    dpFiltroEmbudo   = dpFiltrosSnapshot.embudo;
+    dpFiltroEtapa    = dpFiltrosSnapshot.etapa;
+    dpFiltroAsignado = dpFiltrosSnapshot.asignado;
+    dpFiltroAtendido = dpFiltrosSnapshot.atendido;
+    dpFiltroEstado   = dpFiltrosSnapshot.estado;
+    dpFiltroSentido  = dpFiltrosSnapshot.sentido;
+    dpFiltroTipo     = dpFiltrosSnapshot.tipo;
+    dpFiltroOrigen   = dpFiltrosSnapshot.origen;
+    dpFiltroDesde    = dpFiltrosSnapshot.desde;
+    dpFiltroHasta    = dpFiltrosSnapshot.hasta;
+    dpFiltroLimite   = dpFiltrosSnapshot.limite;
+    dpFiltroOrden    = dpFiltrosSnapshot.orden;
+    dpFiltroDir      = dpFiltrosSnapshot.dir;
+    dpActualizarBadgeFiltros();
+    cargarDp();
+  }
+  cerrarModalFiltrosDp();
+}
+
+function limpiarFiltrosDp() {
+  dpFiltroCodigo   = '';
+  dpFiltroProyecto = '';
+  dpFiltroEmbudo   = '';
+  dpFiltroEtapa    = '';
+  dpFiltroAsignado = '';
+  dpFiltroAtendido = '';
+  dpFiltroEstado   = '';
+  dpFiltroSentido  = '';
+  dpFiltroTipo     = '';
+  dpFiltroOrigen   = '';
+  dpFiltroDesde    = '';
+  dpFiltroHasta    = '';
+  dpFiltroLimite   = 100;
+  dpFiltroOrden    = 'id';
+  dpFiltroDir      = 'desc';
+  $('#fDpCodigo').value   = '';
+  $('#fDpProyecto').value = '';
+  $('#fDpEmbudo').value   = '';
+  $('#fDpAsignado').value = '';
+  $('#fDpAtendido').value = '';
+  $('#fDpDesde').value    = '';
+  $('#fDpHasta').value    = '';
+  $('#fDpLimite').value   = 100;
+  $('#fDpOrden').value    = 'id';
+  $('#fDpDir').value      = 'desc';
+  dpReflejarChipsEstado();
+  dpReflejarEtapasFiltro();
+  dpActualizarBadgeFiltros();
+  cargarDp();
+}
+
+function onFiltroDp(campo, valor) {
+  if (campo === 'codigo')   dpFiltroCodigo   = (valor || '').trim();
+  if (campo === 'proyecto') dpFiltroProyecto = (valor || '').trim();
+  if (campo === 'embudo')   { dpFiltroEmbudo = (valor || '').trim(); dpFiltroEtapa = ''; dpReflejarEtapasFiltro(); }
+  if (campo === 'etapa')    dpFiltroEtapa    = (valor || '').trim();
+  if (campo === 'asignado') dpFiltroAsignado = (valor || '').trim();
+  if (campo === 'atendido') dpFiltroAtendido = (valor || '').trim();
+  if (campo === 'estado')   { dpFiltroEstado = valor === '' ? '' : String(valor); dpReflejarChipsEstado(); }
+  if (campo === 'sentido')  dpFiltroSentido  = (valor || '').trim();
+  if (campo === 'tipo')     dpFiltroTipo     = (valor || '').trim();
+  if (campo === 'origen')   dpFiltroOrigen   = (valor || '').trim();
+  if (campo === 'desde')    dpFiltroDesde    = (valor || '').trim();
+  if (campo === 'hasta')    dpFiltroHasta    = (valor || '').trim();
+  if (campo === 'limite')   dpFiltroLimite   = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')    dpFiltroOrden    = valor || 'id';
+  if (campo === 'dir')      dpFiltroDir      = valor || 'desc';
+  dpActualizarBadgeFiltros();
+  cargarDp();
+}
+
+function dpReflejarChipsEstado() {
+  const cont = document.getElementById('fDpEstadoChips');
+  if (!cont) return;
+  cont.querySelectorAll('.filter-chip').forEach((el) => {
+    el.classList.toggle('active', String(el.dataset.val || '') === String(dpFiltroEstado || ''));
+  });
+}
+
+// Repuebla el select de etapas del filtro en funcion del embudo elegido.
+function dpReflejarEtapasFiltro() {
+  const sel = document.getElementById('fDpEtapa');
+  if (!sel) return;
+  const etapas = dpEtapasDelEmbudo(dpFiltroEmbudo);
+  const opts = ['<option value="">— Todas —</option>']
+    .concat(etapas.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`))
+    .join('');
+  sel.innerHTML = opts;
+  sel.value = dpFiltroEtapa || '';
+  sel.disabled = !dpFiltroEmbudo;
+}
+
+function dpActualizarBadgeFiltros() {
+  let n = 0;
+  if (dpFiltroCodigo)                 n++;
+  if (dpFiltroProyecto)               n++;
+  if (dpFiltroEmbudo)                 n++;
+  if (dpFiltroEtapa)                  n++;
+  if (dpFiltroAsignado)               n++;
+  if (dpFiltroAtendido)               n++;
+  if (dpFiltroEstado !== '')          n++;
+  if (dpFiltroSentido)                n++;
+  if (dpFiltroTipo)                   n++;
+  if (dpFiltroOrigen)                 n++;
+  if (dpFiltroDesde)                  n++;
+  if (dpFiltroHasta)                  n++;
+  if (Number(dpFiltroLimite) !== 100) n++;
+  if (dpFiltroOrden !== 'id')         n++;
+  if (dpFiltroDir   !== 'desc')       n++;
+  const badge = $('#dpFiltrosBadge');
+  const btn   = $('#dpFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ---------- Cambiar etapa (submenu contextual) ----------
+
+function abrirMenuCambiarEtapaDp(id) {
+  const p = dpItems.find((x) => x.id === id);
+  if (!p) return;
+  if (!p.embudo_id) {
+    toast('El prospecto no tiene embudo asignado. Editalo primero para asignarle uno.', { error: true });
+    return;
+  }
+  const etapas = dpEtapasDelEmbudo(p.embudo_id);
+  if (!etapas.length) {
+    toast('El embudo del prospecto no tiene etapas cargadas.', { error: true });
+    return;
+  }
+
+  const menu = document.getElementById('dpEtapasCtxMenu');
+  if (!menu) return;
+  menu.innerHTML = etapas.map((e) => {
+    const swatch = e.color
+      ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${esc(e.color)};margin-right:6px;vertical-align:middle;border:1px solid var(--border)"></span>`
+      : '';
+    const marca = Number(e.id) === Number(p.etapa_id) ? ' style="font-weight:700"' : '';
+    const chk   = Number(e.id) === Number(p.etapa_id)
+      ? '<i class="fa-solid fa-check" style="opacity:.6;margin-right:6px"></i>'
+      : '<i class="fa-solid fa-circle-dot" style="opacity:0;margin-right:6px"></i>';
+    return `
+      <button type="button" role="menuitem" data-prospecto-id="${p.id}" data-etapa-id="${e.id}"${marca}>
+        ${chk}${swatch}<span>${esc(e.nombre)}</span>
+      </button>
+    `;
+  }).join('');
+
+  // Posicionamos el submenu cerca del hamburguesa; si no se puede, en el centro.
+  const btn = document.querySelector(`#dpTbody [data-act="menu"][data-id="${p.id}"]`);
+  const x = btn ? (btn.getBoundingClientRect().right - 240) : (window.innerWidth / 2 - 120);
+  const y = btn ? (btn.getBoundingClientRect().bottom + 4) : (window.innerHeight / 2);
+
+  // Diferimos abrirCtxMenu al siguiente tick para evitar el auto-cierre por
+  // el listener global de outside-click: esta funcion se invoca desde el
+  // click handler del ctx menu padre, y ese click sigue burbujeando al
+  // document listener que cerraria el nuevo submenu (porque el target vive
+  // en el menu viejo, no en este nuevo). setTimeout(0) deja que el evento
+  // termine de propagar antes de abrir el submenu.
+  setTimeout(() => abrirCtxMenu(menu, x, y, {}), 0);
+}
+
+async function cambiarEtapaDp(id, etapaId) {
+  try {
+    const r = await apiSend(`${DP_API}?id=${id}&action=cambiar_etapa`, 'POST', { etapa_id: etapaId });
+    if (r.cambio === false) {
+      toast('El prospecto ya estaba en esa etapa');
+    } else {
+      toast('Etapa actualizada');
+    }
+    await cargarDp();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---------- Modales ----------
+
+function dpOpcionesCombo(campo) {
+  if (!dpLookups || !dpLookups.opciones) return '';
+  const arr = dpLookups.opciones[campo] || [];
+  return arr.map((o) => `<option value="${esc(o.valor)}">${esc(o.texto)}</option>`).join('');
+}
+
+// Alterna entre las 4 pestañas del modal de prospecto (General / Seguimiento
+// / Contacto / Notas). Registrado en window para usarse desde onclick inline
+// de los botones, siguiendo el patron de awsMsgCambiarTab y dremCambiarTab.
+function dpCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-dp-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.dpTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-dp-tab]').forEach((p) => {
+    p.hidden = p.dataset.dpTab !== tab;
+  });
+}
+window.dpCambiarTab = dpCambiarTab;
+
+// Renderiza el panel read-only del contacto vinculado al prospecto. Se usa
+// tanto en el modal Consulta como en el modal Editar (los datos de identidad
+// del prospecto no se editan mas desde aca, la fuente de verdad es
+// datarocket_contactos). Si el prospecto es viejo y todavia no tiene
+// contacto_id (transicion Fase 1 -> 2 del refactor), muestra un aviso en
+// lugar de los datos.
+function dpContactoLinkedPanel(p) {
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem;word-break:break-word">${valor}</div>
+    </div>
+  `;
+  const val = (v) => (v === null || v === undefined || v === '')
+    ? '<span style="color:var(--muted)">—</span>'
+    : esc(v);
+
+  if (!p.contacto_id) {
+    return `
+      <div style="padding:20px;text-align:center;color:var(--muted);background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px">
+        <div style="font-size:2rem;margin-bottom:8px">🔗</div>
+        <div style="font-weight:600;color:var(--text);margin-bottom:4px">Sin contacto vinculado</div>
+        <div style="font-size:.85rem">Este prospecto todavía no fue asociado a un contacto de Datarocket.<br>
+          Corré el backfill (migración <code>20260812_1100</code>) o editalo manualmente para vincularlo.</div>
+      </div>
+    `;
+  }
+
+  const btnFicha = `
+    <div style="grid-column:1/-1;flex:1 1 100%;display:flex;justify-content:flex-end;margin-top:4px">
+      <button type="button" class="btn btn-ghost" onclick="verFichaContactoDp(${Number(p.contacto_id)})">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i>&nbsp; Abrir ficha del contacto
+      </button>
+    </div>
+  `;
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:.85rem;color:var(--muted);padding:6px 2px">
+        <i class="fa-solid fa-circle-info" style="opacity:.7"></i>&nbsp;
+        Los datos del contacto se administran desde el módulo <b>Contactos</b>.
+        Para modificar nombre, correo, celular o cualquier otro dato de identidad,
+        abrí la ficha del contacto.
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:12px">
+        ${card('Código contacto', `<code>${Number(p.contacto_id)}</code>`)}
+        ${card('Tipo',            val((p.contacto_tipo || '').toString().replace(/^./, (c) => c.toUpperCase()) || null))}
+        ${card('Nombre',          val(p.contacto_nombre), 'full')}
+        ${card('Empresa',         val(p.contacto_empresa))}
+        ${card('Correo',          val(p.contacto_correo))}
+        ${card('Celular',         val(p.contacto_celular))}
+        ${card('WhatsApp',        val(p.contacto_whatsapp))}
+        ${card('Teléfono',        val(p.contacto_telefono))}
+        ${card('Web',             val(p.contacto_web), 'full')}
+        ${card('Domicilio',       val(p.contacto_domicilio), 'full')}
+        ${card('Ciudad',          val(p.contacto_ciudad))}
+        ${card('Localidad',       val(p.contacto_localidad))}
+        ${card('Provincia',       val(p.contacto_provincia))}
+        ${card('País',            val(p.contacto_pais))}
+        ${card('Ubicación',       val(p.contacto_ubicacion), 'full')}
+      </div>
+      ${btnFicha}
+    </div>
+  `;
+}
+
+// Navega al ABM de Contactos prefiltrado por el id del contacto — el usuario
+// ve una unica fila y hace click para abrir la ficha. Reutiliza el filtro
+// `codigo` que el ABM de contactos ya soporta (drCtFiltros.codigo).
+function verFichaContactoDp(contactoId) {
+  if (!contactoId) return;
+  Object.assign(drCtFiltros, drCtFiltrosDefaults, { codigo: String(contactoId) });
+  location.hash = '#/datarocketcontactos';
+}
+window.verFichaContactoDp = verFichaContactoDp;
+
+// Selector de contacto para el modal Nuevo prospecto. Renderiza:
+//   - Input de busqueda con typeahead (300ms debounce) que llama a
+//     api/datarocketcontactos.php?q=<query>&limite=20
+//   - Resultados en una lista desplegable — click elige el contacto
+//   - Card con los datos del contacto elegido (o placeholder si vacio)
+//   - Boton "Abrir ABM de Contactos" para crear uno nuevo desde ahi
+//
+// El id elegido queda en el hidden `#dpNuevoContactoId` que guardarDp() lee.
+function dpRenderNuevoContactoSelector() {
+  const body = document.getElementById('dpTabContactoBody');
+  if (!body) return;
+  body.innerHTML = `
+    <input type="hidden" id="dpNuevoContactoId" value="">
+
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:8px">
+      <i class="fa-solid fa-circle-info" style="opacity:.7"></i>&nbsp;
+      El prospecto necesita un contacto vinculado. Buscá uno existente por
+      nombre, correo o celular. Si no existe, creá el contacto desde el ABM
+      de <b>Contactos</b> y volvé acá.
+    </div>
+
+    <div style="position:relative">
+      <input type="search" id="dpNuevoContactoSearch" class="search-input"
+             placeholder="🔍 Buscar contacto por nombre, correo o celular…"
+             autocomplete="off" style="width:100%">
+      <div id="dpNuevoContactoResults"
+           style="position:absolute;top:100%;left:0;right:0;background:var(--surface);
+                  border:1px solid var(--border);border-radius:8px;margin-top:4px;
+                  max-height:280px;overflow-y:auto;z-index:5;display:none;box-shadow:var(--shadow-lg)"></div>
+    </div>
+
+    <div id="dpNuevoContactoElegido" style="margin-top:14px"></div>
+
+    <div style="display:flex;justify-content:flex-end;margin-top:10px">
+      <button type="button" class="btn btn-ghost" onclick="window.open('#/datarocketcontactos', '_blank')">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i>&nbsp; Abrir ABM de Contactos
+      </button>
+    </div>
+  `;
+
+  const inp     = document.getElementById('dpNuevoContactoSearch');
+  const results = document.getElementById('dpNuevoContactoResults');
+  const hidden  = document.getElementById('dpNuevoContactoId');
+  const chosen  = document.getElementById('dpNuevoContactoElegido');
+  let debounce  = null;
+
+  const renderPlaceholder = () => {
+    chosen.innerHTML = `
+      <div style="padding:14px;text-align:center;color:var(--muted);background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;font-size:.88rem">
+        Ningún contacto seleccionado todavía.
+      </div>`;
+  };
+  renderPlaceholder();
+
+  const renderChosen = (c) => {
+    hidden.value = String(c.id);
+    chosen.innerHTML = `
+      <div style="padding:14px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+          <div>
+            <div style="font-weight:600;font-size:1rem;margin-bottom:4px">${esc(c.nombre || '(sin nombre)')}</div>
+            <div style="color:var(--muted);font-size:.85rem">
+              <code style="font-size:.75rem">#${c.id}</code>
+              ${c.empresa ? ' · ' + esc(c.empresa) : ''}
+              ${c.correo ? ' · ' + esc(c.correo) : ''}
+              ${c.celular ? ' · ' + esc(c.celular) : ''}
+            </div>
+          </div>
+          <button type="button" class="btn-icon-sm" title="Quitar" onclick="dpQuitarContactoElegido()">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+      </div>`;
+  };
+
+  window.dpQuitarContactoElegido = () => {
+    hidden.value = '';
+    inp.value = '';
+    results.style.display = 'none';
+    renderPlaceholder();
+  };
+
+  inp.addEventListener('input', () => {
+    clearTimeout(debounce);
+    const q = inp.value.trim();
+    if (q.length < 2) { results.style.display = 'none'; return; }
+    debounce = setTimeout(async () => {
+      try {
+        const data = await apiGet(`api/datarocketcontactos.php?q=${encodeURIComponent(q)}&limite=20`);
+        const items = data.items || [];
+        if (!items.length) {
+          results.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:.85rem;text-align:center">Sin resultados</div>`;
+        } else {
+          results.innerHTML = items.map((c) => `
+            <button type="button" data-contacto-id="${c.id}"
+                    style="display:block;width:100%;text-align:left;padding:10px 12px;background:none;border:none;border-bottom:1px solid var(--border);cursor:pointer;color:var(--text)"
+                    onmouseover="this.style.background='var(--row-hover)'"
+                    onmouseout="this.style.background='none'">
+              <div style="font-weight:600;font-size:.9rem">${esc(c.nombre || '(sin nombre)')}</div>
+              <div style="color:var(--muted);font-size:.78rem;margin-top:2px">
+                <code style="font-size:.72rem">#${c.id}</code>
+                ${c.empresa ? ' · ' + esc(c.empresa) : ''}
+                ${c.correo ? ' · ' + esc(c.correo) : ''}
+                ${c.celular ? ' · ' + esc(c.celular) : ''}
+              </div>
+            </button>
+          `).join('');
+        }
+        results.style.display = '';
+      } catch (e) {
+        results.innerHTML = `<div style="padding:12px;color:var(--danger,#ef4444);font-size:.85rem">Error: ${esc(e.message)}</div>`;
+        results.style.display = '';
+      }
+    }, 300);
+  });
+
+  // Click en un resultado -> elegir contacto y cerrar el dropdown.
+  results.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-contacto-id]');
+    if (!b) return;
+    const id = Number(b.dataset.contactoId);
+    try {
+      const data = await apiGet(`api/datarocketcontactos.php?id=${id}`);
+      renderChosen(data);
+      inp.value = data.nombre || '';
+      results.style.display = 'none';
+    } catch (e) {
+      toast('Error al cargar contacto: ' + e.message, { error: true });
+    }
+  });
+
+  // Cerrar dropdown al clickear afuera.
+  document.addEventListener('click', (ev) => {
+    if (!body.contains(ev.target)) results.style.display = 'none';
+  }, { once: false });
+}
+
+function abrirAltaEdicionDp(id) {
+  dpEditandoId = id;
+  const editando = !!id;
+  const p = editando ? dpItems.find((x) => x.id === id) : null;
+  const titulo = editando ? `Editar prospecto #${id}` : 'Nuevo prospecto';
+
+  const opProy = ['<option value="">— (Ninguno) —</option>']
+    .concat(dpLookups.proyectos.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
+    .join('');
+  const opUsr  = ['<option value="">— (Ninguno) —</option>']
+    .concat(dpLookups.usuarios.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
+    .join('');
+  const opEmb  = ['<option value="">— (Ninguno) —</option>']
+    .concat(dpLookups.embudos.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
+    .join('');
+
+  // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — misma razon
+  // (`.modal` global solo declara `overflow-y:auto`, por spec el eje contrario
+  // tambien se computa `auto` y cualquier descendiente wider dispara scroll).
+  openModal(`
+    <div class="modal" style="max-width:820px;overflow-x:hidden">
+      <div class="modal-header">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- .modal-tabs va DENTRO de .modal-body (mismo patron que awsMsg y
+             Contacto Datarocket). Afuera queda pegado al borde del modal. -->
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-dp-tab="general"     onclick="dpCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab" data-dp-tab="seguimiento" onclick="dpCambiarTab('seguimiento')">
+            <i class="fa-solid fa-arrow-trend-up"></i> Seguimiento
+          </button>
+          <button type="button" class="modal-tab" role="tab" data-dp-tab="contacto"    onclick="dpCambiarTab('contacto')">
+            <i class="fa-solid fa-address-book"></i> Contacto
+          </button>
+          <button type="button" class="modal-tab" role="tab" data-dp-tab="notas"       onclick="dpCambiarTab('notas')">
+            <i class="fa-solid fa-note-sticky"></i> Notas
+          </button>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- TAB: General — ingreso, proyecto, producto, asunto, sentido, -->
+        <!-- origen, tipo. Datos del mensaje/lead inicial que dio origen  -->
+        <!-- al prospecto. Los datos de identidad del humano (nombre,     -->
+        <!-- correo, celular, empresa, ubicacion) NO viven mas aca — se   -->
+        <!-- muestran en el tab Contacto derivados del contacto vinculado -->
+        <!-- via datarocket_contactos.                                    -->
+        <!-- ============================================================ -->
+        <div class="modal-tabpanel" data-dp-tab="general">
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Ingreso</label>
+              <input type="datetime-local" id="dpIngreso">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="dpProyectoId">${opProy}</select>
+            </div>
+            <div class="form-group">
+              <label>Producto</label>
+              <input type="text" id="dpProducto" maxlength="100" placeholder="Producto o servicio">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Sentido</label>
+              <select id="dpSentido"><option value="">—</option>${dpOpcionesCombo('sentido')}</select>
+            </div>
+            <div class="form-group">
+              <label>Origen</label>
+              <select id="dpOrigen"><option value="">—</option>${dpOpcionesCombo('origen')}</select>
+            </div>
+            <div class="form-group">
+              <label>Tipo</label>
+              <select id="dpTipo"><option value="">—</option>${dpOpcionesCombo('tipo')}</select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Asunto</label>
+            <input type="text" id="dpAsunto" maxlength="255">
+          </div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- TAB: Seguimiento — embudo, etapa, ingreso a la etapa, estado -->
+        <!-- (legacy), calificacion, aplazado, asignado, atendido. Donde  -->
+        <!-- vive el prospecto en el pipeline y quien lo trabaja.         -->
+        <!-- ============================================================ -->
+        <div class="modal-tabpanel" data-dp-tab="seguimiento" hidden>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Embudo</label>
+              <select id="dpEmbudoId">${opEmb}</select>
+            </div>
+            <div class="form-group">
+              <label>Etapa</label>
+              <select id="dpEtapaId"><option value="">— (Ninguna) —</option></select>
+            </div>
+            <div class="form-group">
+              <label>Ingreso a la etapa</label>
+              <input type="datetime-local" id="dpEtapaIngreso">
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Estado (legacy)</label>
+              <select id="dpEstado"><option value="">—</option>${dpOpcionesCombo('estado')}</select>
+            </div>
+            <div class="form-group">
+              <label>Calificación</label>
+              <input type="number" id="dpCalificacion" min="0" step="1">
+            </div>
+            <div class="form-group">
+              <label>Aplazado hasta</label>
+              <input type="datetime-local" id="dpAplazado">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Asignado</label>
+              <select id="dpAsignado">${opUsr}</select>
+            </div>
+            <div class="form-group">
+              <label>Atendido por</label>
+              <select id="dpAtendido">${opUsr}</select>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- TAB: Contacto — placeholder inicial. Se rellena con              -->
+        <!-- dpContactoLinkedPanel(p) para prospectos existentes, o con un   -->
+        <!-- selector de contacto para altas nuevas (via dpRenderContactoTab).-->
+        <!-- ============================================================ -->
+        <div class="modal-tabpanel" data-dp-tab="contacto" hidden id="dpTabContactoBody">
+          <div style="text-align:center;padding:40px;color:var(--muted)"><div class="spin"></div></div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- TAB: Notas — comentarios (max 1000) + acciones (log libre).  -->
+        <!-- ============================================================ -->
+        <div class="modal-tabpanel" data-dp-tab="notas" hidden>
+          <div class="form-group">
+            <label>Comentarios (max 1000)</label>
+            <textarea id="dpComentarios" rows="4" maxlength="1000"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Acciones (log libre)</label>
+            <textarea id="dpAcciones" rows="6"></textarea>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  // Handler del select de embudo para poblar el select de etapas dependiente.
+  const embSel   = $('#dpEmbudoId');
+  const etaSel   = $('#dpEtapaId');
+  const repintarEtapas = (embudoId, seleccionar) => {
+    const etapas = dpEtapasDelEmbudo(embudoId);
+    etaSel.innerHTML = ['<option value="">— (Ninguna) —</option>']
+      .concat(etapas.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`))
+      .join('');
+    etaSel.value = seleccionar ? String(seleccionar) : '';
+    etaSel.disabled = !embudoId;
+  };
+  embSel.addEventListener('change', () => repintarEtapas(embSel.value, ''));
+
+  const setDT = (id, v) => {
+    if (!v) { $(id).value = ''; return; }
+    // Espera 'YYYY-MM-DD HH:MM[:SS]' desde el backend.
+    const m = String(v).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+    $(id).value = m ? `${m[1]}T${m[2]}` : '';
+  };
+
+  if (editando && p) {
+    setDT('#dpIngreso',       p.ingreso);
+    $('#dpProyectoId').value  = p.proyecto_id  || '';
+    $('#dpProducto').value    = p.producto     || '';
+    $('#dpSentido').value     = p.sentido      || '';
+    $('#dpOrigen').value      = p.origen       || '';
+    $('#dpTipo').value        = p.tipo         || '';
+    $('#dpAsunto').value      = p.asunto       || '';
+    $('#dpEmbudoId').value    = p.embudo_id    || '';
+    repintarEtapas(p.embudo_id || '', p.etapa_id || '');
+    setDT('#dpEtapaIngreso',  p.etapa_ingreso);
+    $('#dpEstado').value      = (p.estado === null || p.estado === undefined) ? '' : String(p.estado);
+    $('#dpCalificacion').value = (p.calificacion === null || p.calificacion === undefined) ? '' : p.calificacion;
+    setDT('#dpAplazado',      p.aplazado);
+    $('#dpAsignado').value    = p.asignado     || '';
+    $('#dpAtendido').value    = p.atendido     || '';
+    $('#dpComentarios').value = p.comentarios  || '';
+    $('#dpAcciones').value    = p.acciones     || '';
+    // Tab Contacto en modo Edicion: read-only + boton "Abrir ficha".
+    // Al editar no se puede re-vincular el prospecto a otro contacto (regla
+    // del backend + de producto: si el vendedor detecta el error debe borrar
+    // y crear de nuevo). El contacto es inmutable desde este modal.
+    $('#dpTabContactoBody').innerHTML = dpContactoLinkedPanel(p);
+  } else {
+    // Nuevo: si hay filtro de embudo activo, arrancamos ahi.
+    if (dpFiltroEmbudo) {
+      $('#dpEmbudoId').value = dpFiltroEmbudo;
+      repintarEtapas(dpFiltroEmbudo, '');
+    } else {
+      // Si hay embudo activo por default (el primero activo), seleccionarlo.
+      const def = dpLookups.embudos.find((e) => e.activo === 1);
+      if (def) {
+        $('#dpEmbudoId').value = def.id;
+        repintarEtapas(def.id, '');
+      }
+    }
+    // Tab Contacto en modo Alta: selector de contacto obligatorio con
+    // typeahead. Ver dpRenderNuevoContactoSelector() para el markup y la
+    // logica. El backend rechaza el POST sin contacto_id.
+    dpRenderNuevoContactoSelector();
+  }
+
+  // Foco inicial: en Alta arrancamos en el tab Contacto y focus al buscador
+  // (elegir contacto es el primer paso obligatorio). En Edicion, foco al
+  // primer control visible del tab General (proyecto).
+  if (editando) {
+    setTimeout(() => $('#dpProyectoId')?.focus(), 50);
+  } else {
+    dpCambiarTab('contacto');
+    setTimeout(() => document.getElementById('dpNuevoContactoSearch')?.focus(), 50);
+  }
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDp();
+  });
+}
+
+async function guardarDp() {
+  const nullIfEmpty = (v) => (v === null || v === undefined || String(v).trim() === '') ? null : v;
+  const dtIfSet = (id) => {
+    const v = $(id).value;
+    if (!v) return null;
+    // 'YYYY-MM-DDTHH:MM' -> 'YYYY-MM-DD HH:MM:00' (el backend acepta ambos)
+    return v.replace('T', ' ') + (v.length === 16 ? ':00' : '');
+  };
+
+  // Body base: data de mensaje inicial + seguimiento + notas. Los 12 campos
+  // de identidad (nombre / contacto / celular / correo / web / organizacion /
+  // domicilio / ciudad / localidad / provincia / pais / ubicacion) NO se
+  // envian mas — viven en el contacto vinculado.
+  const body = {
+    ingreso:       dtIfSet('#dpIngreso'),
+    proyecto_id:   nullIfEmpty($('#dpProyectoId').value),
+    sentido:       nullIfEmpty($('#dpSentido').value),
+    origen:        nullIfEmpty($('#dpOrigen').value),
+    tipo:          nullIfEmpty($('#dpTipo').value),
+    producto:      nullIfEmpty($('#dpProducto').value.trim()),
+    asunto:        nullIfEmpty($('#dpAsunto').value.trim()),
+    calificacion:  nullIfEmpty($('#dpCalificacion').value),
+    estado:        nullIfEmpty($('#dpEstado').value),
+    embudo_id:     nullIfEmpty($('#dpEmbudoId').value),
+    etapa_id:      nullIfEmpty($('#dpEtapaId').value),
+    etapa_ingreso: dtIfSet('#dpEtapaIngreso'),
+    asignado:      nullIfEmpty($('#dpAsignado').value),
+    atendido:      nullIfEmpty($('#dpAtendido').value),
+    aplazado:      dtIfSet('#dpAplazado'),
+    comentarios:   nullIfEmpty($('#dpComentarios').value.trim()),
+    acciones:      nullIfEmpty($('#dpAcciones').value),
+  };
+
+  // contacto_id solo se envia en alta (el backend rechaza el POST sin el).
+  // En edicion NO se puede re-vincular — el backend lo ignora aunque venga
+  // en el payload.
+  if (!dpEditandoId) {
+    const contactoId = Number($('#dpNuevoContactoId')?.value || 0);
+    if (!contactoId) {
+      toast('Seleccioná un contacto (pestaña Contacto) antes de guardar', { error: true });
+      dpCambiarTab('contacto');
+      return;
+    }
+    body.contacto_id = contactoId;
+  }
+
+  try {
+    if (dpEditandoId) {
+      await apiSend(`${DP_API}?id=${dpEditandoId}`, 'PUT', body);
+      toast('Prospecto actualizado');
+    } else {
+      await apiSend(DP_API, 'POST', body);
+      toast('Prospecto creado');
+    }
+    closeModal();
+    dpEditandoId = null;
+    await cargarDp();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+function abrirConsultaDp(id) {
+  const p = dpItems.find((x) => x.id === id);
+  if (!p) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem;word-break:break-word">${valor}</div>
+    </div>
+  `;
+  const val = (v) => (v === null || v === undefined || v === '') ? '<span style="color:var(--muted)">—</span>' : esc(v);
+  const preText = (v) => (v === null || v === undefined || v === '')
+    ? '<span style="color:var(--muted)">—</span>'
+    : `<pre style="white-space:pre-wrap;margin:0;font-family:inherit;font-size:.9rem">${esc(v)}</pre>`;
+
+  // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — misma razon.
+  // Las 5 pestañas siguen la misma agrupacion que el modal de Edicion para que
+  // el usuario encuentre los campos en el mismo lugar en ambos modos.
+  openModal(`
+    <div class="modal" style="max-width:820px;overflow-x:hidden">
+      <div class="modal-header">
+        <div class="modal-title">
+          🎯 <span class="modal-subtitle">${esc(p.nombre || p.contacto || '(sin nombre)')} — #${p.id}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- .modal-tabs va DENTRO de .modal-body (mismo patron que awsMsg y
+             Contacto Datarocket). Afuera queda pegado al borde del modal. -->
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-dp-tab="general"     onclick="dpCambiarTab('general')">
+            <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab" data-dp-tab="seguimiento" onclick="dpCambiarTab('seguimiento')">
+            <i class="fa-solid fa-arrow-trend-up"></i> Seguimiento
+          </button>
+          <button type="button" class="modal-tab" role="tab" data-dp-tab="contacto"    onclick="dpCambiarTab('contacto')">
+            <i class="fa-solid fa-address-book"></i> Contacto
+          </button>
+          <button type="button" class="modal-tab" role="tab" data-dp-tab="notas"       onclick="dpCambiarTab('notas')">
+            <i class="fa-solid fa-note-sticky"></i> Notas
+          </button>
+        </div>
+
+        <div class="modal-tabpanel" data-dp-tab="general">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Código',       `<code>${p.id}</code>`)}
+            ${card('Ingreso',      val(fmtFecha(p.ingreso)))}
+            ${card('Proyecto',     val(p.proyecto_nombre))}
+            ${card('Producto',     val(p.producto))}
+            ${card('Sentido',      val(p.sentido_texto || p.sentido))}
+            ${card('Origen',       val(p.origen_texto  || p.origen))}
+            ${card('Tipo',         val(p.tipo_texto    || p.tipo))}
+            ${card('Actualizado',  val(fmtFecha(p.actualizado)))}
+            ${card('Asunto',       val(p.asunto), 'full')}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dp-tab="seguimiento" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Embudo',        val(p.embudo_nombre))}
+            ${card('Etapa',         dpEtapaPill(p))}
+            ${card('Ingreso a la etapa', val(fmtFecha(p.etapa_ingreso)))}
+            ${card('Estado (legacy)', dpEstadoLegacyBadge(p.estado))}
+            ${card('Calificación',  val(p.calificacion))}
+            ${card('Aplazado',      val(fmtFecha(p.aplazado)))}
+            ${card('Asignado',      val(p.asignado_nombre))}
+            ${card('Atendido por',  val(p.atendido_nombre))}
+          </div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- TAB: Contacto — read-only, viene 100% de datarocket_contactos-->
+        <!-- via JOIN. Para modificar hay que abrir la ficha del contacto.-->
+        <!-- ============================================================ -->
+        <div class="modal-tabpanel" data-dp-tab="contacto" hidden>
+          ${dpContactoLinkedPanel(p)}
+        </div>
+
+        <div class="modal-tabpanel" data-dp-tab="notas" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Comentarios',   preText(p.comentarios), 'full')}
+            ${card('Acciones',      preText(p.acciones),    'full')}
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDp(id); }
+  });
+}
+
+async function eliminarDp(id) {
+  const p = dpItems.find((x) => x.id === id);
+  if (!p) return;
+  const nombre = p.nombre || p.contacto || `#${id}`;
+  const ok = await confirmar({
+    title:       'Eliminar prospecto',
+    message:     `¿Eliminás el prospecto "${nombre}"? Esta acción no se puede deshacer.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DP_API}?id=${id}`, 'DELETE');
+    toast('Prospecto eliminado');
+    await cargarDp();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
 }
 
 // ------------------------- Vista: Datasale (landing) -------------------------
