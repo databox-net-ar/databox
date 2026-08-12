@@ -48,7 +48,7 @@ function handleList(PDO $pdo, array $q): void {
     $host      = trim((string)($q['host']      ?? ''));
     $region    = trim((string)($q['region']    ?? ''));
     $cuentaId  = isset($q['cuenta_id']) && $q['cuenta_id'] !== '' ? (int)$q['cuenta_id'] : null;
-    $estado    = trim((string)($q['estado']    ?? ''));
+    $existe    = trim((string)($q['existe']    ?? ''));
     $search    = trim((string)($q['q']         ?? ''));
 
     $orderBy = $q['order_by'] ?? 'id';
@@ -69,7 +69,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($host     !== '')   { $where[] = '(s.host LIKE :host OR s.ip LIKE :host2)'; $params[':host'] = "%{$host}%"; $params[':host2'] = "%{$host}%"; }
     if ($region   !== '')   { $where[] = 's.region = :region';                $params[':region']    = $region; }
     if ($cuentaId !== null) { $where[] = 's.cuenta_id = :cuenta_id';          $params[':cuenta_id'] = $cuentaId; }
-    if ($estado   !== '')   { $where[] = 's.estado = :estado';                $params[':estado']    = $estado; }
+    if ($existe   !== '')   { $where[] = 's.existe = :existe';                $params[':existe']    = $existe; }
 
     if ($search !== '') {
         $where[] = '(s.nombre LIKE :s_n OR s.host LIKE :s_h OR s.ip LIKE :s_i OR s.region LIKE :s_r)';
@@ -81,14 +81,16 @@ function handleList(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    $totalGlobal  = (int)$pdo->query("SELECT COUNT(*) FROM aws_servidores")->fetchColumn();
-    $activosGlobal = (int)$pdo->query(
-        "SELECT COUNT(*) FROM aws_servidores WHERE estado = '1'"
+    $totalGlobal    = (int)$pdo->query("SELECT COUNT(*) FROM aws_servidores")->fetchColumn();
+    $existenGlobal  = (int)$pdo->query(
+        "SELECT COUNT(*) FROM aws_servidores WHERE existe = '1'"
     )->fetchColumn();
 
     $sql = "
         SELECT s.id, s.nombre, s.host, s.ip, s.region, s.tipo_instancia,
-               s.usuario_ssh, s.cuenta_id, s.estado, s.actualizado,
+               s.estado_ec2, s.sistema_operativo, s.cpu, s.memoria,
+               s.almacenamiento, s.usuario_ssh, s.cuenta_id, s.existe, s.notas,
+               s.actualizado,
                c.nombre AS cuenta_nombre
         FROM aws_servidores s
         LEFT JOIN aws_cuentas c ON c.id = s.cuenta_id
@@ -102,8 +104,8 @@ function handleList(PDO $pdo, array $q): void {
 
     jsonOk([
         'stats' => [
-            'total'   => $totalGlobal,
-            'activos' => $activosGlobal,
+            'total'    => $totalGlobal,
+            'existen'  => $existenGlobal,
         ],
         'items' => $rows,
     ]);
@@ -112,8 +114,9 @@ function handleList(PDO $pdo, array $q): void {
 function handleGetOne(PDO $pdo, int $id): void {
     $stmt = $pdo->prepare('
         SELECT s.id, s.nombre, s.host, s.ip, s.region, s.tipo_instancia,
-               s.usuario_ssh, s.contrasena_ssh, s.cuenta_id, s.estado,
-               s.notas, s.actualizado,
+               s.estado_ec2, s.sistema_operativo, s.cpu, s.memoria,
+               s.almacenamiento, s.usuario_ssh, s.contrasena_ssh, s.cuenta_id,
+               s.existe, s.notas, s.actualizado,
                c.nombre AS cuenta_nombre
         FROM aws_servidores s
         LEFT JOIN aws_cuentas c ON c.id = s.cuenta_id
@@ -137,20 +140,29 @@ function sanitizePayload(array $in): array {
     if ($cuentaId === '' || $cuentaId === 0 || $cuentaId === '0') $cuentaId = null;
     $cuentaId = $cuentaId !== null ? (int)$cuentaId : null;
 
-    $estado = trim((string)($in['estado'] ?? '1'));
-    if (!in_array($estado, ['0', '1'], true)) $estado = '1';
+    // cpu (vCPUs, entero) y memoria (MiB, entero) son opcionales: string vacio
+    // o valor no numerico -> NULL. Negativos se limpian a NULL tambien.
+    $cpu     = $in['cpu']     ?? null;
+    $memoria = $in['memoria'] ?? null;
+    $cpu     = ($cpu     !== null && $cpu     !== '' && is_numeric($cpu))     ? max(0, (int)$cpu)     : null;
+    $memoria = ($memoria !== null && $memoria !== '' && is_numeric($memoria)) ? max(0, (int)$memoria) : null;
+    if ($cpu     === 0) $cpu     = null;
+    if ($memoria === 0) $memoria = null;
 
     return [
-        'nombre'         => $nombre,
-        'host'           => trim((string)($in['host']           ?? '')) ?: null,
-        'ip'             => trim((string)($in['ip']             ?? '')) ?: null,
-        'region'         => trim((string)($in['region']         ?? '')) ?: null,
-        'tipo_instancia' => trim((string)($in['tipo_instancia'] ?? '')) ?: null,
-        'usuario_ssh'    => trim((string)($in['usuario_ssh']    ?? '')) ?: null,
-        'contrasena_ssh' => trim((string)($in['contrasena_ssh'] ?? '')) ?: null,
-        'cuenta_id'      => $cuentaId,
-        'estado'         => $estado,
-        'notas'          => trim((string)($in['notas']          ?? '')) ?: null,
+        'nombre'            => $nombre,
+        'host'              => trim((string)($in['host']              ?? '')) ?: null,
+        'ip'                => trim((string)($in['ip']                ?? '')) ?: null,
+        'region'            => trim((string)($in['region']            ?? '')) ?: null,
+        'tipo_instancia'    => trim((string)($in['tipo_instancia']    ?? '')) ?: null,
+        'sistema_operativo' => trim((string)($in['sistema_operativo'] ?? '')) ?: null,
+        'cpu'               => $cpu,
+        'memoria'           => $memoria,
+        'almacenamiento'    => trim((string)($in['almacenamiento']    ?? '')) ?: null,
+        'usuario_ssh'       => trim((string)($in['usuario_ssh']       ?? '')) ?: null,
+        'contrasena_ssh'    => trim((string)($in['contrasena_ssh']    ?? '')) ?: null,
+        'cuenta_id'         => $cuentaId,
+        'notas'             => trim((string)($in['notas']             ?? '')) ?: null,
     ];
 }
 
@@ -158,24 +170,29 @@ function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
     $stmt = $pdo->prepare('
         INSERT INTO aws_servidores (
-            nombre, host, ip, region, tipo_instancia,
-            usuario_ssh, contrasena_ssh, cuenta_id, estado, notas
+            nombre, host, ip, region, tipo_instancia, sistema_operativo,
+            cpu, memoria, almacenamiento, usuario_ssh, contrasena_ssh,
+            cuenta_id, notas
         ) VALUES (
-            :nombre, :host, :ip, :region, :tipo_instancia,
-            :usuario_ssh, :contrasena_ssh, :cuenta_id, :estado, :notas
+            :nombre, :host, :ip, :region, :tipo_instancia, :sistema_operativo,
+            :cpu, :memoria, :almacenamiento, :usuario_ssh, :contrasena_ssh,
+            :cuenta_id, :notas
         )
     ');
     $stmt->execute([
-        ':nombre'         => $p['nombre'],
-        ':host'           => $p['host'],
-        ':ip'             => $p['ip'],
-        ':region'         => $p['region'],
-        ':tipo_instancia' => $p['tipo_instancia'],
-        ':usuario_ssh'    => $p['usuario_ssh'],
-        ':contrasena_ssh' => $p['contrasena_ssh'],
-        ':cuenta_id'      => $p['cuenta_id'],
-        ':estado'         => $p['estado'],
-        ':notas'          => $p['notas'],
+        ':nombre'            => $p['nombre'],
+        ':host'              => $p['host'],
+        ':ip'                => $p['ip'],
+        ':region'            => $p['region'],
+        ':tipo_instancia'    => $p['tipo_instancia'],
+        ':sistema_operativo' => $p['sistema_operativo'],
+        ':cpu'               => $p['cpu'],
+        ':memoria'           => $p['memoria'],
+        ':almacenamiento'    => $p['almacenamiento'],
+        ':usuario_ssh'       => $p['usuario_ssh'],
+        ':contrasena_ssh'    => $p['contrasena_ssh'],
+        ':cuenta_id'         => $p['cuenta_id'],
+        ':notas'             => $p['notas'],
     ]);
     jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
 }
@@ -185,32 +202,29 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Servidor AWS no encontrado', 404);
 
-    $p = sanitizePayload($in);
+    // Update parcial: solo actualizamos los campos que el operador puede
+    // editar a mano desde el modal (usuario_ssh / contrasena_ssh / notas).
+    // El resto de las columnas (nombre / host / ip / region / tipo /
+    // cpu / memoria / almacenamiento / sistema_operativo / estado_ec2 /
+    // cuenta_id / instance_id) las maneja exclusivamente el boton
+    // "Obtener" (awsservidores_obtener.php) — el modal Editar ya no expone
+    // esos campos para evitar que un guardado pise datos que vinieron
+    // autoritativamente desde AWS.
+    $usuarioSsh    = trim((string)($in['usuario_ssh']    ?? '')) ?: null;
+    $contrasenaSsh = trim((string)($in['contrasena_ssh'] ?? '')) ?: null;
+    $notas         = trim((string)($in['notas']          ?? '')) ?: null;
+
     $stmt = $pdo->prepare('
         UPDATE aws_servidores
-           SET nombre         = :nombre,
-               host           = :host,
-               ip             = :ip,
-               region         = :region,
-               tipo_instancia = :tipo_instancia,
-               usuario_ssh    = :usuario_ssh,
+           SET usuario_ssh    = :usuario_ssh,
                contrasena_ssh = :contrasena_ssh,
-               cuenta_id      = :cuenta_id,
-               estado         = :estado,
                notas          = :notas
          WHERE id = :id
     ');
     $stmt->execute([
-        ':nombre'         => $p['nombre'],
-        ':host'           => $p['host'],
-        ':ip'             => $p['ip'],
-        ':region'         => $p['region'],
-        ':tipo_instancia' => $p['tipo_instancia'],
-        ':usuario_ssh'    => $p['usuario_ssh'],
-        ':contrasena_ssh' => $p['contrasena_ssh'],
-        ':cuenta_id'      => $p['cuenta_id'],
-        ':estado'         => $p['estado'],
-        ':notas'          => $p['notas'],
+        ':usuario_ssh'    => $usuarioSsh,
+        ':contrasena_ssh' => $contrasenaSsh,
+        ':notas'          => $notas,
         ':id'             => $id,
     ]);
     jsonOk(['id' => $id]);

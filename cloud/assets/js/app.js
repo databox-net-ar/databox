@@ -5095,7 +5095,7 @@ async function eliminarAwsCuenta(id) {
 // modales Consultar y Alta/Edicion. cuenta_id resuelve `nombre` via LEFT
 // JOIN con aws_cuentas en el server.
 const awsSrvFiltrosDefaults = {
-  q: '', codigo: '', nombre: '', host: '', region: '', cuenta_id: '', estado: '',
+  q: '', codigo: '', nombre: '', host: '', region: '', cuenta_id: '', existe: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const awsSrvFiltros = { ...awsSrvFiltrosDefaults };
@@ -5132,7 +5132,7 @@ route('/awsservidores', async (mount) => {
 
       <div class="stats-bar" id="awsSrvStats">
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Existen en AWS</span><span class="stat-value">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -5149,9 +5149,47 @@ route('/awsservidores', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="awsSrvRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="awsSrvMenuBtn" title="Más acciones">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
-        <div class="toolbar-right">
-          <button class="btn btn-primary" id="awsSrvNuevoBtn">+ Nuevo servidor</button>
+        <div class="toolbar-right"></div>
+      </div>
+
+      <div id="awsSrvToolMenu" class="ctx-menu" role="menu">
+        <button type="button" data-action="obtener" role="menuitem">
+          <i class="fa-solid fa-cloud-arrow-down"></i><span>Obtener</span>
+        </button>
+      </div>
+
+      <div class="modal-backdrop" id="awsSrvObtenerBackdrop"
+           onclick="if(event.target===this)cerrarObtenerAwsSrv()">
+        <div class="modal modal-wide">
+          <div class="modal-header">
+            <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:1.2rem">☁️</span>
+              <span>Obtener servidores EC2</span>
+              <span id="awsSrvObtenerResumen" class="modal-subtitle"></span>
+            </div>
+            <button class="btn-icon-sm" type="button" onclick="cerrarObtenerAwsSrv()" title="Cerrar">×</button>
+          </div>
+          <div class="modal-body" style="gap:12px">
+            <div style="font-size:.85rem;color:var(--muted);line-height:1.5">
+              Recorre todas las cuentas AWS configuradas y trae todas las
+              instancias EC2 de cada región habilitada, registrándolas o
+              actualizándolas en el catálogo de servidores.
+            </div>
+            <div>
+              <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">
+                Log de ejecución
+              </label>
+              <pre class="terminal-log terminal-log-neutro" id="awsSrvObtenerLog"><span class="term-info">Presioná «Iniciar» para empezar.</span></pre>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost"   id="awsSrvObtenerBtnCerrar" onclick="cerrarObtenerAwsSrv()">Cerrar</button>
+            <button class="btn btn-primary" id="awsSrvObtenerBtnEjecutar" onclick="ejecutarObtenerAwsSrv()">Iniciar</button>
+          </div>
         </div>
       </div>
 
@@ -5160,18 +5198,20 @@ route('/awsservidores', async (mount) => {
           <thead>
             <tr>
               <th style="width:70px">Código</th>
-              <th>Nombre</th>
-              <th>Host / IP</th>
-              <th style="width:110px">Región</th>
-              <th style="width:110px">Tipo</th>
               <th>Cuenta</th>
-              <th style="width:90px;text-align:center">Estado</th>
+              <th>Nombre</th>
+              <th>Host / Sistema</th>
+              <th style="width:130px">IP</th>
+              <th style="width:110px">Tipo</th>
+              <th style="width:170px">Recursos</th>
+              <th style="width:130px;text-align:center">Estado</th>
+              <th style="width:60px;text-align:center">Existe</th>
               <th style="width:150px">Actualizado</th>
               <th style="width:70px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="awsSrvTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -5226,11 +5266,11 @@ route('/awsservidores', async (mount) => {
               </select>
             </div>
             <div class="form-group">
-              <label>Estado</label>
-              <select id="fAwsSrvEstado" onchange="onFiltroAwsSrv('estado', this.value)">
+              <label>Existe en AWS</label>
+              <select id="fAwsSrvExiste" onchange="onFiltroAwsSrv('existe', this.value)">
                 <option value="">— Todos —</option>
-                <option value="1">Activo</option>
-                <option value="0">Inactivo</option>
+                <option value="1">Sí</option>
+                <option value="0">No (eliminado en AWS)</option>
               </select>
             </div>
           </div>
@@ -5268,9 +5308,28 @@ route('/awsservidores', async (mount) => {
     </div>
   `;
 
-  $('#awsSrvNuevoBtn').addEventListener('click', () => abrirAltaEdicionAwsSrv(null));
   $('#awsSrvFiltrosBtn').addEventListener('click', () => abrirModalFiltrosAwsSrv());
   $('#awsSrvRefrescarBtn').addEventListener('click', () => cargarAwsSrv());
+
+  // Botón "Más acciones" a la derecha de Refrescar: abre un ctx-menu con la
+  // opción "Obtener" (traer EC2 desde AWS). Se oculta la opción si el usuario
+  // no tiene el permiso `plataformas.aws.servidores.obtener`.
+  const toolMenu   = $('#awsSrvToolMenu');
+  const optObtener = toolMenu.querySelector('[data-action="obtener"]');
+  if (!hasPermission('plataformas.aws.servidores.obtener')) {
+    optObtener.style.display = 'none';
+  }
+  $('#awsSrvMenuBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu(toolMenu, r.right - 190, r.bottom + 4, {});
+  });
+  toolMenu.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'obtener') abrirObtenerAwsSrv();
+  });
 
   const inp = $('#awsSrvSearch');
   const clr = $('#awsSrvSearchClear');
@@ -5328,7 +5387,7 @@ route('/awsservidores', async (mount) => {
 async function cargarAwsSrv() {
   const tbody = $('#awsSrvTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
   const qs = new URLSearchParams();
   Object.entries(awsSrvFiltros).forEach(([k, v]) => { if (v !== '' && v != null) qs.set(k, v); });
   try {
@@ -5336,7 +5395,7 @@ async function cargarAwsSrv() {
     pintarStatsAwsSrv(data.stats);
     pintarTablaAwsSrv(data.items);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -5344,38 +5403,89 @@ function pintarStatsAwsSrv(s) {
   const cards = $$('#awsSrvStats .stat-card .stat-value');
   if (!cards.length) return;
   cards[0].textContent = fmtNum(s.total);
-  if (cards[1]) cards[1].textContent = fmtNum(s.activos);
+  if (cards[1]) cards[1].textContent = fmtNum(s.existen);
+}
+
+// Convierte memoria en MiB (como la guardamos en la BD, siguiendo la unidad
+// que devuelve DescribeInstanceTypes) a una etiqueta legible en GB o MiB
+// segun el tamano. Ejemplos: 2048 -> "2 GB", 512 -> "512 MiB", 6144 -> "6 GB".
+function fmtMemoriaMib(mib) {
+  const n = Number(mib);
+  if (!n || n <= 0) return '';
+  if (n < 1024) return `${n} MiB`;
+  const gb = n / 1024;
+  const s  = Number.isInteger(gb) ? String(gb) : gb.toFixed(1).replace(/\.0$/, '');
+  return `${s} GB`;
+}
+
+// Mapea el estado de ejecucion que AWS reporta en DescribeInstances
+// (instanceState.name) a un badge con etiqueta en espanol + color:
+//   running -> verde,  stopped/terminated -> rojo,
+//   pending/stopping/shutting-down -> amarillo, resto -> gris.
+// Si el servidor esta marcado como no-existente en AWS (soft-delete via
+// Obtener), el estado_ec2 es historico y potencialmente enganoso, asi que
+// devolvemos un badge propio "Eliminado en AWS" en rojo.
+function badgeEstadoEc2(estado, existe) {
+  if (existe === '0') return '<span class="badge badge-danger">Eliminado en AWS</span>';
+  if (!estado) return '<span class="badge">—</span>';
+  const map = {
+    running:         { txt: 'Ejecutándose', cls: 'badge-success' },
+    pending:         { txt: 'Iniciando',    cls: 'badge-warn'    },
+    stopping:        { txt: 'Deteniendo',   cls: 'badge-warn'    },
+    stopped:         { txt: 'Detenido',     cls: 'badge-danger'  },
+    'shutting-down': { txt: 'Apagando',     cls: 'badge-warn'    },
+    terminated:      { txt: 'Terminada',    cls: 'badge-danger'  },
+  };
+  const m = map[estado] || { txt: estado, cls: '' };
+  return `<span class="badge ${m.cls}">${esc(m.txt)}</span>`;
 }
 
 function pintarTablaAwsSrv(rows) {
   const tbody = $('#awsSrvTbody');
   if (!rows || !rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin servidores AWS.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin servidores AWS.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => {
-    const hostIp = [
-      r.host ? `<div><code>${esc(r.host)}</code></div>` : '',
-      r.ip   ? `<div style="font-size:.78rem;color:var(--muted)"><code>${esc(r.ip)}</code></div>` : '',
+    const hostSo = [
+      r.host              ? `<div><code>${esc(r.host)}</code></div>` : '',
+      r.sistema_operativo ? `<div style="font-size:.78rem;color:var(--muted)">${esc(r.sistema_operativo)}</div>` : '',
     ].filter(Boolean).join('') || '<span style="color:var(--muted)">—</span>';
+    const ipCell = r.ip
+      ? `<code>${esc(r.ip)}</code>`
+      : '<span style="color:var(--muted)">—</span>';
     const cuentaTxt = r.cuenta_nombre
       ? esc(r.cuenta_nombre)
       : (r.cuenta_id ? `<code>#${esc(r.cuenta_id)}</code>` : '<span style="color:var(--muted)">—</span>');
-    const estadoBadge = r.estado === '0'
-      ? '<span class="badge badge-danger">Inactivo</span>'
-      : '<span class="badge badge-success">Activo</span>';
     const actualizadoTxt = r.actualizado
       ? `<span title="${esc(fmtFecha(r.actualizado))}">${esc(fmtHace(r.actualizado))}</span>`
       : '<span style="color:var(--muted)">—</span>';
+    const nombreCell = [
+      `<div>${esc(r.nombre || '—')}</div>`,
+      r.notas ? `<div style="font-size:.78rem;color:var(--muted);white-space:pre-wrap">${esc(r.notas)}</div>` : '',
+    ].filter(Boolean).join('');
+    const rowStyle = r.existe === '0' ? ' style="opacity:.55"' : '';
     return `
-    <tr data-id="${r.id}" class="row-clickable">
+    <tr data-id="${r.id}" class="row-clickable"${rowStyle}>
       <td><code>${esc(r.id)}</code></td>
-      <td class="td-nombre">${esc(r.nombre || '—')}</td>
-      <td>${hostIp}</td>
-      <td>${r.region ? `<code>${esc(r.region)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
-      <td>${r.tipo_instancia ? `<code>${esc(r.tipo_instancia)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${cuentaTxt}</td>
-      <td style="text-align:center">${estadoBadge}</td>
+      <td class="td-nombre">${nombreCell}</td>
+      <td>${hostSo}</td>
+      <td>${ipCell}</td>
+      <td>${r.tipo_instancia ? `<code>${esc(r.tipo_instancia)}</code>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${(() => {
+        const memTxt = fmtMemoriaMib(r.memoria);
+        const lineas = [
+          r.cpu            ? `<div title="vCPUs"><i class="fa-solid fa-microchip"    style="color:var(--muted);width:14px;margin-right:6px"></i>${esc(r.cpu)} vCPU</div>` : '',
+          memTxt           ? `<div title="Memoria RAM"><i class="fa-solid fa-memory" style="color:var(--muted);width:14px;margin-right:6px"></i>${esc(memTxt)}</div>` : '',
+          r.almacenamiento ? `<div title="Almacenamiento EBS"><i class="fa-solid fa-hard-drive" style="color:var(--muted);width:14px;margin-right:6px"></i>${esc(r.almacenamiento)}</div>` : '',
+        ].filter(Boolean);
+        return lineas.length ? lineas.join('') : '<span style="color:var(--muted)">—</span>';
+      })()}</td>
+      <td style="text-align:center">${badgeEstadoEc2(r.estado_ec2, r.existe)}</td>
+      <td style="text-align:center">${r.existe === '0'
+        ? '<i class="fa-solid fa-circle" style="color:var(--muted);font-size:.7rem" title="No existe en AWS"></i>'
+        : '<i class="fa-solid fa-circle" style="color:#4ade80;font-size:.7rem"    title="Existe en AWS"></i>'}</td>
       <td style="white-space:nowrap">${actualizadoTxt}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
@@ -5422,7 +5532,7 @@ async function sincronizarControlesFiltrosAwsSrv() {
   $('#fAwsSrvNombre').value  = f.nombre;
   $('#fAwsSrvHost').value    = f.host;
   $('#fAwsSrvRegion').value  = f.region;
-  $('#fAwsSrvEstado').value  = f.estado;
+  $('#fAwsSrvExiste').value  = f.existe;
   $('#fAwsSrvLimite').value  = f.limite;
   $('#fAwsSrvOrderBy').value = f.order_by;
   $('#fAwsSrvDir').value     = f.dir;
@@ -5498,20 +5608,30 @@ async function abrirConsultarAwsSrv(id) {
       `;
     };
     const cuentaTxt = r.cuenta_nombre || (r.cuenta_id ? `#${r.cuenta_id}` : '');
-    const estadoTxt = r.estado === '0' ? 'Inactivo' : 'Activo';
+    const existeTxt = r.existe === '0' ? 'No (eliminado en AWS)' : 'Sí';
+    const estadoEc2Map = {
+      running: 'Ejecutándose', pending: 'Iniciando', stopping: 'Deteniendo',
+      stopped: 'Detenido', 'shutting-down': 'Apagando', terminated: 'Terminada',
+    };
+    const estadoEc2Txt = r.estado_ec2 ? (estadoEc2Map[r.estado_ec2] || r.estado_ec2) : '';
     $('#modalRoot .modal-body').innerHTML = `
       <dl class="data-list">
-        ${fila('Nombre',         r.nombre)}
-        ${fila('Estado',         estadoTxt)}
-        ${fila('Host / DNS',     r.host, false, true)}
-        ${fila('IP',             r.ip,   false, true)}
-        ${fila('Región',         r.region, false, true)}
-        ${fila('Tipo instancia', r.tipo_instancia, false, true)}
-        ${fila('Usuario SSH',    r.usuario_ssh,    false, true)}
-        ${fila('Contraseña SSH', r.contrasena_ssh, false, true)}
-        ${fila('Cuenta AWS',     cuentaTxt)}
-        ${fila('Actualizado',    r.actualizado ? fmtFecha(r.actualizado) : '')}
-        ${fila('Notas',          r.notas, true)}
+        ${fila('Cuenta AWS',        cuentaTxt)}
+        ${fila('Nombre',            r.nombre)}
+        ${fila('Host / DNS',        r.host, false, true)}
+        ${fila('IP',                r.ip,   false, true)}
+        ${fila('Sistema operativo', r.sistema_operativo)}
+        ${fila('Región',            r.region, false, true)}
+        ${fila('Tipo instancia',    r.tipo_instancia, false, true)}
+        ${fila('CPU',               r.cpu ? `${r.cpu} vCPU` : '')}
+        ${fila('Memoria',           fmtMemoriaMib(r.memoria))}
+        ${fila('Almacenamiento',    r.almacenamiento)}
+        ${fila('Usuario SSH',       r.usuario_ssh,    false, true)}
+        ${fila('Contraseña SSH',    r.contrasena_ssh, false, true)}
+        ${fila('Estado',            estadoEc2Txt)}
+        ${fila('Existe en AWS',     existeTxt)}
+        ${fila('Actualizado',       r.actualizado ? fmtFecha(r.actualizado) : '')}
+        ${fila('Notas',             r.notas, true)}
       </dl>
     `;
   } catch (e) {
@@ -5519,29 +5639,29 @@ async function abrirConsultarAwsSrv(id) {
   }
 }
 
-// ---- Modal Alta / Edición (servidor AWS) ----
+// ---- Modal Editar (servidor AWS) ----
+// El "alta" desapareció: los servidores solo se crean via el boton "Obtener"
+// que trae los EC2 desde AWS. Este modal ahora solo edita los campos que el
+// operador tiene que cargar a mano (credenciales SSH + notas). El resto se
+// muestra en el modal Consultar como read-only, alimentado por Obtener.
 async function abrirAltaEdicionAwsSrv(id) {
-  const esEdicion = id != null;
   openModal(`
-    <div class="modal modal-wide">
+    <div class="modal">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar servidor AWS <span class="modal-subtitle">#${id}</span>` : 'Nuevo servidor AWS'}</div>
+        <div class="modal-title">Editar servidor AWS <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
 
   try {
-    const [r, cuentas] = await Promise.all([
-      esEdicion ? apiGet(`api/awsservidores.php?id=${id}`) : Promise.resolve({}),
-      awsSrvEnsureCuentas(),
-    ]);
-    $('#modalRoot .modal-body').innerHTML = formAwsSrvHtml(r, cuentas);
+    const r = await apiGet(`api/awsservidores.php?id=${id}`);
+    $('#modalRoot .modal-body').innerHTML = formAwsSrvHtml(r);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -5554,46 +5674,9 @@ async function abrirAltaEdicionAwsSrv(id) {
   });
 }
 
-function formAwsSrvHtml(r, cuentas) {
+function formAwsSrvHtml(r) {
   const v = (k) => esc(r?.[k] ?? '');
-  const cuentaSel = r?.cuenta_id != null ? String(r.cuenta_id) : '';
-  const estadoSel = r?.estado === '0' ? '0' : '1';
-  const cuentaOpts = ['<option value="">— Sin asignar —</option>']
-    .concat((cuentas || []).map((c) =>
-      `<option value="${c.id}"${String(c.id) === cuentaSel ? ' selected' : ''}>${esc(c.nombre || '#' + c.id)}</option>`))
-    .join('');
   return `
-    <div class="form-group">
-      <label>Nombre *</label>
-      <input type="text" id="awsSrvNombre" value="${v('nombre')}" required>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Host / DNS</label>
-        <input type="text" id="awsSrvHost" value="${v('host')}" style="font-family:monospace" placeholder="ec2-1-2-3-4.compute.amazonaws.com">
-      </div>
-      <div class="form-group">
-        <label>IP</label>
-        <input type="text" id="awsSrvIp" value="${v('ip')}" style="font-family:monospace" placeholder="1.2.3.4">
-      </div>
-    </div>
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Región</label>
-        <input type="text" id="awsSrvRegion" value="${v('region')}" style="font-family:monospace" placeholder="us-east-1">
-      </div>
-      <div class="form-group">
-        <label>Tipo de instancia</label>
-        <input type="text" id="awsSrvTipo" value="${v('tipo_instancia')}" style="font-family:monospace" placeholder="t3.small">
-      </div>
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="awsSrvEstado">
-          <option value="1"${estadoSel === '1' ? ' selected' : ''}>Activo</option>
-          <option value="0"${estadoSel === '0' ? ' selected' : ''}>Inactivo</option>
-        </select>
-      </div>
-    </div>
     <div class="form-row">
       <div class="form-group">
         <label>Usuario SSH</label>
@@ -5605,52 +5688,27 @@ function formAwsSrvHtml(r, cuentas) {
       </div>
     </div>
     <div class="form-group">
-      <label>Cuenta AWS</label>
-      <select id="awsSrvCuenta">${cuentaOpts}</select>
-    </div>
-    <div class="form-group">
       <label>Notas</label>
-      <textarea id="awsSrvNotas" rows="3">${v('notas')}</textarea>
+      <textarea id="awsSrvNotas" rows="4">${v('notas')}</textarea>
     </div>
     <div class="field-error" id="awsSrvError" style="display:none"></div>
   `;
 }
 
 async function guardarAwsSrv(id, btn) {
-  const nombre = $('#awsSrvNombre').value.trim();
-  const err    = $('#awsSrvError');
+  const err = $('#awsSrvError');
   err.style.display = 'none';
-  $('#awsSrvNombre').classList.remove('input-invalid');
-
-  if (!nombre) {
-    $('#awsSrvNombre').classList.add('input-invalid');
-    err.textContent = 'El nombre es obligatorio.';
-    err.style.display = '';
-    return;
-  }
 
   const payload = {
-    nombre,
-    host:           $('#awsSrvHost').value.trim(),
-    ip:             $('#awsSrvIp').value.trim(),
-    region:         $('#awsSrvRegion').value.trim(),
-    tipo_instancia: $('#awsSrvTipo').value.trim(),
     usuario_ssh:    $('#awsSrvUsuario').value.trim(),
     contrasena_ssh: $('#awsSrvContrasena').value.trim(),
-    cuenta_id:      $('#awsSrvCuenta').value || null,
-    estado:         $('#awsSrvEstado').value,
     notas:          $('#awsSrvNotas').value.trim(),
   };
 
   btn.disabled = true;
   try {
-    if (id == null) {
-      await apiSend('api/awsservidores.php', 'POST', payload);
-      toast('Servidor AWS creado.');
-    } else {
-      await apiSend(`api/awsservidores.php?id=${id}`, 'PUT', payload);
-      toast('Servidor AWS actualizado.');
-    }
+    await apiSend(`api/awsservidores.php?id=${id}`, 'PUT', payload);
+    toast('Servidor AWS actualizado.');
     closeModal();
     cargarAwsSrv();
   } catch (e) {
@@ -5675,6 +5733,104 @@ async function eliminarAwsSrv(id) {
     toast(e.message, { error: true });
   }
 }
+
+// ---- Modal Obtener: recorre todas las cuentas AWS y trae los EC2 ----
+// Streaming via SSE. Log verde para éxito, rojo para error, gris para info.
+// Al terminar refresca la tabla del ABM.
+let _awsSrvObtEnEjecucion = false;
+let _awsSrvObtEventSource = null;
+
+function abrirObtenerAwsSrv() {
+  const log = document.getElementById('awsSrvObtenerLog');
+  if (log) log.innerHTML = '<span class="term-info">Presioná «Iniciar» para empezar.</span>';
+  const resumen = document.getElementById('awsSrvObtenerResumen');
+  if (resumen) resumen.textContent = '';
+  const btn = document.getElementById('awsSrvObtenerBtnEjecutar');
+  if (btn) { btn.disabled = false; btn.textContent = 'Iniciar'; }
+  document.getElementById('awsSrvObtenerBackdrop').classList.add('open');
+}
+
+function cerrarObtenerAwsSrv() {
+  if (_awsSrvObtEnEjecucion) {
+    toast('Esperá a que termine la obtención en curso.', { error: true });
+    return;
+  }
+  document.getElementById('awsSrvObtenerBackdrop').classList.remove('open');
+}
+
+function awsSrvObtLogAppend(type, msg) {
+  const log = document.getElementById('awsSrvObtenerLog');
+  if (!log) return;
+  const cls = ({
+    error:   'term-error',
+    warn:    'term-warn',
+    success: 'term-success',
+    done:    'term-info',
+  })[type] || 'term-info';
+  const prefix = ({
+    error:   '✗ ',
+    warn:    '⚠ ',
+    success: '✓ ',
+  })[type] || '';
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = prefix + msg;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function ejecutarObtenerAwsSrv() {
+  if (_awsSrvObtEnEjecucion) return;
+  _awsSrvObtEnEjecucion = true;
+
+  const btn = document.getElementById('awsSrvObtenerBtnEjecutar');
+  btn.disabled = true;
+  btn.textContent = 'Obteniendo…';
+  document.getElementById('awsSrvObtenerLog').innerHTML = '';
+
+  const es = new EventSource('api/awsservidores_obtener.php', { withCredentials: true });
+  _awsSrvObtEventSource = es;
+
+  const finalizar = (refrescar) => {
+    if (_awsSrvObtEventSource) {
+      try { _awsSrvObtEventSource.close(); } catch (_) {}
+      _awsSrvObtEventSource = null;
+    }
+    _awsSrvObtEnEjecucion = false;
+    btn.disabled = false;
+    btn.textContent = 'Volver a ejecutar';
+    if (refrescar) cargarAwsSrv();
+  };
+
+  es.onmessage = (ev) => {
+    let obj;
+    try { obj = JSON.parse(ev.data); }
+    catch (_) { awsSrvObtLogAppend('info', ev.data); return; }
+    awsSrvObtLogAppend(obj.type || 'info', obj.msg || '');
+    if (obj.type === 'done') {
+      const resumen = document.getElementById('awsSrvObtenerResumen');
+      if (resumen && typeof obj.nuevos === 'number') {
+        resumen.textContent = `${obj.nuevos} nuevos · ${obj.actualizados} actualizados`
+          + (obj.eliminados ? ` · ${obj.eliminados} eliminados` : '')
+          + (obj.errores    ? ` · ${obj.errores} errores`       : '');
+      }
+      finalizar(true);
+    }
+  };
+  es.onerror = () => {
+    awsSrvObtLogAppend('error', 'Conexión con el servidor interrumpida.');
+    finalizar(false);
+  };
+}
+
+window.cerrarObtenerAwsSrv    = cerrarObtenerAwsSrv;
+window.ejecutarObtenerAwsSrv  = ejecutarObtenerAwsSrv;
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const b = document.getElementById('awsSrvObtenerBackdrop');
+  if (b && b.classList.contains('open')) cerrarObtenerAwsSrv();
+});
 
 // ------------------------- Vista: AWS > Bases de Datos (ABM) -------------------------
 // ABM del catalogo `aws_bases`. Mismo patron abm_design que awsservidores.
@@ -22109,10 +22265,19 @@ route('/datainfradominios', async (mount) => {
           <button class="btn btn-ghost btn-icon" id="didoRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
+          <button class="btn btn-ghost btn-icon" id="didoToolbarMenuBtn" title="Más acciones">
+            <i class="fa-solid fa-bars"></i>
+          </button>
         </div>
         <div class="toolbar-right">
           <button class="btn btn-primary" id="didoNuevoBtn">+ Nuevo dominio</button>
         </div>
+      </div>
+
+      <div id="didoToolbarCtxMenu" class="ctx-menu" role="menu">
+        <button type="button" data-action="actualizar-todos-whois" role="menuitem">
+          <i class="fa-solid fa-cloud-arrow-down"></i><span>Actualizar WHOIS</span>
+        </button>
       </div>
 
       <div class="table-card">
@@ -22144,6 +22309,9 @@ route('/datainfradominios', async (mount) => {
       </button>
       <button type="button" data-action="actualizar" role="menuitem">
         <i class="fa-solid fa-cloud-arrow-down"></i><span>Actualizar WHOIS</span>
+      </button>
+      <button type="button" data-action="abrir-whois" role="menuitem">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i><span>Abrir WHOIS</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="marcar-en-uso" role="menuitem">
@@ -22246,6 +22414,18 @@ route('/datainfradominios', async (mount) => {
   $('#didoRefrescarBtn').addEventListener('click', cargarDido);
   $('#didoNuevoBtn').addEventListener('click', () => abrirAltaEdicionDido(null));
 
+  $('#didoToolbarMenuBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu($('#didoToolbarCtxMenu'), r.right - 220, r.bottom + 4, {});
+  });
+  $('#didoToolbarCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b || b.disabled) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'actualizar-todos-whois') actualizarTodosDidoDesdeWhois();
+  });
+
   // Click en el header para ordenar. Toggle de dir si es la misma columna,
   // 'asc' al arrancar cuando cambia la columna. Espeja el modal de filtros.
   $('#didoThead').addEventListener('click', (ev) => {
@@ -22286,6 +22466,7 @@ route('/datainfradominios', async (mount) => {
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar')      abrirConsultaDido(data.id);
     if (b.dataset.action === 'actualizar')     actualizarDidoDesdeWhois(data.id);
+    if (b.dataset.action === 'abrir-whois')    abrirWhoisFuenteDido(data.id);
     if (b.dataset.action === 'editar')         abrirAltaEdicionDido(data.id);
     if (b.dataset.action === 'eliminar')       eliminarDido(data.id);
     if (b.dataset.action === 'marcar-en-uso')  cambiarEnUsoDido(data.id, 'si');
@@ -22705,6 +22886,121 @@ async function eliminarDido(id) {
     await cargarDido();
   } catch (err) {
     toast(err.message, { error: true });
+  }
+}
+
+function abrirWhoisFuenteDido(id) {
+  const e = didoItems.find((x) => x.id === id);
+  const dominio = (e?.dominio || '').trim().toLowerCase();
+  if (!dominio) { toast('No pude determinar el dominio.', { error: true }); return; }
+  const url = /\.ar$/.test(dominio)
+    ? 'https://nic.ar/es/nic-argentina/dominios/' + encodeURIComponent(dominio)
+    : 'https://who.is/whois/' + encodeURIComponent(dominio);
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+async function actualizarTodosDidoDesdeWhois() {
+  const ok = await confirmar({
+    title:       'Actualizar WHOIS de todos los dominios',
+    message:     'Se va a consultar el WHOIS de todos los dominios uno por uno. ' +
+                 'Puede tardar varios minutos según cuántos haya. ¿Continuar?',
+    confirmText: 'Actualizar todos',
+    danger:      false,
+  });
+  if (!ok) return;
+
+  openModal(`
+    <div class="modal" style="max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🌐 <span class="modal-subtitle">Actualizar WHOIS — todos los dominios</span>
+          <span id="didoWhoisBulkEstado" class="badge badge-info" style="margin-left:8px">Ejecutando…</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="didoWhoisBulkLog" style="background:#0b1220;color:#d1d5db;border:1px solid var(--border);border-radius:8px;padding:12px;height:420px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;white-space:pre-wrap;margin:0"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+
+  const pre    = document.getElementById('didoWhoisBulkLog');
+  const estado = document.getElementById('didoWhoisBulkEstado');
+  const append = (s) => { if (!pre) return; pre.textContent += s + '\n'; pre.scrollTop = pre.scrollHeight; };
+  const setEstado = (cls, txt) => {
+    if (!estado) return;
+    estado.className = `badge ${cls}`;
+    estado.textContent = txt;
+  };
+
+  try {
+    const r = await fetch('api/datainfradominios_whois_bulk.php', {
+      method:      'POST',
+      credentials: 'same-origin',
+    });
+
+    if (!r.ok && r.status !== 200) {
+      append(`✖ HTTP ${r.status} ${r.statusText}`);
+      setEstado('badge-danger', 'Error');
+      return;
+    }
+
+    const reader  = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let resumen = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const linea = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        if (linea.startsWith('___END___ ')) {
+          try { resumen = JSON.parse(linea.slice(10)); }
+          catch (_) { resumen = { ok: false, detail: 'Respuesta final inválida.' }; }
+        } else if (linea !== '') {
+          append(linea);
+        }
+      }
+    }
+    if (buffer !== '') append(buffer);
+
+    if (!resumen) {
+      setEstado('badge-danger', 'Error');
+      append('✖ El servidor cerró la conexión sin enviar resumen.');
+      return;
+    }
+    if (!resumen.ok) {
+      setEstado('badge-danger', 'Error');
+      toast(resumen.detail || 'No se pudo actualizar el WHOIS de los dominios.', { error: true });
+    } else {
+      const total   = resumen.total ?? 0;
+      const okCount = resumen.ok_count ?? 0;
+      const err     = resumen.err_count ?? 0;
+      const camb    = resumen.cambios_totales ?? 0;
+      if (err === 0) {
+        setEstado('badge-success', `${okCount}/${total} OK (${camb} cambios)`);
+        toast(`WHOIS actualizado: ${okCount}/${total} OK, ${camb} cambios.`);
+      } else {
+        setEstado('badge-warn', `${okCount}/${total} OK · ${err} con error`);
+        toast(`WHOIS actualizado: ${okCount}/${total} OK, ${err} con error.`, { error: true });
+      }
+    }
+    await cargarDido();
+  } catch (err) {
+    setEstado('badge-danger', 'Error');
+    append('✖ Error de red: ' + (err.message || err));
+    toast('Error de red: ' + (err.message || err), { error: true });
   }
 }
 
@@ -23361,15 +23657,32 @@ async function abrirConsultarDrCt(id) {
       </div>
     </div>
   `);
-  $('#modalRoot').addEventListener('click', (ev) => {
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    // Fila de prospecto → cerramos este modal y abrimos la ficha de prospecto.
+    // `abrirConsultaDp` es async (hace fetch por id si el prospecto no esta
+    // en dpItems), asi que aca esperamos antes de cerrar por si falla.
+    const filaProspecto = ev.target.closest('#modalRoot .drct-prospecto-fila[data-prospecto-id]');
+    if (filaProspecto) {
+      const pid = Number(filaProspecto.dataset.prospectoId);
+      closeModal();
+      await abrirConsultaDp(pid);
+      return;
+    }
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrCt(id); }
     drCtSwitchTab(ev);
   });
 
   try {
-    const c = await apiGet(`api/datarocketcontactos.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaDrCt(c);
+    // Traemos contacto + sus prospectos en paralelo — el listado va en la
+    // pestaña "Prospectos" del modal.
+    const [c, prospectosResp] = await Promise.all([
+      apiGet(`api/datarocketcontactos.php?id=${id}`),
+      apiGet(`api/datarocket_prospectos.php?contacto_id=${id}&limite=200&order_by=ingreso&dir=desc`)
+        .catch(() => ({ items: [] })),
+    ]);
+    const prospectos = prospectosResp?.items || [];
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrCt(c, prospectos);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -23384,7 +23697,7 @@ function drCtSwitchTab(ev) {
   $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
 }
 
-function renderConsultaDrCt(c) {
+function renderConsultaDrCt(c, prospectos = []) {
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
     const inner = empty ? 'Sin dato'
@@ -23446,7 +23759,8 @@ function renderConsultaDrCt(c) {
       <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
-      <button type="button" class="modal-tab"        data-tab="estado">Estado y verificación</button>
+      <button type="button" class="modal-tab"        data-tab="estado">Estado</button>
+      <button type="button" class="modal-tab"        data-tab="prospectos">Prospectos${prospectos.length ? ` <span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${prospectos.length}</span>` : ''}</button>
     </div>
 
     <div class="modal-tabpanel" data-panel="identidad">
@@ -23508,6 +23822,33 @@ function renderConsultaDrCt(c) {
         ${card('Verificación',  c.verificacion)}
         ${card('Error',         c.error, true)}
       </dl>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="prospectos" hidden>
+      ${prospectos.length === 0
+        ? `<div class="table-empty">Este contacto no tiene prospectos.</div>`
+        : `<div class="table-card">
+             <table>
+               <thead>
+                 <tr>
+                   <th style="width:80px">Código</th>
+                   <th style="width:130px">Ingreso</th>
+                   <th>Asunto</th>
+                   <th>Producto</th>
+                 </tr>
+               </thead>
+               <tbody>
+                 ${prospectos.map(p => `
+                   <tr class="drct-prospecto-fila row-clickable" data-prospecto-id="${p.id}">
+                     <td class="td-id">#${esc(p.id)}</td>
+                     <td>${esc(fmtFecha(p.ingreso) || '—')}</td>
+                     <td>${esc(p.asunto || '—')}</td>
+                     <td>${esc(p.producto || '—')}</td>
+                   </tr>
+                 `).join('')}
+               </tbody>
+             </table>
+           </div>`}
     </div>
   `;
 }
@@ -23600,7 +23941,7 @@ function formDrCtHtml(c) {
       <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
-      <button type="button" class="modal-tab"        data-tab="estado">Estado y verificación</button>
+      <button type="button" class="modal-tab"        data-tab="estado">Estado</button>
     </div>
 
     <div class="modal-tabpanel" data-panel="identidad">
@@ -27037,8 +27378,21 @@ async function guardarDp() {
   }
 }
 
-function abrirConsultaDp(id) {
-  const p = dpItems.find((x) => x.id === id);
+async function abrirConsultaDp(id) {
+  // Preferimos el registro en memoria (dpItems, ya enriquecido con contacto_*
+  // y etapa_nombre) si esta cargado — asi el modal se abre sin viaje al
+  // servidor. Si no esta (caso tipico: abrimos desde el modal de Contacto
+  // Datarocket sin haber pasado antes por la vista de Prospectos), lo
+  // pedimos al API por id.
+  let p = dpItems.find((x) => x.id === id);
+  if (!p) {
+    try {
+      p = await apiGet(`${DP_API}?id=${id}`);
+    } catch (e) {
+      toast(`No se pudo cargar el prospecto: ${e.message}`, { error: true });
+      return;
+    }
+  }
   if (!p) return;
 
   const card = (label, valor, ancho) => `

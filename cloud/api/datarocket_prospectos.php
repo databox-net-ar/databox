@@ -274,8 +274,9 @@ function handleLookupsProspecto(PDO $pdo): void {
 // ----------------------------------------------------------------------------
 
 function handleListProspectos(PDO $pdo, array $q): void {
-    $codigo    = isset($q['codigo'])      && $q['codigo']      !== '' ? (int)$q['codigo']      : null;
-    $proyecto  = isset($q['proyecto_id']) && $q['proyecto_id'] !== '' ? (int)$q['proyecto_id'] : null;
+    $codigo     = isset($q['codigo'])      && $q['codigo']      !== '' ? (int)$q['codigo']      : null;
+    $contactoId = isset($q['contacto_id']) && $q['contacto_id'] !== '' ? (int)$q['contacto_id'] : null;
+    $proyecto   = isset($q['proyecto_id']) && $q['proyecto_id'] !== '' ? (int)$q['proyecto_id'] : null;
     $embudo    = isset($q['embudo_id'])   && $q['embudo_id']   !== '' ? (int)$q['embudo_id']   : null;
     $etapa     = isset($q['etapa_id'])    && $q['etapa_id']    !== '' ? (int)$q['etapa_id']    : null;
     $asignado  = isset($q['asignado'])    && $q['asignado']    !== '' ? (int)$q['asignado']    : null;
@@ -303,8 +304,9 @@ function handleListProspectos(PDO $pdo, array $q): void {
     $where  = [];
     $params = [];
 
-    if ($codigo   !== null) { $where[] = 'id = :codigo';               $params[':codigo']   = $codigo; }
-    if ($proyecto !== null) { $where[] = 'proyecto_id = :proyecto_id'; $params[':proyecto_id'] = $proyecto; }
+    if ($codigo     !== null) { $where[] = 'id = :codigo';               $params[':codigo']      = $codigo; }
+    if ($contactoId !== null) { $where[] = 'contacto_id = :contacto_id'; $params[':contacto_id'] = $contactoId; }
+    if ($proyecto   !== null) { $where[] = 'proyecto_id = :proyecto_id'; $params[':proyecto_id'] = $proyecto; }
     if ($embudo   !== null) { $where[] = 'embudo_id = :embudo_id';     $params[':embudo_id'] = $embudo; }
     if ($etapa    !== null) { $where[] = 'etapa_id = :etapa_id';       $params[':etapa_id']  = $etapa; }
     if ($asignado !== null) { $where[] = 'asignado = :asignado';       $params[':asignado']  = $asignado; }

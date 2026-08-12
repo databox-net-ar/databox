@@ -777,6 +777,13 @@ tbody tr.row-clickable { cursor: pointer; }
 .terminal-log .term-warn    { color: #f5a8a8; display: block; }
 .terminal-log .term-error   { color: #f87171; display: block; font-weight: 600; }
 
+/* Variante "log neutro": gris para info/default, y solo las lineas de
+ * exito o error se resaltan en color. La usa el modal Obtener del ABM
+ * AWS > Servidores. */
+.terminal-log.terminal-log-neutro             { color: #b0b3ba; }
+.terminal-log.terminal-log-neutro .term-info  { color: #b0b3ba; }
+.terminal-log.terminal-log-neutro .term-warn  { color: #f5a8a8; }
+
 /* ---- Terminal en vivo (Programador de tareas)
  * Streaming SSE del log de la ejecución seleccionada. Fondo oscuro,
  * fuente monospace, scroll interno; se llena línea por línea a medida
