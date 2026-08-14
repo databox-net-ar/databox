@@ -13215,6 +13215,18 @@ route('/datacount_pagos', async (mount) => {
       </button>
     </div>
 
+    <!-- Menú del botón "+ Nuevo pago". Dos caminos para el alta:
+         · Cargar datos   -> modal de Alta/Edición de siempre (form a mano).
+         · Cargar adjunto -> alta vacía + upload + extracción con IA. -->
+    <div id="dcPagoNuevoMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="datos" role="menuitem">
+        <i class="fa-solid fa-keyboard"></i><span>Cargar datos</span>
+      </button>
+      <button type="button" data-action="adjunto" role="menuitem">
+        <i class="fa-solid fa-file-arrow-up"></i><span>Cargar adjunto</span>
+      </button>
+    </div>
+
     <!-- Modal de filtros -->
     <div class="modal-backdrop" id="filtrosDcPagoBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcPago()">
@@ -13300,7 +13312,20 @@ route('/datacount_pagos', async (mount) => {
     </div>
   `;
 
-  $('#dcPagoNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcPago(null));
+  // "+ Nuevo pago" no abre el alta directamente: despliega el menú de arriba
+  // para elegir entre cargar los datos a mano o partir de un adjunto.
+  $('#dcPagoNuevoBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const r = ev.currentTarget.getBoundingClientRect();
+    abrirCtxMenu($('#dcPagoNuevoMenu'), r.right - 190, r.bottom + 4, {});
+  });
+  $('#dcPagoNuevoMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'datos')   abrirAltaEdicionDcPago(null);
+    if (b.dataset.action === 'adjunto') abrirNuevoDesdeAdjuntoDcPago();
+  });
   $('#dcPagoFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDcPago());
   $('#dcPagoRefrescarBtn').addEventListener('click', () => cargarDcPago());
 
@@ -13946,6 +13971,24 @@ function dcPagoEditMostrarAdjunto(idx) {
   }
 }
 
+// Upload crudo de un adjunto contra api/datacount_pagos_adjuntos.php
+// (multipart). Devuelve el adjunto creado — ya con `url` resuelta por el
+// back — o tira con el mensaje de error. Lo usan tanto la pestaña Adjuntos
+// del modal Editar como el alta desde adjunto, para que haya un unico lugar
+// donde vive la forma del request.
+async function dcPagoAdjSubirArchivo(pagoId, file) {
+  const fd = new FormData();
+  fd.append('archivo', file);
+  const r = await fetch(`api/datacount_pagos_adjuntos.php?pago=${encodeURIComponent(pagoId)}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: fd,
+  });
+  const data = await r.json().catch(() => ({ ok: false, error: 'Respuesta no JSON' }));
+  if (!data.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data.data;
+}
+
 async function dcPagoAdjSubir(fileList) {
   if (!fileList || !fileList.length) return;
   if (dcPagoAdjuntosPagoId == null) return;
@@ -13954,35 +13997,21 @@ async function dcPagoAdjSubir(fileList) {
   const input  = $('#dcPagAdjInput');
   const status = $('#dcPagAdjStatus');
 
-  const fd = new FormData();
-  fd.append('archivo', file);
-
   if (btn) btn.disabled = true;
   if (status) {
     status.style.color = 'var(--muted)';
     status.textContent = `Subiendo ${file.name}…`;
   }
   try {
-    const r = await fetch(`api/datacount_pagos_adjuntos.php?pago=${encodeURIComponent(dcPagoAdjuntosPagoId)}`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      body: fd,
-    });
-    const data = await r.json();
-    if (!data.ok) {
-      if (status) {
-        status.style.color = 'var(--danger)';
-        status.textContent = data.error || 'Error al subir';
-      }
-      return;
-    }
-    dcPagoAdjuntosEdicion.push(data.data);
+    const adj = await dcPagoAdjSubirArchivo(dcPagoAdjuntosPagoId, file);
+    dcPagoAdjuntosEdicion.push(adj);
     dcPagoAdjRefrescarTab();
+    if (status) status.textContent = '';
     toast('Adjunto subido.');
   } catch (e) {
     if (status) {
       status.style.color = 'var(--danger)';
-      status.textContent = 'Error de red al subir';
+      status.textContent = e.message || 'Error al subir';
     }
   } finally {
     if (btn) btn.disabled = false;
@@ -14230,6 +14259,161 @@ function renderConsultaDcPago(p) {
 }
 
 // ---- Modal Alta / Edición ----
+// ------------------------- Alta desde adjunto -------------------------
+// Camino "Cargar adjunto" del menú de "+ Nuevo pago". El orden importa:
+//   1. Se da de alta una orden de pago vacía sólo para obtener el id — los
+//      adjuntos cuelgan de `pago`, así que sin id no hay dónde subirlos. Se
+//      prefilla la empresa del contexto activo del listado.
+//   2. Se sube el archivo (mismo endpoint que la pestaña Adjuntos, vía
+//      dcPagoAdjSubirArchivo).
+//   3. Se abre el modal de Edición del pago recién creado y, encima, el mismo
+//      modal "Magia" que ya dispara el FAB de la pestaña Adjuntos: la
+//      detección con IA es literalmente dcPagoAdjAbrirMagia(), no un proceso
+//      paralelo. Su "Aplicar y guardar" vuelca los campos en el form y
+//      dispara el guardado normal del pago.
+// Si el usuario cierra el diálogo sin llegar a subir el archivo, la orden del
+// paso 1 quedó vacía e inservible: se elimina.
+async function abrirNuevoDesdeAdjuntoDcPago() {
+  document.getElementById('dcpNuevoAdj')?.remove();
+
+  let pagoId  = null;   // id de la orden creada en el paso 1
+  let subido  = false;  // ya tiene adjunto -> deja de ser descartable
+  let ocupado = false;  // upload en curso  -> no dejar cerrar a mitad
+  let cerrado = false;
+
+  const wrap = document.createElement('div');
+  wrap.id = 'dcpNuevoAdj';
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:520px">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-file-arrow-up"></i> Nueva orden de pago desde adjunto
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <button type="button" class="dcp-nuevo-adj-drop" id="dcpNuevoAdjDrop" disabled>
+          <i class="fa-solid fa-cloud-arrow-up"></i>
+          <div class="dcp-nuevo-adj-main">Arrastrá el comprobante o hacé clic para elegirlo</div>
+          <div class="dcp-nuevo-adj-hint">PDF o imagen · los datos se detectan con IA</div>
+        </button>
+        <input type="file" id="dcpNuevoAdjInput" style="display:none">
+        <div class="dcp-nuevo-adj-status" id="dcpNuevoAdjStatus">Creando la orden de pago…</div>
+        <div class="field-error" id="dcpNuevoAdjError" hidden></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-act="close">Cancelar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  const drop   = wrap.querySelector('#dcpNuevoAdjDrop');
+  const input  = wrap.querySelector('#dcpNuevoAdjInput');
+  const status = wrap.querySelector('#dcpNuevoAdjStatus');
+  const errEl  = wrap.querySelector('#dcpNuevoAdjError');
+  const cierres = wrap.querySelectorAll('[data-act="close"]');
+
+  const setStatus = (txt) => { status.textContent = txt || ''; };
+  const setError  = (txt) => { errEl.textContent = txt || ''; errEl.hidden = !txt; };
+
+  // Cierra el diálogo. Si nunca se llegó a subir el adjunto, la orden creada
+  // en el paso 1 quedó vacía: se borra para no dejar basura en la tabla.
+  const cerrar = async () => {
+    if (ocupado || cerrado) return;
+    cerrado = true;
+    document.removeEventListener('keydown', onKey);
+    wrap.classList.remove('open');
+    setTimeout(() => wrap.remove(), 200);
+    if (!subido && pagoId != null) {
+      const huerfano = pagoId;
+      pagoId = null;
+      // El borrado es de limpieza: si falla no vale la pena molestar al
+      // usuario, que ya se fue del diálogo.
+      try { await apiSend(`api/datacount_pagos.php?id=${huerfano}`, 'DELETE'); } catch {}
+    }
+  };
+  const onKey = (ev) => { if (ev.key === 'Escape') cerrar(); };
+
+  // Pasos 2 y 3: subir el archivo y encadenar el modal Editar + la extracción.
+  const procesar = async (fileList) => {
+    if (!fileList || !fileList.length || pagoId == null || ocupado || cerrado) return;
+    const file = fileList[0];
+    ocupado = true;
+    drop.disabled = true;
+    cierres.forEach((b) => { b.disabled = true; });
+    setError('');
+    setStatus(`Subiendo ${file.name}…`);
+
+    let adj;
+    try {
+      adj = await dcPagoAdjSubirArchivo(pagoId, file);
+    } catch (e) {
+      ocupado = false;
+      drop.disabled = false;
+      cierres.forEach((b) => { b.disabled = false; });
+      input.value = '';
+      setStatus('');
+      setError('No se pudo subir el archivo: ' + e.message);
+      return;
+    }
+
+    subido  = true;
+    ocupado = false;
+    setStatus('Adjunto subido. Detectando los datos…');
+    const nuevoId = pagoId;
+    await cerrar();
+
+    // A partir de acá es el flujo de siempre: modal de Edición del pago +
+    // modal Magia sobre el adjunto recién subido.
+    await abrirAltaEdicionDcPago(nuevoId);
+    const cargado = (dcPagoAdjuntosEdicion || [])
+      .find((x) => Number(x.id) === Number(adj.id));
+    dcPagoAdjAbrirMagia(cargado || adj);
+    cargarDcPago();
+  };
+
+  document.addEventListener('keydown', onKey);
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target === wrap || ev.target.closest('[data-act="close"]')) { cerrar(); return; }
+    if (ev.target.closest('#dcpNuevoAdjDrop')) input.click();
+  });
+  input.addEventListener('change', () => procesar(input.files));
+  ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (ev) => {
+    ev.preventDefault();
+    if (!drop.disabled) drop.classList.add('dragover');
+  }));
+  ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (ev) => {
+    ev.preventDefault();
+    drop.classList.remove('dragover');
+  }));
+  drop.addEventListener('drop', (ev) => {
+    if (drop.disabled) return;
+    procesar(ev.dataTransfer?.files);
+  });
+
+  // Paso 1: alta vacía. `empresa` sale del contexto del listado; sin ella el
+  // modal de Edición arrancaría con un campo obligatorio en blanco.
+  try {
+    const creado = await apiSend('api/datacount_pagos.php', 'POST', {
+      empresa: dcPagoFiltros.empresa || null,
+    });
+    // El usuario pudo cancelar mientras se creaba: nace huérfana, la borramos.
+    if (cerrado) {
+      try { await apiSend(`api/datacount_pagos.php?id=${creado.id}`, 'DELETE'); } catch {}
+      return;
+    }
+    pagoId = Number(creado.id);
+    drop.disabled = false;
+    setStatus(`Orden #${pagoId} creada. Subí el comprobante para continuar.`);
+  } catch (e) {
+    setStatus('');
+    setError('No se pudo crear la orden de pago: ' + e.message);
+  }
+}
+
 async function abrirAltaEdicionDcPago(id) {
   const esEdicion = id != null;
   openModal(`

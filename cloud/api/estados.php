@@ -15,6 +15,14 @@
 //   PUT    api/estados.php?id=N     -> modificacion (JSON body)
 //   DELETE api/estados.php?id=N     -> baja
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
+//
+// PERMISOS: la LECTURA es libre para cualquier sesion autenticada -- `estados`
+// es el catalogo que alimenta los combos/chips de TODOS los modulos (tipos de
+// orden de pago, monedas, tipos de comprobante, etc.), asi que gatearla detras
+// del permiso de la herramienta de administracion dejaba selects vacios a los
+// usuarios sin ese permiso. Solo la ESCRITURA (POST/PUT/DELETE), que es la
+// herramienta de administracion propiamente dicha, exige
+// `administracion.herramientas.estados.*`.
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
@@ -23,10 +31,14 @@ requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
 try {
-    requirePermCrud('administracion.herramientas.estados');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+
+    // Lectura libre; escritura solo para quien administra el catalogo.
+    if (!in_array($method, ['GET', 'HEAD'], true)) {
+        requirePermCrud('administracion.herramientas.estados');
+    }
 
     if ($method === 'GET' && $id > 0) {
         handleGetOne($pdo, $id);

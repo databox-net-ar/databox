@@ -939,6 +939,26 @@ tbody tr.row-clickable { cursor: pointer; }
                        opacity: .5; transition: opacity .18s ease; }
 .dcp-adj-fs-pill:hover { opacity: 1; }
 
+/* Diálogo "Nueva orden de pago desde adjunto" - zona de drop del comprobante.
+   Es un <button> para que quede accesible por teclado y para que `disabled`
+   corte el click mientras se está creando la orden o subiendo el archivo. */
+.dcp-nuevo-adj-drop  { display: flex; flex-direction: column; align-items: center;
+                       justify-content: center; gap: 8px; width: 100%;
+                       padding: 32px 20px; cursor: pointer;
+                       background: var(--bg); color: var(--text);
+                       border: 2px dashed var(--border); border-radius: var(--radius);
+                       font-family: inherit; font-size: .88rem; text-align: center;
+                       transition: border-color .15s, background .15s, opacity .15s; }
+.dcp-nuevo-adj-drop i         { font-size: 1.8rem; color: var(--muted); }
+.dcp-nuevo-adj-drop:disabled  { opacity: .5; cursor: not-allowed; }
+.dcp-nuevo-adj-drop:hover:not(:disabled),
+.dcp-nuevo-adj-drop.dragover  { border-color: var(--primary); background: var(--surface); }
+.dcp-nuevo-adj-drop:hover:not(:disabled) i,
+.dcp-nuevo-adj-drop.dragover i { color: var(--primary); }
+.dcp-nuevo-adj-main   { font-weight: 600; }
+.dcp-nuevo-adj-hint   { color: var(--muted); font-size: .78rem; }
+.dcp-nuevo-adj-status { color: var(--muted); font-size: .82rem; min-height: 1.1em; }
+
 /* Modal "Magia" - datos extraidos por OpenAI a la izq + preview a la der.
    Es un overlay independiente (append a body, no usa openModal) para poder
    sobreponerse al modal Editar sin cerrarlo. */

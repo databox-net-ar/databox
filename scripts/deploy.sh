@@ -127,9 +127,15 @@ fi
 
 STAGING_REMOTE="/tmp/databox-deploy-staging"
 
-# 3a. Preparar staging limpio
-ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
-    "rm -rf '$STAGING_REMOTE' && mkdir -p '$STAGING_REMOTE'"
+# 3a. Preparar staging limpio + fotografiar el env que hay HOY en prod.
+# El hash se toma ANTES de subir nada: es la unica forma de saber despues si
+# env.php / .env.production cambiaron realmente de contenido (ver paso 4).
+ENV_HASH_LOCAL=$(md5sum "$BASE_LOCAL/env.php" "$BASE_LOCAL/.env.production" | awk '{print $1}' | tr '\n' ' ')
+ENV_HASH_REMOTO=$(ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" bash <<EOF
+rm -rf '$STAGING_REMOTE' && mkdir -p '$STAGING_REMOTE'
+md5sum '$BASE_REMOTE/env.php' '$BASE_REMOTE/.env.production' 2>/dev/null | awk '{print \$1}' | tr '\n' ' '
+EOF
+)
 
 # 3b. Subir tarball al staging
 tar \
@@ -183,32 +189,35 @@ echo ""
 #
 # Casos que SI requieren recrear el contenedor:
 #   a) --rebuild explicito (cambio de Dockerfile / dependencias del sistema).
-#   b) env.php o .env.production cambiaron: estan bind-montados como ARCHIVOS
-#      individuales (no como dir), y rsync los reemplaza creando inodo nuevo.
-#      El bind mount de Docker resuelve por inodo, no por path, asi que sin
-#      recreate el contenedor sigue viendo el env viejo.
+#   b) env.php o .env.production cambiaron de CONTENIDO. El motivo real es
+#      `env_file: - .env.production` en docker-compose.prod.yml: Docker inyecta
+#      esas variables como entorno al CREAR el contenedor, y env.php le da
+#      precedencia al entorno por sobre el archivo (`if (getenv($k) !== false)
+#      continue;`). O sea que los valores vigentes quedan congelados desde el
+#      ultimo `up`: cambiar el archivo no alcanza, hay que recrear.
+#
+#      Antes esto se detectaba comparando el inodo del archivo en el host
+#      contra el del contenedor, asumiendo que la subida creaba inodo nuevo.
+#      Es falso: estos dos archivos no viajan por el rsync del paso 3c sino
+#      por el `cp -f` de mas abajo, y `cp -f` sobrescribe in place -- mismo
+#      inodo, chequeo siempre negativo. Resultado: cambiarle el VALOR a una
+#      clave existente de .env.production no llegaba nunca a produccion, en
+#      silencio y con el deploy reportando OK. (Agregar una clave NUEVA si
+#      funcionaba: al no estar en el entorno inyectado, no aplica la
+#      precedencia y el valor sale del archivo.)
+#
+#      Ahora se compara el md5 del par (env.php, .env.production) local contra
+#      el que habia en prod ANTES de subir. Si difiere, recreate.
 if [ "$REBUILD" = true ]; then
     echo "  Reconstruyendo imagen Docker y recreando contenedor..."
     ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
         "cd '$BASE_REMOTE' && docker compose -f $COMPOSE_FILE build && docker compose -f $COMPOSE_FILE up -d --force-recreate"
     echo "  OK -- imagen reconstruida y contenedor levantado"
 else
-    # Detectar si env.php o .env.production quedaron con inodo distinto al
-    # que el contenedor tiene bind-monteado. Si cualquiera cambio, recreate.
-    ENV_CHANGED=$(ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" bash <<EOF
-set -e
-changed=0
-for f in env.php .env.production; do
-    host_ino=\$(stat -c '%i' "$BASE_REMOTE/\$f" 2>/dev/null || echo "0")
-    cont_ino=\$(docker exec databox-apache stat -c '%i' "/var/www/\$f" 2>/dev/null || echo "0")
-    if [ "\$host_ino" != "\$cont_ino" ]; then
-        changed=1
-    fi
-done
-echo \$changed
-EOF
-)
-    if [ "$ENV_CHANGED" = "1" ]; then
+    # Comparacion por contenido contra la foto tomada en el paso 3a. Si prod
+    # no tenia los archivos (primer deploy), el hash remoto viene vacio o
+    # incompleto y tambien difiere -> recreate, que es lo correcto.
+    if [ "$ENV_HASH_LOCAL" != "$ENV_HASH_REMOTO" ]; then
         echo "  env.php / .env.production cambiaron -- recreando contenedor..."
         ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
             "cd '$BASE_REMOTE' && docker compose -f $COMPOSE_FILE up -d --force-recreate"
