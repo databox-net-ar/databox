@@ -417,7 +417,15 @@ async function apiSend(url, method, body) {
   });
   if (r.status === 401) { handleSessionExpired(); throw new Error('Sesión expirada'); }
   const j = await r.json().catch(() => ({ ok: false, error: 'Respuesta no JSON' }));
-  if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  if (!r.ok || !j.ok) {
+    // El código HTTP y el cuerpo completo viajan en el Error para que el
+    // llamador pueda distinguir el tipo de fallo sin parsear el texto, y leer
+    // los extras que mande el back (ej. 409 duplicado → `payload.duplicado`).
+    const err = new Error(j.error || `HTTP ${r.status}`);
+    err.status  = r.status;
+    err.payload = j;
+    throw err;
+  }
   return j.data;
 }
 
@@ -503,16 +511,24 @@ function closeModal() {
   setTimeout(() => m.remove(), 200);
 }
 
-function confirmar({ title, message, confirmText = 'Confirmar', danger = true }) {
+// Confirmación modal. Resuelve `true` (acción principal) o `false` (Cancelar /
+// click en el backdrop).
+//
+// `altText` agrega un TERCER botón para los casos en que "no" no es lo mismo
+// que "cancelar" — típicamente "seguir igual" frente a "corregir". Cuando se
+// pasa, la promesa puede resolver además `'alt'`. Los llamadores que no lo usan
+// no cambian: siguen recibiendo solo true/false.
+function confirmar({ title, message, confirmText = 'Confirmar', danger = true, altText = null }) {
   return new Promise((resolve) => {
     const wrap = document.createElement('div');
     wrap.className = 'confirm-backdrop';
     wrap.innerHTML = `
-      <div class="confirm-box">
+      <div class="confirm-box${altText ? ' confirm-box-wide' : ''}">
         <div class="confirm-title">${esc(title)}</div>
         <div class="confirm-msg">${esc(message)}</div>
         <div class="confirm-actions">
           <button class="btn btn-ghost" data-act="no">Cancelar</button>
+          ${altText ? `<button class="btn btn-ghost" data-act="alt">${esc(altText)}</button>` : ''}
           <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-act="yes">${esc(confirmText)}</button>
         </div>
       </div>`;
@@ -527,8 +543,49 @@ function confirmar({ title, message, confirmText = 'Confirmar', danger = true })
       if (ev.target === wrap) close(false);
       const a = ev.target.closest('[data-act]');
       if (!a) return;
+      if (a.dataset.act === 'alt') { close('alt'); return; }
       close(a.dataset.act === 'yes');
     });
+  });
+}
+
+// Aviso modal: informa, no pregunta. Para errores que merecen frenar al
+// operador en seco en vez de quedar como un renglón rojo al pie de un
+// formulario largo, donde pasan desapercibidos.
+// Comparte markup y CSS con `confirmar()` para que se vea igual que el resto.
+// Se cierra con el botón, con click en el fondo o con Escape.
+//
+// `altText` agrega un segundo botón a la izquierda del principal, para ofrecer
+// una acción secundaria sobre el aviso (ej. "Ver original" en el duplicado).
+// La promesa resuelve `'alt'` si se eligió ese botón, y `undefined` si no.
+function avisar({ title, message, buttonText = 'Entendido', danger = true, altText = null }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'confirm-backdrop';
+    wrap.innerHTML = `
+      <div class="confirm-box confirm-box-wide">
+        <div class="confirm-title">${esc(title)}</div>
+        <div class="confirm-msg">${esc(message)}</div>
+        <div class="confirm-actions">
+          ${altText ? `<button class="btn btn-ghost" data-act="alt">${esc(altText)}</button>` : ''}
+          <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-act="ok">${esc(buttonText)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => wrap.classList.add('open'));
+    const cerrar = (val) => {
+      document.removeEventListener('keydown', onKey);
+      wrap.classList.remove('open');
+      setTimeout(() => wrap.remove(), 150);
+      resolve(val);
+    };
+    const onKey = (ev) => { if (ev.key === 'Escape') cerrar(undefined); };
+    document.addEventListener('keydown', onKey);
+    wrap.addEventListener('click', (ev) => {
+      if (ev.target.closest('[data-act="alt"]')) { cerrar('alt'); return; }
+      if (ev.target === wrap || ev.target.closest('[data-act="ok"]')) cerrar(undefined);
+    });
+    requestAnimationFrame(() => wrap.querySelector('[data-act="ok"]')?.focus());
   });
 }
 
@@ -5221,6 +5278,15 @@ route('/awsservidores', async (mount) => {
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
+      <button type="button" class="ctx-menu-plain" data-action="encender" role="menuitem">
+        <i class="fa-solid fa-play"></i><span>Encender</span>
+      </button>
+      <button type="button" class="ctx-menu-plain" data-action="apagar" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span>Apagar</span>
+      </button>
+      <button type="button" class="ctx-menu-plain" data-action="reiniciar" role="menuitem">
+        <i class="fa-solid fa-rotate-right"></i><span>Reiniciar</span>
+      </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
@@ -5349,24 +5415,37 @@ route('/awsservidores', async (mount) => {
     refrescarBadgeFiltrosAwsSrv();
   });
 
+  // Las acciones de energia (encender/apagar/reiniciar) tocan infraestructura
+  // viva, no el catalogo: van detras de su propio permiso `…servidores.operar`
+  // y se ocultan enteras si el usuario no lo tiene.
+  if (!hasPermission('plataformas.aws.servidores.operar')) {
+    for (const acc of ['encender', 'apagar', 'reiniciar']) {
+      const b = $(`#awsSrvCtxMenu [data-action="${acc}"]`);
+      if (b) b.style.display = 'none';
+    }
+  }
+
   $('#awsSrvCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
-    if (!b) return;
+    if (!b || b.disabled) return;
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarAwsSrv(data.id);
     if (b.dataset.action === 'editar')    abrirAltaEdicionAwsSrv(data.id);
     if (b.dataset.action === 'eliminar')  eliminarAwsSrv(data.id);
+    if (['encender', 'apagar', 'reiniciar'].includes(b.dataset.action)) {
+      accionAwsSrv(data.id, b.dataset.action, data.nombre);
+    }
   });
 
   $('#awsSrvTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
-      const id = Number(ham.dataset.id);
+      const tr = ham.closest('tr[data-id]');
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#awsSrvCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      abrirCtxMenu($('#awsSrvCtxMenu'), r.right - 190, r.bottom + 4, awsSrvAjustarCtxMenu(tr));
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -5377,7 +5456,7 @@ route('/awsservidores', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#awsSrvCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    abrirCtxMenu($('#awsSrvCtxMenu'), ev.clientX, ev.clientY, awsSrvAjustarCtxMenu(tr));
   });
 
   refrescarBadgeFiltrosAwsSrv();
@@ -5440,6 +5519,86 @@ function badgeEstadoEc2(estado, existe) {
   return `<span class="badge ${m.cls}">${esc(m.txt)}</span>`;
 }
 
+// Habilita/deshabilita las acciones de energia del menu contextual segun el
+// estado EC2 de la fila y devuelve el `data` con el que se abre el menu.
+// AWS igual valida del lado suyo (responde IncorrectInstanceState), pero
+// deshabilitar evita el viaje de ida y vuelta para pedir algo que ya sabemos
+// que no aplica: encender una instancia que ya corre, reiniciar una detenida,
+// u operar una que quedo marcada como eliminada en AWS.
+function awsSrvAjustarCtxMenu(tr) {
+  const id     = Number(tr?.dataset.id);
+  const nombre = tr?.dataset.nombre || '';
+  const estado = tr?.dataset.estado || '';
+  const existe = tr?.dataset.existe || '1';
+
+  // Acciones permitidas por estado. Los estados de transicion no permiten
+  // ninguna: hay que esperar a que AWS termine. Un estado desconocido o vacio
+  // (fila que todavia no paso por "Obtener") habilita las tres y deja decidir
+  // a AWS.
+  const permitidas = {
+    running:         ['apagar', 'reiniciar'],
+    stopped:         ['encender'],
+    pending:         [],
+    stopping:        [],
+    'shutting-down': [],
+    terminated:      [],
+  };
+  const motivo = {
+    running:         'La instancia ya está ejecutándose',
+    stopped:         'La instancia está detenida',
+    pending:         'La instancia se está iniciando',
+    stopping:        'La instancia se está deteniendo',
+    'shutting-down': 'La instancia se está apagando',
+    terminated:      'La instancia fue terminada',
+  };
+
+  const lista = Array.isArray(permitidas[estado])
+    ? permitidas[estado]
+    : ['encender', 'apagar', 'reiniciar'];
+
+  for (const acc of ['encender', 'apagar', 'reiniciar']) {
+    const b = $(`#awsSrvCtxMenu [data-action="${acc}"]`);
+    if (!b) continue;
+    const habilitada = existe !== '0' && lista.includes(acc);
+    b.disabled = !habilitada;
+    b.title = habilitada ? '' : (existe === '0'
+      ? 'El servidor ya no existe en AWS'
+      : (motivo[estado] || 'No aplica con el estado actual'));
+  }
+
+  return { id, nombre, estado, existe };
+}
+
+// Encender / apagar / reiniciar la instancia EC2 de un servidor del catalogo.
+// Confirma siempre —las tres tocan un server real— y al volver refresca la
+// tabla para mostrar el estado de transicion que devolvio AWS (`pending` /
+// `stopping`); el estado final lo consolida el proximo "Obtener".
+async function accionAwsSrv(id, accion, nombre) {
+  const cfg = {
+    encender:  { titulo: 'Encender servidor',  verbo: 'encenderá',  boton: 'Encender',  danger: false },
+    apagar:    { titulo: 'Apagar servidor',    verbo: 'apagará',    boton: 'Apagar',    danger: true  },
+    reiniciar: { titulo: 'Reiniciar servidor', verbo: 'reiniciará', boton: 'Reiniciar', danger: true  },
+  }[accion];
+  if (!cfg) return;
+
+  const etiqueta = nombre ? `«${nombre}» (#${id})` : `#${id}`;
+  const ok = await confirmar({
+    title:       cfg.titulo,
+    message:     `Se ${cfg.verbo} la instancia EC2 del servidor ${etiqueta}. La acción impacta sobre AWS de inmediato.`,
+    confirmText: cfg.boton,
+    danger:      cfg.danger,
+  });
+  if (!ok) return;
+
+  try {
+    const r = await apiSend('api/awsservidores_accion.php', 'POST', { id, accion });
+    toast(r?.mensaje || 'Acción enviada a AWS.');
+    cargarAwsSrv();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 function pintarTablaAwsSrv(rows) {
   const tbody = $('#awsSrvTbody');
   if (!rows || !rows.length) {
@@ -5465,8 +5624,13 @@ function pintarTablaAwsSrv(rows) {
       r.notas ? `<div style="font-size:.78rem;color:var(--muted);white-space:pre-wrap">${esc(r.notas)}</div>` : '',
     ].filter(Boolean).join('');
     const rowStyle = r.existe === '0' ? ' style="opacity:.55"' : '';
+    // `data-estado` / `data-existe` / `data-nombre` los lee
+    // awsSrvAjustarCtxMenu() para habilitar las acciones de energia y armar
+    // el texto de la confirmacion.
     return `
-    <tr data-id="${r.id}" class="row-clickable"${rowStyle}>
+    <tr data-id="${r.id}" data-nombre="${esc(r.nombre || '')}"
+        data-estado="${esc(r.estado_ec2 || '')}" data-existe="${esc(r.existe ?? '1')}"
+        class="row-clickable"${rowStyle}>
       <td><code>${esc(r.id)}</code></td>
       <td>${cuentaTxt}</td>
       <td class="td-nombre">${nombreCell}</td>
@@ -13714,28 +13878,67 @@ function dcPagoAdjRefrescarTab() {
 
 // Ordenado + labels de los campos que devuelve
 // api/datacount_pagos_openai_extraer.php. Cada entrada es
-// [key_backend, label_ui, hint_placeholder].
+// [key_backend, label_ui, hint_placeholder, campo_estados?].
+// `empresa_*` es el EMISOR (el proveedor que nos factura) y es lo que termina
+// en razon/cuit de la orden de pago; `cliente_*` somos nosotros y se muestra
+// sólo para poder controlar de un vistazo que la IA no invirtió los bloques.
+// Las etiquetas dicen "Emisor"/"Cliente" y no "Empresa"/"Cliente" justamente
+// porque ese "Empresa" se leía como "nuestra empresa".
+// El 4º elemento opcional convierte el campo en un `<select>` — el mismo que
+// usa el form de la orden de pago, para que lo que se ve acá sea exactamente
+// una opción válida del select de destino. Fuentes soportadas:
+//   'estados:<campo>' → catálogo `estados` (ej. `factura_tipo`: la IA devuelve
+//                       el código `FA` y acá se lee "Factura A").
+//   'empresas'        → catálogo `datacount_empresas`.
+//
+// `orden_empresa` no es un campo que devuelva la IA: es la empresa NUESTRA bajo
+// la que se va a contabilizar la orden. Se prellena con la que se dedujo del
+// `cliente_cuit` del comprobante y es lo que termina en el select "Empresa" del
+// form. Existe para que el operador vea y pueda corregir ese dato antes de
+// aplicar, en vez de descubrir después que el gasto quedó en otra empresa.
 const DCP_MAGIA_CAMPOS = [
-  ['factura_fecha',  'Fecha',           'YYYY-MM-DD'],
-  ['factura_tipo',   'Tipo',            'A / B / C'],
-  ['factura_numero', 'Número',          'prefijo-sufijo'],
-  ['empresa_razon',  'Empresa (razón)', ''],
-  ['empresa_cuit',   'Empresa (CUIT)',  ''],
-  ['cliente_razon',  'Cliente (razón)', ''],
-  ['cliente_cuit',   'Cliente (CUIT)',  ''],
+  ['factura_fecha',  'Fecha',                   'YYYY-MM-DD'],
+  ['orden_empresa',  'Empresa',                 '', 'empresas'],
+  ['factura_tipo',   'Tipo',                    '', 'estados:datacount_pago_tipo'],
+  ['factura_numero', 'Número',                  'prefijo-sufijo'],
+  ['empresa_razon',  'Emisor · razón social',   'quien nos factura'],
+  ['empresa_cuit',   'Emisor · CUIT',           'quien nos factura'],
+  ['cliente_razon',  'Cliente · razón social',  'nuestra empresa'],
+  ['cliente_cuit',   'Cliente · CUIT',          'nuestra empresa'],
   ['moneda',         'Moneda',          'P / D'],
   ['iva',            'IVA',             '0.00'],
   ['total',          'Total',           '0.00'],
   ['concepto',       'Concepto',        ''],
 ];
 
+// Opciones de los campos de DCP_MAGIA_CAMPOS que se renderizan como `<select>`.
+// Ninguna preselecciona nada: el valor lo pone el post-proceso de la extracción
+// (dcpMagiaPrellenar), que es cuando recién se sabe qué eligió la IA.
+function dcpMagiaOpciones(fuente) {
+  if (fuente === 'empresas') {
+    return '<option value="">—</option>' +
+      (dcEmpresasCache || []).map((e) =>
+        `<option value="${esc(e.id)}">${esc(e.nombre || '#' + e.id)}</option>`
+      ).join('');
+  }
+  if (String(fuente).startsWith('estados:')) {
+    return dcPagoOpcionesSelect(String(fuente).slice('estados:'.length), '');
+  }
+  return '<option value="">—</option>';
+}
+
 // Modal "Magia": abre un overlay independiente (no usa openModal, para no
 // cerrar el modal Editar de fondo) que muestra a la izq los datos extraidos
 // por OpenAI del comprobante y a la der la vista previa del archivo. La
 // extraccion se dispara automaticamente al abrirse.
-function dcPagoAdjAbrirMagia(a) {
+async function dcPagoAdjAbrirMagia(a) {
   if (!a || !a.url) return;
   document.getElementById('dcpAdjMagia')?.remove();
+
+  // El select "Empresa" se arma con el catálogo de empresas. En la práctica ya
+  // está cacheado (lo cargó el form del pago); el await sólo cubre el caso de
+  // que el modal se abra por un camino donde todavía no se pidió.
+  await dcGetEmpresas().catch(() => []);
 
   const tipo = dcPagoTipoVisor(a);
   let viewerHtml;
@@ -13752,12 +13955,17 @@ function dcPagoAdjAbrirMagia(a) {
     `;
   }
 
-  const camposHtml = DCP_MAGIA_CAMPOS.map(([k, label, hint]) => `
+  const camposHtml = DCP_MAGIA_CAMPOS.map(([k, label, hint, fuente]) => {
+    const control = fuente
+      ? `<select id="dcpMagia_${esc(k)}">${dcpMagiaOpciones(fuente)}</select>`
+      : `<input type="text" id="dcpMagia_${esc(k)}" placeholder="${esc(hint)}">`;
+    return `
     <div class="form-group">
       <label>${esc(label)}</label>
-      <input type="text" id="dcpMagia_${esc(k)}" placeholder="${esc(hint)}">
+      ${control}
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   const wrap = document.createElement('div');
   wrap.id = 'dcpAdjMagia';
@@ -13807,8 +14015,10 @@ function dcPagoAdjAbrirMagia(a) {
     if (ev.target.closest('.dcp-magia-close')) { cerrar(); return; }
     if (ev.target === wrap) { cerrar(); return; }
     if (ev.target.closest('#dcpMagiaGuardar')) {
-      await dcPagoAdjMagiaGuardar();
-      cerrar();
+      // Si el control de empresa devuelve false el operador canceló: dejamos
+      // el modal abierto para que pueda revisar los datos extraídos.
+      const aplicado = await dcPagoAdjMagiaGuardar();
+      if (aplicado !== false) cerrar();
     }
   });
 
@@ -13821,12 +14031,7 @@ function dcPagoAdjAbrirMagia(a) {
       );
       $('#dcpMagiaLoader')?.setAttribute('hidden', '');
       $('#dcpMagiaForm')?.removeAttribute('hidden');
-      for (const [k] of DCP_MAGIA_CAMPOS) {
-        const el = document.getElementById(`dcpMagia_${k}`);
-        if (!el) continue;
-        const v = data?.[k];
-        el.value = v == null ? '' : String(v);
-      }
+      dcpMagiaPrellenar(data);
       // Habilitar Guardar solo una vez que hay datos cargados.
       const btn = $('#dcpMagiaGuardar');
       if (btn) btn.disabled = false;
@@ -13842,20 +14047,67 @@ function dcPagoAdjAbrirMagia(a) {
   })();
 }
 
+// Vuelca la respuesta de la extracción en los controles del modal Magia.
+//
+// Los campos que devuelve la IA se copian tal cual. `orden_empresa` es la
+// excepción: no viene en la respuesta, se DEDUCE del `cliente_cuit` (a nombre
+// de quién está el comprobante) buscándolo en `datacount_empresas`. Si no se
+// puede deducir, se cae a la empresa que ya tiene el form, así el select nunca
+// queda en "—" pudiendo evitarlo.
+function dcpMagiaPrellenar(data) {
+  for (const [k] of DCP_MAGIA_CAMPOS) {
+    const el = document.getElementById(`dcpMagia_${k}`);
+    if (!el || !(k in (data || {}))) continue;
+    const v = data[k];
+    el.value = v == null ? '' : String(v);
+  }
+
+  const selEmpresa = document.getElementById('dcpMagia_orden_empresa');
+  if (!selEmpresa) return;
+  const detectada = dcPagoEmpresaPorCuit(data?.cliente_cuit);
+  const fallback  = document.getElementById('dcPagEmpresa')?.value || '';
+  selEmpresa.value = detectada ? String(detectada.id) : fallback;
+}
+
+// Busca en el catálogo de empresas propias la que tenga ese CUIT.
+// Devuelve la empresa o null. Compara sólo dígitos: la IA puede devolver el
+// CUIT con guiones y en `datacount_empresas` está sin ellos (o al revés).
+function dcPagoEmpresaPorCuit(cuit) {
+  const soloDig = (v) => String(v ?? '').replace(/\D+/g, '');
+  const buscado = soloDig(cuit);
+  if (buscado.length !== 11) return null;
+  return (dcEmpresasCache || []).find((e) => soloDig(e.cuit) === buscado) || null;
+}
+
 // Aplica los valores del modal Magia al formulario del modal Editar (los
 // inputs del general tab) y dispara el Save del pago programaticamente.
 // Mapeo campo IA → campo del form:
 //   factura_fecha  → dcPagEmision
-//   factura_tipo   → dcPagTipo        (valor directo — puede no matchear el
-//                                       catalogo, en cuyo caso el select queda vacio)
+//   factura_tipo   → dcPagTipo        (codigo del catalogo `datacount_pago_tipo`,
+//                                       ej. "FA" — el backend ya lo normalizo con
+//                                       dcpoaiNormalizarTipo(), y en el modal
+//                                       Magia se elige del mismo select)
+//   orden_empresa  → dcPagEmpresa     (empresa NUESTRA deducida del cliente_cuit,
+//                                       corregible desde el select del modal)
 //   factura_numero → dcPagNumero
-//   cliente_razon  → dcPagRazon
-//   cliente_cuit   → dcPagCuit
+//   empresa_razon  → dcPagRazon
+//   empresa_cuit   → dcPagCuit
 //   concepto       → dcPagDescripcion
 //   total          → dcPagMonto
 //   moneda         → dcPagMoneda      (P/D matchea 1:1 el catalogo)
-// Los campos empresa_razon, empresa_cuit e iva no tienen destino directo
-// en el schema y se ignoran.
+//
+// razon/cuit son SIEMPRE los del EMISOR de la factura (el proveedor que nos
+// vendio), nunca los del cliente: la orden de pago registra a quien le
+// pagamos. `empresa_*` es el emisor y `cliente_*` somos nosotros — hasta el
+// 2026-08-14 esto estaba mapeado al reves y las ordenes quedaban a nombre de
+// nuestras propias empresas (Alfatec, Alvarez, etc).
+// El campo `iva` no tiene destino directo en el schema y se ignora.
+// `cliente_razon` / `cliente_cuit` no se copian a ningún input: `cliente_cuit`
+// alimenta el select Empresa (ver dcpMagiaPrellenar y dcPagoMagiaControlarEmpresa).
+//
+// Devuelve `false` si el operador abortó en el control de empresa (para que el
+// modal Magia NO se cierre y pueda revisar), y `true` si se aplicó y disparó
+// el guardado.
 async function dcPagoAdjMagiaGuardar() {
   const setVal = (formId, valor) => {
     const el = document.getElementById(formId);
@@ -13864,19 +14116,80 @@ async function dcPagoAdjMagiaGuardar() {
   };
   const get = (k) => document.getElementById('dcpMagia_' + k)?.value?.trim() ?? '';
 
+  // Control de empresa ANTES de tocar el form: si el operador cancela, el
+  // formulario queda como estaba.
+  if (await dcPagoMagiaControlarEmpresa() === false) return false;
+
   setVal('dcPagEmision',     get('factura_fecha'));
   setVal('dcPagTipo',        get('factura_tipo'));
   setVal('dcPagNumero',      get('factura_numero'));
-  setVal('dcPagRazon',       get('cliente_razon'));
-  setVal('dcPagCuit',        get('cliente_cuit'));
+  setVal('dcPagRazon',       get('empresa_razon'));
+  setVal('dcPagCuit',        get('empresa_cuit'));
   setVal('dcPagDescripcion', get('concepto'));
   setVal('dcPagMonto',       get('total'));
   setVal('dcPagMoneda',      get('moneda'));
+  // Sólo pisamos la empresa del form si el select del modal tiene una elegida:
+  // dejarlo en "—" no debe borrar una empresa válida que ya estaba cargada.
+  if (get('orden_empresa') !== '') setVal('dcPagEmpresa', get('orden_empresa'));
 
   // Disparar el guardar del modal Editar (mismo boton que el usuario ve al pie
   // del modal). Reusa validacion + PUT + toast + refresh de listado.
   const btnGuardar = document.querySelector('#modalRoot [data-act="guardar"]');
   if (btnGuardar) btnGuardar.click();
+  return true;
+}
+
+// Última barrera antes de aplicar: que la empresa elegida en el modal Magia no
+// contradiga al comprobante.
+//
+// El select "Empresa" del modal ya viene prellenado con la empresa que se dedujo
+// del `cliente_cuit`, así que en el flujo normal esto no interrumpe nada. El
+// diálogo salta sólo si el operador la cambió a mano por otra distinta a la que
+// figura en el comprobante — que es el caso en el que el gasto termina
+// contabilizado en la empresa equivocada (pasó el 2026-08-14: una factura de DHL
+// a nombre de Alvarez cargada bajo Alfatec, y nada en la orden guardada lo
+// delata después).
+//
+// Devuelve:
+//   true  → seguí (coincide, no hay con qué comparar, o el operador lo confirmó).
+//   false → el operador canceló: no apliques nada.
+async function dcPagoMagiaControlarEmpresa() {
+  const sel = document.getElementById('dcpMagia_orden_empresa');
+  if (!sel) return true;
+
+  const cuitCliente = document.getElementById('dcpMagia_cliente_cuit')?.value?.trim() ?? '';
+  const detectada   = dcPagoEmpresaPorCuit(cuitCliente);
+  // Comprobante sin CUIT de cliente, o a nombre de alguien que no es ninguna de
+  // nuestras empresas (o la empresa no tiene el CUIT cargado): no hay contra qué
+  // contrastar, así que no molestamos.
+  if (!detectada) return true;
+
+  if (String(detectada.id) === String(sel.value)) return true; // coincide
+
+  // Select en "—": lo completamos con la detectada, no hay conflicto que avisar.
+  if (String(sel.value) === '') {
+    sel.value = String(detectada.id);
+    return true;
+  }
+
+  const elegida = sel.selectedOptions[0]?.textContent?.trim() || 'la empresa elegida';
+  const destino = detectada.nombre || `#${detectada.id}`;
+  const aQuien  = document.getElementById('dcpMagia_cliente_razon')?.value?.trim() || destino;
+
+  const r = await confirmar({
+    title:   'La factura es de otra empresa',
+    message: `El comprobante está emitido a nombre de ${aQuien} (CUIT ${cuitCliente}), `
+           + `que corresponde a ${destino}.\n\n`
+           + `Pero elegiste guardar la orden de pago en ${elegida}. `
+           + `Si seguís así, el gasto queda contabilizado en la empresa equivocada.`,
+    confirmText: `Cambiar a ${destino}`,
+    altText:     `Guardar en ${elegida}`,
+    danger:      false,
+  });
+
+  if (r === false) return false;                      // Cancelar
+  if (r === true)  sel.value = String(detectada.id);
+  return true;                                        // 'alt' → se respeta lo elegido
 }
 
 // Abre un adjunto en un overlay a pantalla completa por encima del modal
@@ -14141,9 +14454,15 @@ let dcPagoAdjConsultaSelIdx = 0;
 let dcPagoAdjuntosCache = [];
 
 // ---- Modal Consultar ----
-async function abrirConsultarDcPago(id) {
+// `apilado: true` abre la consulta en un overlay propio, POR ENCIMA del modal
+// que ya esté abierto, en vez de reemplazarlo. Lo usa "Ver original" del aviso
+// de comprobante duplicado: ahí el operador está en medio de un alta y usar
+// openModal() le borraría el formulario a medio completar. En ese modo se
+// oculta "Editar", porque editar el original con otro formulario abierto detrás
+// es una trampa segura.
+async function abrirConsultarDcPago(id, { apilado = false } = {}) {
   dcPagoAdjuntosCache = [];
-  openModal(`
+  const html = `
     <div class="modal dcp-consulta-modal">
       <div class="modal-header">
         <div class="modal-title">Orden de pago <span class="modal-subtitle">#${id}</span></div>
@@ -14152,13 +14471,36 @@ async function abrirConsultarDcPago(id) {
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
         <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+        ${apilado ? '' : '<button class="btn btn-primary" data-act="editar">✏️ Editar</button>'}
       </div>
     </div>
-  `);
-  $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcPago(id); }
+  `;
+
+  let root, cerrar;
+  if (apilado) {
+    root = document.createElement('div');
+    root.className = 'modal-backdrop modal-apilado';
+    root.innerHTML = html;
+    document.body.appendChild(root);
+    requestAnimationFrame(() => root.classList.add('open'));
+    // Escape cierra sólo esta capa; stopPropagation evita que el mismo evento
+    // llegue al handler global y se lleve puesto el modal de abajo.
+    const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); cerrar(); } };
+    cerrar = () => {
+      document.removeEventListener('keydown', onKey);
+      root.classList.remove('open');
+      setTimeout(() => root.remove(), 200);
+    };
+    document.addEventListener('keydown', onKey);
+    root.addEventListener('click', (ev) => { if (ev.target === root) cerrar(); });
+  } else {
+    root   = openModal(html);
+    cerrar = closeModal;
+  }
+
+  root.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  cerrar();
+    if (ev.target.closest('[data-act="editar"]')) { cerrar(); abrirAltaEdicionDcPago(id); }
     // FAB del visor: acciones sobre el adjunto actualmente en preview.
     const fabBtn = ev.target.closest('[data-dcp-adj-consulta-fab]');
     if (fabBtn) {
@@ -14170,13 +14512,14 @@ async function abrirConsultarDcPago(id) {
     }
   });
 
+  const body = () => root.querySelector('.modal-body');
   try {
     const [p] = await Promise.all([
       apiGet(`api/datacount_pagos.php?id=${id}`),
       dcPagoCargarCatalogosEstados().catch(() => null),
     ]);
     dcPagoAdjuntosCache = p.adjuntos || [];
-    $('#modalRoot .modal-body').innerHTML = `
+    body().innerHTML = `
       ${dcPagoTabsHeaderHtml()}
       <div class="modal-tabpanel" data-tab="general" role="tabpanel">
         ${renderConsultaDcPago(p)}
@@ -14189,7 +14532,7 @@ async function abrirConsultarDcPago(id) {
     // a la pestaña ya lo ve, sin flash vacio.
     if (dcPagoAdjuntosCache.length) dcPagoMostrarAdjunto(0);
   } catch (e) {
-    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    body().innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -14629,21 +14972,24 @@ async function guardarDcPago(id, btn) {
     { id: 'dcPagEmision', label: 'Emisión'      },
     { id: 'dcPagMonto',   label: 'Monto'        },
   ];
+  // Marca un campo en rojo hasta que el operador lo vuelva a tocar.
+  const marcarInvalido = (elId) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    el.classList.add('input-invalid');
+    const limpiar = () => {
+      el.classList.remove('input-invalid');
+      el.removeEventListener('input',  limpiar);
+      el.removeEventListener('change', limpiar);
+    };
+    el.addEventListener('input',  limpiar);
+    el.addEventListener('change', limpiar);
+  };
+
   requeridos.forEach((f) => $('#' + f.id)?.classList.remove('input-invalid'));
   const faltantes = requeridos.filter((f) => !String($('#' + f.id).value || '').trim());
   if (faltantes.length) {
-    faltantes.forEach((f) => {
-      const el = $('#' + f.id);
-      if (!el) return;
-      el.classList.add('input-invalid');
-      const limpiar = () => {
-        el.classList.remove('input-invalid');
-        el.removeEventListener('input',  limpiar);
-        el.removeEventListener('change', limpiar);
-      };
-      el.addEventListener('input',  limpiar);
-      el.addEventListener('change', limpiar);
-    });
+    faltantes.forEach((f) => marcarInvalido(f.id));
     err.textContent = 'Completá los campos obligatorios: ' + faltantes.map((f) => f.label).join(', ') + '.';
     err.style.display = '';
     return;
@@ -14691,10 +15037,46 @@ async function guardarDcPago(id, btn) {
     closeModal();
     cargarDcPago();
   } catch (e) {
+    btn.disabled = false;
+    // 409 = comprobante duplicado (mismo CUIT de emisor + mismo número que otra
+    // orden). Va como modal y no como renglón rojo al pie: es un motivo de
+    // rechazo, no un campo mal completado, y al pie del formulario pasaba
+    // desapercibido. Igual dejamos marcados los dos campos que forman la clave
+    // para que al cerrar el modal quede claro dónde está el conflicto.
+    if (e.status === 409) {
+      marcarInvalido('dcPagCuit');
+      marcarInvalido('dcPagNumero');
+      const original = e?.payload?.duplicado?.id;
+      const r = await avisar({
+        title:      'Comprobante duplicado',
+        message:    dcPagoMensajeDuplicado(e),
+        buttonText: 'Entendido',
+        // "Ver original" sólo si sabemos cuál es. Abre la consulta APILADA para
+        // no destruir el formulario que el operador tiene a medio completar.
+        altText:    original ? 'Ver original' : null,
+      });
+      if (r === 'alt' && original) abrirConsultarDcPago(original, { apilado: true });
+      return;
+    }
     err.textContent = e.message;
     err.style.display = '';
-    btn.disabled = false;
   }
+}
+
+// Arma el texto del modal de comprobante duplicado. Prefiere los datos
+// desglosados que manda el back en `duplicado` (id / número / CUIT / razón); si
+// no vinieran —endpoint viejo, error inesperado— cae al texto plano del Error,
+// que ya es autosuficiente.
+function dcPagoMensajeDuplicado(e) {
+  const d = e?.payload?.duplicado;
+  if (!d) return e?.message || 'El comprobante ya está registrado en otra orden de pago.';
+  return 'No se puede guardar: este comprobante ya está cargado en otra orden de pago.\n\n'
+       + `Orden de pago: #${d.id}\n`
+       + `Comprobante: ${d.numero || '—'}\n`
+       + `Emisor: ${d.razon || '—'}\n`
+       + `CUIT: ${d.cuit || '—'}\n\n`
+       + 'Una misma factura no puede registrarse dos veces. Si es un comprobante distinto, '
+       + `revisá el número y el CUIT; si querés modificar el que ya existe, abrí la orden #${d.id}.`;
 }
 
 async function eliminarDcPago(id) {

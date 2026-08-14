@@ -16,6 +16,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/s3.php';
+require_once __DIR__ . '/lib/datacount_comprobante.php';
 
 // Columnas SELECT comunes. `medio___` esta deprecated (ver comentario en el
 // schema: "desde 831 hacia atras era id de medio"), pero se mantiene disponible
@@ -200,6 +201,11 @@ function dcpNullableStr(mixed $v, ?int $max = null): ?string {
     return $s;
 }
 
+// dcpNormalizarNumero() y dcpClaveComprobante() viven en
+// lib/datacount_comprobante.php, compartidas con el endpoint de extraccion con
+// IA para que el numero que se muestra, el que se guarda y el que se compara
+// sean siempre el mismo.
+
 function dcpNullableInt(mixed $v): ?int {
     if ($v === null || $v === '') return null;
     return (int)$v;
@@ -238,7 +244,7 @@ function dcpSanitizePayload(array $in): array {
         'cancelacion'   => dcpNullableDate($in['cancelacion'] ?? null),
         'razon'         => dcpNullableStr($in['razon']        ?? null, 255),
         'cuit'          => dcpNullableStr($in['cuit']         ?? null, 20),
-        'numero'        => dcpNullableStr($in['numero']       ?? null, 50),
+        'numero'        => dcpNormalizarNumero(dcpNullableStr($in['numero'] ?? null, 50)),
         'moneda'        => dcpNullableStr($in['moneda']       ?? null, 1),
         'monto'         => dcpNullableDec($in['monto']        ?? null),
         'cotizacion'    => dcpNullableDec($in['cotizacion']   ?? null),
@@ -252,6 +258,100 @@ function dcpSanitizePayload(array $in): array {
         'clasificado'   => dcpNullableStr($in['clasificado']  ?? null, 1),
         'estado'        => dcpNullableStr($in['estado']       ?? null, 1),
     ];
+}
+
+// ----------------------------------------------------------------------------
+// Control de comprobantes duplicados
+// ----------------------------------------------------------------------------
+//
+// Un comprobante fiscal queda identificado por el par (CUIT del EMISOR, numero
+// de comprobante): el numero es unico por emisor y punto de venta. Dos ordenes
+// de pago con el mismo par son la misma factura cargada dos veces — pasa al
+// re-subir el adjunto de un pago que ya estaba registrado, y despues aparece
+// como gasto duplicado en las analiticas.
+//
+// El CUIT se compara por sus digitos: en la tabla conviven "30-70308853-4" y
+// "30678814357" para el mismo emisor.
+//
+// El NUMERO se compara por su forma canonica COMPLETA, con los ceros incluidos
+// (dcpClaveComprobante). El relleno no se normaliza a proposito: es parte del
+// numero impreso, y el mismo comprobante leido dos veces del mismo PDF trae
+// siempre los mismos ceros, asi que la igualdad exacta alcanza para detectar la
+// recarga. Recortar ceros, en cambio, fusionaria comprobantes distintos de
+// emisores que numeran con rellenos diferentes.
+//
+// Si falta cualquiera de los dos datos NO se controla nada: hay cientos de
+// pagos sin CUIT o sin numero (VEPs, transacciones bancarias, comprobantes del
+// exterior) y ahi el par no identifica al comprobante.
+//
+// La validacion vive en el back a proposito: es el unico punto por el que pasan
+// todos los caminos de alta y modificacion.
+//
+// $ignorarId es el propio pago cuando se esta editando, para que no choque
+// contra si mismo.
+function dcpVerificarDuplicado(PDO $pdo, ?string $cuit, ?string $numero, int $ignorarId = 0): void {
+    $soloDigitos = static fn (?string $v): string => preg_replace('/\D+/', '', (string)$v);
+    $c = $soloDigitos($cuit);
+    if ($c === '' || $soloDigitos($numero) === '') return;
+
+    // Traemos los pagos del mismo emisor (siempre un puñado) y comparamos el
+    // numero en PHP, con las mismas funciones que usa el guardado. Hacerlo en
+    // SQL obligaria a duplicar la normalizacion en dialecto MySQL/MariaDB y a
+    // mantener las dos versiones sincronizadas.
+    $sql = "
+        SELECT id, razon, numero
+          FROM datacount_pagos
+         WHERE REGEXP_REPLACE(COALESCE(cuit, ''), '[^0-9]', '') = :cuit
+           AND numero IS NOT NULL AND TRIM(numero) <> ''
+    ";
+    $params = [':cuit' => $c];
+    if ($ignorarId > 0) {
+        $sql .= ' AND id <> :ignorar';
+        $params[':ignorar'] = $ignorarId;
+    }
+    $sql .= ' ORDER BY id';
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+
+    // Dos criterios, y alcanza con que coincida UNO:
+    //   - clave canonica:      "0280 01678510" vs "0280/01678510" vs
+    //                          "0280-01678510" (mismo numero, otro separador);
+    //   - digitos pegados:     "0005-00001234" vs "000500001234" (el mismo
+    //     comprobante cargado con y sin separador — hay 281 numeros viejos
+    //     guardados sin guion, y la clave canonica no los empareja porque no
+    //     hay forma de saber donde terminaba el punto de venta).
+    // Ninguno de los dos cubre al otro, asi que se aplican los dos. Ojo que
+    // ninguno toca los ceros: los dos comparan el numero completo.
+    $claveNueva  = dcpClaveComprobante($numero);
+    $digitoNueva = $soloDigitos($numero);
+
+    $dup = null;
+    foreach ($stmt->fetchAll() as $fila) {
+        if (dcpClaveComprobante($fila['numero']) === $claveNueva
+            || $soloDigitos($fila['numero']) === $digitoNueva) {
+            $dup = $fila;
+            break;
+        }
+    }
+    if (!$dup) return;
+
+    $razon = trim((string)($dup['razon'] ?? ''));
+    jsonError(
+        'Comprobante duplicado: la orden de pago #' . (int)$dup['id']
+        . ' ya registra el comprobante ' . trim((string)$dup['numero'])
+        . ' del CUIT ' . $c
+        . ($razon !== '' ? ' (' . $razon . ')' : '') . '.',
+        409,
+        // Los mismos datos desglosados, para que el front pueda armar el modal
+        // de error sin tener que parsear la frase de arriba.
+        ['duplicado' => [
+            'id'     => (int)$dup['id'],
+            'numero' => trim((string)$dup['numero']),
+            'cuit'   => $c,
+            'razon'  => $razon,
+        ]]
+    );
 }
 
 // ----------------------------------------------------------------------------
@@ -336,6 +436,7 @@ function dcpValorizar(PDO $pdo, array $p): array {
 
 function handleCreateDcPago(PDO $pdo, array $in): void {
     $p = dcpValorizar($pdo, dcpSanitizePayload($in));
+    dcpVerificarDuplicado($pdo, $p['cuit'], $p['numero']);
     $p['uuid']       = substr(bin2hex(random_bytes(8)), 0, 10);
     $p['registrado'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                         ->format('Y-m-d H:i:s');
@@ -392,6 +493,9 @@ function handleUpdateDcPago(PDO $pdo, int $id, array $in): void {
     // `valor` se recalcula en cada guardado, no solo al alta: si cambia el
     // monto, la moneda o la emision, la conversion a pesos tiene que seguirlos.
     $p = dcpValorizar($pdo, dcpSanitizePayload($in));
+    // Tambien al editar: cambiar el CUIT o el numero puede convertir este pago
+    // en el duplicado de otro que ya existe.
+    dcpVerificarDuplicado($pdo, $p['cuit'], $p['numero'], $id);
 
     $sql = "
         UPDATE datacount_pagos SET
@@ -446,9 +550,57 @@ function handleUpdateDcPago(PDO $pdo, int $id, array $in): void {
     jsonOk(['id' => $id]);
 }
 
+// Baja de una orden de pago. Antes de tocar la fila se limpian sus adjuntos:
+// primero los binarios en S3 y despues las filas de `datacount_pagos_adjuntos`.
+//
+// El orden importa. Si se borrara el pago primero y algo fallara despues, los
+// adjuntos quedarian huerfanos: filas apuntando a un `pago` inexistente y, peor,
+// objetos en S3 que ya nadie referencia y que nadie va a encontrar para
+// borrar. La tabla no tiene FK con ON DELETE CASCADE, asi que la limpieza es
+// responsabilidad de este endpoint.
+//
+// Un fallo de S3 no aborta la baja (mismo criterio que
+// datacount_pagos_adjuntos.php:handleDeleteDcPagoAdjunto): preferimos un objeto
+// hueco en el bucket antes que dejar el pago a medio borrar. Los que fallan se
+// devuelven en la respuesta y quedan en el error_log para poder rastrearlos.
 function handleDeleteDcPago(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM datacount_pagos WHERE id = :id');
-    $stmt->execute([':id' => $id]);
-    if ($stmt->rowCount() === 0) jsonError('Pago no encontrado', 404);
-    jsonOk(['id' => $id]);
+    $existe = $pdo->prepare('SELECT id FROM datacount_pagos WHERE id = :id');
+    $existe->execute([':id' => $id]);
+    if (!$existe->fetch()) jsonError('Pago no encontrado', 404);
+
+    $stmt = $pdo->prepare(
+        'SELECT id, archivo FROM datacount_pagos_adjuntos WHERE pago = :pago'
+    );
+    $stmt->execute([':pago' => $id]);
+    $adjuntos = $stmt->fetchAll();
+
+    $borrados = 0;
+    $fallidos = [];
+    foreach ($adjuntos as $a) {
+        if (empty($a['archivo'])) { $borrados++; continue; }
+        try {
+            s3_delete_object(DCPAGO_S3_PREFIX . $a['archivo']);
+            $borrados++;
+        } catch (Throwable $e) {
+            $fallidos[] = (string)$a['archivo'];
+            error_log('[datacount_pagos] S3 delete fallo para ' . $a['archivo']
+                    . ' (pago #' . $id . '): ' . $e->getMessage());
+        }
+    }
+
+    // Las filas de adjuntos se borran siempre, hayan fallado o no sus binarios:
+    // el pago se va, y dejarlas apuntando a un pago inexistente es peor.
+    $delAdj = $pdo->prepare('DELETE FROM datacount_pagos_adjuntos WHERE pago = :pago');
+    $delAdj->execute([':pago' => $id]);
+
+    $del = $pdo->prepare('DELETE FROM datacount_pagos WHERE id = :id');
+    $del->execute([':id' => $id]);
+    if ($del->rowCount() === 0) jsonError('Pago no encontrado', 404);
+
+    jsonOk([
+        'id'                 => $id,
+        'adjuntos'           => count($adjuntos),
+        'adjuntos_borrados'  => $borrados,
+        'adjuntos_fallidos'  => $fallidos,
+    ]);
 }

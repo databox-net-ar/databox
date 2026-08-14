@@ -340,6 +340,11 @@ textarea { resize: vertical; min-height: 60px; }
                   display: flex; align-items: center; justify-content: center;
                   z-index: 100; opacity: 0; pointer-events: none; transition: opacity .2s; }
 .modal-backdrop.open { opacity: 1; pointer-events: all; }
+/* Modal que se abre ENCIMA de otro sin reemplazarlo (ej. "Ver original" del
+   aviso de comprobante duplicado, que no puede destruir el formulario de alta
+   que el operador tiene abierto detrás). Por debajo del confirm (10050), que
+   siempre es la capa más alta. */
+.modal-backdrop.modal-apilado { z-index: 120; background: rgba(0,0,0,.55); }
 .modal          { background: var(--surface); border-radius: 14px;
                   width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto;
                   box-shadow: var(--shadow-lg);
@@ -373,18 +378,28 @@ textarea { resize: vertical; min-height: 60px; }
 .modal-tabpanel[hidden] { display: none; }
 
 /* 15. Confirm dialog */
+/* z-index por encima de TODO: el confirm es siempre la capa más alta porque lo
+   dispara cualquier otra (modal normal 100, magia 9000, visor fullscreen del
+   adjunto 10000, banner de versión 9999). Con un valor menor quedaba pintado
+   por detrás del modal Magia y su backdrop se comía los clicks — el operador
+   no podía contestarlo sin cerrar la ventana de IA primero. */
 .confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5);
                     display: flex; align-items: center; justify-content: center;
-                    z-index: 150; opacity: 0; pointer-events: none; transition: opacity .15s; }
+                    z-index: 10050; opacity: 0; pointer-events: none; transition: opacity .15s; }
 .confirm-backdrop.open { opacity: 1; pointer-events: all; }
 .confirm-box     { background: var(--surface); border-radius: 14px;
                    padding: 28px 28px 20px; max-width: 380px;
                    width: calc(100% - 32px); box-shadow: var(--shadow-lg);
                    transform: scale(.95); transition: transform .15s; }
 .confirm-backdrop.open .confirm-box { transform: scale(1); }
+/* Variante para los confirms de 3 botones (Cancelar + alternativa + acción):
+   con 380px las etiquetas largas se apilan feo. */
+.confirm-box-wide { max-width: 460px; }
 .confirm-title   { font-weight: 700; margin-bottom: 8px; }
-.confirm-msg     { font-size: .88rem; color: var(--muted); margin-bottom: 20px; }
-.confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.confirm-msg     { font-size: .88rem; color: var(--muted); margin-bottom: 20px;
+                   white-space: pre-line; }
+.confirm-actions { display: flex; gap: 10px; justify-content: flex-end;
+                   flex-wrap: wrap; }
 
 /* 22. Lista de datos (Consultar) */
 .data-list  { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

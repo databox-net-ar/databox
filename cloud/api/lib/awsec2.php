@@ -12,9 +12,12 @@
  *
  * La firma SigV4 aplica igual: firmamos el body form-encoded como payload.
  *
- * Este helper solo cubre el subset que necesita el boton "Obtener" del ABM
- * de servidores AWS: DescribeRegions (para descubrir regiones habilitadas
- * por cuenta) y DescribeInstances (para listar las EC2 de cada region).
+ * Este helper cubre el subset que necesita el ABM de servidores AWS:
+ *   - boton "Obtener": DescribeRegions (regiones habilitadas por cuenta),
+ *     DescribeInstances (EC2 por region), DescribeInstanceTypes y
+ *     DescribeVolumes (specs de hardware y almacenamiento);
+ *   - menu contextual de la fila: StartInstances / StopInstances /
+ *     RebootInstances (acciones de energia sobre una instancia puntual).
  */
 
 /**
@@ -334,4 +337,64 @@ function aws_ec2_describe_volumes(
         }
     }
     return ['sizes' => $sizes, 'error' => null];
+}
+
+/**
+ * Accion de energia sobre UNA instancia EC2: encender, apagar o reiniciar.
+ * Mapea a StartInstances / StopInstances / RebootInstances de la Query API.
+ *
+ * AWS acepta las tres acciones sobre un lote (`InstanceId.1`, `.2`, …), pero
+ * aca mandamos siempre una sola instancia porque la accion se dispara desde
+ * el menu contextual de una fila del ABM.
+ *
+ * Respuestas:
+ *   - Start/Stop -> <instancesSet><item><instanceId/><currentState><name>…
+ *     Devolvemos ese `currentState.name` (tipicamente `pending` / `stopping`),
+ *     que es el estado inmediato: la transicion a `running` / `stopped` la
+ *     completa AWS despues, y la refleja el proximo "Obtener".
+ *   - Reboot     -> solo <return>true</return>, sin estado. En ese caso
+ *     devolvemos `estado => null` (la instancia sigue `running`).
+ *
+ * Si la instancia esta en un estado que no admite la accion (ej. apagar una
+ * ya detenida), AWS responde 400 con `IncorrectInstanceState` y ese mensaje
+ * llega tal cual en `error`.
+ *
+ * @param string $accion 'start' | 'stop' | 'reboot'
+ * @return array{ estado: ?string, error: ?string }
+ */
+function aws_ec2_instance_action(
+    string $accessKey,
+    string $secretKey,
+    string $region,
+    string $accion,
+    string $instanceId
+): array {
+    $acciones = [
+        'start'  => 'StartInstances',
+        'stop'   => 'StopInstances',
+        'reboot' => 'RebootInstances',
+    ];
+    if (!isset($acciones[$accion])) {
+        return ['estado' => null, 'error' => "Accion EC2 no soportada: {$accion}"];
+    }
+    if ($instanceId === '') {
+        return ['estado' => null, 'error' => 'Falta el instance_id'];
+    }
+
+    $res = aws_ec2_query($accessKey, $secretKey, $region, $acciones[$accion], [
+        'InstanceId.1' => $instanceId,
+    ]);
+    if ($res['error'] !== null || $res['xml'] === null) {
+        return ['estado' => null, 'error' => $res['error'] ?? 'Respuesta vacia'];
+    }
+
+    $estado = null;
+    if (isset($res['xml']->instancesSet->item)) {
+        foreach ($res['xml']->instancesSet->item as $item) {
+            if ((string)$item->instanceId !== $instanceId) continue;
+            $estado = (string)($item->currentState->name ?? '') ?: null;
+            break;
+        }
+    }
+    return ['estado' => $estado, 'error' => null];
 }

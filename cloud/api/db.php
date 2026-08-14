@@ -37,10 +37,18 @@ function jsonOk(mixed $data, int $code = 200): void {
     exit;
 }
 
-function jsonError(string $msg, int $code = 400): void {
+// `$extra` agrega claves al JSON de error, al lado de `ok` y `error`, para los
+// casos en que el front necesita algo mas que el texto (ej. el 409 de
+// comprobante duplicado manda el id y los datos del pago que ya lo registra,
+// para poder armar un modal decente). El texto de `error` sigue siendo
+// autosuficiente: quien no mire el extra no pierde informacion.
+function jsonError(string $msg, int $code = 400, array $extra = []): void {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode(['ok' => false, 'error' => $msg], JSON_UNESCAPED_UNICODE);
+    echo json_encode(
+        array_merge(['ok' => false, 'error' => $msg], $extra),
+        JSON_UNESCAPED_UNICODE
+    );
     exit;
 }
 
