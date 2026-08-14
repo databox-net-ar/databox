@@ -3,13 +3,18 @@
 // Cotizacion realtime del dolar OFICIAL scrapeada desde dolarhoy.com.
 //   GET api/dolarhoy_realtime.php -> {ok:true, data:{compra, venta, fuente, fecha}}
 // Cachea 60s en /tmp para no golpear a dolarhoy en cada page load.
+//
+// Solo lectura: NO escribe en `dolarhoy_cotizaciones`. Quien graba la fila del
+// dia es el job cloud/jobs/dolarhoy_cotizacion_actualizar.php (L-V 07:00).
+// El scraping en si vive en api/lib/dolarhoy_cotizacion.php, compartido con
+// ese job.
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+require_once __DIR__ . '/lib/dolarhoy_cotizacion.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
-const DH_RT_URL       = 'https://dolarhoy.com/i/cotizaciones/dolar-oficial';
 const DH_RT_CACHE_TTL = 60;
 const DH_RT_CACHE_KEY = 'dolarhoy_oficial_realtime';
 
@@ -20,49 +25,16 @@ try {
         jsonOk($cache + ['cache' => true]);
     }
 
-    $ch = curl_init(DH_RT_URL);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 8);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Databox Panel)');
-    $html = curl_exec($ch);
-    $err  = curl_error($ch);
-    curl_close($ch);
-
-    if ($html === false || $html === '') {
-        jsonError('No se pudo obtener el HTML de dolarhoy.com' . ($err ? " ({$err})" : ''), 502);
+    try {
+        $payload = dhScrapearOficial();
+    } catch (RuntimeException $e) {
+        jsonError($e->getMessage(), 502);
     }
 
-    $compra = extraerCotizacionDolarhoy($html, 'Compra');
-    $venta  = extraerCotizacionDolarhoy($html, 'Venta');
-
-    if ($compra === null && $venta === null) {
-        jsonError('No se encontraron valores en la respuesta de dolarhoy.com', 502);
-    }
-
-    $payload = [
-        'compra' => $compra,
-        'venta'  => $venta,
-        'fuente' => DH_RT_URL,
-        'fecha'  => (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
-                    ->format('Y-m-d H:i:s'),
-    ];
     escribirCacheDolarhoy($payload);
     jsonOk($payload + ['cache' => false]);
 } catch (Throwable $e) {
     jsonError($e->getMessage(), 500);
-}
-
-function extraerCotizacionDolarhoy(string $html, string $etiqueta): ?float {
-    $pattern = '/<p>\$?([\d.,]+)<span>' . preg_quote($etiqueta, '/') . '<\/span><\/p>/i';
-    if (!preg_match($pattern, $html, $m)) return null;
-    $raw = str_replace(['$', ' '], '', $m[1]);
-    // Formato AR: miles con "." y decimales con ",". Sacamos los "." y cambiamos "," por ".".
-    $raw = str_replace('.', '', $raw);
-    $raw = str_replace(',', '.', $raw);
-    return is_numeric($raw) ? (float)$raw : null;
 }
 
 function cacheFileDolarhoy(): string {

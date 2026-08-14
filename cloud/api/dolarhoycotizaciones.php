@@ -1,7 +1,7 @@
 <?php
 // api/dolarhoycotizaciones.php
 // ABM de cotizaciones del dolar (Dolarhoy). Lee/escribe sobre la tabla
-// `dolarhoycotizaciones` definida en db/schema.sql.
+// `dolarhoy_cotizaciones` definida en db/schema.sql.
 //   GET    api/dolarhoycotizaciones.php          -> listado con filtros (query string)
 //   GET    api/dolarhoycotizaciones.php?id=N     -> registro individual
 //   POST   api/dolarhoycotizaciones.php          -> alta (JSON body)
@@ -85,12 +85,12 @@ function handleList(PDO $pdo, array $q): void {
             MAX(fecha)    AS fecha_max,
             AVG(compra)   AS compra_prom,
             AVG(venta)    AS venta_prom
-        FROM dolarhoycotizaciones
+        FROM dolarhoy_cotizaciones
     ")->fetch();
 
     $sql = "
         SELECT " . DH_COT_COLS . "
-        FROM dolarhoycotizaciones
+        FROM dolarhoy_cotizaciones
         {$sqlWhere}
         ORDER BY {$orderBy} {$dirSql}
         LIMIT {$limite}
@@ -112,7 +112,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . DH_COT_COLS . " FROM dolarhoycotizaciones WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . DH_COT_COLS . " FROM dolarhoy_cotizaciones WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('Cotizacion no encontrada', 404);
@@ -156,7 +156,7 @@ function handleCreate(PDO $pdo, array $in): void {
     }
 
     $sql = "
-        INSERT INTO dolarhoycotizaciones (fecha, compra, venta)
+        INSERT INTO dolarhoy_cotizaciones (fecha, compra, venta)
         VALUES (:fecha, :compra, :venta)
     ";
     $stmt = $pdo->prepare($sql);
@@ -169,14 +169,14 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM dolarhoycotizaciones WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM dolarhoy_cotizaciones WHERE id = :id');
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Cotizacion no encontrada', 404);
 
     $p = sanitizePayload($in);
 
     $sql = "
-        UPDATE dolarhoycotizaciones SET
+        UPDATE dolarhoy_cotizaciones SET
             fecha  = :fecha,
             compra = :compra,
             venta  = :venta
@@ -193,7 +193,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM dolarhoycotizaciones WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM dolarhoy_cotizaciones WHERE id = :id');
     $stmt->execute([':id' => $id]);
     if ($stmt->rowCount() === 0) jsonError('Cotizacion no encontrada', 404);
     jsonOk(['id' => $id]);

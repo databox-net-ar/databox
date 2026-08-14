@@ -6,9 +6,11 @@ Microservicio de consulta de la cotización del dólar guardada en el ABM cloud
 → Plataformas → DolarHoy → Cotizaciones.
 
 Es un endpoint **de solo lectura** — sirve la fila de la tabla
-`dolarhoycotizaciones` (schema en [db/schema.sql](../../../db/schema.sql)).
-El alta, edición y baja de cotizaciones vive exclusivamente en el ABM interno
-([cloud/api/dolarhoycotizaciones.php](../../../cloud/api/dolarhoycotizaciones.php)).
+`dolarhoy_cotizaciones` (schema en [db/schema.sql](../../../db/schema.sql)).
+El alta, edición y baja manual de cotizaciones vive en el ABM interno
+([cloud/api/dolarhoycotizaciones.php](../../../cloud/api/dolarhoycotizaciones.php)),
+y la fila de cada día la graba automáticamente el job
+`dolarhoy_cotizacion_actualizar` (lunes a viernes 07:00).
 
 Para obtener la cotización **realtime** (scrapeada al vuelo desde dolarhoy.com,
 sin persistir) el panel usa otro endpoint interno,
@@ -82,7 +84,7 @@ Campos:
 
 | Campo    | Tipo         | Notas                                                  |
 |----------|--------------|--------------------------------------------------------|
-| `id`     | int          | Clave primaria en `dolarhoycotizaciones`.              |
+| `id`     | int          | Clave primaria en `dolarhoy_cotizaciones`.             |
 | `fecha`  | string       | `YYYY-MM-DD`. Puede ser `null` si la fila la tiene así.|
 | `compra` | number\|null | Cotización de compra (decimal 11,2).                   |
 | `venta`  | number\|null | Cotización de venta (decimal 11,2).                    |
@@ -91,7 +93,7 @@ Campos:
 
 ## GET — cotización de una fecha específica
 
-Filtra por igualdad exacta contra `dolarhoycotizaciones.fecha`. Si hay más de
+Filtra por igualdad exacta contra `dolarhoy_cotizaciones.fecha`. Si hay más de
 una fila cargada para ese día, se devuelve la de mayor `id`. Si no hay
 ninguna fila para esa fecha, la respuesta es `404 Cotizacion no encontrada`
 (el endpoint **no** hace fallback a fechas anteriores).
@@ -161,6 +163,8 @@ como endpoint separado.
 
 ## Referencias
 
-- Tabla fuente: `dolarhoycotizaciones` — schema en [db/schema.sql](../../../db/schema.sql).
+- Tabla fuente: `dolarhoy_cotizaciones` — schema en [db/schema.sql](../../../db/schema.sql).
 - ABM interno equivalente: [cloud/api/dolarhoycotizaciones.php](../../../cloud/api/dolarhoycotizaciones.php).
 - Cotización realtime (scraper): [cloud/api/dolarhoy_realtime.php](../../../cloud/api/dolarhoy_realtime.php).
+- Scraper compartido: [cloud/api/lib/dolarhoy_cotizacion.php](../../../cloud/api/lib/dolarhoy_cotizacion.php).
+- Job que puebla la tabla: [cloud/jobs/dolarhoy_cotizacion_actualizar.php](../../../cloud/jobs/dolarhoy_cotizacion_actualizar.php) (`0 7 * * 1-5`).

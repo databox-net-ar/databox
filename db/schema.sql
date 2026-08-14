@@ -1975,8 +1975,25 @@ CREATE TABLE `datasaleprospectoscomunicaciones`  (
 ) ENGINE = MyISAM AUTO_INCREMENT = 929 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for dolarhoy_cotizaciones
+-- ----------------------------
+DROP TABLE IF EXISTS `dolarhoy_cotizaciones`;
+CREATE TABLE `dolarhoy_cotizaciones`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `fecha` date NULL DEFAULT NULL,
+  `compra` decimal(11, 2) NULL DEFAULT NULL,
+  `venta` decimal(11, 2) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  KEY `idx_dolarhoy_cot_fecha`(`fecha`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 8618 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for dolarhoycotizaciones
 -- ----------------------------
+-- LEGACY: reemplazada por `dolarhoy_cotizaciones` (migracion
+-- 20260814_1300_clonar_dolarhoycotizaciones_a_dolarhoy_cotizaciones.sql).
+-- Queda en la base hasta confirmar que ningun otro proyecto del grupo la
+-- consulta. El cloud ya no la lee ni la escribe.
 DROP TABLE IF EXISTS `dolarhoycotizaciones`;
 CREATE TABLE `dolarhoycotizaciones`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,

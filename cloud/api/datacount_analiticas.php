@@ -29,7 +29,7 @@
 //     registradas suman). Se suma la columna `valor` (monto en pesos, con
 //     la conversion dolar ya aplicada por convencion del ABM:
 //     valor = monto * cotizacion). La cotizacion para pagos en dolares
-//     se backfillea desde `dolarhoycotizaciones` y `valor` se recalcula
+//     se backfillea desde `dolarhoy_cotizaciones` y `valor` se recalcula
 //     via migraciones 20260802_1400_... y 20260802_1500_...
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'}.

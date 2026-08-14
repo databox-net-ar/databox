@@ -32,6 +32,13 @@ const DCP_COLS = "id, uuid, empresa, proyecto, periodo, tipo, emision, cancelaci
 // dominios hardcodeados aca.
 const DCPAGO_S3_PREFIX = 'datacount/pagos/';
 
+// Codigo de moneda dolar del catalogo `datacount_pago_moneda` ('P' = Pesos,
+// 'D' = Dolares). Declarado aca arriba y no junto a las funciones que lo usan
+// porque `const` a nivel de archivo NO es compile-time: se procesa al ejecutar
+// la linea, y el dispatcher de mas abajo corre antes (incidente 2026-08-02,
+// ver comentario equivalente en datacount_analiticas.php).
+const DCPAGO_MONEDA_DOLAR = 'D';
+
 header('Content-Type: application/json; charset=utf-8');
 
 try {
@@ -247,8 +254,88 @@ function dcpSanitizePayload(array $in): array {
     ];
 }
 
+// ----------------------------------------------------------------------------
+// Valorizacion (`cotizacion` + `valor`)
+// ----------------------------------------------------------------------------
+//
+// Invariante del sistema — la misma que sostienen las migraciones
+// 20260802_1400_..._backfill_cotizacion_dolar y
+// 20260802_1500_..._recalcular_valor_dolar, y de la que depende
+// datacount_analiticas.php cuando suma la columna `valor`:
+//
+//     valor = ROUND(monto * cotizacion, 2)      con cotizacion = 1 en pesos
+//
+// Se aplica en el alta y en TODA modificacion, sin importar por donde entre el
+// pago (modal de carga manual, alta desde adjunto + extraccion IA, o cualquier
+// via futura). Vive en el back a proposito: es el unico punto por el que pasan
+// todos los caminos, asi que no puede quedar un flujo sin calcular.
+
+// Cotizacion venta del dolar para la emision del pago. Criterio identico al de
+// la migracion de backfill: la ultima cotizacion con `fecha <= emision`. Si la
+// emision es anterior al inicio de la serie se cae a la mas antigua disponible,
+// y si no hay emision se usa la ultima conocida. Devuelve null solo cuando
+// `dolarhoy_cotizaciones` no tiene ninguna fila util — en ese caso preferimos
+// dejar el pago sin valorizar antes que inventar un numero.
+function dcpCotizacionDolar(PDO $pdo, ?string $emision): ?string {
+    if ($emision !== null) {
+        $stmt = $pdo->prepare("
+            SELECT venta FROM dolarhoy_cotizaciones
+             WHERE fecha <= :emision AND venta > 0
+             ORDER BY fecha DESC LIMIT 1
+        ");
+        $stmt->execute([':emision' => $emision]);
+        $venta = $stmt->fetchColumn();
+        if ($venta !== false && $venta !== null) return (string)$venta;
+
+        $stmt = $pdo->prepare("
+            SELECT venta FROM dolarhoy_cotizaciones
+             WHERE fecha > :emision AND venta > 0
+             ORDER BY fecha ASC LIMIT 1
+        ");
+        $stmt->execute([':emision' => $emision]);
+        $venta = $stmt->fetchColumn();
+        return ($venta === false || $venta === null) ? null : (string)$venta;
+    }
+
+    $venta = $pdo->query("
+        SELECT venta FROM dolarhoy_cotizaciones
+         WHERE venta > 0 ORDER BY fecha DESC LIMIT 1
+    ")->fetchColumn();
+    return ($venta === false || $venta === null) ? null : (string)$venta;
+}
+
+// Completa `cotizacion` y recalcula `valor` sobre el payload ya sanitizado.
+// - Pesos (o moneda sin cargar): cotizacion = 1, valor = monto.
+// - Dolares: si el payload no trajo una cotizacion usable se resuelve contra
+//   `dolarhoy_cotizaciones`. Una cotizacion cargada a mano — o corregida por la
+//   migracion de backfill — se respeta y no se pisa.
+// `valor` se recalcula SIEMPRE: es un campo derivado, nunca lo manda el front.
+//
+// "Usable" excluye el 1 exacto: es el default de los pagos en pesos y queda
+// pegado en el form cuando la moneda pasa de pesos a dolares (caso tipico del
+// alta desde adjunto, donde el registro nace en pesos y la IA despues detecta
+// que el comprobante estaba en dolares). El dolar nunca vale 1 peso, asi que
+// tratarlo como "sin cargar" es el mismo criterio de la migracion de backfill.
+function dcpValorizar(PDO $pdo, array $p): array {
+    if (($p['moneda'] ?? null) !== DCPAGO_MONEDA_DOLAR) {
+        $p['cotizacion'] = '1';
+    } elseif ($p['cotizacion'] === null || (float)$p['cotizacion'] <= 1) {
+        $p['cotizacion'] = dcpCotizacionDolar($pdo, $p['emision']);
+    }
+
+    // Sin monto (o sin cotizacion resoluble) no hay valor posible: NULL, no 0.
+    if ($p['monto'] === null || $p['cotizacion'] === null) {
+        $p['valor'] = null;
+    } else {
+        $p['valor'] = number_format(
+            round((float)$p['monto'] * (float)$p['cotizacion'], 2), 2, '.', ''
+        );
+    }
+    return $p;
+}
+
 function handleCreateDcPago(PDO $pdo, array $in): void {
-    $p = dcpSanitizePayload($in);
+    $p = dcpValorizar($pdo, dcpSanitizePayload($in));
     $p['uuid']       = substr(bin2hex(random_bytes(8)), 0, 10);
     $p['registrado'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                         ->format('Y-m-d H:i:s');
@@ -302,7 +389,9 @@ function handleUpdateDcPago(PDO $pdo, int $id, array $in): void {
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Pago no encontrado', 404);
 
-    $p = dcpSanitizePayload($in);
+    // `valor` se recalcula en cada guardado, no solo al alta: si cambia el
+    // monto, la moneda o la emision, la conversion a pesos tiene que seguirlos.
+    $p = dcpValorizar($pdo, dcpSanitizePayload($in));
 
     $sql = "
         UPDATE datacount_pagos SET

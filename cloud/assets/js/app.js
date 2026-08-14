@@ -14593,13 +14593,15 @@ function formDcPagoHtml(p, empresas, proyectos) {
       <label>Descripción</label>
       <textarea id="dcPagDescripcion" maxlength="255">${v('descripcion')}</textarea>
     </div>
-    <!-- Campos ocultos: cotizacion/valor/billetera/remuneracion/clasificado/
+    <!-- Campos ocultos: cotizacion/billetera/remuneracion/clasificado/
          estado/comprobante/transaccion/contabilizado/cancelacion se sacaron
          del formulario visible pero se preservan en el payload para no pisar
          los valores existentes cuando se edita un pago. Para altas quedan en
-         '' → NULL en la BD. -->
+         '' → NULL en la BD.
+         El campo valor no está acá ni viaja en el payload: es derivado
+         (monto × cotizacion) y lo recalcula el back en cada alta y en cada
+         modificación — ver dcpValorizar() en api/datacount_pagos.php. -->
     <input type="hidden" id="dcPagCotizacion"    value="${v('cotizacion')}">
-    <input type="hidden" id="dcPagValor"         value="${v('valor')}">
     <input type="hidden" id="dcPagBilletera"     value="${v('billetera')}">
     <input type="hidden" id="dcPagRemuneracion"  value="${v('remuneracion')}">
     <input type="hidden" id="dcPagClasificado"   value="${v('clasificado')}">
@@ -14667,7 +14669,6 @@ async function guardarDcPago(id, btn) {
     moneda:        $('#dcPagMoneda').value,
     monto:         $('#dcPagMonto').value,
     cotizacion:    $('#dcPagCotizacion').value,
-    valor:         $('#dcPagValor').value,
     billetera:     $('#dcPagBilletera').value,
     descripcion:   $('#dcPagDescripcion').value,
     comprobante:   $('#dcPagComprobante').value,

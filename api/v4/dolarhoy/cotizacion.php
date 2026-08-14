@@ -9,7 +9,7 @@
 // Auth: Bearer con apikey de la tabla `aplicaciones` (mismo esquema que el
 // resto del stack v4 -- ver /v4/arca, /v4/evolution, /v4/telegram).
 //
-// Tabla fuente: `dolarhoycotizaciones` (schema en db/schema.sql).
+// Tabla fuente: `dolarhoy_cotizaciones` (schema en db/schema.sql).
 // Es solo lectura -- el alta/edicion de cotizaciones vive en el ABM cloud
 // (cloud/api/dolarhoycotizaciones.php).
 
@@ -76,7 +76,7 @@ try {
     if ($fecha !== '') {
         $st = $pdo->prepare(
             "SELECT id, fecha, compra, venta
-               FROM dolarhoycotizaciones
+               FROM dolarhoy_cotizaciones
               WHERE fecha = :fecha
               ORDER BY id DESC
               LIMIT 1"
@@ -85,7 +85,7 @@ try {
     } else {
         $st = $pdo->query(
             "SELECT id, fecha, compra, venta
-               FROM dolarhoycotizaciones
+               FROM dolarhoy_cotizaciones
               ORDER BY fecha DESC, id DESC
               LIMIT 1"
         );
