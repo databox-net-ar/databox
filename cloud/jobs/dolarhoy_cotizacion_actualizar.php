@@ -9,16 +9,19 @@
  * asi la logica de parseo vive en un solo lugar.
  *
  * Si ya hay una fila para la fecha de hoy la actualiza en vez de insertar otra:
- * el ABM y el microservicio v4 asumen una cotizacion por dia.
+ * el ABM y el microservicio v4 asumen una cotizacion por dia. Por eso correr
+ * seguido no ensucia la serie — cada corrida refresca la fila del dia con el
+ * ultimo valor publicado.
  *
  * Deja un unico suceso al terminar:
  *   - tipo=info   : cotizacion registrada o actualizada.
  *   - tipo=error  : dolarhoy.com inalcanzable, markup cambiado o sin venta.
  *
  * Se registra desde el Programador de tareas (tabla `tareas`) apuntando
- * `script` = "jobs/dolarhoy_cotizacion_actualizar.php". Corrida: lunes a
- * viernes 07:00 (`0 7 * * 1-5`) — ver
- * cloud/sql/migrations/20260814_1400_tarea_dolarhoy_cotizacion_actualizar.sql.
+ * `script` = "jobs/dolarhoy_cotizacion_actualizar.php". Corrida: cada hora en
+ * punto (`0 * * * *`) — ver
+ * cloud/sql/migrations/20260814_1400_tarea_dolarhoy_cotizacion_actualizar.sql
+ * (alta) y 20260814_1600_tarea_dolarhoy_cotizacion_cada_hora.sql (frecuencia).
  */
 
 require_once __DIR__ . '/_bootstrap.php';

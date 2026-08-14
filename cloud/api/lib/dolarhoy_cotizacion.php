@@ -5,7 +5,7 @@
 //
 // Lo consumen dos caminos distintos y por eso vive aca y no en un endpoint:
 //   - cloud/api/dolarhoy_realtime.php  (HTTP, cachea 60s, solo lectura)
-//   - cloud/jobs/dolarhoy_cotizacion_actualizar.php (cron L-V 07:00, escribe)
+//   - cloud/jobs/dolarhoy_cotizacion_actualizar.php (cron cada hora, escribe)
 //
 // Expone:
 //   dhScrapearOficial(): array{compra: ?float, venta: ?float, fuente, fecha}
