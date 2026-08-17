@@ -21,6 +21,17 @@ function fmtFecha(iso) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Fecha SIN hora ('YYYY-MM-DD' -> 'DD/MM/YYYY'). No usa `new Date()` a
+// proposito: `new Date('2026-09-30')` se interpreta como medianoche UTC y en
+// una zona negativa (aca -03:00) retrocede al dia anterior — el 30/09 se
+// mostraba como "29/09 21:00". Para columnas DATE (sin hora) hay que formatear
+// la cadena tal cual viene, sin pasar por el huso.
+function fmtFechaSola(iso) {
+  if (!iso) return '—';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso);
+}
+
 // Tiempo relativo compacto en castellano ("hace 3 min", "hace 2 h", "hace 4 d",
 // "hace 2 mes", "hace 1 a"). Sin dependencias; equivalente al
 // $oTiempo->traducir($oTiempo->diferencia(...)) del legacy.
@@ -22074,8 +22085,8 @@ route('/datarocket', async (mount) => {
     </div>
 
     <!-- Orden de tarjetas fijado por el usuario (no alfabetico): sigue el flujo
-         CRM "quien" (Contactos, Prospectos) -> "pipeline" (Embudos, Etapas) ->
-         "que paso" (Interacciones) -> "insumos de mensajeria" (Listas,
+         CRM "quien" (Contactos, Prospectos) -> "que paso" (Interacciones) ->
+         "pipeline" (Embudos, Etapas) -> "insumos de mensajeria" (Listas,
          Etiquetas, Plantillas). NO reordenar a alfabetico sin acuerdo. -->
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketcontactos'">
@@ -22088,15 +22099,15 @@ route('/datarocket', async (mount) => {
         <span class="tile-title">Prospectos</span>
         <span class="tile-desc">Interesados que entraron al embudo con producto, estado, asignación, atendido, embudo y etapa actual.</span>
       </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_embudos'">
-        <span class="tile-icon">🪣</span>
-        <span class="tile-title">Embudos</span>
-        <span class="tile-desc">Pipelines de captación / venta por los que avanzan los prospectos. Cada embudo agrupa un conjunto ordenado de etapas configurables desde el mismo embudo.</span>
-      </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketinteracciones'">
         <span class="tile-icon">💬</span>
         <span class="tile-title">Interacciones</span>
         <span class="tile-desc">Historial de interacciones sobre cada contacto: correos y whatsapps enviados y otros eventos registrados por las APIs de envío.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_embudos'">
+        <span class="tile-icon">🪣</span>
+        <span class="tile-title">Embudos</span>
+        <span class="tile-desc">Pipelines de captación / venta por los que avanzan los prospectos. Cada embudo agrupa un conjunto ordenado de etapas configurables desde el mismo embudo.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketlistas'">
         <span class="tile-icon">📇</span>
@@ -23677,9 +23688,8 @@ async function cambiarEnUsoDido(id, valor) {
 
 // ------------------------- Vista: Datarocket > Contactos (ABM) -------------------------
 const drCtFiltrosDefaults = {
-  q: '', codigo: '', tipo: '', lista_id: '', etiqueta_id: '',
-  estado: '', verificacion: '', genero: '',
-  origen: '', pais: '', provincia: '', correo: '', celular: '',
+  q: '', codigo: '', tipo: '', lista_id: '', etiqueta_id: '', genero: '',
+  origen: '', pais_id: '', provincia_id: '', correo: '', celular: '',
   desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -23701,25 +23711,6 @@ async function drCtCargarListas() {
 }
 
 const DR_CT_GENERO_MAP = { M: 'Masculino', F: 'Femenino', X: 'Otro' };
-
-function drCtEstadoBadge(e) {
-  if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
-  return `<span class="badge badge-info">${esc(e)}</span>`;
-}
-
-function drCtVerificacionBadge(v) {
-  if (v == null || v === '') return `<span class="badge badge-info">—</span>`;
-  const colorMap = {
-    O: 'badge-success',
-    V: 'badge-success',
-    E: 'badge-danger',
-    F: 'badge-danger',
-    P: 'badge-warn',
-  };
-  const labelMap = { O: 'OK', V: 'Válido', E: 'Error', F: 'Fallado', P: 'Pendiente' };
-  const cls = colorMap[v] || 'badge-info';
-  return `<span class="badge ${cls}">${esc(labelMap[v] || v)}</span>`;
-}
 
 // Icono del tipo de contacto para el listado y el modal Consultar. Los
 // contactos historicos tienen tipo=NULL — se muestran con un signo neutro y
@@ -23781,7 +23772,7 @@ route('/datarocketcontactos', async (mount) => {
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
             Los contactos de Datarocket son las personas y empresas registradas en la
             base del motor de envíos, con sus datos personales, medios de contacto,
-            suscripciones a listas y el resultado de la verificación previa al envío.
+            ubicación, etiquetas y suscripciones a listas de distribución.
           </div>
         </div>
       </div>
@@ -23873,7 +23864,7 @@ route('/datarocketcontactos', async (mount) => {
                      oninput="onFiltroDrCt('origen', this.value)">
             </div>
           </div>
-          <div class="form-row">
+          <div class="form-row form-row-3">
             <div class="form-group">
               <label>Lista</label>
               <select id="fDrCtLista" onchange="onFiltroDrCt('lista_id', this.value)">
@@ -23885,18 +23876,6 @@ route('/datarocketcontactos', async (mount) => {
               <select id="fDrCtEtiqueta" onchange="onFiltroDrCt('etiqueta_id', this.value)">
                 <option value="">— Todas —</option>
               </select>
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Estado</label>
-              <input type="text" id="fDrCtEstado" maxlength="1" style="font-family:monospace"
-                     placeholder="A/I/…" oninput="onFiltroDrCt('estado', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Verificación</label>
-              <input type="text" id="fDrCtVerificacion" maxlength="1" style="font-family:monospace"
-                     placeholder="O/V/E/P…" oninput="onFiltroDrCt('verificacion', this.value)">
             </div>
             <div class="form-group">
               <label>Género</label>
@@ -23911,11 +23890,15 @@ route('/datarocketcontactos', async (mount) => {
           <div class="form-row">
             <div class="form-group">
               <label>País</label>
-              <input type="text" id="fDrCtPais" maxlength="255" oninput="onFiltroDrCt('pais', this.value)">
+              <select id="fDrCtPais" onchange="onFiltroPaisDrCt(this.value)">
+                <option value="">— Todos —</option>
+              </select>
             </div>
             <div class="form-group">
               <label>Provincia</label>
-              <input type="text" id="fDrCtProvincia" maxlength="255" oninput="onFiltroDrCt('provincia', this.value)">
+              <select id="fDrCtProvincia" onchange="onFiltroDrCt('provincia_id', this.value)">
+                <option value="">— Todas —</option>
+              </select>
             </div>
           </div>
           <div class="form-row">
@@ -23953,11 +23936,8 @@ route('/datarocketcontactos', async (mount) => {
                 <option value="empresa">Empresa</option>
                 <option value="correo">Correo</option>
                 <option value="registrado">Registrado</option>
-                <option value="completado">Completado</option>
-                <option value="estado">Estado</option>
-                <option value="verificacion">Verificación</option>
-                <option value="pais">País</option>
-                <option value="provincia">Provincia</option>
+                <option value="pais_id">País</option>
+                <option value="provincia_id">Provincia</option>
                 <option value="origen">Origen</option>
               </select>
             </div>
@@ -24097,7 +24077,7 @@ function pintarTablaDrCt(rows) {
 }
 
 function onFiltroDrCt(key, value) {
-  if (['tipo', 'estado', 'verificacion', 'genero', 'origen', 'pais', 'provincia',
+  if (['tipo', 'genero', 'origen', 'pais_id', 'provincia_id',
        'correo', 'celular', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drCtFiltros[key] = value;
   } else if (['codigo', 'lista_id', 'etiqueta_id'].includes(key)) {
@@ -24133,11 +24113,9 @@ function sincronizarControlesFiltrosDrCt() {
   $('#fDrCtOrigen').value       = f.origen;
   $('#fDrCtLista').value        = f.lista_id;
   $('#fDrCtEtiqueta').value     = f.etiqueta_id;
-  $('#fDrCtEstado').value       = f.estado;
-  $('#fDrCtVerificacion').value = f.verificacion;
   $('#fDrCtGenero').value       = f.genero;
-  $('#fDrCtPais').value         = f.pais;
-  $('#fDrCtProvincia').value    = f.provincia;
+  $('#fDrCtPais').value         = f.pais_id;
+  $('#fDrCtProvincia').value    = f.provincia_id;
   $('#fDrCtCorreo').value       = f.correo;
   $('#fDrCtCelular').value      = f.celular;
   $('#fDrCtDesde').value        = f.desde;
@@ -24182,9 +24160,65 @@ async function poblarEtiquetasFiltroDrCt() {
   } catch (_) { /* silencioso: si falla, queda el placeholder */ }
 }
 
+// Catalogo de paises para los selects (filtros y formulario). Es chico (8
+// filas) asi que se cachea entero; provincias y localidades se piden por
+// demanda al elegir el nivel de arriba — `localidades` tiene ~94k filas.
+let drCtPaisesCache = null;
+async function drCtCargarPaises() {
+  if (drCtPaisesCache) return drCtPaisesCache;
+  const data = await apiGet('api/datarocketcontactos.php?lookups=1');
+  drCtPaisesCache = data.paises || [];
+  return drCtPaisesCache;
+}
+
+// <option> de una lista [{id, nombre}], con `valorActual` preseleccionado.
+function drCtOpcionesIdNombre(items, valorActual, labelVacio) {
+  const parts = [`<option value="">${esc(labelVacio)}</option>`];
+  for (const it of (items || [])) {
+    const sel = String(it.id) === String(valorActual ?? '') ? ' selected' : '';
+    parts.push(`<option value="${esc(it.id)}"${sel}>${esc(it.nombre)}</option>`);
+  }
+  return parts.join('');
+}
+
+async function poblarPaisesFiltroDrCt() {
+  const sel = $('#fDrCtPais');
+  if (!sel || sel.dataset.poblado === '1') return;
+  try {
+    sel.innerHTML = drCtOpcionesIdNombre(await drCtCargarPaises(), drCtFiltros.pais_id, '— Todos —');
+    sel.dataset.poblado = '1';
+    // Si ya habia un pais filtrado, el select de provincias tiene que llegar
+    // poblado y con su valor puesto — si no, al abrir el modal se veria vacio.
+    if (drCtFiltros.pais_id) await poblarProvinciasFiltroDrCt(drCtFiltros.pais_id, drCtFiltros.provincia_id);
+  } catch (_) { /* silencioso: si falla, queda el placeholder */ }
+}
+
+async function poblarProvinciasFiltroDrCt(paisId, keepProv) {
+  const sel = $('#fDrCtProvincia');
+  if (!sel) return;
+  if (!paisId) { sel.innerHTML = '<option value="">— Todas —</option>'; return; }
+  try {
+    const items = await apiGet('api/datarocketcontactos.php?provincias=1&pais=' + encodeURIComponent(paisId));
+    sel.innerHTML = drCtOpcionesIdNombre(items, keepProv, '— Todas —');
+  } catch (_) {
+    sel.innerHTML = '<option value="">— Todas —</option>';
+  }
+}
+
+// Cambiar el pais del filtro invalida la provincia elegida (pertenecia al pais
+// anterior). Se limpia y se dispara un solo refresco del listado.
+async function onFiltroPaisDrCt(paisId) {
+  drCtFiltros.pais_id      = paisId;
+  drCtFiltros.provincia_id = '';
+  await poblarProvinciasFiltroDrCt(paisId, '');
+  refrescarBadgeFiltrosDrCt();
+  cargarDrCt();
+}
+window.onFiltroPaisDrCt = onFiltroPaisDrCt;
+
 function abrirModalFiltrosDrCt() {
   drCtFiltrosSnapshot = { ...drCtFiltros };
-  Promise.all([poblarListasFiltroDrCt(), poblarEtiquetasFiltroDrCt()])
+  Promise.all([poblarListasFiltroDrCt(), poblarEtiquetasFiltroDrCt(), poblarPaisesFiltroDrCt()])
     .then(() => sincronizarControlesFiltrosDrCt());
   sincronizarControlesFiltrosDrCt();
   $('#filtrosDrCtBackdrop').classList.add('open');
@@ -24235,21 +24269,24 @@ async function abrirConsultarDrCt(id) {
       await abrirConsultaDp(pid);
       return;
     }
+    // Fila de interacción → abrimos la ficha de la interacción.
+    if (drIntFilaEmbebidaClick(ev)) return;
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrCt(id); }
     drCtSwitchTab(ev);
   });
 
   try {
-    // Traemos contacto + sus prospectos en paralelo — el listado va en la
-    // pestaña "Prospectos" del modal.
-    const [c, prospectosResp] = await Promise.all([
+    // Traemos contacto + sus prospectos + sus interacciones en paralelo — cada
+    // listado va en su propia pestaña del modal.
+    const [c, prospectosResp, interacciones] = await Promise.all([
       apiGet(`api/datarocketcontactos.php?id=${id}`),
       apiGet(`api/datarocket_prospectos.php?contacto_id=${id}&limite=200&order_by=ingreso&dir=desc`)
         .catch(() => ({ items: [] })),
+      drIntCargarDeRecurso('contacto_id', id),
     ]);
     const prospectos = prospectosResp?.items || [];
-    $('#modalRoot .modal-body').innerHTML = renderConsultaDrCt(c, prospectos);
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrCt(c, prospectos, interacciones);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -24264,7 +24301,7 @@ function drCtSwitchTab(ev) {
   $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
 }
 
-function renderConsultaDrCt(c, prospectos = []) {
+function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
     const inner = empty ? 'Sin dato'
@@ -24314,9 +24351,7 @@ function renderConsultaDrCt(c, prospectos = []) {
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code></div>
       </div>
       <div style="text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-        <div>${drCtEstadoBadge(c.estado)} ${drCtVerificacionBadge(c.verificacion)}</div>
         <div style="font-size:.85rem;color:var(--muted)">Registrado: ${esc(fmtFecha(c.registrado))}</div>
-        ${c.completado ? `<div style="font-size:.85rem;color:var(--muted)">Completado: ${esc(fmtFecha(c.completado))}</div>` : ''}
       </div>
     </div>
 
@@ -24326,8 +24361,8 @@ function renderConsultaDrCt(c, prospectos = []) {
       <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
-      <button type="button" class="modal-tab"        data-tab="estado">Estado</button>
       <button type="button" class="modal-tab"        data-tab="prospectos">Prospectos${prospectos.length ? ` <span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${prospectos.length}</span>` : ''}</button>
+      <button type="button" class="modal-tab"        data-tab="interacciones">Interacciones${drIntTabBadge(interacciones.length)}</button>
     </div>
 
     <div class="modal-tabpanel" data-panel="identidad">
@@ -24367,9 +24402,9 @@ function renderConsultaDrCt(c, prospectos = []) {
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
         ${card('Domicilio', c.domicilio, true)}
         ${card('Ciudad',    c.ciudad)}
-        ${card('Localidad', c.localidad)}
-        ${card('Provincia', c.provincia)}
-        ${card('País',      c.pais)}
+        ${card('Localidad', c.localidad_nombre)}
+        ${card('Provincia', c.provincia_nombre)}
+        ${card('País',      c.pais_nombre)}
         ${card('Ubicación', c.ubicacion, true, true)}
       </dl>
     </div>
@@ -24382,15 +24417,6 @@ function renderConsultaDrCt(c, prospectos = []) {
       </dl>
     </div>
 
-    <div class="modal-tabpanel" data-panel="estado" hidden>
-      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-        ${card('Suscripciones', c.suscripciones)}
-        ${card('Estado',        c.estado)}
-        ${card('Verificación',  c.verificacion)}
-        ${card('Error',         c.error, true)}
-      </dl>
-    </div>
-
     <div class="modal-tabpanel" data-panel="prospectos" hidden>
       ${prospectos.length === 0
         ? `<div class="table-empty">Este contacto no tiene prospectos.</div>`
@@ -24400,8 +24426,8 @@ function renderConsultaDrCt(c, prospectos = []) {
                  <tr>
                    <th style="width:80px">Código</th>
                    <th style="width:130px">Ingreso</th>
-                   <th>Asunto</th>
                    <th>Producto</th>
+                   <th>Comentarios</th>
                  </tr>
                </thead>
                <tbody>
@@ -24409,13 +24435,18 @@ function renderConsultaDrCt(c, prospectos = []) {
                    <tr class="drct-prospecto-fila row-clickable" data-prospecto-id="${p.id}">
                      <td class="td-id">#${esc(p.id)}</td>
                      <td>${esc(fmtFecha(p.ingreso) || '—')}</td>
-                     <td>${esc(p.asunto || '—')}</td>
                      <td>${esc(p.producto || '—')}</td>
+                     <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                         title="${esc(p.comentarios || '')}">${esc(String(p.comentarios || '').split('\n')[0] || '—')}</td>
                    </tr>
                  `).join('')}
                </tbody>
              </table>
            </div>`}
+    </div>
+
+    <div class="modal-tabpanel" data-panel="interacciones" hidden>
+      ${drIntTablaEmbebida(interacciones, 'Este contacto no tiene interacciones registradas.')}
     </div>
   `;
 }
@@ -24445,14 +24476,18 @@ async function abrirAltaEdicionDrCt(id) {
   drCtListasEditor    = null;
   drCtEtiquetasEditor = null;
   try {
-    const [c, listasResp, etiqsResp] = await Promise.all([
+    const [c, listasResp, etiqsResp, paises] = await Promise.all([
       esEdicion ? apiGet(`api/datarocketcontactos.php?id=${id}`) : Promise.resolve({}),
       apiGet('api/datarocketlistas.php?limite=1000&order_by=nombre&dir=asc'),
       apiGet('api/datarocket_etiquetas.php?limite=1000&orden=nombre&dir=asc'),
+      drCtCargarPaises(),
     ]);
     const listasCatalogo = listasResp?.items || [];
     const etiqsCatalogo  = etiqsResp?.items  || [];
-    $('#modalRoot .modal-body').innerHTML = formDrCtHtml(c);
+    $('#modalRoot .modal-body').innerHTML = formDrCtHtml(c, paises);
+    // Encadenado: puebla provincias del pais del contacto y, dentro, las
+    // localidades de esa provincia, dejando ambos valores preseleccionados.
+    await cargarProvinciasDrCt(c.pais_id, c.provincia_id, c.localidad_id);
     drCtListasEditor = attachChipsPicker(
       $('#drcListasHost'), listasCatalogo, c.lista_ids || [],
       { placeholder: 'Escribí para buscar una lista…' }
@@ -24479,7 +24514,7 @@ async function abrirAltaEdicionDrCt(id) {
       return;
     }
     // Cambio de pestaña — mismas pestañas que el modal de consulta
-    // (identidad / contacto / web y redes / ubicacion / comentarios / estado).
+    // (identidad / contacto / web y redes / ubicacion / comentarios).
     drCtSwitchTab(ev);
     const a = ev.target.closest('[data-act]');
     if (!a) return;
@@ -24488,7 +24523,136 @@ async function abrirAltaEdicionDrCt(id) {
   });
 }
 
-function formDrCtHtml(c) {
+// Repuebla el select de provincias del formulario filtrado por pais.
+// `keepProv` es el valor a preservar tras el refresco (al inicializar el form
+// con datos existentes) y `keepLoc` se propaga al select de localidades.
+// Vaciar el pais limpia ambos dependientes.
+async function cargarProvinciasDrCt(paisId, keepProv, keepLoc) {
+  const selProv = document.getElementById('drcProvincia');
+  const selLoc  = document.getElementById('drcLocalidad');
+  if (!selProv) return;
+
+  if (!paisId) {
+    selProv.innerHTML = '<option value="">—</option>';
+    if (selLoc) selLoc.innerHTML = '<option value="">—</option>';
+    return;
+  }
+  selProv.innerHTML = '<option value="">Cargando…</option>';
+  if (selLoc) selLoc.innerHTML = '<option value="">—</option>';
+  try {
+    const items = await apiGet('api/datarocketcontactos.php?provincias=1&pais=' + encodeURIComponent(paisId));
+    selProv.innerHTML = drCtOpcionesIdNombre(items, keepProv || '', '—');
+    if (keepProv) await cargarLocalidadesDrCt(keepProv, keepLoc || '');
+  } catch (e) {
+    selProv.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
+  }
+}
+
+// Analogo para localidades filtradas por provincia.
+async function cargarLocalidadesDrCt(provinciaId, keepLoc) {
+  const selLoc = document.getElementById('drcLocalidad');
+  if (!selLoc) return;
+
+  if (!provinciaId) { selLoc.innerHTML = '<option value="">—</option>'; return; }
+  selLoc.innerHTML = '<option value="">Cargando…</option>';
+  try {
+    const items = await apiGet('api/datarocketcontactos.php?localidades=1&provincia=' + encodeURIComponent(provinciaId));
+    selLoc.innerHTML = drCtOpcionesIdNombre(items, keepLoc || '', '—');
+  } catch (e) {
+    selLoc.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
+  }
+}
+
+window.cargarProvinciasDrCt  = cargarProvinciasDrCt;
+window.cargarLocalidadesDrCt = cargarLocalidadesDrCt;
+
+// `paises` llega ya resuelto desde abrirAltaEdicionDrCt: los selects de
+// provincia y localidad se pueblan despues de inyectar el HTML, encadenados
+// al valor del nivel de arriba (ver cargarProvinciasDrCt).
+// ---------------------------------------------------------------------------
+// Normalizacion de teléfonos y correo del contacto
+// ---------------------------------------------------------------------------
+// Espejo en cliente de cloud/api/lib/contactos_normalizar.php. Existe sólo
+// para que al salir del campo el usuario vea exactamente lo que va a quedar
+// guardado, sin esperar el viaje al servidor. La fuente de verdad sigue siendo
+// el API, que renormaliza todo lo que recibe.
+//
+// Regla: todo número nacional argentino son 10 dígitos (área + abonado), sin
+// el 0 de larga distancia y sin el 15 de móvil.
+
+// Códigos de área de 3 dígitos. `11` es el único de 2; el resto es de 4.
+const DRC_AREAS_3 = new Set([
+  '220','221','223','230','236','237','249','260','261','263','264','266',
+  '280','291','297','299','341','342','343','345','348','351','353','358',
+  '362','364','370','376','379','381','383','385','387','388',
+]);
+
+function drCtAreaLen(d) {
+  if (d.startsWith('11'))            return 2;
+  if (DRC_AREAS_3.has(d.slice(0, 3))) return 3;
+  return 4;
+}
+
+// Saca prefijos: 00 internacional, 0 de larga distancia, 54 de país, 9 de
+// móvil, 15 intercalado, y convierte el móvil de CABA en formato local
+// (15-6780-5502) a 11-6780-5502.
+function drCtDespejar(d) {
+  if (d.startsWith('00')) d = d.slice(2);
+  while (d.length > 10 && d.startsWith('0')) d = d.slice(1);
+  if (d.length > 10 && d.startsWith('54')) d = d.slice(2);
+  // Largo 11 = 9 + los 10 del número nacional; largo 13 = 9 + área + 15 +
+  // abonado ("+54 9 341 15-307-4305", con los dos marcadores de móvil).
+  if ((d.length === 11 || d.length === 13) && d.startsWith('9')) d = d.slice(1);
+  if (d.length === 12) {
+    let a = drCtAreaLen(d);
+    if (d.substr(a, 2) !== '15') {
+      a = 0;
+      for (const t of [2, 3, 4]) if (d.substr(t, 2) === '15') { a = t; break; }
+    }
+    if (a > 0) d = d.slice(0, a) + d.slice(a + 2);
+  }
+  if (d.length === 10 && d.startsWith('15')) d = '11' + d.slice(2);
+  return d;
+}
+
+function drCtTelValido(d) {
+  return d.length === 10 && /^(11|[23]|600|800|810)/.test(d);
+}
+
+// Devuelve los 10 dígitos cuando las reglas llegan a un número nacional
+// válido; si no, los dígitos crudos (hay contactos del exterior y fijos sin
+// código de área que no queremos perder); '' si no hay ningún dígito.
+function drCtNormalizarTel(v) {
+  const raw = String(v ?? '').trim();
+  if (raw === '') return '';
+  const entero = drCtDespejar(raw.replace(/\D+/g, ''));
+  if (drCtTelValido(entero)) return entero;
+  // El campo puede traer dos números separados por espacios ("fijo móvil").
+  for (const token of raw.split(/\s+/).filter(Boolean)) {
+    const cand = drCtDespejar(token.replace(/\D+/g, ''));
+    if (drCtTelValido(cand)) return cand;
+  }
+  return raw.replace(/\D+/g, '');
+}
+
+const DRC_CORREO_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/;
+
+// Minúscula y sin espacios; si el campo trae una lista separada por comas o
+// barras se queda con la primera dirección. '' si no hay ninguna parseable.
+function drCtNormalizarCorreo(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (s === '') return '';
+  const m = s.match(DRC_CORREO_RE);
+  return m ? m[0] : s;
+}
+
+// Handler de blur de los cuatro campos: reescribe el valor ya normalizado.
+function drCtNormalizarInput(inp, tipo) {
+  inp.value = tipo === 'correo' ? drCtNormalizarCorreo(inp.value)
+                                : drCtNormalizarTel(inp.value);
+}
+
+function formDrCtHtml(c, paises) {
   const v   = (k) => esc(c?.[k] ?? '');
   const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
   const dt  = (k) => {
@@ -24498,9 +24662,9 @@ function formDrCtHtml(c) {
   };
   // Pestañas espejan la distribucion del modal de consulta (renderConsultaDrCt)
   // para que consultar y editar tengan el mismo mapa mental: identidad ·
-  // contacto · web y redes · ubicacion · comentarios y clasificacion · estado
-  // y verificacion. `drCtSwitchTab` (mismo helper que usa el consultar) se
-  // encarga de mostrar/ocultar los paneles desde el listener del modal.
+  // contacto · web y redes · ubicacion · comentarios y clasificacion.
+  // `drCtSwitchTab` (mismo helper que usa el consultar) se encarga de
+  // mostrar/ocultar los paneles desde el listener del modal.
   return `
     <div class="modal-tabs">
       <button type="button" class="modal-tab active" data-tab="identidad">Identidad</button>
@@ -24508,7 +24672,6 @@ function formDrCtHtml(c) {
       <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
-      <button type="button" class="modal-tab"        data-tab="estado">Estado</button>
     </div>
 
     <div class="modal-tabpanel" data-panel="identidad">
@@ -24563,7 +24726,7 @@ function formDrCtHtml(c) {
           <input type="text" id="drcNacimiento" maxlength="255" value="${v('nacimiento')}" placeholder="AAAA-MM-DD">
         </div>
       </div>
-      <div class="form-row">
+      <div class="form-row form-row-3">
         <div class="form-group">
           <label>DNI</label>
           <input type="text" id="drcDni" maxlength="255" value="${v('dni')}" style="font-family:monospace">
@@ -24572,6 +24735,10 @@ function formDrCtHtml(c) {
           <label>Origen</label>
           <input type="text" id="drcOrigen" maxlength="255" value="${v('origen')}">
         </div>
+        <div class="form-group">
+          <label>Registrado</label>
+          <input type="datetime-local" id="drcRegistrado" value="${dt('registrado')}">
+        </div>
       </div>
     </div>
 
@@ -24579,30 +24746,39 @@ function formDrCtHtml(c) {
       <div class="form-row">
         <div class="form-group">
           <label>Teléfono</label>
-          <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace">
+          <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace"
+                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
         </div>
         <div class="form-group">
           <label>Celular</label>
-          <input type="text" id="drcCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
+          <input type="text" id="drcCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace"
+                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label>WhatsApp</label>
-          <input type="text" id="drcWhatsapp" maxlength="255" value="${v('whatsapp')}" style="font-family:monospace">
+          <input type="text" id="drcWhatsapp" maxlength="255" value="${v('whatsapp')}" style="font-family:monospace"
+                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
         </div>
         <div class="form-group">
           <label>Correo</label>
-          <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
+          <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace"
+                 placeholder="nombre@empresa.com" onblur="drCtNormalizarInput(this, 'correo')">
         </div>
       </div>
+      <p style="margin:4px 0 0;font-size:.75rem;color:var(--muted)">
+        Los teléfonos se guardan como 10 dígitos, sin 0, sin 15 y sin
+        separadores; el correo siempre en minúscula.
+      </p>
     </div>
 
     <div class="modal-tabpanel" data-panel="webredes" hidden>
       <div class="form-row">
         <div class="form-group">
           <label>Web</label>
-          <input type="text" id="drcWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
+          <input type="text" id="drcWeb" maxlength="255" value="${v('web')}"
+                 placeholder="ej. www.ejemplo.com.ar/contacto" style="font-family:monospace">
         </div>
         <div class="form-group">
           <label>Facebook</label>
@@ -24619,6 +24795,10 @@ function formDrCtHtml(c) {
           <input type="text" id="drcTiktok" maxlength="255" value="${v('tiktok')}" style="font-family:monospace">
         </div>
       </div>
+      <p style="margin:4px 0 0;font-size:.75rem;color:var(--muted)">
+        La web se guarda sin <code>http://</code>: se pega la dirección completa
+        y se recorta sola. Lo que no sea una dirección válida se descarta.
+      </p>
     </div>
 
     <div class="modal-tabpanel" data-panel="ubicacion" hidden>
@@ -24626,25 +24806,29 @@ function formDrCtHtml(c) {
         <label>Domicilio</label>
         <input type="text" id="drcDomicilio" maxlength="255" value="${v('domicilio')}">
       </div>
-      <div class="form-row">
+      <div class="form-row form-row-3">
         <div class="form-group">
-          <label>Ciudad</label>
-          <input type="text" id="drcCiudad" maxlength="255" value="${v('ciudad')}">
+          <label>País</label>
+          <select id="drcPais" onchange="cargarProvinciasDrCt(this.value, '')">
+            ${drCtOpcionesIdNombre(paises, c?.pais_id, '—')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Provincia</label>
+          <select id="drcProvincia" onchange="cargarLocalidadesDrCt(this.value, '')">
+            <option value="">—</option>
+          </select>
         </div>
         <div class="form-group">
           <label>Localidad</label>
-          <input type="text" id="drcLocalidad" maxlength="255" value="${v('localidad')}">
+          <select id="drcLocalidad">
+            <option value="">—</option>
+          </select>
         </div>
       </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Provincia</label>
-          <input type="text" id="drcProvincia" maxlength="255" value="${v('provincia')}">
-        </div>
-        <div class="form-group">
-          <label>País</label>
-          <input type="text" id="drcPais" maxlength="255" value="${v('pais')}">
-        </div>
+      <div class="form-group">
+        <label>Ciudad</label>
+        <input type="text" id="drcCiudad" maxlength="255" value="${v('ciudad')}">
       </div>
       <div class="form-group">
         <label>Ubicación</label>
@@ -24664,39 +24848,6 @@ function formDrCtHtml(c) {
       <div class="form-group">
         <label>Listas suscriptas</label>
         <div id="drcListasHost"></div>
-      </div>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="estado" hidden>
-      <div class="form-row form-row-3">
-        <div class="form-group">
-          <label>Estado</label>
-          <input type="text" id="drcEstado" maxlength="1" value="${v('estado')}"
-                 style="font-family:monospace" placeholder="A/I/…">
-        </div>
-        <div class="form-group">
-          <label>Verificación</label>
-          <input type="text" id="drcVerificacion" maxlength="1" value="${v('verificacion')}"
-                 style="font-family:monospace" placeholder="O/V/E/P…">
-        </div>
-        <div class="form-group">
-          <label>Suscripciones</label>
-          <input type="number" id="drcSuscripciones" min="0" value="${v('suscripciones')}">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Registrado</label>
-          <input type="datetime-local" id="drcRegistrado" value="${dt('registrado')}">
-        </div>
-        <div class="form-group">
-          <label>Completado</label>
-          <input type="datetime-local" id="drcCompletado" value="${dt('completado')}">
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Error</label>
-        <textarea id="drcErrorTxt" rows="2" maxlength="255">${v('error')}</textarea>
       </div>
     </div>
 
@@ -24720,6 +24871,18 @@ async function guardarDrCt(id, btn) {
     return;
   }
 
+  // Correo: si trae algo escrito tiene que contener una dirección parseable.
+  // El backend rechaza igual con 400; se chequea acá además para dar feedback
+  // inmediato y saltar al tab donde está el campo.
+  const correoNorm = drCtNormalizarCorreo($('#drcCorreo').value);
+  if (correoNorm !== '' && !DRC_CORREO_RE.test(correoNorm)) {
+    const btnContacto = $('#modalRoot .modal-tab[data-tab="contacto"]');
+    if (btnContacto) btnContacto.click();
+    err.textContent = 'El correo no es válido.';
+    err.style.display = '';
+    return;
+  }
+
   const payload = {
     tipo:          tipoSel,
     nombre:        $('#drcNombre').value.trim(),
@@ -24735,13 +24898,15 @@ async function guardarDrCt(id, btn) {
     domicilio:     $('#drcDomicilio').value.trim(),
     ciudad:        $('#drcCiudad').value.trim(),
     ubicacion:     $('#drcUbicacion').value.trim(),
-    localidad:     $('#drcLocalidad').value.trim(),
-    provincia:     $('#drcProvincia').value.trim(),
-    pais:          $('#drcPais').value.trim(),
-    telefono:      $('#drcTelefono').value.trim(),
-    celular:       $('#drcCelular').value.trim(),
-    whatsapp:      $('#drcWhatsapp').value.trim(),
-    correo:        $('#drcCorreo').value.trim(),
+    localidad_id:  $('#drcLocalidad').value.trim() || null,
+    provincia_id:  $('#drcProvincia').value.trim() || null,
+    pais_id:       $('#drcPais').value.trim() || null,
+    // Ya normalizados en cliente (el API los renormaliza igual — ver
+    // cloud/api/lib/contactos_normalizar.php).
+    telefono:      drCtNormalizarTel($('#drcTelefono').value),
+    celular:       drCtNormalizarTel($('#drcCelular').value),
+    whatsapp:      drCtNormalizarTel($('#drcWhatsapp').value),
+    correo:        correoNorm,
     web:           $('#drcWeb').value.trim(),
     facebook:      $('#drcFacebook').value.trim(),
     instagram:     $('#drcInstagram').value.trim(),
@@ -24754,12 +24919,7 @@ async function guardarDrCt(id, btn) {
     // (attachChipsPicker) devuelven el array de ids seleccionados.
     lista_ids:     drCtListasEditor    ? drCtListasEditor.getIds()    : [],
     etiqueta_ids:  drCtEtiquetasEditor ? drCtEtiquetasEditor.getIds() : [],
-    suscripciones: $('#drcSuscripciones').value,
-    estado:        $('#drcEstado').value.trim(),
-    verificacion:  $('#drcVerificacion').value.trim(),
     registrado:    $('#drcRegistrado').value || null,
-    completado:    $('#drcCompletado').value || null,
-    error:         $('#drcErrorTxt').value,
   };
 
   btn.disabled = true;
@@ -24804,7 +24964,7 @@ async function eliminarDrCt(id) {
 // mensaje que origino la interaccion (origen ∈ {'aws_mensajes',
 // 'evolution_mensajes'}).
 const drIntFiltrosDefaults = {
-  q: '', codigo: '', contacto_id: '', mensaje_id: '', tipo: '', origen: '',
+  q: '', codigo: '', contacto_id: '', sentido: '', canal: '', respuesta: '',
   desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -24812,19 +24972,197 @@ const drIntFiltros = { ...drIntFiltrosDefaults };
 let drIntBuscadorTimer   = null;
 let drIntFiltrosSnapshot = null;
 
-const DR_INT_TIPO_MAP = {
-  correo_enviado:   { label: 'Correo enviado',   icon: 'fa-envelope',      cls: 'badge-info' },
-  correo_abierto:   { label: 'Correo abierto',   icon: 'fa-envelope-open', cls: 'badge-success' },
-  whatsapp_enviado: { label: 'WhatsApp enviado', icon: 'fa-whatsapp',      cls: 'badge-info' },
-  sms_enviado:      { label: 'SMS enviado',      icon: 'fa-comment-sms',   cls: 'badge-info' },
-  link_clickeado:   { label: 'Link clickeado',   icon: 'fa-link',          cls: 'badge-success' },
+// `sentido` y `canal` reemplazaron al viejo `tipo`, que mezclaba los dos ejes
+// en un solo slug (migración 20260817_1000). Los valores son los del catálogo
+// `estados`, campos `datarocket_interaccion_sentido` / `_canal`.
+// OJO con los iconos: el panel carga Font Awesome 6.5.1 **Free** (ver el <link>
+// de cloud/index.php). Las flechas diagonales `fa-arrow-down-left` /
+// `fa-arrow-up-right` son Pro y en el Free no renderizan nada — la celda queda
+// muda, sin error en consola. Por eso el sentido usa las flechas rectas, que sí
+// están en el Free. Antes de sumar un icono acá, verificar que exista en el
+// Free.
+const DR_INT_SENTIDO_MAP = {
+  entrante: { label: 'Entrante', icon: 'fa-solid fa-arrow-down',  color: 'var(--success)' },
+  saliente: { label: 'Saliente', icon: 'fa-solid fa-arrow-up',    color: 'var(--info)'    },
+  interna:  { label: 'Interna',  icon: 'fa-solid fa-note-sticky', color: 'var(--warn)'    },
 };
 
-function drIntTipoBadge(t) {
-  if (t == null || t === '') return `<span class="badge badge-info">—</span>`;
-  const info = DR_INT_TIPO_MAP[t];
-  if (!info) return `<span class="badge badge-info">${esc(t)}</span>`;
-  return `<span class="badge ${info.cls}"><i class="fa-solid ${info.icon}"></i> ${esc(info.label)}</span>`;
+// WhatsApp y Telegram son iconos de brand en FA6 (fa-brands); el resto va con
+// el solid. Por eso cada entrada declara la familia junto al icono.
+const DR_INT_CANAL_MAP = {
+  correo:     { label: 'Correo',     icon: 'fa-solid fa-envelope'    },
+  whatsapp:   { label: 'WhatsApp',   icon: 'fa-brands fa-whatsapp'   },
+  telegram:   { label: 'Telegram',   icon: 'fa-brands fa-telegram'   },
+  sms:        { label: 'SMS',        icon: 'fa-solid fa-comment-sms' },
+  web:        { label: 'Web',        icon: 'fa-solid fa-globe'       },
+  telefono:   { label: 'Teléfono',   icon: 'fa-solid fa-phone'       },
+  presencial: { label: 'Presencial', icon: 'fa-solid fa-handshake'   },
+};
+
+// Sentido y canal comparten una sola celda, solo con iconos y el label como
+// tooltip — mismo patrón que las columnas Medio/Formato de plantillas. La
+// flecha va coloreada por sentido; el canal en el color de texto normal.
+// `canal` es NULL en las notas internas: ahí queda solo la flecha.
+// Minutos -> "45 min" / "3 h" / "2 d". Se usa tanto para la demora de una
+// respuesta como para lo que lleva esperando una consulta pendiente.
+function drIntFmtMinutos(min) {
+  if (min == null || isNaN(Number(min))) return '—';
+  const n = Math.max(0, Number(min));
+  if (n < 60)    return `${n} min`;
+  if (n < 1440)  return `${Math.floor(n / 60)} h`;
+  return `${Math.floor(n / 1440)} d`;
+}
+
+// Celda de la columna Respuesta. Tres estados posibles:
+//   - entrante contestada  -> tiempo que tardó, en verde
+//   - entrante pendiente   -> "Pendiente" + hace cuánto, en ámbar
+//   - saliente o nota      -> guion; no esperan respuesta
+function drIntRespuestaCelda(a) {
+  if (a.respondida) {
+    return `<span class="badge badge-success" title="Respondida el ${esc(fmtFechaLarga(a.respondida))}">`
+         + `<i class="fa-solid fa-check"></i> ${esc(drIntFmtMinutos(a.respuesta_minutos))}</span>`;
+  }
+  if (a.sentido === 'entrante') {
+    return `<span class="badge badge-warn" title="Sin responder desde hace ${esc(drIntFmtMinutos(a.espera_minutos))}">`
+         + `<i class="fa-solid fa-hourglass-half"></i> ${esc(drIntFmtMinutos(a.espera_minutos))}</span>`;
+  }
+  return '<span style="color:var(--muted)">—</span>';
+}
+
+function drIntViaCelda(a) {
+  const s = DR_INT_SENTIDO_MAP[a.sentido];
+  const c = DR_INT_CANAL_MAP[a.canal];
+  if (!s && !c) return '<span style="color:var(--muted)">—</span>';
+  const iSent = s
+    ? `<i class="${s.icon}" title="${esc(s.label)}" style="color:${s.color}"></i>`
+    : '';
+  const iCanal = c
+    ? `<i class="${c.icon}" title="${esc(c.label)}"></i>`
+    : (a.canal ? `<span title="${esc(a.canal)}">?</span>` : '');
+  return `<span style="display:inline-flex;gap:10px;align-items:center;font-size:1rem">${iSent}${iCanal}</span>`;
+}
+
+// Celda "Asunto / Mensaje" del listado: el asunto arriba en el color de texto
+// normal y debajo un preview del mensaje, atenuado y en cuerpo chico.
+//
+// Los dos campos son opcionales y rara vez estan los dos: la mayoria de las
+// interacciones no tiene asunto —los canales que no lo manejan (WhatsApp,
+// Telegram) y las migradas desde prospectos, donde solo 79 de 1336 lo traian—
+// asi que cuando falta uno se renderiza solo el otro, sin dejar una linea
+// vacia ocupando alto de fila.
+//
+// El mensaje es MEDIUMTEXT: se colapsan los espacios y se corta a 120 chars
+// para que un cuerpo largo no reviente la altura de la fila. El texto completo
+// queda en el `title` y en el modal de Consultar.
+// Ojo con `class="muted"`: NO existe como regla global en style.css (solo esta
+// definida `.data-value.muted`), asi que no pinta nada. La convencion real del
+// proyecto es el token inline `color:var(--muted)` — 423 usos contra 12 de la
+// clase, que son bugs silenciosos.
+function drIntAsuntoCelda(a) {
+  const asunto  = String(a.asunto  || '').trim();
+  const mensaje = String(a.mensaje || '').replace(/\s+/g, ' ').trim();
+  if (!asunto && !mensaje) return '<span style="color:var(--muted)">—</span>';
+
+  const preview = mensaje.length > 120 ? mensaje.slice(0, 120) + '…' : mensaje;
+  const lineaAsunto  = asunto
+    ? `<div>${esc(asunto)}</div>`
+    : '';
+  const lineaMensaje = mensaje
+    ? `<div style="color:var(--muted);font-size:.78rem;line-height:1.35;margin-top:${asunto ? '2px' : '0'}" title="${esc(mensaje)}">${esc(preview)}</div>`
+    : '';
+  return lineaAsunto + lineaMensaje;
+}
+
+// Celda "Asignado": arriba el nombre del usuario responsable y debajo, atenuado
+// y en cuerpo chico, cuanto lleva esperando la interaccion.
+//
+// El asignado sale del PROSPECTO relacionado (`datarocket_prospectos.asignado`),
+// no de la interaccion: `datarocket_interacciones.usuario_id` es el autor de una
+// carga manual y esta NULL en el 100% de las filas de hoy. Ver DR_INT_JOINS.
+//
+// "Esperando" se mide desde `fecha` — cuanto hace que ocurrio el evento y sigue
+// sin cerrarse. Se muestra aunque no haya asignado: que una interaccion lleve
+// tres semanas sin responsable es justamente lo que hay que ver.
+function drIntAsignadoCelda(a) {
+  const nombre = String(a.asignado_nombre || '').trim();
+  const espera = fmtHace(a.fecha);
+  const linea1 = nombre
+    ? `<div>${esc(nombre)}</div>`
+    : `<div style="color:var(--muted)">Sin asignar</div>`;
+  const linea2 = espera
+    ? `<div style="color:var(--muted);font-size:.76rem;line-height:1.35;margin-top:2px">${esc(espera)}</div>`
+    : '';
+  return linea1 + linea2;
+}
+
+// ---- Pestaña "Interacciones" embebida en otros modales -------------------
+// El listado de interacciones de un contacto / prospecto se muestra dentro de
+// los modales de Consultar de esos recursos. Se comparte el render para que
+// las dos pestañas se vean igual y sigan las mismas columnas que el listado
+// principal (menos Contacto y Acciones, redundantes dentro de una ficha).
+
+// Trae las interacciones de un recurso. `filtro` es 'contacto_id' o
+// 'prospecto_id'. Nunca lanza: si el usuario no tiene el permiso de consulta
+// —o el endpoint falla— devolvemos [] y la pestaña muestra el vacío, en vez de
+// romper el modal entero de contacto/prospecto por una pestaña secundaria.
+async function drIntCargarDeRecurso(filtro, id) {
+  if (!hasPermission('datarocket.interacciones.consultar')) return [];
+  try {
+    const r = await apiGet(
+      `api/datarocketinteracciones.php?${filtro}=${encodeURIComponent(id)}` +
+      '&limite=200&order_by=fecha&dir=desc'
+    );
+    return r?.items || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Badge con el contador para el botón de la pestaña. Se omite en 0 para no
+// ensuciar la barra de tabs (mismo criterio que la pestaña Prospectos).
+function drIntTabBadge(n) {
+  if (!n) return '';
+  return `<span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${n}</span>`;
+}
+
+// Tabla compacta de interacciones. Las filas son clickeables y las despacha
+// `drIntFilaEmbebidaClick()` desde el handler delegado del modal contenedor.
+function drIntTablaEmbebida(items, vacioTxt) {
+  if (!items.length) return `<div class="table-empty">${esc(vacioTxt)}</div>`;
+  return `
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:80px">Código</th>
+            <th style="width:150px">Fecha</th>
+            <th style="width:70px;text-align:center" title="Sentido y canal">Vía</th>
+            <th>Asunto / Mensaje</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map((a) => `
+            <tr class="drint-fila-embebida row-clickable" data-interaccion-id="${a.id}"
+                title="Ver interacción #${esc(a.id)}">
+              <td class="td-id">#${esc(a.id)}</td>
+              <td>${esc(fmtFecha(a.fecha) || '—')}</td>
+              <td style="text-align:center">${drIntViaCelda(a)}</td>
+              <td>${drIntAsuntoCelda(a)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+// Click delegado sobre una fila de `drIntTablaEmbebida`. Devuelve true si
+// manejó el evento, para que el llamador corte su propio handler. No hace
+// falta closeModal(): openModal() ya reemplaza el modal actual.
+function drIntFilaEmbebidaClick(ev) {
+  const fila = ev.target.closest('#modalRoot .drint-fila-embebida[data-interaccion-id]');
+  if (!fila) return false;
+  abrirConsultarDrInt(Number(fila.dataset.interaccionId));
+  return true;
 }
 
 route('/datarocketinteracciones', async (mount) => {
@@ -24849,14 +25187,16 @@ route('/datarocketinteracciones', async (mount) => {
       <div class="stats-bar" id="drIntStats">
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Contactos únicos</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Correos enviados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Entrantes</span><span class="stat-value green">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin responder</span><span class="stat-value orange">—</span></div>
+        <div class="stat-card"><span class="stat-label">Respuesta promedio</span><span class="stat-value">—</span></div>
       </div>
 
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="drIntSearch"
-                   placeholder="🔍 Buscar por contacto, correo o descripción…">
+                   placeholder="🔍 Buscar por contacto, correo, asunto o mensaje…">
             <button class="search-clear" id="drIntSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="drIntFiltrosBtn" title="Filtros">
@@ -24876,14 +25216,15 @@ route('/datarocketinteracciones', async (mount) => {
               <th>Código</th>
               <th>Fecha</th>
               <th>Contacto</th>
-              <th>Tipo</th>
-              <th>Origen</th>
-              <th>Descripción</th>
+              <th style="width:70px;text-align:center" title="Sentido y canal">Vía</th>
+              <th>Asunto / Mensaje</th>
+              <th style="width:170px">Asignado</th>
+              <th style="width:110px;text-align:center">Respuesta</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="drIntTbody">
-            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -24893,6 +25234,14 @@ route('/datarocketinteracciones', async (mount) => {
     <div id="drIntCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <!-- Solo tiene sentido sobre las entrantes: el handler del menú oculta
+           estas dos opciones para salientes y notas internas. -->
+      <button type="button" data-action="responder" role="menuitem">
+        <i class="fa-solid fa-check"></i><span>Marcar respondida</span>
+      </button>
+      <button type="button" data-action="despender" role="menuitem">
+        <i class="fa-solid fa-rotate-left"></i><span>Volver a pendiente</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
@@ -24915,29 +25264,41 @@ route('/datarocketinteracciones', async (mount) => {
               <input type="number" id="fDrIntCodigo" min="1" placeholder="ID …" oninput="onFiltroDrInt('codigo', this.value)">
             </div>
             <div class="form-group">
-              <label>Tipo</label>
-              <select id="fDrIntTipo" onchange="onFiltroDrInt('tipo', this.value)">
+              <label>Sentido</label>
+              <select id="fDrIntSentido" onchange="onFiltroDrInt('sentido', this.value)">
                 <option value="">— Todos —</option>
-                <option value="correo_enviado">Correo enviado</option>
-                <option value="correo_abierto">Correo abierto</option>
-                <option value="whatsapp_enviado">WhatsApp enviado</option>
-                <option value="sms_enviado">SMS enviado</option>
-                <option value="link_clickeado">Link clickeado</option>
+                <option value="entrante">Entrante</option>
+                <option value="saliente">Saliente</option>
+                <option value="interna">Interna</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Canal</label>
+              <select id="fDrIntCanal" onchange="onFiltroDrInt('canal', this.value)">
+                <option value="">— Todos —</option>
+                <option value="correo">Correo</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="telegram">Telegram</option>
+                <option value="sms">SMS</option>
+                <option value="web">Web</option>
+                <option value="telefono">Teléfono</option>
+                <option value="presencial">Presencial</option>
+                <option value="_null">— Sin canal —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Respuesta</label>
+              <select id="fDrIntRespuesta" onchange="onFiltroDrInt('respuesta', this.value)">
+                <option value="">— Todas —</option>
+                <option value="pendiente">Sin responder</option>
+                <option value="respondida">Respondidas</option>
               </select>
             </div>
           </div>
-          <div class="form-row form-row-3">
+          <div class="form-row">
             <div class="form-group">
               <label>Contacto (ID)</label>
               <input type="number" id="fDrIntContacto" min="1" oninput="onFiltroDrInt('contacto_id', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Mensaje (ID)</label>
-              <input type="number" id="fDrIntMensaje" min="1" oninput="onFiltroDrInt('mensaje_id', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Origen</label>
-              <input type="text" id="fDrIntOrigen" placeholder="ej. aws_mensajes" oninput="onFiltroDrInt('origen', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -24961,7 +25322,9 @@ route('/datarocketinteracciones', async (mount) => {
                 <option value="id">Código</option>
                 <option value="fecha">Fecha</option>
                 <option value="contacto_id">Contacto</option>
-                <option value="tipo">Tipo</option>
+                <option value="sentido">Sentido</option>
+                <option value="canal">Canal</option>
+                <option value="respondida">Respuesta</option>
                 <option value="origen">Origen</option>
                 <option value="mensaje_id">Mensaje</option>
               </select>
@@ -25012,8 +25375,10 @@ route('/datarocketinteracciones', async (mount) => {
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarDrInt(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarDrInt(data.id);
+    if (b.dataset.action === 'consultar')  abrirConsultarDrInt(data.id);
+    if (b.dataset.action === 'responder')  marcarRespondidaDrInt(data.id, true);
+    if (b.dataset.action === 'despender')  marcarRespondidaDrInt(data.id, false);
+    if (b.dataset.action === 'eliminar')   eliminarDrInt(data.id);
   });
 
   // Clic en fila → consultar; clic en hamburguesa → menú
@@ -25021,9 +25386,8 @@ route('/datarocketinteracciones', async (mount) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
-      const id = Number(ham.dataset.id);
-      const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#drIntCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      const r = ham.getBoundingClientRect();
+      abrirCtxMenuDrInt(ham.closest('tr[data-id]'), r.right - 190, r.bottom + 4);
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -25034,57 +25398,99 @@ route('/datarocketinteracciones', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#drIntCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    abrirCtxMenuDrInt(tr, ev.clientX, ev.clientY);
   });
 
   refrescarBadgeFiltrosDrInt();
   await cargarDrInt();
 }, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Interacciones');
 
+// Abre el menú contextual de una fila mostrando sólo las acciones que aplican:
+// "Marcar respondida" / "Volver a pendiente" existen únicamente sobre las
+// entrantes, y nunca las dos a la vez.
+function abrirCtxMenuDrInt(tr, x, y) {
+  if (!tr) return;
+  const menu       = $('#drIntCtxMenu');
+  const esEntrante = tr.dataset.sentido === 'entrante';
+  const respondida = tr.dataset.respondida === '1';
+  menu.querySelector('[data-action="responder"]').style.display = (esEntrante && !respondida) ? '' : 'none';
+  menu.querySelector('[data-action="despender"]').style.display = (esEntrante &&  respondida) ? '' : 'none';
+  abrirCtxMenu(menu, x, y, { id: Number(tr.dataset.id) });
+}
+
+// Sella (o borra) la hora de respuesta de una interacción entrante. El backend
+// pone la hora del servidor cuando se manda `true`.
+async function marcarRespondidaDrInt(id, respondida) {
+  try {
+    await apiSend(`api/datarocketinteracciones.php?id=${id}`, 'PUT', { respondida });
+    toast(respondida ? 'Interacción marcada como respondida.' : 'Interacción vuelta a pendiente.');
+    cargarDrInt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 async function cargarDrInt() {
   const tbody = $('#drIntTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(drIntFiltros).forEach(([k, v]) => {
-    if (v !== '' && v != null) qs.set(k, v);
+    if (v === '' || v == null) return;
+    // `respuesta` es un tri-estado del formulario; el API lo recibe como dos
+    // flags separados (`pendiente` / `respondida`).
+    if (k === 'respuesta') { qs.set(v === 'pendiente' ? 'pendiente' : 'respondida', '1'); return; }
+    qs.set(k, v);
   });
   try {
     const data = await apiGet('api/datarocketinteracciones.php?' + qs.toString());
     pintarStatsDrInt(data.stats);
     pintarTablaDrInt(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
 function pintarStatsDrInt(s) {
   const cards = $$('#drIntStats .stat-card .stat-value');
-  if (cards.length < 3) return;
+  if (cards.length < 5) return;
   cards[0].textContent = fmtNum(s.total);
   cards[1].textContent = fmtNum(s.contactos);
-  cards[2].textContent = fmtNum(s.correos);
+  cards[2].textContent = fmtNum(s.entrantes);
+  cards[3].textContent = fmtNum(s.pendientes);
+  // null cuando todavía no se marcó ninguna respondida: no hay promedio que
+  // mostrar y un "0 min" sería mentira.
+  cards[4].textContent = s.respuesta_promedio == null
+    ? '—' : drIntFmtMinutos(s.respuesta_promedio);
 }
 
 function pintarTablaDrInt(rows) {
   const tbody = $('#drIntTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin interacciones.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin interacciones.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((a) => {
+    // Solo el nombre: el "#id" del contacto no aporta al operador y competia
+    // visualmente con el codigo de la propia interaccion, que ya va en la
+    // primera columna. Cuando no hay nombre cargado si cae al id, que es lo
+    // unico identificable que queda.
     const contactoTxt = a.contacto_nombre
-      ? `${esc(a.contacto_nombre)} <span style="color:var(--muted)">#${esc(a.contacto_id)}</span>`
-      : `#${esc(a.contacto_id)}`;
+      ? esc(a.contacto_nombre)
+      : `<span style="color:var(--muted)">#${esc(a.contacto_id)}</span>`;
+    // `data-sentido` / `data-respondida` los lee el menú contextual para
+    // decidir si ofrece "Marcar respondida" o "Volver a pendiente".
     return `
-    <tr data-id="${a.id}" class="row-clickable">
+    <tr data-id="${a.id}" class="row-clickable"
+        data-sentido="${esc(a.sentido || '')}" data-respondida="${a.respondida ? '1' : ''}">
       <td class="td-id">#${esc(a.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(a.fecha))}</td>
       <td>${contactoTxt}</td>
-      <td>${drIntTipoBadge(a.tipo)}</td>
-      <td>${a.origen ? `<code>${esc(a.origen)}</code>` : '—'}</td>
-      <td>${esc(a.descripcion || '—')}</td>
+      <td style="text-align:center">${drIntViaCelda(a)}</td>
+      <td>${drIntAsuntoCelda(a)}</td>
+      <td>${drIntAsignadoCelda(a)}</td>
+      <td style="text-align:center">${drIntRespuestaCelda(a)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${a.id}">
@@ -25099,9 +25505,9 @@ function pintarTablaDrInt(rows) {
 
 // ---- Modal de Filtros ----
 function onFiltroDrInt(key, value) {
-  if (['tipo', 'origen', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+  if (['sentido', 'canal', 'respuesta', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drIntFiltros[key] = value;
-  } else if (['codigo', 'contacto_id', 'mensaje_id'].includes(key)) {
+  } else if (['codigo', 'contacto_id'].includes(key)) {
     const v = String(value).trim();
     drIntFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
@@ -25130,10 +25536,10 @@ function refrescarBadgeFiltrosDrInt() {
 function sincronizarControlesFiltrosDrInt() {
   const f = drIntFiltros;
   $('#fDrIntCodigo').value   = f.codigo;
-  $('#fDrIntTipo').value     = f.tipo;
+  $('#fDrIntSentido').value  = f.sentido;
+  $('#fDrIntCanal').value    = f.canal;
+  $('#fDrIntRespuesta').value = f.respuesta;
   $('#fDrIntContacto').value = f.contacto_id;
-  $('#fDrIntMensaje').value  = f.mensaje_id;
-  $('#fDrIntOrigen').value   = f.origen;
   $('#fDrIntDesde').value    = f.desde;
   $('#fDrIntHasta').value    = f.hasta;
   $('#fDrIntLimite').value   = f.limite;
@@ -25227,33 +25633,39 @@ function renderConsultaDrInt(a) {
   // Si no hay nombre mostramos "#id" y linkeamos igual.
   const contactoNombre = a.contacto_nombre || `#${a.contacto_id}`;
   const contactoHtml   = `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); abrirConsultarDrCt(${Number(a.contacto_id)})">${esc(contactoNombre)}</a>`
-                       + (a.contacto_nombre ? ` <span class="muted">(#${esc(a.contacto_id)})</span>` : '');
+                       + (a.contacto_nombre ? ` <span style="color:var(--muted)">(#${esc(a.contacto_id)})</span>` : '');
 
-  // Mensaje: "#id" clickeable que abre el modal de Consultar mensaje AWS o
-  // Evolution segun el `origen`. Si el origen es desconocido o no hay
-  // mensaje_id, cae al render read-only sin link.
-  const abridoresMsg = {
-    aws_mensajes:       'abrirConsultarAwsMsg',
-    evolution_mensajes: 'abrirConsultarEvoMsg',
-  };
-  const abridor = abridoresMsg[a.origen];
-  const mensajeHtml = (a.mensaje_id != null && abridor)
-    ? `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); ${abridor}(${Number(a.mensaje_id)})">#${esc(a.mensaje_id)}</a>`
-    : (a.mensaje_id != null ? `#${esc(a.mensaje_id)}` : '<span class="muted">Sin dato</span>');
+  // Prospecto: producto clickeable que abre el modal de Consultar prospecto.
+  // Era el asunto hasta que la migracion 20260817_1700 dropeo esa columna.
+  // `prospecto_id` es NULL-able (las interacciones anteriores al backfill y
+  // las que no nacen de un prospecto no lo tienen), asi que cae a "Sin dato".
+  const prospectoHtml = a.prospecto_id
+    ? `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); abrirConsultaDp(${Number(a.prospecto_id)})">${esc(a.prospecto_producto || ('#' + a.prospecto_id))}</a>`
+      + (a.prospecto_producto ? ` <span style="color:var(--muted)">(#${esc(a.prospecto_id)})</span>` : '')
+    : '<span style="color:var(--muted)">Sin dato</span>';
 
-  const tipoInfo = DR_INT_TIPO_MAP[a.tipo];
-  const tipoTxt  = tipoInfo ? tipoInfo.label : (a.tipo || '—');
+  const sentidoTxt = DR_INT_SENTIDO_MAP[a.sentido]?.label ?? (a.sentido || '—');
+  // `canal` es NULL en las notas internas: ahí el texto correcto es "—", no el
+  // slug crudo.
+  const canalTxt   = DR_INT_CANAL_MAP[a.canal]?.label   ?? (a.canal   || '—');
 
   return `
     <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
       ${card('Código',      '#' + a.id)}
       ${card('Fecha',       fmtFechaLarga(a.fecha))}
-      ${cardHtml('Contacto', contactoHtml)}
+      ${cardHtml('Contacto',  contactoHtml)}
+      ${cardHtml('Prospecto', prospectoHtml)}
       ${card('Correo',      a.contacto_correo)}
-      ${card('Tipo',        tipoTxt)}
-      ${card('Origen',      a.origen, false, true)}
-      ${cardHtml('Mensaje', mensajeHtml)}
-      ${card('Descripción', a.descripcion, true)}
+      ${card('Sentido',     sentidoTxt)}
+      ${card('Canal',       canalTxt)}
+      ${card('Respondida',  a.respondida ? fmtFechaLarga(a.respondida)
+                                         : (a.sentido === 'entrante' ? 'Pendiente' : '—'))}
+      ${card('Tiempo de respuesta', a.respondida
+               ? drIntFmtMinutos(a.respuesta_minutos)
+               : (a.sentido === 'entrante'
+                    ? 'Esperando hace ' + drIntFmtMinutos(a.espera_minutos) : '—'))}
+      ${card('Asunto',  a.asunto,  true)}
+      ${card('Mensaje', a.mensaje, true)}
     </dl>
   `;
 }
@@ -26833,7 +27245,10 @@ function dpEnriquecerConColores() {
     const et = etaMap.get(Number(it.etapa_id));
     it.embudo_color = em ? em.color : null;
     it.etapa_color  = et ? et.color : null;
-    it.etapa_tipo   = et ? et.tipo  : null;
+    // `etapa_tipo` NO se pisa desde el lookup: el listado ya lo trae por fila
+    // (drProEnrichRows). Cuando el lookup falla queda vacio, y sobreescribir
+    // aca dejaba en null un dato que el backend habia resuelto bien.
+    if (it.etapa_tipo == null && et) it.etapa_tipo = et.tipo;
   }
 }
 
@@ -26875,11 +27290,16 @@ route('/datarocket_prospectos', async (mount) => {
         <div class="stat-card"><span class="stat-label">Asignados</span><span class="stat-value" id="dpStatAsignados">—</span></div>
       </div>
 
+      <!-- Valor del embudo. Se puebla desde el bloque forecast del API (una
+           fila por moneda) y queda oculta mientras ningun prospecto tenga
+           monto cargado. Sin backticks: estamos dentro de un template literal. -->
+      <div class="stats-bar" id="dpForecast" style="display:none"></div>
+
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="dpSearch"
-                   placeholder="🔍 Buscar nombre, organización, contacto, correo, asunto…">
+                   placeholder="🔍 Buscar contacto, empresa, correo, celular, producto…">
             <button class="search-clear" id="dpSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="dpFiltrosBtn" title="Filtros">
@@ -26902,7 +27322,8 @@ route('/datarocket_prospectos', async (mount) => {
               ${thOrdenable('id',            'Código',   'width:80px')}
               ${thOrdenable('ingreso',       'Ingreso',  'width:130px')}
               ${thOrdenable('proyecto_id',   'Proyecto', 'width:130px')}
-              <th>Nombre / Organización</th>
+              ${thOrdenable('contacto_nombre', 'Nombre / Organización')}
+              ${thOrdenable('monto',         'Monto',    'width:130px;text-align:right')}
               ${thOrdenable('embudo_id',     'Embudo',   'width:150px')}
               ${thOrdenable('etapa_id',      'Etapa',    'width:150px')}
               ${thOrdenable('estado',        'Estado',   'width:110px;text-align:center')}
@@ -26911,7 +27332,7 @@ route('/datarocket_prospectos', async (mount) => {
             </tr>
           </thead>
           <tbody id="dpTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -27015,6 +27436,9 @@ route('/datarocket_prospectos', async (mount) => {
                 <option value="estado">Estado</option>
                 <option value="asignado">Asignado</option>
                 <option value="actualizado">Actualizado</option>
+                <option value="contacto_nombre">Contacto</option>
+                <option value="monto">Monto</option>
+                <option value="cierre_esperado">Cierre esperado</option>
               </select>
             </div>
             <div class="form-group">
@@ -27115,7 +27539,7 @@ route('/datarocket_prospectos', async (mount) => {
 async function cargarDp() {
   const tbody = $('#dpTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (dpBusqueda)                 qs.set('q', dpBusqueda);
@@ -27140,9 +27564,10 @@ async function cargarDp() {
     dpItems = data.items || [];
     dpEnriquecerConColores();
     pintarStatsDp(data.stats || {});
+    pintarForecastDp(data.forecast || []);
     renderDp();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -27152,18 +27577,81 @@ function pintarStatsDp(s) {
   $('#dpStatAsignados').textContent  = fmtNum(s.asignados   ?? 0);
 }
 
+// Importe con separadores es-AR y el codigo de moneda adelante ("ARS 1.250.000,50").
+// Se usa el codigo y no el simbolo porque $ es ambiguo entre pesos y dolares.
+function dpFmtMonto(monto, moneda) {
+  if (monto == null || monto === '') return '—';
+  const n = Number(monto);
+  if (isNaN(n)) return '—';
+  return `${moneda || 'ARS'} ${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// Celda "Monto" del listado. Debajo del importe se muestra el ponderado por la
+// probabilidad de la etapa, que es el numero que realmente importa para el
+// forecast. Solo aparece si la etapa es activa y tiene probabilidad cargada.
+function dpMontoCelda(p) {
+  if (p.monto == null) return '<span style="color:var(--muted)">—</span>';
+  const base = `<div style="font-weight:600;white-space:nowrap">${esc(dpFmtMonto(p.monto, p.moneda))}</div>`;
+  if (p.monto_ponderado == null) return base;
+  return base + `<div style="color:var(--muted);font-size:.76rem;white-space:nowrap" title="Monto ponderado por la probabilidad de la etapa (${p.etapa_probabilidad}%)">
+      ${esc(dpFmtMonto(p.monto_ponderado, p.moneda))} · ${p.etapa_probabilidad}%
+    </div>`;
+}
+
+// Tarjetas de valor del embudo. El API devuelve una fila por moneda (nunca suma
+// monedas distintas), asi que se pinta un bloque por moneda dentro de cada
+// tarjeta. Si no hay ninguna oportunidad con monto cargado, la fila entera se
+// oculta para no mostrar cuatro tarjetas en cero.
+function pintarForecastDp(forecast) {
+  const cont = $('#dpForecast');
+  if (!cont) return;
+  const filas = Array.isArray(forecast) ? forecast : [];
+  if (!filas.length) { cont.style.display = 'none'; cont.innerHTML = ''; return; }
+  cont.style.display = '';
+
+  // Cada tarjeta lista solo las monedas que aportan algo: sin el filtro, un
+  // embudo con una sola venta en dolares pintaba "USD 0,00 / 0 oportunidades"
+  // en las otras tres tarjetas.
+  const tarjeta = (label, campo, campoN, color, title) => {
+    const conValor = filas.filter((f) => Number(f[campo]) > 0);
+    const cuerpo = conValor.length
+      ? conValor.map((f) => `
+          <span class="stat-value ${color}" style="font-size:1rem;white-space:nowrap">${esc(dpFmtMonto(f[campo], f.moneda))}</span>
+          <span style="color:var(--muted);font-size:.72rem">${fmtNum(f[campoN])} oportunidad${f[campoN] === 1 ? '' : 'es'}</span>
+        `).join('')
+      : `<span class="stat-value" style="font-size:1rem;color:var(--muted)">—</span>`;
+    return `
+      <div class="stat-card" title="${esc(title)}">
+        <span class="stat-label">${esc(label)}</span>
+        ${cuerpo}
+      </div>`;
+  };
+
+  cont.innerHTML =
+      tarjeta('Embudo abierto', 'abierto',   'abiertas', 'orange',
+              'Suma de los montos en etapas activas')
+    + tarjeta('Forecast ponderado', 'ponderado', 'abiertas', '',
+              'Suma de monto × probabilidad de la etapa, solo etapas activas')
+    + tarjeta('Ganado', 'ganado',  'ganadas',  'green',
+              'Suma de los montos en etapas de tipo ganada')
+    + tarjeta('Perdido', 'perdido', 'perdidas', 'red',
+              'Suma de los montos en etapas de tipo perdida');
+}
+
 function renderDp() {
   const tbody = $('#dpTbody');
   if (!tbody) return;
   actualizarSortIndicadores($('#dpThead'), { order_by: dpFiltroOrden, dir: dpFiltroDir });
   if (!dpItems.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin prospectos registrados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin prospectos registrados.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = dpItems.map((p) => {
-    const nombre = p.nombre || p.contacto || '—';
-    const org    = p.organizacion || '';
+    // Identidad 100% derivada del contacto vinculado — las columnas legacy del
+    // prospecto se dropearon en la migracion 20260816_1500.
+    const nombre = p.contacto_nombre || '—';
+    const org    = p.contacto_empresa || '';
     const nomOrg = org
       ? `<div style="font-weight:600">${esc(nombre)}</div><div style="color:var(--muted);font-size:.82rem">${esc(org)}</div>`
       : `<div style="font-weight:600">${esc(nombre)}</div>`;
@@ -27173,6 +27661,7 @@ function renderDp() {
         <td style="font-size:.82rem;color:var(--muted)">${esc(fmtFecha(p.ingreso) || '—')}</td>
         <td style="font-size:.85rem">${esc(p.proyecto_nombre || (p.proyecto_id ? `#${p.proyecto_id}` : '—'))}</td>
         <td>${nomOrg}</td>
+        <td style="text-align:right">${dpMontoCelda(p)}</td>
         <td style="font-size:.85rem">${esc(p.embudo_nombre || '—')}</td>
         <td>${dpEtapaPill(p)}</td>
         <td style="text-align:center">${dpEstadoLegacyBadge(p.estado)}</td>
@@ -27686,8 +28175,8 @@ function abrirAltaEdicionDp(id) {
         </div>
 
         <!-- ============================================================ -->
-        <!-- TAB: General — ingreso, proyecto, producto, asunto, sentido, -->
-        <!-- origen, tipo. Datos del mensaje/lead inicial que dio origen  -->
+        <!-- TAB: General — ingreso, proyecto, producto, sentido, origen, -->
+        <!-- tipo. Datos del mensaje/lead inicial que dio origen          -->
         <!-- al prospecto. Los datos de identidad del humano (nombre,     -->
         <!-- correo, celular, empresa, ubicacion) NO viven mas aca — se   -->
         <!-- muestran en el tab Contacto derivados del contacto vinculado -->
@@ -27722,18 +28211,31 @@ function abrirAltaEdicionDp(id) {
               <select id="dpTipo"><option value="">—</option>${dpOpcionesCombo('tipo')}</select>
             </div>
           </div>
-          <div class="form-group">
-            <label>Asunto</label>
-            <input type="text" id="dpAsunto" maxlength="255">
-          </div>
         </div>
 
         <!-- ============================================================ -->
-        <!-- TAB: Seguimiento — embudo, etapa, ingreso a la etapa, estado -->
-        <!-- (legacy), calificacion, aplazado, asignado, atendido. Donde  -->
-        <!-- vive el prospecto en el pipeline y quien lo trabaja.         -->
+        <!-- TAB: Seguimiento — monto, cierre esperado, embudo, etapa,    -->
+        <!-- ingreso a la etapa, estado (legacy), calificacion, aplazado, -->
+        <!-- asignado, atendido. Donde vive el prospecto en el pipeline,  -->
+        <!-- cuanto vale y quien lo trabaja.                              -->
         <!-- ============================================================ -->
         <div class="modal-tabpanel" data-dp-tab="seguimiento" hidden>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Monto</label>
+              <!-- type=text y no number: permite tipear "1.250.000,50" con los
+                   separadores de es-AR; el API normaliza (drProNullableMonto). -->
+              <input type="text" id="dpMonto" inputmode="decimal" placeholder="Ej. 1.250.000,50">
+            </div>
+            <div class="form-group">
+              <label>Moneda</label>
+              <select id="dpMoneda">${dpOpcionesCombo('moneda')}</select>
+            </div>
+            <div class="form-group">
+              <label>Cierre esperado</label>
+              <input type="date" id="dpCierreEsperado">
+            </div>
+          </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Embudo</label>
@@ -27784,16 +28286,17 @@ function abrirAltaEdicionDp(id) {
         </div>
 
         <!-- ============================================================ -->
-        <!-- TAB: Notas — comentarios (max 1000) + acciones (log libre).  -->
+        <!-- TAB: Notas — comentarios (max 1000). Unico bloque de notas   -->
+        <!-- libres del prospecto: el asunto se fusiono adentro y el log  -->
+        <!-- de acciones se dropeo (migraciones 20260817_1600 y 1700).    -->
+        <!-- El historial estructurado vive en Interacciones. Sin         -->
+        <!-- backticks en este comentario: esta dentro de un template     -->
+        <!-- literal y lo cortarian.                                      -->
         <!-- ============================================================ -->
         <div class="modal-tabpanel" data-dp-tab="notas" hidden>
           <div class="form-group">
             <label>Comentarios (max 1000)</label>
-            <textarea id="dpComentarios" rows="4" maxlength="1000"></textarea>
-          </div>
-          <div class="form-group">
-            <label>Acciones (log libre)</label>
-            <textarea id="dpAcciones" rows="6"></textarea>
+            <textarea id="dpComentarios" rows="10" maxlength="1000"></textarea>
           </div>
         </div>
 
@@ -27832,7 +28335,13 @@ function abrirAltaEdicionDp(id) {
     $('#dpSentido').value     = p.sentido      || '';
     $('#dpOrigen').value      = p.origen       || '';
     $('#dpTipo').value        = p.tipo         || '';
-    $('#dpAsunto').value      = p.asunto       || '';
+    // El monto viaja como number; se muestra con separadores es-AR para que el
+    // usuario lo lea igual que en el listado. El API vuelve a normalizarlo.
+    $('#dpMonto').value       = p.monto != null
+      ? Number(p.monto).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : '';
+    $('#dpMoneda').value      = p.moneda       || 'ARS';
+    $('#dpCierreEsperado').value = p.cierre_esperado ? String(p.cierre_esperado).slice(0, 10) : '';
     $('#dpEmbudoId').value    = p.embudo_id    || '';
     repintarEtapas(p.embudo_id || '', p.etapa_id || '');
     setDT('#dpEtapaIngreso',  p.etapa_ingreso);
@@ -27842,7 +28351,6 @@ function abrirAltaEdicionDp(id) {
     $('#dpAsignado').value    = p.asignado     || '';
     $('#dpAtendido').value    = p.atendido     || '';
     $('#dpComentarios').value = p.comentarios  || '';
-    $('#dpAcciones').value    = p.acciones     || '';
     // Tab Contacto en modo Edicion: read-only + boton "Abrir ficha".
     // Al editar no se puede re-vincular el prospecto a otro contacto (regla
     // del backend + de producto: si el vendedor detecta el error debe borrar
@@ -27903,7 +28411,12 @@ async function guardarDp() {
     origen:        nullIfEmpty($('#dpOrigen').value),
     tipo:          nullIfEmpty($('#dpTipo').value),
     producto:      nullIfEmpty($('#dpProducto').value.trim()),
-    asunto:        nullIfEmpty($('#dpAsunto').value.trim()),
+    // El monto va crudo tal como lo tipeo el usuario ("1.250.000,50"): el
+    // parseo de separadores lo hace drProNullableMonto() en el backend, que es
+    // el unico lugar donde tiene que estar la regla.
+    monto:           nullIfEmpty($('#dpMonto').value.trim()),
+    moneda:          $('#dpMoneda').value || 'ARS',
+    cierre_esperado: nullIfEmpty($('#dpCierreEsperado').value),
     calificacion:  nullIfEmpty($('#dpCalificacion').value),
     estado:        nullIfEmpty($('#dpEstado').value),
     embudo_id:     nullIfEmpty($('#dpEmbudoId').value),
@@ -27913,7 +28426,6 @@ async function guardarDp() {
     atendido:      nullIfEmpty($('#dpAtendido').value),
     aplazado:      dtIfSet('#dpAplazado'),
     comentarios:   nullIfEmpty($('#dpComentarios').value.trim()),
-    acciones:      nullIfEmpty($('#dpAcciones').value),
   };
 
   // contacto_id solo se envia en alta (el backend rechaza el POST sin el).
@@ -27962,6 +28474,11 @@ async function abrirConsultaDp(id) {
   }
   if (!p) return;
 
+  // Interacciones del prospecto — van en su propia pestaña. Se piden aca (no
+  // en paralelo con el prospecto) porque el prospecto puede venir de dpItems
+  // sin viaje al servidor; el helper nunca lanza, asi que no hay try/catch.
+  const interacciones = await drIntCargarDeRecurso('prospecto_id', id);
+
   const card = (label, valor, ancho) => `
     <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
                 background:color-mix(in srgb, var(--surface) 90%, #000);
@@ -27975,6 +28492,19 @@ async function abrirConsultaDp(id) {
     ? '<span style="color:var(--muted)">—</span>'
     : `<pre style="white-space:pre-wrap;margin:0;font-family:inherit;font-size:.9rem">${esc(v)}</pre>`;
 
+  // Contacto: nombre clickeable que abre el modal de Consultar contacto. Es el
+  // salto inverso al que ya hace abrirConsultarDrCt() (contacto → prospecto),
+  // asi que se navega igual: openModal() cierra solo el modal actual, no hace
+  // falta closeModal() aca. La identidad (nombre, correo, teléfonos) vive en
+  // `datarocket_contactos`; el prospecto sólo la referencia.
+  const contactoNombre = p.contacto_nombre || ('#' + p.contacto_id);
+  const contactoHtml = p.contacto_id
+    ? `<a href="#" style="color:var(--primary);cursor:pointer;text-decoration:underline"
+           onclick="event.preventDefault(); abrirConsultarDrCt(${Number(p.contacto_id)})"
+        >${esc(contactoNombre)}</a>`
+      + (p.contacto_nombre ? ` <span style="color:var(--muted)">(#${Number(p.contacto_id)})</span>` : '')
+    : '<span style="color:var(--muted)">Sin contacto vinculado</span>';
+
   // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — misma razon.
   // Las 5 pestañas siguen la misma agrupacion que el modal de Edicion para que
   // el usuario encuentre los campos en el mismo lugar en ambos modos.
@@ -27982,7 +28512,7 @@ async function abrirConsultaDp(id) {
     <div class="modal" style="max-width:820px;overflow-x:hidden">
       <div class="modal-header">
         <div class="modal-title">
-          🎯 <span class="modal-subtitle">${esc(p.nombre || p.contacto || '(sin nombre)')} — #${p.id}</span>
+          🎯 <span class="modal-subtitle">${esc(p.contacto_nombre || '(sin nombre)')} — #${p.id}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
@@ -28003,10 +28533,14 @@ async function abrirConsultaDp(id) {
           <button type="button" class="modal-tab" role="tab" data-dp-tab="notas"       onclick="dpCambiarTab('notas')">
             <i class="fa-solid fa-note-sticky"></i> Notas
           </button>
+          <button type="button" class="modal-tab" role="tab" data-dp-tab="interacciones" onclick="dpCambiarTab('interacciones')">
+            <i class="fa-solid fa-comments"></i> Interacciones${drIntTabBadge(interacciones.length)}
+          </button>
         </div>
 
         <div class="modal-tabpanel" data-dp-tab="general">
           <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Contacto',     contactoHtml, 'full')}
             ${card('Código',       `<code>${p.id}</code>`)}
             ${card('Ingreso',      val(fmtFecha(p.ingreso)))}
             ${card('Proyecto',     val(p.proyecto_nombre))}
@@ -28015,14 +28549,23 @@ async function abrirConsultaDp(id) {
             ${card('Origen',       val(p.origen_texto  || p.origen))}
             ${card('Tipo',         val(p.tipo_texto    || p.tipo))}
             ${card('Actualizado',  val(fmtFecha(p.actualizado)))}
-            ${card('Asunto',       val(p.asunto), 'full')}
           </div>
         </div>
 
         <div class="modal-tabpanel" data-dp-tab="seguimiento" hidden>
           <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Monto',         p.monto != null
+                                      ? `<span style="font-weight:600">${esc(dpFmtMonto(p.monto, p.moneda))}</span>`
+                                      : '<span style="color:var(--muted)">Sin monto cargado</span>')}
+            ${card('Cierre esperado', val(p.cierre_esperado ? fmtFechaSola(p.cierre_esperado) : null))}
             ${card('Embudo',        val(p.embudo_nombre))}
             ${card('Etapa',         dpEtapaPill(p))}
+            ${card('Probabilidad',  p.etapa_probabilidad != null
+                                      ? `${p.etapa_probabilidad}%`
+                                      : '<span style="color:var(--muted)">—</span>')}
+            ${card('Monto ponderado', p.monto_ponderado != null
+                                      ? esc(dpFmtMonto(p.monto_ponderado, p.moneda))
+                                      : '<span style="color:var(--muted)">—</span>')}
             ${card('Ingreso a la etapa', val(fmtFecha(p.etapa_ingreso)))}
             ${card('Estado (legacy)', dpEstadoLegacyBadge(p.estado))}
             ${card('Calificación',  val(p.calificacion))}
@@ -28043,8 +28586,17 @@ async function abrirConsultaDp(id) {
         <div class="modal-tabpanel" data-dp-tab="notas" hidden>
           <div style="display:flex;flex-wrap:wrap;gap:12px">
             ${card('Comentarios',   preText(p.comentarios), 'full')}
-            ${card('Acciones',      preText(p.acciones),    'full')}
           </div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- TAB: Interacciones — filas de datarocket_interacciones con   -->
+        <!-- prospecto_id = este prospecto. Fila clickeable → ficha de la -->
+        <!-- interacción. Sin backticks en este comentario: esta adentro  -->
+        <!-- de un template literal y lo cortarian.                       -->
+        <!-- ============================================================ -->
+        <div class="modal-tabpanel" data-dp-tab="interacciones" hidden>
+          ${drIntTablaEmbebida(interacciones, 'Este prospecto no tiene interacciones registradas.')}
         </div>
 
       </div>
@@ -28056,6 +28608,7 @@ async function abrirConsultaDp(id) {
   `);
 
   $('#modalRoot').addEventListener('click', (ev) => {
+    if (drIntFilaEmbebidaClick(ev)) return;
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDp(id); }
   });
@@ -28064,7 +28617,7 @@ async function abrirConsultaDp(id) {
 async function eliminarDp(id) {
   const p = dpItems.find((x) => x.id === id);
   if (!p) return;
-  const nombre = p.nombre || p.contacto || `#${id}`;
+  const nombre = p.contacto_nombre || `#${id}`;
   const ok = await confirmar({
     title:       'Eliminar prospecto',
     message:     `¿Eliminás el prospecto "${nombre}"? Esta acción no se puede deshacer.`,

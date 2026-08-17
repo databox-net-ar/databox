@@ -164,9 +164,10 @@ function encolarTelegramMensaje(PDO $pdo, array $datos): int {
         registrarInteraccionMensaje(
             $pdo,
             (int)$p['contacto_id'],
-            'telegram_enviado',
-            'telegram_mensajes',
-            $id,
+            'saliente',
+            'telegram',
+            // Telegram tampoco tiene asunto propio — ver evolution_mensajes.php.
+            $p['asunto'] ?? null,
             $p['cuerpo'] ?? $p['destino'],
             $p['fecha']
         );

@@ -164,9 +164,11 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
     registrarInteraccionMensaje(
         $pdo,
         $p['contacto_id'],
-        'whatsapp_enviado',
-        'evolution_mensajes',
-        $id,
+        'saliente',
+        'whatsapp',
+        // WhatsApp no tiene asunto: `asunto` queda NULL salvo que la plantilla
+        // lo haya cargado, y el texto real va siempre a `mensaje`.
+        $p['asunto'] ?? null,
         $p['cuerpo'] ?? $p['destino'],
         $p['fecha']
     );

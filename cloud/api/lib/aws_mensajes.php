@@ -155,10 +155,10 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
     registrarInteraccionMensaje(
         $pdo,
         $p['contacto_id'],
-        'correo_enviado',
-        'aws_mensajes',
-        $id,
+        'saliente',
+        'correo',
         $p['asunto'] ?? $p['destino'],
+        $p['cuerpo'] ?? null,
         $p['fecha']
     );
 

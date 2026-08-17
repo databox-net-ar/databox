@@ -18,6 +18,14 @@
 
 require_once __DIR__ . '/../db.php';
 
+// Valores del catalogo `estados`, campos `datarocket_interaccion_sentido` y
+// `datarocket_interaccion_canal` (migracion 20260817_1000). Se declaran aca
+// para que el helper no dependa de una query al catalogo en el camino caliente
+// del encolado.
+const DR_INT_SENTIDOS = ['entrante', 'saliente', 'interna'];
+const DR_INT_CANALES  = ['correo', 'whatsapp', 'telegram', 'sms', 'web',
+                         'telefono', 'presencial'];
+
 /**
  * Registra un alta en `datarocket_interacciones`. Devuelve el id insertado o
  * null si se salteo (contacto ausente) o hubo un error interno.
@@ -25,47 +33,60 @@ require_once __DIR__ . '/../db.php';
  * @param ?int    $contactoId  FK a `datarocket_contactos.id`. Si es null/<=0
  *                             se saltea el INSERT (interaccion sin contacto
  *                             no aporta nada al historial).
- * @param string  $tipo        Categoria (ej. 'correo_enviado', 'whatsapp_enviado').
- * @param string  $origen      Tabla del mensaje: 'aws_mensajes' | 'evolution_mensajes'.
- * @param int     $mensajeId   ID de la fila en la tabla `origen`.
- * @param ?string $descripcion Texto libre para mostrar en el listado (asunto
- *                             del correo, preview del cuerpo del WhatsApp,
- *                             etc.). Se trunca a 500 chars.
+ * @param string  $sentido     Direccion: 'entrante' | 'saliente' | 'interna'.
+ *                             Reemplaza al viejo `tipo`, junto con $canal
+ *                             (migracion 20260817_1000).
+ * @param ?string $canal       Medio: 'correo' | 'whatsapp' | 'telegram' |
+ *                             'sms' | 'web' | 'telefono' | 'presencial'. NULL
+ *                             cuando no hubo comunicacion (notas internas) o no
+ *                             se sabe por donde entro.
+ * @param ?string $asunto      Asunto del mensaje, para la etiqueta corta del
+ *                             listado. Se trunca a 500 chars. NULL en los
+ *                             canales que no tienen asunto (WhatsApp, Telegram).
+ * @param ?string $mensaje     Cuerpo completo del mensaje. Sin truncar: la
+ *                             columna es MEDIUMTEXT.
  * @param ?string $fecha       Datetime 'Y-m-d H:i:s'. Si es null se usa NOW()
  *                             en America/Argentina/Buenos_Aires.
  */
 function registrarInteraccionMensaje(
     PDO $pdo,
     ?int $contactoId,
-    string $tipo,
-    string $origen,
-    int $mensajeId,
-    ?string $descripcion,
+    string $sentido,
+    ?string $canal,
+    ?string $asunto,
+    ?string $mensaje,
     ?string $fecha = null
 ): ?int {
     if ($contactoId === null || $contactoId <= 0) return null;
+
+    // Un sentido fuera del catalogo seria un bug del caller, no un dato del
+    // usuario. Se normaliza a 'saliente' en vez de tirar: este helper es
+    // best-effort y no debe tumbar el encolado del mensaje.
+    if (!in_array($sentido, DR_INT_SENTIDOS, true)) $sentido = 'saliente';
+    if ($canal !== null && !in_array($canal, DR_INT_CANALES, true)) $canal = null;
 
     if ($fecha === null) {
         $fecha = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                  ->format('Y-m-d H:i:s');
     }
 
-    $descripcion = drIntNullableStr($descripcion, 500);
+    $asunto  = drIntNullableStr($asunto, 500);
+    $mensaje = drIntNullableStr($mensaje, 0);
 
     try {
         $st = $pdo->prepare("
             INSERT INTO datarocket_interacciones
-                (fecha, contacto_id, tipo, origen, mensaje_id, descripcion)
+                (fecha, contacto_id, sentido, canal, asunto, mensaje)
             VALUES
-                (:fecha, :contacto_id, :tipo, :origen, :mensaje_id, :descripcion)
+                (:fecha, :contacto_id, :sentido, :canal, :asunto, :mensaje)
         ");
         $st->execute([
             ':fecha'       => $fecha,
             ':contacto_id' => $contactoId,
-            ':tipo'        => $tipo,
-            ':origen'      => $origen,
-            ':mensaje_id'  => $mensajeId,
-            ':descripcion' => $descripcion,
+            ':sentido'     => $sentido,
+            ':canal'       => $canal,
+            ':asunto'      => $asunto,
+            ':mensaje'     => $mensaje,
         ]);
         return (int)$pdo->lastInsertId();
     } catch (Throwable) {
@@ -73,10 +94,11 @@ function registrarInteraccionMensaje(
     }
 }
 
+// $max <= 0 significa "sin limite" — lo usa `mensaje`, que va a un MEDIUMTEXT.
 function drIntNullableStr(mixed $v, int $max): ?string {
     if ($v === null) return null;
     $s = trim((string)$v);
     if ($s === '') return null;
-    if (mb_strlen($s) > $max) $s = mb_substr($s, 0, $max);
+    if ($max > 0 && mb_strlen($s) > $max) $s = mb_substr($s, 0, $max);
     return $s;
 }

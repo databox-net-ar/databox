@@ -38,21 +38,42 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-// Nota fase 1->2 del refactor "prospectos = referencia a contacto":
-// las 12 columnas de identidad del prospecto (nombre, contacto, celular, correo,
-// web, organizacion, domicilio, ciudad, localidad, provincia, pais, ubicacion)
-// SIGUEN en la tabla como respaldo hasta la fase 3 (DROP columns). Las dejamos
-// en el SELECT pero el frontend ya deberia consumir los `contacto_*` derivados
-// del JOIN (ver drProEnrichRows). Cuando la fase 3 corra, se sacan estas 12
-// tanto del SELECT como del payload de create/update.
-const DR_PRO_COLS = "id, contacto_id, ingreso, proyecto_id, sentido, origen, tipo, producto, asunto,
-                     organizacion, nombre, contacto, celular, correo, web, domicilio,
-                     ciudad, localidad, provincia, pais, ubicacion, calificacion, estado,
+// Fase 3 del refactor "prospectos = referencia a contacto" COMPLETADA
+// (migracion 20260816_1500): las 12 columnas de identidad del prospecto
+// (nombre, contacto, celular, correo, web, organizacion, domicilio, ciudad,
+// localidad, provincia, pais, ubicacion) ya NO existen en la tabla. La fuente
+// de verdad es `datarocket_contactos` via `contacto_id`, y el frontend consume
+// los `contacto_*` derivados del JOIN (ver drProEnrichRows).
+//
+// `asunto` y `acciones` tampoco existen mas (migracion 20260817_1700): el
+// asunto se fusiono como primera linea de `comentarios` (20260817_1600) y el
+// log libre de `acciones` quedo reemplazado por `datarocket_interacciones`.
+const DR_PRO_COLS = "id, contacto_id, ingreso, proyecto_id, sentido, origen, tipo, producto,
+                     monto, moneda, cierre_esperado, calificacion, estado,
                      embudo_id, etapa_id, etapa_ingreso, asignado, atendido,
-                     actualizado, aplazado, comentarios, acciones";
+                     actualizado, aplazado, comentarios";
+
+// Misma lista calificada con el alias `p`. El listado joinea con
+// `datarocket_contactos` (buscador + orden por identidad) y ahi `id`, `tipo`,
+// `correo` y varias mas son ambiguas sin prefijo.
+const DR_PRO_COLS_P = "p.id, p.contacto_id, p.ingreso, p.proyecto_id, p.sentido, p.origen,
+                       p.tipo, p.producto, p.monto, p.moneda, p.cierre_esperado,
+                       p.calificacion, p.estado, p.embudo_id, p.etapa_id, p.etapa_ingreso,
+                       p.asignado, p.atendido, p.actualizado, p.aplazado, p.comentarios";
 
 const DR_PRO_COMBO_CAMPOS = ['sentido', 'origen', 'tipo', 'estado', 'producto'];
 const DR_PRO_CAMPO_PREFIX = 'datasale_prospecto_';
+
+// `moneda` es un campo propio de Datarocket (el ABM legacy de Datasale no
+// maneja importes), asi que su catalogo NO reusa el prefijo heredado de arriba.
+// Ver migracion 20260816_1300.
+const DR_PRO_COMBO_CAMPOS_PROPIOS = ['moneda'];
+const DR_PRO_CAMPO_PREFIX_PROPIO  = 'datarocket_prospecto_';
+
+// Monedas aceptadas en el payload (ISO-4217). Se valida contra esta lista y no
+// contra `estados` para que un catalogo mal cargado no abra la puerta a basura
+// en la columna.
+const DR_PRO_MONEDAS = ['ARS', 'USD'];
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -93,7 +114,8 @@ try {
 
 function drProFetchLookupByIds(PDO $pdo, string $table, array $ids): array {
     if (!$ids) return [];
-    $whitelist = ['proyectos', 'usuarios', 'datarocket_embudos', 'datarocket_etapas'];
+    $whitelist = ['proyectos', 'usuarios', 'datarocket_embudos', 'datarocket_etapas',
+                  'paises', 'provincias', 'localidades'];
     if (!in_array($table, $whitelist, true)) return [];
 
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
@@ -110,8 +132,14 @@ function drProEstadosMap(PDO $pdo): array {
     static $cache = null;
     if ($cache !== null) return $cache;
     $cache = [];
-    $stmt = $pdo->prepare("SELECT campo, valor, texto FROM estados WHERE campo LIKE :prefix");
-    $stmt->execute([':prefix' => DR_PRO_CAMPO_PREFIX . '%']);
+    $stmt = $pdo->prepare(
+        "SELECT campo, valor, texto FROM estados
+          WHERE campo LIKE :prefix OR campo LIKE :prefix_propio"
+    );
+    $stmt->execute([
+        ':prefix'        => DR_PRO_CAMPO_PREFIX . '%',
+        ':prefix_propio' => DR_PRO_CAMPO_PREFIX_PROPIO . '%',
+    ]);
     foreach ($stmt->fetchAll() as $r) {
         $cache[$r['campo'] . '|' . (string)$r['valor']] = (string)$r['texto'];
     }
@@ -127,8 +155,27 @@ function drProFetchContactosByIds(PDO $pdo, array $ids): array {
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
     $stmt = $pdo->prepare(
         "SELECT id, tipo, nombre, empresa, telefono, celular, whatsapp, correo,
-                web, domicilio, ciudad, localidad, provincia, pais, ubicacion
+                web, domicilio, ciudad, localidad_id, provincia_id, pais_id, ubicacion
            FROM datarocket_contactos
+          WHERE id IN ({$placeholders})"
+    );
+    $stmt->execute(array_values($ids));
+    $out = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $out[(int)$r['id']] = $r;
+    }
+    return $out;
+}
+
+// Etapas con sus tres columnas relevantes. No reusa drProFetchLookupByIds
+// (que solo trae `nombre`) porque el forecast necesita `tipo`
+// (activa / ganada / perdida) y `probabilidad` para ponderar el monto.
+function drProFetchEtapasByIds(PDO $pdo, array $ids): array {
+    if (!$ids) return [];
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare(
+        "SELECT id, nombre, tipo, probabilidad
+           FROM datarocket_etapas
           WHERE id IN ({$placeholders})"
     );
     $stmt->execute(array_values($ids));
@@ -155,9 +202,22 @@ function drProEnrichRows(PDO $pdo, array $rows): array {
     $proyectos = drProFetchLookupByIds($pdo, 'proyectos',          array_keys($projIds));
     $usuarios  = drProFetchLookupByIds($pdo, 'usuarios',           array_keys($usrIds));
     $embudos   = drProFetchLookupByIds($pdo, 'datarocket_embudos', array_keys($embIds));
-    $etapas    = drProFetchLookupByIds($pdo, 'datarocket_etapas',  array_keys($etaIds));
+    $etapas    = drProFetchEtapasByIds($pdo,                        array_keys($etaIds));
     $contactos = drProFetchContactosByIds($pdo,                     array_keys($ctIds));
     $estados   = drProEstadosMap($pdo);
+
+    // La ubicacion del contacto ahora son FKs a los catalogos (migracion
+    // 20260815_1000). Se resuelven a nombre con un SELECT por catalogo, acotado
+    // a los ids que realmente aparecen en estas filas.
+    $ctPaisIds = $ctProvIds = $ctLocIds = [];
+    foreach ($contactos as $c) {
+        if (!empty($c['pais_id']))      $ctPaisIds[(int)$c['pais_id']]      = true;
+        if (!empty($c['provincia_id'])) $ctProvIds[(int)$c['provincia_id']] = true;
+        if (!empty($c['localidad_id'])) $ctLocIds[(int)$c['localidad_id']]  = true;
+    }
+    $ctPaises      = drProFetchLookupByIds($pdo, 'paises',      array_keys($ctPaisIds));
+    $ctProvincias  = drProFetchLookupByIds($pdo, 'provincias',  array_keys($ctProvIds));
+    $ctLocalidades = drProFetchLookupByIds($pdo, 'localidades', array_keys($ctLocIds));
 
     $out = [];
     foreach ($rows as $r) {
@@ -165,7 +225,22 @@ function drProEnrichRows(PDO $pdo, array $rows): array {
         $r['asignado_nombre'] = !empty($r['asignado'])    ? ($usuarios[(int)$r['asignado']]     ?? null) : null;
         $r['atendido_nombre'] = !empty($r['atendido'])    ? ($usuarios[(int)$r['atendido']]     ?? null) : null;
         $r['embudo_nombre']   = !empty($r['embudo_id'])   ? ($embudos[(int)$r['embudo_id']]     ?? null) : null;
-        $r['etapa_nombre']    = !empty($r['etapa_id'])    ? ($etapas[(int)$r['etapa_id']]       ?? null) : null;
+
+        // Etapa: ademas del nombre se exponen `tipo` y `probabilidad`, que son
+        // los que convierten `monto` en pipeline ponderado. `monto_ponderado`
+        // se calcula solo para etapas activas: una oportunidad ganada ya vale
+        // su monto completo y una perdida vale cero, ponderarlas seria mentir
+        // sobre el forecast.
+        $e = !empty($r['etapa_id']) ? ($etapas[(int)$r['etapa_id']] ?? null) : null;
+        $r['etapa_nombre']       = $e ? (string)$e['nombre'] : null;
+        $r['etapa_tipo']         = $e ? (string)$e['tipo']   : null;
+        $r['etapa_probabilidad'] = $e && $e['probabilidad'] !== null ? (int)$e['probabilidad'] : null;
+
+        $r['monto'] = $r['monto'] !== null ? (float)$r['monto'] : null;
+        $r['monto_ponderado'] = ($r['monto'] !== null && $r['etapa_tipo'] === 'activa'
+                                 && $r['etapa_probabilidad'] !== null)
+            ? round($r['monto'] * $r['etapa_probabilidad'] / 100, 2)
+            : null;
 
         // Datos derivados del contacto vinculado. Prefijo `contacto_*` para
         // que el frontend los muestre como read-only (la fuente de verdad es
@@ -181,15 +256,23 @@ function drProEnrichRows(PDO $pdo, array $rows): array {
         $r['contacto_web']       = $c ? ($c['web']       !== '' ? (string)$c['web']       : null) : null;
         $r['contacto_domicilio'] = $c ? ($c['domicilio'] !== '' ? (string)$c['domicilio'] : null) : null;
         $r['contacto_ciudad']    = $c ? ($c['ciudad']    !== null ? (string)$c['ciudad']  : null) : null;
-        $r['contacto_localidad'] = $c ? ($c['localidad'] !== '' ? (string)$c['localidad'] : null) : null;
-        $r['contacto_provincia'] = $c ? ($c['provincia'] !== '' ? (string)$c['provincia'] : null) : null;
-        $r['contacto_pais']      = $c ? ($c['pais']      !== '' ? (string)$c['pais']      : null) : null;
+        // Se exponen resueltos a nombre (antes viajaba el ID crudo, que el
+        // frontend pintaba tal cual en la tarjeta de detalle).
+        $r['contacto_localidad'] = $c && !empty($c['localidad_id']) ? ($ctLocalidades[(int)$c['localidad_id']] ?? null) : null;
+        $r['contacto_provincia'] = $c && !empty($c['provincia_id']) ? ($ctProvincias[(int)$c['provincia_id']]  ?? null) : null;
+        $r['contacto_pais']      = $c && !empty($c['pais_id'])      ? ($ctPaises[(int)$c['pais_id']]           ?? null) : null;
         $r['contacto_ubicacion'] = $c ? ($c['ubicacion'] !== '' ? (string)$c['ubicacion'] : null) : null;
 
         foreach (DR_PRO_COMBO_CAMPOS as $c2) {
             $v = $r[$c2] ?? null;
             $r["{$c2}_texto"] = ($v !== null && $v !== '')
                 ? ($estados[DR_PRO_CAMPO_PREFIX . $c2 . '|' . (string)$v] ?? null)
+                : null;
+        }
+        foreach (DR_PRO_COMBO_CAMPOS_PROPIOS as $c3) {
+            $v = $r[$c3] ?? null;
+            $r["{$c3}_texto"] = ($v !== null && $v !== '')
+                ? ($estados[DR_PRO_CAMPO_PREFIX_PROPIO . $c3 . '|' . (string)$v] ?? null)
                 : null;
         }
         $out[] = $r;
@@ -211,10 +294,16 @@ function handleLookupsProspecto(PDO $pdo): void {
     $paises    = $pdo->query('SELECT id, nombre FROM paises ORDER BY nombre')->fetchAll();
 
     // Embudos activos, ordenados por su campo `orden`.
+    //
+    // Ojo: `datarocket_embudos` NO tiene columnas `color` ni `orden` — pedirlas
+    // reventaba el endpoint entero con "Unknown column 'color'", y como
+    // dpCargarLookups() se come la excepcion, el modulo venia corriendo con
+    // TODOS los combos del formulario vacios sin avisar. El color se sigue
+    // exponiendo como null porque el frontend lo lee (dpEnriquecerConColores).
     $embudos = $pdo->query(
-        'SELECT id, nombre, color, activo
+        'SELECT id, nombre, activo
            FROM datarocket_embudos
-       ORDER BY activo DESC, orden ASC, nombre ASC'
+       ORDER BY activo DESC, nombre ASC'
     )->fetchAll();
 
     // Etapas de todos los embudos — el frontend las filtra por embudo_id al
@@ -226,17 +315,27 @@ function handleLookupsProspecto(PDO $pdo): void {
        ORDER BY embudo_id ASC, orden ASC, id ASC'
     )->fetchAll();
 
-    // Opciones de combos: reutilizamos el catalogo `datasale_prospecto_*`.
+    // Opciones de combos: los heredados salen del catalogo `datasale_prospecto_*`
+    // y los propios de Datarocket (hoy solo `moneda`) de `datarocket_prospecto_*`.
     $stmt = $pdo->prepare("
         SELECT campo, valor, texto, orden
           FROM estados
-         WHERE campo LIKE :prefix
+         WHERE campo LIKE :prefix OR campo LIKE :prefix_propio
       ORDER BY campo, COALESCE(orden, 0), id
     ");
-    $stmt->execute([':prefix' => DR_PRO_CAMPO_PREFIX . '%']);
-    $opciones = array_fill_keys(DR_PRO_COMBO_CAMPOS, []);
+    $stmt->execute([
+        ':prefix'        => DR_PRO_CAMPO_PREFIX . '%',
+        ':prefix_propio' => DR_PRO_CAMPO_PREFIX_PROPIO . '%',
+    ]);
+    $opciones = array_fill_keys(
+        array_merge(DR_PRO_COMBO_CAMPOS, DR_PRO_COMBO_CAMPOS_PROPIOS),
+        []
+    );
     foreach ($stmt->fetchAll() as $r) {
-        $key = substr($r['campo'], strlen(DR_PRO_CAMPO_PREFIX));
+        $prefijo = str_starts_with($r['campo'], DR_PRO_CAMPO_PREFIX_PROPIO)
+            ? DR_PRO_CAMPO_PREFIX_PROPIO
+            : DR_PRO_CAMPO_PREFIX;
+        $key = substr($r['campo'], strlen($prefijo));
         if (isset($opciones[$key])) {
             $opciones[$key][] = [
                 'valor' => (string)$r['valor'],
@@ -253,7 +352,7 @@ function handleLookupsProspecto(PDO $pdo): void {
         'embudos'   => array_map(fn($r) => [
             'id'     => (int)$r['id'],
             'nombre' => (string)$r['nombre'],
-            'color'  => $r['color'] !== null ? (string)$r['color'] : null,
+            'color'  => null,
             'activo' => (int)$r['activo'],
         ], $embudos),
         'etapas'    => array_map(fn($r) => [
@@ -295,39 +394,53 @@ function handleListProspectos(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
+    // `organizacion` y `nombre` salieron del listado de ordenables: las columnas
+    // ya no existen (migracion 20260816_1500). Para ordenar por identidad ahora
+    // hay que usar el nombre del contacto, que vive en el JOIN — se expone como
+    // `contacto_nombre`.
     $allowedOrder = ['id', 'ingreso', 'proyecto_id', 'embudo_id', 'etapa_id', 'etapa_ingreso',
-                     'sentido', 'origen', 'tipo', 'producto', 'organizacion', 'nombre',
-                     'estado', 'calificacion', 'asignado', 'atendido', 'actualizado', 'aplazado'];
+                     'sentido', 'origen', 'tipo', 'producto', 'monto', 'cierre_esperado',
+                     'estado', 'calificacion', 'asignado', 'atendido', 'actualizado', 'aplazado',
+                     'contacto_nombre'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
+    // Todas las columnas ordenables son de `p` salvo la del contacto joineado.
+    $orderCol = $orderBy === 'contacto_nombre' ? 'c.nombre' : ('p.' . $orderBy);
 
     $where  = [];
     $params = [];
 
-    if ($codigo     !== null) { $where[] = 'id = :codigo';               $params[':codigo']      = $codigo; }
-    if ($contactoId !== null) { $where[] = 'contacto_id = :contacto_id'; $params[':contacto_id'] = $contactoId; }
-    if ($proyecto   !== null) { $where[] = 'proyecto_id = :proyecto_id'; $params[':proyecto_id'] = $proyecto; }
-    if ($embudo   !== null) { $where[] = 'embudo_id = :embudo_id';     $params[':embudo_id'] = $embudo; }
-    if ($etapa    !== null) { $where[] = 'etapa_id = :etapa_id';       $params[':etapa_id']  = $etapa; }
-    if ($asignado !== null) { $where[] = 'asignado = :asignado';       $params[':asignado']  = $asignado; }
-    if ($atendido !== null) { $where[] = 'atendido = :atendido';       $params[':atendido']  = $atendido; }
-    if ($estado   !== null) { $where[] = 'estado = :estado';           $params[':estado']    = $estado; }
-    if ($sentido  !== '')   { $where[] = 'sentido = :sentido';         $params[':sentido']   = $sentido; }
-    if ($tipo     !== '')   { $where[] = 'tipo = :tipo';               $params[':tipo']      = $tipo; }
-    if ($origen   !== '')   { $where[] = 'origen = :origen';           $params[':origen']    = $origen; }
-    if ($desde    !== '')   { $where[] = 'ingreso >= :desde';          $params[':desde']     = $desde . ' 00:00:00'; }
-    if ($hasta    !== '')   { $where[] = 'ingreso <= :hasta';          $params[':hasta']     = $hasta . ' 23:59:59'; }
+    if ($codigo     !== null) { $where[] = 'p.id = :codigo';               $params[':codigo']      = $codigo; }
+    if ($contactoId !== null) { $where[] = 'p.contacto_id = :contacto_id'; $params[':contacto_id'] = $contactoId; }
+    if ($proyecto   !== null) { $where[] = 'p.proyecto_id = :proyecto_id'; $params[':proyecto_id'] = $proyecto; }
+    if ($embudo   !== null) { $where[] = 'p.embudo_id = :embudo_id';     $params[':embudo_id'] = $embudo; }
+    if ($etapa    !== null) { $where[] = 'p.etapa_id = :etapa_id';       $params[':etapa_id']  = $etapa; }
+    if ($asignado !== null) { $where[] = 'p.asignado = :asignado';       $params[':asignado']  = $asignado; }
+    if ($atendido !== null) { $where[] = 'p.atendido = :atendido';       $params[':atendido']  = $atendido; }
+    if ($estado   !== null) { $where[] = 'p.estado = :estado';           $params[':estado']    = $estado; }
+    if ($sentido  !== '')   { $where[] = 'p.sentido = :sentido';         $params[':sentido']   = $sentido; }
+    if ($tipo     !== '')   { $where[] = 'p.tipo = :tipo';               $params[':tipo']      = $tipo; }
+    if ($origen   !== '')   { $where[] = 'p.origen = :origen';           $params[':origen']    = $origen; }
+    if ($desde    !== '')   { $where[] = 'p.ingreso >= :desde';          $params[':desde']     = $desde . ' 00:00:00'; }
+    if ($hasta    !== '')   { $where[] = 'p.ingreso <= :hasta';          $params[':hasta']     = $hasta . ' 23:59:59'; }
 
     if ($search !== '') {
+        // El buscador cubria nombre / organizacion / contacto / correo / celular
+        // sobre las columnas legacy del prospecto. Ahora esos cuatro campos se
+        // buscan sobre `datarocket_contactos` via JOIN — misma cobertura para el
+        // usuario, pero contra la fuente de verdad.
+        //
         // PDO con emulate_prepares=false no permite reusar el mismo placeholder
         // en varias posiciones — duplicamos el bind, uno por columna.
-        $where[] = '(nombre LIKE :s1 OR organizacion LIKE :s2 OR contacto LIKE :s3
-                     OR correo LIKE :s4 OR celular LIKE :s5 OR asunto LIKE :s6
-                     OR producto LIKE :s7 OR comentarios LIKE :s8)';
+        //
+        // `p.asunto` salio del buscador (migracion 20260817_1700): su contenido
+        // vive ahora en `p.comentarios`, que ya estaba cubierto.
+        $where[] = '(c.nombre LIKE :s1 OR c.empresa LIKE :s2 OR c.correo LIKE :s3
+                     OR c.celular LIKE :s4
+                     OR p.producto LIKE :s5 OR p.comentarios LIKE :s6)';
         $like = "%{$search}%";
         $params[':s1'] = $like;  $params[':s2'] = $like;  $params[':s3'] = $like;
         $params[':s4'] = $like;  $params[':s5'] = $like;  $params[':s6'] = $like;
-        $params[':s7'] = $like;  $params[':s8'] = $like;
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
@@ -341,25 +454,76 @@ function handleListProspectos(PDO $pdo, array $q): void {
           FROM datarocket_prospectos
     ")->fetch();
 
-    $sql = "
-        SELECT " . DR_PRO_COLS . "
-          FROM datarocket_prospectos
-          {$sqlWhere}
-      ORDER BY {$orderBy} {$dirSql}
-         LIMIT {$limite}
-    ";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $rows = drProEnrichRows($pdo, $stmt->fetchAll());
-
     jsonOk([
-        'stats' => [
+        'stats'    => [
             'total'       => (int)($stats['total']       ?? 0),
             'sin_atender' => (int)($stats['sin_atender'] ?? 0),
             'asignados'   => (int)($stats['asignados']   ?? 0),
         ],
-        'items' => $rows,
+        'forecast' => drProForecast($pdo),
+        'items'    => drProEnrichRows($pdo, drProFetchList($pdo, $sqlWhere, $params, $orderCol, $dirSql, $limite)),
     ]);
+}
+
+// SELECT del listado. El JOIN a `datarocket_contactos` existe para que el
+// buscador y el ORDER BY por identidad puedan mirar la fuente de verdad; las
+// columnas del contacto NO se traen aca (las resuelve drProEnrichRows con un
+// unico SELECT por lote, sin multiplicar filas).
+function drProFetchList(PDO $pdo, string $sqlWhere, array $params,
+                        string $orderCol, string $dirSql, int $limite): array {
+    $sql = "
+        SELECT " . DR_PRO_COLS_P . "
+          FROM datarocket_prospectos p
+          LEFT JOIN datarocket_contactos c ON c.id = p.contacto_id
+          {$sqlWhere}
+      ORDER BY {$orderCol} {$dirSql}
+         LIMIT {$limite}
+    ";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchAll();
+}
+
+// Valor del embudo, agrupado por moneda. NUNCA se suman monedas distintas: un
+// total que mezcle pesos y dolares es un numero sin significado, asi que el
+// front recibe una fila por moneda y las muestra por separado.
+//
+//   abierto    suma de `monto` en etapas activas (pipeline bruto)
+//   ponderado  suma de `monto * probabilidad / 100` en etapas activas (forecast)
+//   ganado     suma de `monto` en etapas tipo 'ganada'
+//   perdido    suma de `monto` en etapas tipo 'perdida'
+//
+// Las oportunidades sin `monto` o sin etapa quedan afuera — no aportan valor y
+// contarlas como 0 ensuciaria el promedio. `probabilidad` NULL pondera 0.
+function drProForecast(PDO $pdo): array {
+    $rows = $pdo->query("
+        SELECT
+            COALESCE(p.moneda, 'ARS') AS moneda,
+            SUM(CASE WHEN e.tipo = 'activa'  THEN p.monto ELSE 0 END) AS abierto,
+            SUM(CASE WHEN e.tipo = 'activa'
+                     THEN p.monto * COALESCE(e.probabilidad, 0) / 100 ELSE 0 END) AS ponderado,
+            SUM(CASE WHEN e.tipo = 'ganada'  THEN p.monto ELSE 0 END) AS ganado,
+            SUM(CASE WHEN e.tipo = 'perdida' THEN p.monto ELSE 0 END) AS perdido,
+            SUM(CASE WHEN e.tipo = 'activa'  THEN 1 ELSE 0 END) AS abiertas,
+            SUM(CASE WHEN e.tipo = 'ganada'  THEN 1 ELSE 0 END) AS ganadas,
+            SUM(CASE WHEN e.tipo = 'perdida' THEN 1 ELSE 0 END) AS perdidas
+          FROM datarocket_prospectos p
+          JOIN datarocket_etapas e ON e.id = p.etapa_id
+         WHERE p.monto IS NOT NULL
+      GROUP BY COALESCE(p.moneda, 'ARS')
+      ORDER BY abierto DESC
+    ")->fetchAll();
+
+    return array_map(static fn(array $r): array => [
+        'moneda'    => (string)$r['moneda'],
+        'abierto'   => (float)$r['abierto'],
+        'ponderado' => round((float)$r['ponderado'], 2),
+        'ganado'    => (float)$r['ganado'],
+        'perdido'   => (float)$r['perdido'],
+        'abiertas'  => (int)$r['abiertas'],
+        'ganadas'   => (int)$r['ganadas'],
+        'perdidas'  => (int)$r['perdidas'],
+    ], $rows);
 }
 
 function handleGetOneProspecto(PDO $pdo, int $id): void {
@@ -388,6 +552,46 @@ function drProNullableInt(mixed $v): ?int {
     return (int)$v;
 }
 
+// Monto: acepta numero o string. Se toleran los separadores que escribe un
+// humano en el form (miles con punto, decimales con coma) porque el input es
+// `type="text"` justamente para poder tipear "1.250.000,50". Negativos y basura
+// caen a NULL — un negocio no vale menos que cero.
+function drProNullableMonto(mixed $v): ?float {
+    if ($v === null || $v === '') return null;
+    if (is_int($v) || is_float($v)) return $v >= 0 ? round((float)$v, 2) : null;
+    $s = trim((string)$v);
+    if ($s === '') return null;
+    // El signo se evalua ANTES de limpiar separadores: la limpieza borra el '-'
+    // y "-50" terminaria guardandose como 50.
+    if (strpos($s, '-') !== false) return null;
+    // "1.250.000,50" -> "1250000.50" ; "1250000.50" queda igual.
+    if (strpos($s, ',') !== false) {
+        $s = str_replace('.', '', $s);
+        $s = str_replace(',', '.', $s);
+    }
+    $s = preg_replace('/[^0-9.]/', '', $s);
+    if ($s === '' || !is_numeric($s)) return null;
+    return round((float)$s, 2);
+}
+
+// Moneda: se normaliza a mayusculas y se valida contra la whitelist. Un valor
+// fuera de la lista cae al default en vez de rechazar el guardado — el campo es
+// accesorio y no vale perder el resto del formulario por el.
+function drProMoneda(mixed $v): string {
+    $s = strtoupper(trim((string)($v ?? '')));
+    return in_array($s, DR_PRO_MONEDAS, true) ? $s : DR_PRO_MONEDAS[0];
+}
+
+// Fecha sola (sin hora) para `cierre_esperado`. Acepta 'YYYY-MM-DD' y tolera
+// que venga un datetime completo, del que se queda con la parte de fecha.
+function drProNullableFecha(mixed $v): ?string {
+    $s = drProNullableStr($v);
+    if ($s === null) return null;
+    $s = substr($s, 0, 10);
+    $d = DateTime::createFromFormat('Y-m-d', $s);
+    return ($d && $d->format('Y-m-d') === $s) ? $s : null;
+}
+
 function drProNullableDateTime(mixed $v): ?string {
     $s = drProNullableStr($v);
     if ($s === null) return null;
@@ -406,19 +610,9 @@ function drProSanitizePayload(array $in): array {
         'origen'        => drProNullableStr($in['origen']             ?? null, 10),
         'tipo'          => drProNullableStr($in['tipo']               ?? null, 1),
         'producto'      => drProNullableStr($in['producto']           ?? null, 100),
-        'asunto'        => drProNullableStr($in['asunto']             ?? null, 255),
-        'organizacion'  => drProNullableStr($in['organizacion']       ?? null, 255),
-        'nombre'        => drProNullableStr($in['nombre']             ?? null, 255),
-        'contacto'      => drProNullableStr($in['contacto']           ?? null, 255),
-        'celular'       => drProNullableStr($in['celular']            ?? null, 255),
-        'correo'        => drProNullableStr($in['correo']             ?? null, 255),
-        'web'           => drProNullableStr($in['web']                ?? null, 255),
-        'domicilio'     => drProNullableStr($in['domicilio']          ?? null, 255),
-        'ciudad'        => drProNullableStr($in['ciudad']             ?? null, 255),
-        'localidad'     => drProNullableStr($in['localidad']          ?? null, 255),
-        'provincia'     => drProNullableStr($in['provincia']          ?? null, 255),
-        'pais'          => drProNullableStr($in['pais']               ?? null, 255),
-        'ubicacion'     => drProNullableStr($in['ubicacion']          ?? null, 255),
+        'monto'           => drProNullableMonto($in['monto']          ?? null),
+        'moneda'          => drProMoneda($in['moneda']                ?? null),
+        'cierre_esperado' => drProNullableFecha($in['cierre_esperado'] ?? null),
         'calificacion'  => drProNullableInt($in['calificacion']       ?? null),
         'estado'        => drProNullableInt($in['estado']             ?? null),
         'embudo_id'     => drProNullableInt($in['embudo_id']          ?? null),
@@ -429,7 +623,6 @@ function drProSanitizePayload(array $in): array {
         'actualizado'   => drProNullableDateTime($in['actualizado']   ?? null),
         'aplazado'      => drProNullableDateTime($in['aplazado']      ?? null),
         'comentarios'   => drProNullableStr($in['comentarios']        ?? null, 1000),
-        'acciones'      => drProNullableStr($in['acciones']           ?? null),
     ];
 }
 
@@ -487,18 +680,20 @@ function handleCreateProspecto(PDO $pdo, array $in): void {
         $p['etapa_ingreso'] = $p['actualizado'];
     }
 
-    // Las 12 columnas de identidad legacy (nombre / contacto / celular / etc.)
-    // NO se escriben mas desde nuevos altas — quedan NULL. Se dropean en la
-    // fase 3 del refactor.
+    // Las 12 columnas de identidad legacy ya no existen (migracion 20260816_1500):
+    // la identidad se lee del contacto vinculado. `asunto` y `acciones` tampoco
+    // (migracion 20260817_1700).
     $sql = "
         INSERT INTO datarocket_prospectos
-            (contacto_id, ingreso, proyecto_id, sentido, origen, tipo, producto, asunto,
+            (contacto_id, ingreso, proyecto_id, sentido, origen, tipo, producto,
+             monto, moneda, cierre_esperado,
              calificacion, estado, embudo_id, etapa_id, etapa_ingreso,
-             asignado, atendido, actualizado, aplazado, comentarios, acciones)
+             asignado, atendido, actualizado, aplazado, comentarios)
         VALUES
-            (:contacto_id, :ingreso, :proyecto_id, :sentido, :origen, :tipo, :producto, :asunto,
+            (:contacto_id, :ingreso, :proyecto_id, :sentido, :origen, :tipo, :producto,
+             :monto, :moneda, :cierre_esperado,
              :calificacion, :estado, :embudo_id, :etapa_id, :etapa_ingreso,
-             :asignado, :atendido, :actualizado, :aplazado, :comentarios, :acciones)
+             :asignado, :atendido, :actualizado, :aplazado, :comentarios)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
@@ -509,7 +704,9 @@ function handleCreateProspecto(PDO $pdo, array $in): void {
         ':origen'        => $p['origen'],
         ':tipo'          => $p['tipo'],
         ':producto'      => $p['producto'],
-        ':asunto'        => $p['asunto'],
+        ':monto'           => $p['monto'],
+        ':moneda'          => $p['moneda'],
+        ':cierre_esperado' => $p['cierre_esperado'],
         ':calificacion'  => $p['calificacion'],
         ':estado'        => $p['estado'],
         ':embudo_id'     => $p['embudo_id'],
@@ -520,7 +717,6 @@ function handleCreateProspecto(PDO $pdo, array $in): void {
         ':actualizado'   => $p['actualizado'],
         ':aplazado'      => $p['aplazado'],
         ':comentarios'   => $p['comentarios'],
-        ':acciones'      => $p['acciones'],
     ]);
     jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
 }
@@ -557,20 +753,21 @@ function handleUpdateProspecto(PDO $pdo, int $id, array $in): void {
     // si el vendedor detecta el error debe borrar y crear de nuevo. Cualquier
     // contacto_id en el payload se ignora.
     //
-    // Tampoco escribimos mas las 12 columnas de identidad legacy (nombre /
-    // contacto / celular / correo / web / organizacion / domicilio / ciudad /
-    // localidad / provincia / pais / ubicacion) — la fuente de verdad son las
-    // columnas equivalentes de `datarocket_contactos`. Para modificar esa
-    // data hay que editar el contacto vinculado.
+    // Las 12 columnas de identidad legacy ya no existen (migracion 20260816_1500)
+    // — la fuente de verdad son las columnas equivalentes de
+    // `datarocket_contactos`. Para modificar esa data hay que editar el contacto
+    // vinculado.
     $sql = "
         UPDATE datarocket_prospectos SET
-            ingreso       = :ingreso,
-            proyecto_id   = :proyecto_id,
-            sentido       = :sentido,
-            origen        = :origen,
-            tipo          = :tipo,
-            producto      = :producto,
-            asunto        = :asunto,
+            ingreso         = :ingreso,
+            proyecto_id     = :proyecto_id,
+            sentido         = :sentido,
+            origen          = :origen,
+            tipo            = :tipo,
+            producto        = :producto,
+            monto           = :monto,
+            moneda          = :moneda,
+            cierre_esperado = :cierre_esperado,
             calificacion  = :calificacion,
             estado        = :estado,
             embudo_id     = :embudo_id,
@@ -580,8 +777,7 @@ function handleUpdateProspecto(PDO $pdo, int $id, array $in): void {
             atendido      = :atendido,
             actualizado   = :actualizado,
             aplazado      = :aplazado,
-            comentarios   = :comentarios,
-            acciones      = :acciones
+            comentarios   = :comentarios
         WHERE id = :id
     ";
     $stmt = $pdo->prepare($sql);
@@ -592,7 +788,9 @@ function handleUpdateProspecto(PDO $pdo, int $id, array $in): void {
         ':origen'        => $p['origen'],
         ':tipo'          => $p['tipo'],
         ':producto'      => $p['producto'],
-        ':asunto'        => $p['asunto'],
+        ':monto'           => $p['monto'],
+        ':moneda'          => $p['moneda'],
+        ':cierre_esperado' => $p['cierre_esperado'],
         ':calificacion'  => $p['calificacion'],
         ':estado'        => $p['estado'],
         ':embudo_id'     => $p['embudo_id'],
@@ -603,7 +801,6 @@ function handleUpdateProspecto(PDO $pdo, int $id, array $in): void {
         ':actualizado'   => $p['actualizado'],
         ':aplazado'      => $p['aplazado'],
         ':comentarios'   => $p['comentarios'],
-        ':acciones'      => $p['acciones'],
         ':id'            => $id,
     ]);
     jsonOk(['id' => $id]);

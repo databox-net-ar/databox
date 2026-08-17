@@ -206,7 +206,7 @@ function handleLookups(PDO $pdo): void {
 }
 
 function handleProvincias(PDO $pdo, int $pais): void {
-    $stmt = $pdo->prepare('SELECT id, nombre FROM provincias WHERE pais = :p ORDER BY nombre');
+    $stmt = $pdo->prepare('SELECT id, nombre FROM provincias WHERE pais_id = :p ORDER BY nombre');
     $stmt->execute([':p' => $pais]);
     $rows = array_map(
         fn($r) => ['id' => (int)$r['id'], 'nombre' => (string)$r['nombre']],
@@ -216,7 +216,7 @@ function handleProvincias(PDO $pdo, int $pais): void {
 }
 
 function handleLocalidades(PDO $pdo, int $provincia): void {
-    $stmt = $pdo->prepare('SELECT id, nombre FROM localidades WHERE provincia = :p ORDER BY nombre');
+    $stmt = $pdo->prepare('SELECT id, nombre FROM localidades WHERE provincia_id = :p ORDER BY nombre');
     $stmt->execute([':p' => $provincia]);
     $rows = array_map(
         fn($r) => ['id' => (int)$r['id'], 'nombre' => (string)$r['nombre']],

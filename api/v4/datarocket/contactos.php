@@ -17,11 +17,22 @@
 // cloud/api/datarocketcontactos.php — mismas columnas, mismos filtros, misma
 // forma de sanitizacion; la diferencia es la capa de auth (permisos de sesion
 // vs. Bearer estatico) y que el listado v4 no publica el bloque `stats`.
+//
+// Normalizacion: `telefono` / `celular` / `whatsapp` se guardan como 10
+// digitos argentinos, `correo` en minuscula validada y `web` como host + path
+// sin esquema (`bna.com.ar/sucursales`) — reglas en
+// cloud/api/lib/contactos_normalizar.php. Un telefono que no se pueda llevar a
+// 10 digitos se guarda igual, en digitos crudos (hay contactos del exterior en
+// la tabla); un correo del que no se pueda extraer una direccion valida se
+// rechaza con 400; una `web` que no sea una URL va a NULL, salvo que sea un
+// correo y `correo` este vacio (ahi se rescata). Ojo los consumidores: `web`
+// ya no incluye `http://` — hay que anteponerlo al armar el link.
 
 header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/contactos_normalizar.php';
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -66,11 +77,18 @@ function requireApp(): array {
 // Ruteo
 // ---------------------------------------------------------------------------
 
+// `localidad_id` / `provincia_id` / `pais_id` son FK a los catalogos desde la
+// migracion 20260815_1000; antes eran VARCHAR con el mismo ID adentro. Se
+// aliasan a los nombres viejos para NO romper el contrato JSON publico de v4:
+// los consumidores externos siguen recibiendo `localidad` / `provincia` /
+// `pais` con exactamente el mismo valor que antes. La respuesta suma ademas
+// las claves `*_id` para los clientes nuevos.
 const DR_CT_COLS = "id, uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo,
                     persona, genero, nacimiento, dni, domicilio, ciudad, ubicacion,
-                    localidad, provincia, pais, telefono, celular, whatsapp, correo,
-                    web, facebook, instagram, tiktok, comentarios, suscripciones,
-                    registrado, completado, error, estado, verificacion";
+                    localidad_id, provincia_id, pais_id,
+                    localidad_id AS localidad, provincia_id AS provincia, pais_id AS pais,
+                    telefono, celular, whatsapp, correo,
+                    web, facebook, instagram, tiktok, comentarios, registrado";
 
 // Valores validos para `datarocket_contactos.tipo`. Se rechazan alta y
 // modificacion que no traigan uno de estos valores; las filas historicas
@@ -108,12 +126,12 @@ try {
 
 function handleList(PDO $pdo, array $q): void {
     $codigo       = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
-    $estado       = trim((string)($q['estado']       ?? ''));
-    $verificacion = trim((string)($q['verificacion'] ?? ''));
     $genero       = trim((string)($q['genero']       ?? ''));
     $origen       = trim((string)($q['origen']       ?? ''));
-    $pais         = trim((string)($q['pais']         ?? ''));
-    $provincia    = trim((string)($q['provincia']    ?? ''));
+    // Se aceptan tanto `pais_id` (nuevo) como `pais` (legacy) — el valor era y
+    // sigue siendo el ID del catalogo.
+    $paisId       = drCtFiltroId($q['pais_id']      ?? $q['pais']      ?? null);
+    $provinciaId  = drCtFiltroId($q['provincia_id'] ?? $q['provincia'] ?? null);
     $correo       = trim((string)($q['correo']       ?? ''));
     $celular      = trim((string)($q['celular']      ?? ''));
     $desde        = trim((string)($q['desde']        ?? ''));
@@ -126,8 +144,12 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'nombre', 'empresa', 'correo', 'registrado', 'completado',
-                     'estado', 'verificacion', 'pais', 'provincia', 'origen'];
+    // `pais` / `provincia` siguen aceptandose como criterio de orden (contrato
+    // publico) pero se traducen a la columna renombrada.
+    if ($orderBy === 'pais')      $orderBy = 'pais_id';
+    if ($orderBy === 'provincia') $orderBy = 'provincia_id';
+    $allowedOrder = ['id', 'nombre', 'empresa', 'correo', 'registrado',
+                     'pais_id', 'provincia_id', 'origen'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
 
@@ -135,12 +157,10 @@ function handleList(PDO $pdo, array $q): void {
     $params = [];
 
     if ($codigo       !== null) { $where[] = 'id = :codigo';                 $params[':codigo']       = $codigo; }
-    if ($estado       !== '')   { $where[] = 'estado = :estado';             $params[':estado']       = $estado; }
-    if ($verificacion !== '')   { $where[] = 'verificacion = :verificacion'; $params[':verificacion'] = $verificacion; }
     if ($genero       !== '')   { $where[] = 'genero = :genero';             $params[':genero']       = $genero; }
     if ($origen       !== '')   { $where[] = 'origen = :origen';             $params[':origen']       = $origen; }
-    if ($pais         !== '')   { $where[] = 'pais = :pais';                 $params[':pais']         = $pais; }
-    if ($provincia    !== '')   { $where[] = 'provincia = :provincia';       $params[':provincia']    = $provincia; }
+    if ($paisId      !== null)  { $where[] = 'pais_id = :pais_id';           $params[':pais_id']      = $paisId; }
+    if ($provinciaId !== null)  { $where[] = 'provincia_id = :provincia_id'; $params[':provincia_id'] = $provinciaId; }
     if ($correo       !== '')   { $where[] = 'correo LIKE :correo';          $params[':correo']       = '%' . $correo . '%'; }
     if ($celular      !== '')   { $where[] = 'celular LIKE :celular';        $params[':celular']      = '%' . $celular . '%'; }
     if ($desde        !== '')   { $where[] = 'registrado >= :desde';         $params[':desde']        = $desde . ' 00:00:00'; }
@@ -286,15 +306,46 @@ function drCtNullableInt(mixed $v): ?int {
     return (int)$v;
 }
 
-// Normaliza telefonos: elimina cualquier caracter que no sea digito
-// (espacios, guiones, parentesis, '+', etc.). Si queda vacio -> NULL.
-// Aplica a telefono, celular y whatsapp — la tabla es unica canal-agnostica
-// de contactos y queremos que los numeros queden comparables entre si.
-function drCtDigitsOnly(mixed $v): ?string {
-    $s = drCtNullableStr($v);
-    if ($s === null) return null;
-    $s = preg_replace('/\D+/', '', $s);
-    return $s === '' ? null : substr($s, 0, 255);
+// Normaliza un ID de catalogo que llega por query string: vacio / no numerico
+// / <= 0 -> null (equivale a "sin filtro", no a filtrar por 0).
+function drCtFiltroId(mixed $v): ?int {
+    if ($v === null) return null;
+    $s = trim((string)$v);
+    if ($s === '' || !ctype_digit($s)) return null;
+    $n = (int)$s;
+    return $n > 0 ? $n : null;
+}
+
+// Rechaza con 400 los ids de ubicacion que no existan en su catalogo. Sin esto
+// la violacion de FK sube como excepcion PDO y el cliente recibe un 500 con el
+// mensaje crudo de InnoDB.
+function drCtAssertUbicacion(PDO $pdo, array $p): void {
+    $checks = [
+        ['pais_id',      'paises',      'El país indicado no existe.'],
+        ['provincia_id', 'provincias',  'La provincia indicada no existe.'],
+        ['localidad_id', 'localidades', 'La localidad indicada no existe.'],
+    ];
+    foreach ($checks as [$campo, $tabla, $msg]) {
+        if ($p[$campo] === null) continue;
+        $stmt = $pdo->prepare("SELECT 1 FROM {$tabla} WHERE id = :id");
+        $stmt->execute([':id' => $p[$campo]]);
+        if (!$stmt->fetchColumn()) jsonError($msg, 400);
+    }
+}
+
+// Rechaza con 400 un `correo` que venga con algo escrito pero del que no se
+// pueda extraer ninguna direccion valida. Se chequea sobre el payload crudo
+// porque contactoNormalizarCorreo() devuelve null tanto para "campo vacio"
+// como para "campo con basura", y solo el segundo es un error. Un cliente que
+// manda basura merece enterarse, no que se la descartemos en silencio.
+// Mismo criterio en el ABM cloud (cloud/api/datarocketcontactos.php).
+function drCtAssertCorreo(array $in): void {
+    if (!array_key_exists('correo', $in)) return;
+    $raw = trim((string)($in['correo'] ?? ''));
+    if ($raw === '') return;
+    if (contactoNormalizarCorreo($raw) === null) {
+        jsonError('El correo no es válido.', 400);
+    }
 }
 
 // Genera un UUID v4 RFC 4122 (36 chars con guiones) alineado con el formato
@@ -320,7 +371,7 @@ function drCtNullableDateTime(mixed $v): ?string {
 }
 
 function drCtSanitize(array $in): array {
-    return [
+    $p = [
         'tipo'          => drCtNullableStr($in['tipo']          ?? null, 20),
         'origen'        => drCtNullableStr($in['origen']        ?? null, 255),
         'nombre'        => drCtNullableStr($in['nombre']        ?? null, 255),
@@ -335,34 +386,46 @@ function drCtSanitize(array $in): array {
         'domicilio'     => drCtNullableStr($in['domicilio']     ?? null, 255),
         'ciudad'        => drCtNullableStr($in['ciudad']        ?? null, 255),
         'ubicacion'     => drCtNullableStr($in['ubicacion']     ?? null, 255),
-        'localidad'     => drCtNullableStr($in['localidad']     ?? null, 255),
-        'provincia'     => drCtNullableStr($in['provincia']     ?? null, 255),
-        'pais'          => drCtNullableStr($in['pais']          ?? null, 255),
-        'telefono'      => drCtDigitsOnly($in['telefono']      ?? null),
-        'celular'       => drCtDigitsOnly($in['celular']       ?? null),
-        'whatsapp'      => drCtDigitsOnly($in['whatsapp']      ?? null),
-        'correo'        => drCtNullableStr($in['correo']        ?? null, 255),
-        'web'           => drCtNullableStr($in['web']           ?? null, 255),
+        // FK a los catalogos. Se acepta la clave nueva y la legacy (misma
+        // semantica: el ID). Un valor no numerico deja de escribirse como texto
+        // y pasa a NULL — con la FK puesta no hay otra opcion valida.
+        'localidad_id'  => drCtNullableInt($in['localidad_id']  ?? $in['localidad'] ?? null),
+        'provincia_id'  => drCtNullableInt($in['provincia_id']  ?? $in['provincia'] ?? null),
+        'pais_id'       => drCtNullableInt($in['pais_id']       ?? $in['pais']      ?? null),
+        // Telefonos a 10 digitos argentinos y correo a minuscula validada —
+        // reglas en cloud/api/lib/contactos_normalizar.php, compartidas con el
+        // ABM cloud y con la migracion 20260816_1700.
+        'telefono'      => contactoNormalizarTelefono($in['telefono'] ?? null),
+        'celular'       => contactoNormalizarTelefono($in['celular']  ?? null),
+        'whatsapp'      => contactoNormalizarTelefono($in['whatsapp'] ?? null),
+        'correo'        => contactoNormalizarCorreo($in['correo']     ?? null),
+        // `web` se guarda como host + path sin esquema; lo que no es una URL
+        // va a NULL. Mismas reglas, mismo lib, migracion 20260816_1800.
+        'web'           => contactoNormalizarWeb($in['web']           ?? null),
         'facebook'      => drCtNullableStr($in['facebook']      ?? null, 255),
         'instagram'     => drCtNullableStr($in['instagram']     ?? null, 255),
         'tiktok'        => drCtNullableStr($in['tiktok']        ?? null, 255),
         'comentarios'   => drCtNullableStr($in['comentarios']   ?? null, 500),
-        'suscripciones' => drCtNullableInt($in['suscripciones'] ?? null),
         'registrado'    => drCtNullableDateTime($in['registrado'] ?? null),
-        'completado'    => drCtNullableDateTime($in['completado'] ?? null),
-        'error'         => drCtNullableStr($in['error']         ?? null, 255),
-        'estado'        => drCtNullableStr($in['estado']        ?? null, 1),
-        'verificacion'  => drCtNullableStr($in['verificacion']  ?? null, 1),
     ];
+    // Un correo cargado por error en `web` se rescata a `correo` cuando ese
+    // campo viene vacio; si el contacto ya trae correo, se descarta con el
+    // resto de los no-URL. Mismo criterio en el ABM cloud.
+    if ($p['correo'] === null) {
+        $p['correo'] = contactoWebComoCorreo($in['web'] ?? null);
+    }
+    return $p;
 }
 
 function handleCreate(PDO $pdo, array $in): void {
+    drCtAssertCorreo($in);
     $p = drCtSanitize($in);
     // `tipo` obligatorio en alta — cualquier cliente del microservicio v4
     // debe indicar persona o empresa. Ver DR_CT_TIPOS_VALIDOS.
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
+    drCtAssertUbicacion($pdo, $p);
     $p['uuid'] = drCtNullableStr($in['uuid'] ?? null, 255) ?? drCtUuidV4();
     if ($p['registrado'] === null) {
         $p['registrado'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
@@ -375,16 +438,14 @@ function handleCreate(PDO $pdo, array $in): void {
     try {
         $sql = "INSERT INTO datarocket_contactos
                     (uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo, persona,
-                     genero, nacimiento, dni, domicilio, ciudad, ubicacion, localidad,
-                     provincia, pais, telefono, celular, whatsapp, correo, web, facebook,
-                     instagram, tiktok, comentarios, suscripciones,
-                     registrado, completado, error, estado, verificacion)
+                     genero, nacimiento, dni, domicilio, ciudad, ubicacion, localidad_id,
+                     provincia_id, pais_id, telefono, celular, whatsapp, correo, web, facebook,
+                     instagram, tiktok, comentarios, registrado)
                 VALUES
                     (:uuid, :tipo, :origen, :nombre, :empresa, :rubro, :actividad, :cargo, :persona,
-                     :genero, :nacimiento, :dni, :domicilio, :ciudad, :ubicacion, :localidad,
-                     :provincia, :pais, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
-                     :instagram, :tiktok, :comentarios, :suscripciones,
-                     :registrado, :completado, :error, :estado, :verificacion)";
+                     :genero, :nacimiento, :dni, :domicilio, :ciudad, :ubicacion, :localidad_id,
+                     :provincia_id, :pais_id, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
+                     :instagram, :tiktok, :comentarios, :registrado)";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
             ':uuid'          => $p['uuid'],
@@ -402,9 +463,9 @@ function handleCreate(PDO $pdo, array $in): void {
             ':domicilio'     => $p['domicilio'],
             ':ciudad'        => $p['ciudad'],
             ':ubicacion'     => $p['ubicacion'],
-            ':localidad'     => $p['localidad'],
-            ':provincia'     => $p['provincia'],
-            ':pais'          => $p['pais'],
+            ':localidad_id'  => $p['localidad_id'],
+            ':provincia_id'  => $p['provincia_id'],
+            ':pais_id'       => $p['pais_id'],
             ':telefono'      => $p['telefono'],
             ':celular'       => $p['celular'],
             ':whatsapp'      => $p['whatsapp'],
@@ -414,12 +475,7 @@ function handleCreate(PDO $pdo, array $in): void {
             ':instagram'     => $p['instagram'],
             ':tiktok'        => $p['tiktok'],
             ':comentarios'   => $p['comentarios'],
-            ':suscripciones' => $p['suscripciones'],
             ':registrado'    => $p['registrado'],
-            ':completado'    => $p['completado'],
-            ':error'         => $p['error'],
-            ':estado'        => $p['estado'],
-            ':verificacion'  => $p['verificacion'],
         ]);
         $newId = (int)$pdo->lastInsertId();
         drCtSyncListas($pdo, $newId, $listaIds);
@@ -441,11 +497,13 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $exists->execute([':id' => $id]);
     if (!$exists->fetch()) jsonError('Contacto no encontrado', 404);
 
+    drCtAssertCorreo($in);
     $p = drCtSanitize($in);
     // `tipo` obligatorio en edicion — mismas reglas que en el ABM cloud.
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
+    drCtAssertUbicacion($pdo, $p);
     // `lista_ids` / `etiqueta_ids` opcionales en PUT: si no vienen, no se
     // toca la puente. Solo cuando el cliente los manda explicitamente (aun
     // `[]` para desasignar de todo) se sincroniza cada una.
@@ -473,9 +531,9 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
                     domicilio     = :domicilio,
                     ciudad        = :ciudad,
                     ubicacion     = :ubicacion,
-                    localidad     = :localidad,
-                    provincia     = :provincia,
-                    pais          = :pais,
+                    localidad_id  = :localidad_id,
+                    provincia_id  = :provincia_id,
+                    pais_id       = :pais_id,
                     telefono      = :telefono,
                     celular       = :celular,
                     whatsapp      = :whatsapp,
@@ -485,12 +543,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
                     instagram     = :instagram,
                     tiktok        = :tiktok,
                     comentarios   = :comentarios,
-                    suscripciones = :suscripciones,
-                    registrado    = :registrado,
-                    completado    = :completado,
-                    error         = :error,
-                    estado        = :estado,
-                    verificacion  = :verificacion
+                    registrado    = :registrado
                 WHERE id = :id";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
@@ -508,9 +561,9 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             ':domicilio'     => $p['domicilio'],
             ':ciudad'        => $p['ciudad'],
             ':ubicacion'     => $p['ubicacion'],
-            ':localidad'     => $p['localidad'],
-            ':provincia'     => $p['provincia'],
-            ':pais'          => $p['pais'],
+            ':localidad_id'  => $p['localidad_id'],
+            ':provincia_id'  => $p['provincia_id'],
+            ':pais_id'       => $p['pais_id'],
             ':telefono'      => $p['telefono'],
             ':celular'       => $p['celular'],
             ':whatsapp'      => $p['whatsapp'],
@@ -520,12 +573,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             ':instagram'     => $p['instagram'],
             ':tiktok'        => $p['tiktok'],
             ':comentarios'   => $p['comentarios'],
-            ':suscripciones' => $p['suscripciones'],
             ':registrado'    => $p['registrado'],
-            ':completado'    => $p['completado'],
-            ':error'         => $p['error'],
-            ':estado'        => $p['estado'],
-            ':verificacion'  => $p['verificacion'],
             ':id'            => $id,
         ]);
         if ($listaIds    !== null) drCtSyncListas($pdo, $id, $listaIds);

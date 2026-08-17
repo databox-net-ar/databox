@@ -116,13 +116,16 @@ y consulta individual):
 | `tiktok`        | varchar(255) |                                                                      |
 | `comentarios`   | varchar(500) |                                                                      |
 | `tags`          | varchar(500) | Tags libres para segmentacion / busqueda.                            |
-| `suscripciones` | int          |                                                                      |
 | `listas`        | varchar(500) |                                                                      |
 | `registrado`    | datetime     | Fecha de alta. Si no se manda, default = `NOW()` en `America/Argentina/Buenos_Aires`. |
-| `completado`    | datetime     | Fecha en que el contacto termino de completar sus datos.             |
-| `error`         | varchar(255) | Mensaje de error (si hubo problemas en el ingreso / validacion).     |
-| `estado`        | varchar(1)   | Passthrough (1 caracter).                                            |
-| `verificacion`  | varchar(1)   | Passthrough (1 caracter, no vacio implica "verificado").             |
+
+> **Baja de campos (migracion 20260817_1500).** `verificacion`, `estado`,
+> `error`, `completado` y `suscripciones` fueron eliminados de
+> `datarocket_contactos`. Ya no se devuelven en las respuestas, no filtran, no
+> ordenan y se ignoran si vienen en el body de un POST / PUT. El estado de
+> envio vive ahora en `datarocket_interacciones` y la suscripcion a listas en
+> la puente `datarocket_contactos_listas` (expuesta como `lista_ids` /
+> `lista_nombres`).
 
 ### Reglas de sanitizacion (POST / PUT)
 
@@ -154,8 +157,6 @@ Todos son opcionales; combinables con `AND`.
 | Parametro      | Tipo   | Notas                                                                                    |
 | -------------- | ------ | ---------------------------------------------------------------------------------------- |
 | `codigo`       | int    | Filtra por `id` exacto (equivalente a la consulta individual pero devuelve envelope de listado). |
-| `estado`       | string | Match exacto contra `estado`.                                                            |
-| `verificacion` | string | Match exacto contra `verificacion`.                                                      |
 | `genero`       | string | Match exacto contra `genero`.                                                            |
 | `origen`       | string | Match exacto contra `origen`.                                                            |
 | `pais`         | string | Match exacto contra `pais`.                                                              |
@@ -165,7 +166,7 @@ Todos son opcionales; combinables con `AND`.
 | `desde`        | date   | `YYYY-MM-DD`. Filtra `registrado >= '<desde> 00:00:00'`.                                 |
 | `hasta`        | date   | `YYYY-MM-DD`. Filtra `registrado <= '<hasta> 23:59:59'`.                                 |
 | `q`            | string | Busqueda difusa: `LIKE '%<q>%'` sobre `nombre`, `empresa`, `correo`, `telefono`, `celular`, `whatsapp`, `dni`, `uuid`. |
-| `order_by`     | string | Default `id`. Whitelist: `id`, `nombre`, `empresa`, `correo`, `registrado`, `completado`, `estado`, `verificacion`, `pais`, `provincia`, `origen`. Valor fuera de la lista cae a `id`. |
+| `order_by`     | string | Default `id`. Whitelist: `id`, `nombre`, `empresa`, `correo`, `registrado`, `pais`, `provincia`, `origen`. Valor fuera de la lista cae a `id`. |
 | `dir`          | string | `asc` \| `desc`. Default `desc`.                                                         |
 | `limite`       | int    | Default `100`. Clampeado a `[1, 1000]`.                                                  |
 
@@ -186,9 +187,7 @@ Todos son opcionales; combinables con `AND`.
         "correo": "juan@acme.com",
         "celular": "5491133445566",
         "whatsapp": "5491133445566",
-        "registrado": "2026-07-27 14:32:07",
-        "estado": "1",
-        "verificacion": "1"
+        "registrado": "2026-07-27 14:32:07"
       }
     ]
   }
@@ -244,13 +243,8 @@ curl -H "Authorization: Bearer $APIKEY" \
     "tiktok": null,
     "comentarios": "Contacto interesado en el plan enterprise",
     "tags": "vip,enterprise",
-    "suscripciones": 3,
     "listas": "clientes,newsletter-2026",
-    "registrado": "2026-07-27 14:32:07",
-    "completado": "2026-07-27 14:45:11",
-    "error": null,
-    "estado": "1",
-    "verificacion": "1"
+    "registrado": "2026-07-27 14:32:07"
   }
 }
 ```
@@ -376,8 +370,7 @@ curl -X PUT "https://api.databox.net.ar/v4/datarocket/contactos?id=148287" \
     "whatsapp": "5491133445566",
     "pais":     "Argentina",
     "provincia":"Buenos Aires",
-    "ciudad":   "CABA",
-    "verificacion": "1"
+    "ciudad":   "CABA"
   }'
 ```
 
