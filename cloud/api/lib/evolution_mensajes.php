@@ -335,15 +335,29 @@ function resolverContactoIdEvolution(PDO $pdo, ?string $destino, ?string $destin
 
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
              ->format('Y-m-d H:i:s');
+    // Invariante de identidad (ver db/schema.sql): un contacto creado al vuelo
+    // igual necesita `tipo` y el nombre del lado que corresponda, porque es el
+    // que alimenta a `nombre`. Un alta automatica desde un envio es siempre un
+    // individuo, asi que va como 'persona'.
+    //
+    // Si el envio no trajo `destinatario` se cae al celular: es el unico dato
+    // identificatorio disponible, y dejar el nombre vacio reintroduce
+    // exactamente las filas sin nombre que limpio la migracion 20260817_2100
+    // (las 5 que quedaron sin arreglar son justamente contactos que solo tienen
+    // celular). Mismo criterio en cloud/api/lib/aws_mensajes.php.
+    $nombre = trim((string)($destinatario ?? ''));
+    if ($nombre === '') $nombre = $celular;
+
     $ins = $pdo->prepare("
-        INSERT INTO datarocket_contactos (uuid, origen, nombre, celular, registrado)
-        VALUES (:uuid, 'evolution_mensajes', :nombre, :celular, :registrado)
+        INSERT INTO datarocket_contactos (uuid, tipo, nombre, persona_nombre, celular, registrado)
+        VALUES (:uuid, 'persona', :nombre, :persona_nombre, :celular, :registrado)
     ");
     $ins->execute([
-        ':uuid'       => bin2hex(random_bytes(16)),
-        ':nombre'     => trim((string)($destinatario ?? '')),
-        ':celular'    => $celular,
-        ':registrado' => $ahora,
+        ':uuid'           => bin2hex(random_bytes(16)),
+        ':nombre'         => $nombre,
+        ':persona_nombre' => $nombre,
+        ':celular'        => $celular,
+        ':registrado'     => $ahora,
     ]);
     return (int)$pdo->lastInsertId();
 }

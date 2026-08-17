@@ -9,7 +9,7 @@
 //   GET    api/datarocketcontactos.php?localidades=1&provincia=N -> localidades de la provincia
 //   POST   api/datarocketcontactos.php          -> alta (JSON body)
 //   PUT    api/datarocketcontactos.php?id=N     -> modificacion (JSON body)
-//   DELETE api/datarocketcontactos.php?id=N     -> baja
+//   DELETE api/datarocketcontactos.php?id=N     -> baja (en cascada: interacciones + prospectos)
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 //
 // Normalizacion: `telefono` / `celular` / `whatsapp` se guardan como 10
@@ -19,6 +19,22 @@
 // igual, en digitos crudos; un correo del que no se pueda extraer una
 // direccion valida se rechaza con 400; una `web` que no sea una URL va a NULL,
 // salvo que sea un correo y `correo` este vacio (ahi se rescata).
+//
+// Buscador rapido (`?q=`): matchea nombre / empresa_nombre / correo / telefono /
+// celular / whatsapp / persona_dni / uuid del contacto, y ademas el nombre de las
+// etiquetas asignadas y de las listas suscriptas (via las puentes
+// `datarocket_contactos_etiquetas` / `datarocket_contactos_listas`). Los
+// filtros `etiqueta_id` / `lista_id` son otra cosa: ID exacto y en AND.
+//
+// Filtros del listado por campo: `codigo`, `tipo`, `nombre`, `etiqueta_id`,
+// `lista_id`, `pais_id`, `provincia_id`, `correo`, `celular`, `web`, `desde`,
+// `hasta`. Los de texto son LIKE %valor%; los de catalogo, ID exacto.
+//
+// `etiqueta_id` y `lista_id` son MULTI-VALOR (el modal de filtros los pinta
+// con un picker de chips + typeahead, no con un select). Aceptan '5', '5,14'
+// o el parametro repetido — ver drCtFiltroIds(). Con varios valores la
+// semantica es OR dentro del campo ("cualquiera de estas etiquetas") y AND
+// entre campos ("alguna de estas etiquetas Y alguna de estas listas").
 //
 // Ubicacion: `pais_id` / `provincia_id` / `localidad_id` son INT con FK a
 // `paises` / `provincias` / `localidades` (migracion 20260815_1000). Antes eran
@@ -31,8 +47,10 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/contactos_normalizar.php';
 
-const DR_CT_COLS = "id, uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo,
-                    persona, genero, nacimiento, dni, domicilio, ciudad, ubicacion,
+const DR_CT_COLS = "id, uuid, tipo, nombre,
+                    empresa_nombre, empresa_rubro, empresa_actividad, empresa_cargo,
+                    persona_nombre, persona_genero, persona_nacimiento, persona_dni,
+                    domicilio, ciudad, ubicacion,
                     localidad_id, provincia_id, pais_id, telefono, celular, whatsapp, correo,
                     web, facebook, instagram, tiktok, comentarios, registrado";
 
@@ -157,11 +175,14 @@ function attachUbicacionNombres(PDO $pdo, array &$rows): void {
 
 function handleList(PDO $pdo, array $q): void {
     $codigo       = isset($q['codigo'])      && $q['codigo']      !== '' ? (int)$q['codigo']      : null;
-    $listaId      = isset($q['lista_id'])    && $q['lista_id']    !== '' ? (int)$q['lista_id']    : null;
-    $etiquetaId   = isset($q['etiqueta_id']) && $q['etiqueta_id'] !== '' ? (int)$q['etiqueta_id'] : null;
+    // `lista_id` / `etiqueta_id` son MULTI-VALOR: aceptan un id solo ('5'), un
+    // CSV ('5,14' — lo que manda el picker de chips del modal de filtros) o
+    // repeticiones del parametro. Ver drCtFiltroIds().
+    $listaIds     = drCtFiltroIds($q['lista_id']    ?? null);
+    $etiquetaIds  = drCtFiltroIds($q['etiqueta_id'] ?? null);
     $tipo         = trim((string)($q['tipo']         ?? ''));
-    $genero       = trim((string)($q['genero']       ?? ''));
-    $origen       = trim((string)($q['origen']       ?? ''));
+    $nombre       = trim((string)($q['nombre']        ?? ''));
+    $genero       = trim((string)($q['persona_genero']       ?? ''));
     // Ubicacion: los filtros viajan como ID de catalogo (el ABM los pinta con
     // selects). Se aceptan las claves legacy `pais` / `provincia` porque el
     // contenido era el mismo ID cuando las columnas eran VARCHAR.
@@ -169,6 +190,7 @@ function handleList(PDO $pdo, array $q): void {
     $provinciaId  = drCtFiltroId($q['provincia_id'] ?? $q['provincia'] ?? null);
     $correo       = trim((string)($q['correo']       ?? ''));
     $celular      = trim((string)($q['celular']      ?? ''));
+    $web          = trim((string)($q['web']          ?? ''));
     $desde        = trim((string)($q['desde']        ?? ''));
     $hasta        = trim((string)($q['hasta']        ?? ''));
     $search       = trim((string)($q['q']            ?? ''));
@@ -179,8 +201,8 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'nombre', 'empresa', 'correo', 'registrado',
-                     'pais_id', 'provincia_id', 'origen'];
+    $allowedOrder = ['id', 'nombre', 'empresa_nombre', 'correo', 'registrado',
+                     'pais_id', 'provincia_id'];
     // Alias legacy: el ABM viejo ordenaba por 'pais' / 'provincia'.
     if ($orderBy === 'pais')      $orderBy = 'pais_id';
     if ($orderBy === 'provincia') $orderBy = 'provincia_id';
@@ -191,24 +213,41 @@ function handleList(PDO $pdo, array $q): void {
     $params = [];
 
     if ($codigo       !== null) { $where[] = 'id = :codigo';                     $params[':codigo']       = $codigo; }
-    if ($listaId      !== null) {
-        // Suscripcion a una lista de distribucion — la relacion vive en
-        // datarocket_contactos_listas (PK compuesta contacto_id + lista_id,
-        // FKs con CASCADE). EXISTS evita duplicados y no obliga a aliasar la
-        // tabla principal.
+    // Suscripcion a listas de distribucion — la relacion vive en
+    // datarocket_contactos_listas (PK compuesta contacto_id + lista_id, FKs
+    // con CASCADE). EXISTS evita duplicados y no obliga a aliasar la tabla
+    // principal.
+    //
+    // SEMANTICA CON VARIAS SELECCIONADAS: OR dentro del campo (el IN), o sea
+    // "que este en CUALQUIERA de estas listas" = union de audiencias. Es lo
+    // que espera un filtro facetado y lo unico util en la practica: con AND,
+    // elegir dos listas devolveria casi siempre cero (un contacto rara vez
+    // esta en varias a la vez) y se leeria como que el filtro esta roto.
+    // Entre Listas y Etiquetas, en cambio, se combina con AND — son dos
+    // condiciones distintas del mismo query.
+    if ($listaIds) {
+        $ph = [];
+        foreach ($listaIds as $i => $lid) {
+            $k = ":lista_id{$i}";
+            $ph[] = $k;
+            $params[$k] = $lid;
+        }
         $where[] = 'EXISTS (SELECT 1 FROM datarocket_contactos_listas dcl
                             WHERE dcl.contacto_id = datarocket_contactos.id
-                              AND dcl.lista_id    = :lista_id)';
-        $params[':lista_id'] = $listaId;
+                              AND dcl.lista_id IN (' . implode(',', $ph) . '))';
     }
-    if ($etiquetaId   !== null) {
-        // Etiqueta asignada al contacto. Relacion via tabla puente
-        // `datarocket_contactos_etiquetas` (PK compuesta contacto_id +
-        // etiqueta_id, FKs con CASCADE). Mismo patron que `lista_id` arriba.
+    // Etiquetas asignadas al contacto, via `datarocket_contactos_etiquetas`.
+    // Mismo patron y misma semantica OR-dentro/AND-entre que las listas.
+    if ($etiquetaIds) {
+        $ph = [];
+        foreach ($etiquetaIds as $i => $eid) {
+            $k = ":etiqueta_id{$i}";
+            $ph[] = $k;
+            $params[$k] = $eid;
+        }
         $where[] = 'EXISTS (SELECT 1 FROM datarocket_contactos_etiquetas dce
                             WHERE dce.contacto_id = datarocket_contactos.id
-                              AND dce.etiqueta_id = :etiqueta_id)';
-        $params[':etiqueta_id'] = $etiquetaId;
+                              AND dce.etiqueta_id IN (' . implode(',', $ph) . '))';
     }
     if ($tipo === '_null') {
         // Centinela para "sin tipo asignado" — usado por el filtro del ABM
@@ -224,28 +263,48 @@ function handleList(PDO $pdo, array $q): void {
         $where[] = 'tipo = :tipo';
         $params[':tipo'] = $tipo;
     }
-    if ($genero       !== '')   { $where[] = 'genero = :genero';                 $params[':genero']       = $genero; }
-    if ($origen       !== '')   { $where[] = 'origen = :origen';                 $params[':origen']       = $origen; }
+    if ($genero       !== '')   { $where[] = 'persona_genero = :persona_genero'; $params[':persona_genero'] = $genero; }
     if ($paisId      !== null)  { $where[] = 'pais_id = :pais_id';               $params[':pais_id']      = $paisId; }
     if ($provinciaId !== null)  { $where[] = 'provincia_id = :provincia_id';     $params[':provincia_id'] = $provinciaId; }
+    if ($nombre       !== '')   { $where[] = 'nombre LIKE :nombre';              $params[':nombre']       = '%' . $nombre . '%'; }
     if ($correo       !== '')   { $where[] = 'correo LIKE :correo';              $params[':correo']       = '%' . $correo . '%'; }
     if ($celular      !== '')   { $where[] = 'celular LIKE :celular';            $params[':celular']      = '%' . $celular . '%'; }
+    if ($web          !== '')   { $where[] = 'web LIKE :web';                    $params[':web']          = '%' . $web . '%'; }
     if ($desde        !== '')   { $where[] = 'registrado >= :desde';             $params[':desde']        = $desde . ' 00:00:00'; }
     if ($hasta        !== '')   { $where[] = 'registrado <= :hasta';             $params[':hasta']        = $hasta . ' 23:59:59'; }
 
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s1 OR empresa LIKE :s2 OR correo LIKE :s3
+        // Ademas de los campos propios del contacto, el buscador rapido matchea
+        // el NOMBRE de las etiquetas asignadas y de las listas suscriptas: asi
+        // escribir "newsletter" o "expo" encuentra a los contactos de esa lista
+        // o con esa etiqueta sin tener que abrir el modal de filtros y elegir
+        // del combo. Los dos EXISTS van por `idx_dcl_lista`/`idx_dce_etiqueta`
+        // + PK compuesta de las puentes (migraciones 20260811_1400 y _1600).
+        // Nota: esto es un OR contra el resto del buscador, distinto de los
+        // filtros `lista_id`/`etiqueta_id`, que siguen siendo un AND por ID
+        // exacto.
+        $where[] = '(nombre LIKE :s1 OR empresa_nombre LIKE :s2 OR correo LIKE :s3
                      OR telefono LIKE :s4 OR celular LIKE :s5 OR whatsapp LIKE :s6
-                     OR dni LIKE :s7 OR uuid LIKE :s8)';
+                     OR persona_dni LIKE :s7 OR uuid LIKE :s8
+                     OR EXISTS (SELECT 1 FROM datarocket_contactos_etiquetas dceq
+                                  JOIN datarocket_etiquetas deq ON deq.id = dceq.etiqueta_id
+                                 WHERE dceq.contacto_id = datarocket_contactos.id
+                                   AND deq.nombre LIKE :s9)
+                     OR EXISTS (SELECT 1 FROM datarocket_contactos_listas dclq
+                                  JOIN datarocket_listas dlq ON dlq.id = dclq.lista_id
+                                 WHERE dclq.contacto_id = datarocket_contactos.id
+                                   AND dlq.nombre LIKE :s10))';
         $like = "%{$search}%";
-        $params[':s1'] = $like;
-        $params[':s2'] = $like;
-        $params[':s3'] = $like;
-        $params[':s4'] = $like;
-        $params[':s5'] = $like;
-        $params[':s6'] = $like;
-        $params[':s7'] = $like;
-        $params[':s8'] = $like;
+        $params[':s1']  = $like;
+        $params[':s2']  = $like;
+        $params[':s3']  = $like;
+        $params[':s4']  = $like;
+        $params[':s5']  = $like;
+        $params[':s6']  = $like;
+        $params[':s7']  = $like;
+        $params[':s8']  = $like;
+        $params[':s9']  = $like;  // etiquetas.nombre
+        $params[':s10'] = $like;  // listas.nombre
     }
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
@@ -280,7 +339,7 @@ function handleList(PDO $pdo, array $q): void {
     attachUbicacionNombres($pdo, $rows);
 
     jsonOk([
-        'stats' => [
+        'stats'    => [
             'total'    => (int)($stats['total'] ?? 0),
             'filtrado' => $filtrado,
         ],
@@ -418,6 +477,27 @@ function drCtFiltroId(mixed $v): ?int {
     return $n > 0 ? $n : null;
 }
 
+// Version multi-valor de `drCtFiltroId` para los filtros que aceptan varias
+// selecciones (`lista_id`, `etiqueta_id`). Acepta las tres formas en que puede
+// llegar el parametro y devuelve int[] deduplicado, sin ceros y sin basura:
+//   ?lista_id=5          -> [5]
+//   ?lista_id=5,14       -> [5, 14]   (lo que manda el picker de chips)
+//   ?lista_id[]=5&...=14 -> [5, 14]   (PHP lo entrega como array)
+// Un valor no numerico se descarta en silencio, igual que en drCtFiltroId:
+// equivale a "sin filtro" en vez de reventar el query.
+function drCtFiltroIds(mixed $v): array {
+    if ($v === null) return [];
+    $partes = is_array($v) ? $v : explode(',', (string)$v);
+    $out = [];
+    foreach ($partes as $p) {
+        $s = trim((string)$p);
+        if ($s === '' || !ctype_digit($s)) continue;
+        $n = (int)$s;
+        if ($n > 0) $out[$n] = true;
+    }
+    return array_keys($out);
+}
+
 // Valida que los ids de ubicacion existan en su catalogo antes de tocar la
 // tabla. Sin esto la violacion de FK sale como excepcion PDO y el ABM muestra
 // un 500 con el mensaje crudo de InnoDB.
@@ -450,6 +530,44 @@ function assertCorreoValido(array $in): void {
     }
 }
 
+// Invariante de identidad: el campo de nombre que corresponde al `tipo` tiene
+// que venir cargado, porque es el que alimenta a `nombre` (ver drCtDerivarNombre).
+// Un contacto persona sin `persona_nombre` no tiene de donde sacar el nombre
+// con el que se lista, se busca y se saluda en una plantilla.
+//
+// Solo se exige el campo del tipo. El del OTRO lado sigue siendo opcional y es
+// legitimo tenerlo cargado: en un contacto persona `empresa_nombre` es donde
+// trabaja, y en un contacto empresa `persona_nombre` es quien atiende.
+//
+// La backfill 20260817_2100 dejo la tabla cumpliendo esta invariante salvo 5
+// filas que no tienen ningun nombre en ninguna columna (solo celular). Esas
+// caen aca la primera vez que alguien las edite, que es cuando hay un humano
+// para resolverlas — es el comportamiento buscado, no un efecto colateral.
+// Mismo criterio en el endpoint v4 (api/v4/datarocket/contactos.php).
+function assertIdentidadValida(array $p): void {
+    if ($p['tipo'] === 'persona' && (string)($p['persona_nombre'] ?? '') === '') {
+        jsonError('El nombre de la persona es obligatorio para un contacto de tipo persona.', 400);
+    }
+    if ($p['tipo'] === 'empresa' && (string)($p['empresa_nombre'] ?? '') === '') {
+        jsonError('El nombre de la empresa es obligatorio para un contacto de tipo empresa.', 400);
+    }
+}
+
+// `nombre` es DERIVADO, no un campo que el cliente elija: sale del campo de
+// identidad que corresponde al `tipo`. Se pisa lo que haya mandado el cliente
+// a proposito — asi la columna no puede volver a divergir de `persona_nombre`
+// / `empresa_nombre`, que es justamente como se ensucio la tabla antes de la
+// backfill 20260817_2100. El form del ABM muestra `#drcNombre` readonly y lo
+// calcula en vivo con la misma regla, para que lo que se ve sea lo que se
+// guarda.
+//
+// Se asume assertIdentidadValida() ya corrido: el campo de origen no es vacio.
+function drCtDerivarNombre(array $p): string {
+    return $p['tipo'] === 'persona'
+        ? (string)$p['persona_nombre']
+        : (string)$p['empresa_nombre'];
+}
+
 // Genera un UUID v4 RFC 4122 (36 chars con guiones) alineado con el formato
 // que ya persiste `datarocket_contactos.uuid` (regenerado por la migracion
 // 20260727_2000). Antes usabamos bin2hex(random_bytes(16)) que producia 32
@@ -473,40 +591,39 @@ function nullableDateTime(mixed $v): ?string {
 
 function sanitizePayload(array $in): array {
     $p = [
-        'tipo'          => nullableStr($in['tipo']          ?? null, 20),
-        'origen'        => nullableStr($in['origen']        ?? null, 255),
-        'nombre'        => nullableStr($in['nombre']        ?? null, 255),
-        'empresa'       => nullableStr($in['empresa']       ?? null, 255),
-        'rubro'         => nullableStr($in['rubro']         ?? null, 255),
-        'actividad'     => nullableStr($in['actividad']     ?? null, 255),
-        'cargo'         => nullableStr($in['cargo']         ?? null, 255),
-        'persona'       => nullableStr($in['persona']       ?? null, 255),
-        'genero'        => nullableStr($in['genero']        ?? null, 1),
-        'nacimiento'    => nullableStr($in['nacimiento']    ?? null, 255),
-        'dni'           => nullableStr($in['dni']           ?? null, 255),
-        'domicilio'     => nullableStr($in['domicilio']     ?? null, 255),
-        'ciudad'        => nullableStr($in['ciudad']        ?? null, 255),
-        'ubicacion'     => nullableStr($in['ubicacion']     ?? null, 255),
+        'tipo'               => nullableStr($in['tipo']                    ?? null, 20),
+        'nombre'             => nullableStr($in['nombre']                  ?? null, 255),
+        'empresa_nombre'     => nullableStr($in['empresa_nombre']          ?? null, 255),
+        'empresa_rubro'      => nullableStr($in['empresa_rubro']           ?? null, 255),
+        'empresa_actividad'  => nullableStr($in['empresa_actividad']       ?? null, 255),
+        'empresa_cargo'      => nullableStr($in['empresa_cargo']           ?? null, 255),
+        'persona_nombre'     => nullableStr($in['persona_nombre']          ?? null, 255),
+        'persona_genero'     => nullableStr($in['persona_genero']          ?? null, 1),
+        'persona_nacimiento' => nullableStr($in['persona_nacimiento']      ?? null, 255),
+        'persona_dni'        => nullableStr($in['persona_dni']             ?? null, 255),
+        'domicilio'          => nullableStr($in['domicilio']               ?? null, 255),
+        'ciudad'             => nullableStr($in['ciudad']                  ?? null, 255),
+        'ubicacion'          => nullableStr($in['ubicacion']               ?? null, 255),
         // FK a `localidades` / `provincias` / `paises`. Se aceptan las claves
         // legacy sin sufijo: cuando las columnas eran VARCHAR ya guardaban el ID.
-        'localidad_id'  => nullableInt($in['localidad_id']  ?? $in['localidad'] ?? null),
-        'provincia_id'  => nullableInt($in['provincia_id']  ?? $in['provincia'] ?? null),
-        'pais_id'       => nullableInt($in['pais_id']       ?? $in['pais']      ?? null),
+        'localidad_id' => nullableInt($in['localidad_id']            ?? $in['localidad'] ?? null),
+        'provincia_id' => nullableInt($in['provincia_id']            ?? $in['provincia'] ?? null),
+        'pais_id'      => nullableInt($in['pais_id']                 ?? $in['pais']      ?? null),
         // Telefonos a 10 digitos argentinos y correo a minuscula validada —
         // reglas en lib/contactos_normalizar.php, compartidas con el endpoint
         // v4 y con la migracion 20260816_1700 que puso al dia lo ya cargado.
-        'telefono'      => contactoNormalizarTelefono($in['telefono'] ?? null),
-        'celular'       => contactoNormalizarTelefono($in['celular']  ?? null),
-        'whatsapp'      => contactoNormalizarTelefono($in['whatsapp'] ?? null),
-        'correo'        => contactoNormalizarCorreo($in['correo']     ?? null),
+        'telefono' => contactoNormalizarTelefono($in['telefono'] ?? null),
+        'celular'  => contactoNormalizarTelefono($in['celular']  ?? null),
+        'whatsapp' => contactoNormalizarTelefono($in['whatsapp'] ?? null),
+        'correo'   => contactoNormalizarCorreo($in['correo']     ?? null),
         // `web` se guarda como host + path sin esquema; lo que no es una URL
         // va a NULL. Mismas reglas, mismo lib, migracion 20260816_1800.
-        'web'           => contactoNormalizarWeb($in['web']           ?? null),
-        'facebook'      => nullableStr($in['facebook']      ?? null, 255),
-        'instagram'     => nullableStr($in['instagram']     ?? null, 255),
-        'tiktok'        => nullableStr($in['tiktok']        ?? null, 255),
-        'comentarios'   => nullableStr($in['comentarios']   ?? null, 500),
-        'registrado'    => nullableDateTime($in['registrado'] ?? null),
+        'web'         => contactoNormalizarWeb($in['web']           ?? null),
+        'facebook'    => nullableStr($in['facebook']                ?? null, 255),
+        'instagram'   => nullableStr($in['instagram']               ?? null, 255),
+        'tiktok'      => nullableStr($in['tiktok']                  ?? null, 255),
+        'comentarios' => nullableStr($in['comentarios']             ?? null, 500),
+        'registrado'  => nullableDateTime($in['registrado']         ?? null),
     ];
     // Un correo cargado por error en `web` se rescata a `correo` cuando ese
     // campo viene vacio; si el contacto ya trae correo, se descarta con el
@@ -525,6 +642,8 @@ function handleCreate(PDO $pdo, array $in): void {
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
+    assertIdentidadValida($p);
+    $p['nombre'] = drCtDerivarNombre($p);
     assertUbicacionValida($pdo, $p);
     $p['uuid'] = nullableStr($in['uuid'] ?? null, 255) ?? uuidV4();
     if ($p['registrado'] === null) {
@@ -538,46 +657,49 @@ function handleCreate(PDO $pdo, array $in): void {
     try {
         $sql = "
             INSERT INTO datarocket_contactos
-                (uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo, persona,
-                 genero, nacimiento, dni, domicilio, ciudad, ubicacion, localidad_id,
+                (uuid, tipo, nombre,
+                 empresa_nombre, empresa_rubro, empresa_actividad, empresa_cargo,
+                 persona_nombre, persona_genero, persona_nacimiento, persona_dni,
+                 domicilio, ciudad, ubicacion, localidad_id,
                  provincia_id, pais_id, telefono, celular, whatsapp, correo, web, facebook,
                  instagram, tiktok, comentarios, registrado)
             VALUES
-                (:uuid, :tipo, :origen, :nombre, :empresa, :rubro, :actividad, :cargo, :persona,
-                 :genero, :nacimiento, :dni, :domicilio, :ciudad, :ubicacion, :localidad_id,
+                (:uuid, :tipo, :nombre,
+                 :empresa_nombre, :empresa_rubro, :empresa_actividad, :empresa_cargo,
+                 :persona_nombre, :persona_genero, :persona_nacimiento, :persona_dni,
+                 :domicilio, :ciudad, :ubicacion, :localidad_id,
                  :provincia_id, :pais_id, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
                  :instagram, :tiktok, :comentarios, :registrado)
         ";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
-            ':uuid'          => $p['uuid'],
-            ':tipo'          => $p['tipo'],
-            ':origen'        => $p['origen'],
-            ':nombre'        => $p['nombre'],
-            ':empresa'       => $p['empresa'],
-            ':rubro'         => $p['rubro'],
-            ':actividad'     => $p['actividad'],
-            ':cargo'         => $p['cargo'],
-            ':persona'       => $p['persona'],
-            ':genero'        => $p['genero'],
-            ':nacimiento'    => $p['nacimiento'],
-            ':dni'           => $p['dni'],
-            ':domicilio'     => $p['domicilio'],
-            ':ciudad'        => $p['ciudad'],
-            ':ubicacion'     => $p['ubicacion'],
-            ':localidad_id'  => $p['localidad_id'],
-            ':provincia_id'  => $p['provincia_id'],
-            ':pais_id'       => $p['pais_id'],
-            ':telefono'      => $p['telefono'],
-            ':celular'       => $p['celular'],
-            ':whatsapp'      => $p['whatsapp'],
-            ':correo'        => $p['correo'],
-            ':web'           => $p['web'],
-            ':facebook'      => $p['facebook'],
-            ':instagram'     => $p['instagram'],
-            ':tiktok'        => $p['tiktok'],
-            ':comentarios'   => $p['comentarios'],
-            ':registrado'    => $p['registrado'],
+            ':uuid'               => $p['uuid'],
+            ':tipo'               => $p['tipo'],
+            ':nombre'             => $p['nombre'],
+            ':empresa_nombre'     => $p['empresa_nombre'],
+            ':empresa_rubro'      => $p['empresa_rubro'],
+            ':empresa_actividad'  => $p['empresa_actividad'],
+            ':empresa_cargo'      => $p['empresa_cargo'],
+            ':persona_nombre'     => $p['persona_nombre'],
+            ':persona_genero'     => $p['persona_genero'],
+            ':persona_nacimiento' => $p['persona_nacimiento'],
+            ':persona_dni'        => $p['persona_dni'],
+            ':domicilio'          => $p['domicilio'],
+            ':ciudad'             => $p['ciudad'],
+            ':ubicacion'          => $p['ubicacion'],
+            ':localidad_id'       => $p['localidad_id'],
+            ':provincia_id'       => $p['provincia_id'],
+            ':pais_id'            => $p['pais_id'],
+            ':telefono'           => $p['telefono'],
+            ':celular'            => $p['celular'],
+            ':whatsapp'           => $p['whatsapp'],
+            ':correo'             => $p['correo'],
+            ':web'                => $p['web'],
+            ':facebook'           => $p['facebook'],
+            ':instagram'          => $p['instagram'],
+            ':tiktok'             => $p['tiktok'],
+            ':comentarios'        => $p['comentarios'],
+            ':registrado'         => $p['registrado'],
         ]);
         $newId = (int)$pdo->lastInsertId();
         syncListas($pdo, $newId, $listaIds);
@@ -603,6 +725,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
+    assertIdentidadValida($p);
+    $p['nombre'] = drCtDerivarNombre($p);
     assertUbicacionValida($pdo, $p);
     // `lista_ids` / `etiqueta_ids` son opcionales en el PUT — si el cliente
     // no los envia (o envia null), la relacion actual NO se toca. Solo
@@ -619,65 +743,63 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     try {
         $sql = "
             UPDATE datarocket_contactos SET
-                tipo          = :tipo,
-                origen        = :origen,
-                nombre        = :nombre,
-                empresa       = :empresa,
-                rubro         = :rubro,
-                actividad     = :actividad,
-                cargo         = :cargo,
-                persona       = :persona,
-                genero        = :genero,
-                nacimiento    = :nacimiento,
-                dni           = :dni,
-                domicilio     = :domicilio,
-                ciudad        = :ciudad,
-                ubicacion     = :ubicacion,
-                localidad_id  = :localidad_id,
-                provincia_id  = :provincia_id,
-                pais_id       = :pais_id,
-                telefono      = :telefono,
-                celular       = :celular,
-                whatsapp      = :whatsapp,
-                correo        = :correo,
-                web           = :web,
-                facebook      = :facebook,
-                instagram     = :instagram,
-                tiktok        = :tiktok,
-                comentarios   = :comentarios,
-                registrado    = :registrado
+                tipo               = :tipo,
+                nombre             = :nombre,
+                empresa_nombre     = :empresa_nombre,
+                empresa_rubro      = :empresa_rubro,
+                empresa_actividad  = :empresa_actividad,
+                empresa_cargo      = :empresa_cargo,
+                persona_nombre     = :persona_nombre,
+                persona_genero     = :persona_genero,
+                persona_nacimiento = :persona_nacimiento,
+                persona_dni        = :persona_dni,
+                domicilio          = :domicilio,
+                ciudad             = :ciudad,
+                ubicacion          = :ubicacion,
+                localidad_id       = :localidad_id,
+                provincia_id       = :provincia_id,
+                pais_id            = :pais_id,
+                telefono           = :telefono,
+                celular            = :celular,
+                whatsapp           = :whatsapp,
+                correo             = :correo,
+                web                = :web,
+                facebook           = :facebook,
+                instagram          = :instagram,
+                tiktok             = :tiktok,
+                comentarios        = :comentarios,
+                registrado         = :registrado
             WHERE id = :id
         ";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
-            ':tipo'          => $p['tipo'],
-            ':origen'        => $p['origen'],
-            ':nombre'        => $p['nombre'],
-            ':empresa'       => $p['empresa'],
-            ':rubro'         => $p['rubro'],
-            ':actividad'     => $p['actividad'],
-            ':cargo'         => $p['cargo'],
-            ':persona'       => $p['persona'],
-            ':genero'        => $p['genero'],
-            ':nacimiento'    => $p['nacimiento'],
-            ':dni'           => $p['dni'],
-            ':domicilio'     => $p['domicilio'],
-            ':ciudad'        => $p['ciudad'],
-            ':ubicacion'     => $p['ubicacion'],
-            ':localidad_id'  => $p['localidad_id'],
-            ':provincia_id'  => $p['provincia_id'],
-            ':pais_id'       => $p['pais_id'],
-            ':telefono'      => $p['telefono'],
-            ':celular'       => $p['celular'],
-            ':whatsapp'      => $p['whatsapp'],
-            ':correo'        => $p['correo'],
-            ':web'           => $p['web'],
-            ':facebook'      => $p['facebook'],
-            ':instagram'     => $p['instagram'],
-            ':tiktok'        => $p['tiktok'],
-            ':comentarios'   => $p['comentarios'],
-            ':registrado'    => $p['registrado'],
-            ':id'            => $id,
+            ':tipo'               => $p['tipo'],
+            ':nombre'             => $p['nombre'],
+            ':empresa_nombre'     => $p['empresa_nombre'],
+            ':empresa_rubro'      => $p['empresa_rubro'],
+            ':empresa_actividad'  => $p['empresa_actividad'],
+            ':empresa_cargo'      => $p['empresa_cargo'],
+            ':persona_nombre'     => $p['persona_nombre'],
+            ':persona_genero'     => $p['persona_genero'],
+            ':persona_nacimiento' => $p['persona_nacimiento'],
+            ':persona_dni'        => $p['persona_dni'],
+            ':domicilio'          => $p['domicilio'],
+            ':ciudad'             => $p['ciudad'],
+            ':ubicacion'          => $p['ubicacion'],
+            ':localidad_id'       => $p['localidad_id'],
+            ':provincia_id'       => $p['provincia_id'],
+            ':pais_id'            => $p['pais_id'],
+            ':telefono'           => $p['telefono'],
+            ':celular'            => $p['celular'],
+            ':whatsapp'           => $p['whatsapp'],
+            ':correo'             => $p['correo'],
+            ':web'                => $p['web'],
+            ':facebook'           => $p['facebook'],
+            ':instagram'          => $p['instagram'],
+            ':tiktok'             => $p['tiktok'],
+            ':comentarios'        => $p['comentarios'],
+            ':registrado'         => $p['registrado'],
+            ':id'                 => $id,
         ]);
         if ($listaIds    !== null) syncListas($pdo, $id, $listaIds);
         if ($etiquetaIds !== null) syncEtiquetas($pdo, $id, $etiquetaIds);
@@ -689,13 +811,50 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     }
 }
 
+// Baja en cascada explicita. El orden importa:
+//   1) `datarocket_interacciones` — las propias del contacto y las colgadas de
+//      sus prospectos. No hay FK contra el contacto (solo contra el prospecto,
+//      y con ON DELETE SET NULL), asi que si no se borran a mano quedan filas
+//      huerfanas apuntando a un contacto inexistente.
+//   2) `datarocket_prospectos` — su FK `fk_dr_prospectos_contacto` es ON DELETE
+//      RESTRICT, o sea que mientras exista un prospecto el borrado del contacto
+//      falla con error de integridad.
+//   3) `datarocket_contactos` — recien aca. Las puente `..._listas` y
+//      `..._etiquetas` se borran solas por el ON DELETE CASCADE de sus FKs.
+// Todo dentro de una transaccion: o se va el contacto entero o no se va nada.
 function handleDelete(PDO $pdo, int $id): void {
-    // Las filas de `datarocket_contactos_listas` y `datarocket_contactos_
-    // etiquetas` se borran solas por el ON DELETE CASCADE de sus FKs.
-    $stmt = $pdo->prepare('DELETE FROM datarocket_contactos WHERE id = :id');
-    $stmt->execute([':id' => $id]);
-    if ($stmt->rowCount() === 0) jsonError('Contacto no encontrado', 404);
-    jsonOk(['id' => $id]);
+    $exists = $pdo->prepare('SELECT id FROM datarocket_contactos WHERE id = :id');
+    $exists->execute([':id' => $id]);
+    if (!$exists->fetchColumn()) jsonError('Contacto no encontrado', 404);
+
+    $pdo->beginTransaction();
+    try {
+        $delInteracciones = $pdo->prepare(
+            'DELETE FROM datarocket_interacciones
+              WHERE contacto_id = :id
+                 OR prospecto_id IN (SELECT id FROM datarocket_prospectos
+                                      WHERE contacto_id = :id2)'
+        );
+        $delInteracciones->execute([':id' => $id, ':id2' => $id]);
+        $interacciones = $delInteracciones->rowCount();
+
+        $delProspectos = $pdo->prepare('DELETE FROM datarocket_prospectos WHERE contacto_id = :id');
+        $delProspectos->execute([':id' => $id]);
+        $prospectos = $delProspectos->rowCount();
+
+        $delContacto = $pdo->prepare('DELETE FROM datarocket_contactos WHERE id = :id');
+        $delContacto->execute([':id' => $id]);
+
+        $pdo->commit();
+        jsonOk([
+            'id'            => $id,
+            'interacciones' => $interacciones,
+            'prospectos'    => $prospectos,
+        ]);
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
 }
 
 // ----------------------------------------------------------------------------

@@ -12,8 +12,8 @@
 //                                                        etapas, proyectos,
 //                                                        usuarios, paises, y
 //                                                        opciones de combos
-//                                                        sentido/origen/tipo/
-//                                                        estado/producto)
+//                                                        sentido/origen/estado/
+//                                                        producto)
 //   POST   api/datarocket_prospectos.php               -> alta (JSON body)
 //   POST   api/datarocket_prospectos.php?id=N&action=cambiar_etapa
 //                                                     -> movimiento entre
@@ -30,7 +30,7 @@
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 //
 // Reutilizamos el catalogo `estados` con prefijo `datasale_prospecto_` para
-// los combos sentido / origen / tipo / estado / producto — comparten valores
+// los combos sentido / origen / estado / producto — comparten valores
 // con el ABM legacy `/prospectos` (mismo dominio, misma tabla origen). Cuando
 // se decida deprecar `datasaleprospectos` se puede renombrar el prefijo en
 // una unica migracion sin tocar codigo.
@@ -48,20 +48,23 @@ require_once __DIR__ . '/lib/auth_check.php';
 // `asunto` y `acciones` tampoco existen mas (migracion 20260817_1700): el
 // asunto se fusiono como primera linea de `comentarios` (20260817_1600) y el
 // log libre de `acciones` quedo reemplazado por `datarocket_interacciones`.
-const DR_PRO_COLS = "id, contacto_id, ingreso, proyecto_id, sentido, origen, tipo, producto,
+//
+// `tipo` se dropeo en la 20260817_1800: guardaba valores legacy (U/I/O/M) que
+// ningun catalogo `estados` decodificaba, asi que el panel siempre mostro "—".
+const DR_PRO_COLS = "id, contacto_id, ingreso, proyecto_id, sentido, origen, producto,
                      monto, moneda, cierre_esperado, calificacion, estado,
                      embudo_id, etapa_id, etapa_ingreso, asignado, atendido,
                      actualizado, aplazado, comentarios";
 
 // Misma lista calificada con el alias `p`. El listado joinea con
-// `datarocket_contactos` (buscador + orden por identidad) y ahi `id`, `tipo`,
-// `correo` y varias mas son ambiguas sin prefijo.
+// `datarocket_contactos` (buscador + orden por identidad) y ahi `id`, `correo`
+// y varias mas son ambiguas sin prefijo.
 const DR_PRO_COLS_P = "p.id, p.contacto_id, p.ingreso, p.proyecto_id, p.sentido, p.origen,
-                       p.tipo, p.producto, p.monto, p.moneda, p.cierre_esperado,
+                       p.producto, p.monto, p.moneda, p.cierre_esperado,
                        p.calificacion, p.estado, p.embudo_id, p.etapa_id, p.etapa_ingreso,
                        p.asignado, p.atendido, p.actualizado, p.aplazado, p.comentarios";
 
-const DR_PRO_COMBO_CAMPOS = ['sentido', 'origen', 'tipo', 'estado', 'producto'];
+const DR_PRO_COMBO_CAMPOS = ['sentido', 'origen', 'estado', 'producto'];
 const DR_PRO_CAMPO_PREFIX = 'datasale_prospecto_';
 
 // `moneda` es un campo propio de Datarocket (el ABM legacy de Datasale no
@@ -154,7 +157,7 @@ function drProFetchContactosByIds(PDO $pdo, array $ids): array {
     if (!$ids) return [];
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
     $stmt = $pdo->prepare(
-        "SELECT id, tipo, nombre, empresa, telefono, celular, whatsapp, correo,
+        "SELECT id, tipo, nombre, empresa_nombre, telefono, celular, whatsapp, correo,
                 web, domicilio, ciudad, localidad_id, provincia_id, pais_id, ubicacion
            FROM datarocket_contactos
           WHERE id IN ({$placeholders})"
@@ -247,7 +250,10 @@ function drProEnrichRows(PDO $pdo, array $rows): array {
         // datarocket_contactos, no las columnas legacy en el prospecto).
         $c = !empty($r['contacto_id']) ? ($contactos[(int)$r['contacto_id']] ?? null) : null;
         $r['contacto_nombre']    = $c ? ($c['nombre']    !== '' ? (string)$c['nombre']    : null) : null;
-        $r['contacto_empresa']   = $c ? ($c['empresa']   !== null ? (string)$c['empresa'] : null) : null;
+        // `contacto_empresa` conserva el nombre de la clave expuesta al front
+        // aunque la columna origen pase a llamarse `empresa_nombre` (migracion
+        // 20260817_1900): el prefijo `contacto_` es el contrato de este endpoint.
+        $r['contacto_empresa']   = $c ? ($c['empresa_nombre'] !== null ? (string)$c['empresa_nombre'] : null) : null;
         $r['contacto_tipo']      = $c ? ($c['tipo']      !== null ? (string)$c['tipo']    : null) : null;
         $r['contacto_telefono']  = $c ? ($c['telefono']  !== '' ? (string)$c['telefono']  : null) : null;
         $r['contacto_celular']   = $c ? ($c['celular']   !== null ? (string)$c['celular'] : null) : null;
@@ -382,7 +388,6 @@ function handleListProspectos(PDO $pdo, array $q): void {
     $atendido  = isset($q['atendido'])    && $q['atendido']    !== '' ? (int)$q['atendido']    : null;
     $estado    = isset($q['estado'])      && $q['estado']      !== '' ? (int)$q['estado']      : null;
     $sentido   = trim((string)($q['sentido']  ?? ''));
-    $tipo      = trim((string)($q['tipo']     ?? ''));
     $origen    = trim((string)($q['origen']   ?? ''));
     $desde     = trim((string)($q['desde']    ?? ''));
     $hasta     = trim((string)($q['hasta']    ?? ''));
@@ -397,9 +402,9 @@ function handleListProspectos(PDO $pdo, array $q): void {
     // `organizacion` y `nombre` salieron del listado de ordenables: las columnas
     // ya no existen (migracion 20260816_1500). Para ordenar por identidad ahora
     // hay que usar el nombre del contacto, que vive en el JOIN — se expone como
-    // `contacto_nombre`.
+    // `contacto_nombre`. `tipo` salio por el mismo motivo (migracion 20260817_1800).
     $allowedOrder = ['id', 'ingreso', 'proyecto_id', 'embudo_id', 'etapa_id', 'etapa_ingreso',
-                     'sentido', 'origen', 'tipo', 'producto', 'monto', 'cierre_esperado',
+                     'sentido', 'origen', 'producto', 'monto', 'cierre_esperado',
                      'estado', 'calificacion', 'asignado', 'atendido', 'actualizado', 'aplazado',
                      'contacto_nombre'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
@@ -419,7 +424,6 @@ function handleListProspectos(PDO $pdo, array $q): void {
     if ($atendido !== null) { $where[] = 'p.atendido = :atendido';       $params[':atendido']  = $atendido; }
     if ($estado   !== null) { $where[] = 'p.estado = :estado';           $params[':estado']    = $estado; }
     if ($sentido  !== '')   { $where[] = 'p.sentido = :sentido';         $params[':sentido']   = $sentido; }
-    if ($tipo     !== '')   { $where[] = 'p.tipo = :tipo';               $params[':tipo']      = $tipo; }
     if ($origen   !== '')   { $where[] = 'p.origen = :origen';           $params[':origen']    = $origen; }
     if ($desde    !== '')   { $where[] = 'p.ingreso >= :desde';          $params[':desde']     = $desde . ' 00:00:00'; }
     if ($hasta    !== '')   { $where[] = 'p.ingreso <= :hasta';          $params[':hasta']     = $hasta . ' 23:59:59'; }
@@ -435,7 +439,7 @@ function handleListProspectos(PDO $pdo, array $q): void {
         //
         // `p.asunto` salio del buscador (migracion 20260817_1700): su contenido
         // vive ahora en `p.comentarios`, que ya estaba cubierto.
-        $where[] = '(c.nombre LIKE :s1 OR c.empresa LIKE :s2 OR c.correo LIKE :s3
+        $where[] = '(c.nombre LIKE :s1 OR c.empresa_nombre LIKE :s2 OR c.correo LIKE :s3
                      OR c.celular LIKE :s4
                      OR p.producto LIKE :s5 OR p.comentarios LIKE :s6)';
         $like = "%{$search}%";
@@ -608,7 +612,6 @@ function drProSanitizePayload(array $in): array {
         'proyecto_id'   => drProNullableInt($in['proyecto_id']        ?? null),
         'sentido'       => drProNullableStr($in['sentido']            ?? null, 1),
         'origen'        => drProNullableStr($in['origen']             ?? null, 10),
-        'tipo'          => drProNullableStr($in['tipo']               ?? null, 1),
         'producto'      => drProNullableStr($in['producto']           ?? null, 100),
         'monto'           => drProNullableMonto($in['monto']          ?? null),
         'moneda'          => drProMoneda($in['moneda']                ?? null),
@@ -685,12 +688,12 @@ function handleCreateProspecto(PDO $pdo, array $in): void {
     // (migracion 20260817_1700).
     $sql = "
         INSERT INTO datarocket_prospectos
-            (contacto_id, ingreso, proyecto_id, sentido, origen, tipo, producto,
+            (contacto_id, ingreso, proyecto_id, sentido, origen, producto,
              monto, moneda, cierre_esperado,
              calificacion, estado, embudo_id, etapa_id, etapa_ingreso,
              asignado, atendido, actualizado, aplazado, comentarios)
         VALUES
-            (:contacto_id, :ingreso, :proyecto_id, :sentido, :origen, :tipo, :producto,
+            (:contacto_id, :ingreso, :proyecto_id, :sentido, :origen, :producto,
              :monto, :moneda, :cierre_esperado,
              :calificacion, :estado, :embudo_id, :etapa_id, :etapa_ingreso,
              :asignado, :atendido, :actualizado, :aplazado, :comentarios)
@@ -702,7 +705,6 @@ function handleCreateProspecto(PDO $pdo, array $in): void {
         ':proyecto_id'   => $p['proyecto_id'],
         ':sentido'       => $p['sentido'],
         ':origen'        => $p['origen'],
-        ':tipo'          => $p['tipo'],
         ':producto'      => $p['producto'],
         ':monto'           => $p['monto'],
         ':moneda'          => $p['moneda'],
@@ -763,7 +765,6 @@ function handleUpdateProspecto(PDO $pdo, int $id, array $in): void {
             proyecto_id     = :proyecto_id,
             sentido         = :sentido,
             origen          = :origen,
-            tipo            = :tipo,
             producto        = :producto,
             monto           = :monto,
             moneda          = :moneda,
@@ -786,7 +787,6 @@ function handleUpdateProspecto(PDO $pdo, int $id, array $in): void {
         ':proyecto_id'   => $p['proyecto_id'],
         ':sentido'       => $p['sentido'],
         ':origen'        => $p['origen'],
-        ':tipo'          => $p['tipo'],
         ':producto'      => $p['producto'],
         ':monto'           => $p['monto'],
         ':moneda'          => $p['moneda'],

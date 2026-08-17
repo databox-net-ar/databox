@@ -83,8 +83,10 @@ function requireApp(): array {
 // los consumidores externos siguen recibiendo `localidad` / `provincia` /
 // `pais` con exactamente el mismo valor que antes. La respuesta suma ademas
 // las claves `*_id` para los clientes nuevos.
-const DR_CT_COLS = "id, uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo,
-                    persona, genero, nacimiento, dni, domicilio, ciudad, ubicacion,
+const DR_CT_COLS = "id, uuid, tipo, nombre,
+                    empresa_nombre, empresa_rubro, empresa_actividad, empresa_cargo,
+                    persona_nombre, persona_genero, persona_nacimiento, persona_dni,
+                    domicilio, ciudad, ubicacion,
                     localidad_id, provincia_id, pais_id,
                     localidad_id AS localidad, provincia_id AS provincia, pais_id AS pais,
                     telefono, celular, whatsapp, correo,
@@ -126,8 +128,7 @@ try {
 
 function handleList(PDO $pdo, array $q): void {
     $codigo       = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
-    $genero       = trim((string)($q['genero']       ?? ''));
-    $origen       = trim((string)($q['origen']       ?? ''));
+    $genero       = trim((string)($q['persona_genero']       ?? ''));
     // Se aceptan tanto `pais_id` (nuevo) como `pais` (legacy) — el valor era y
     // sigue siendo el ID del catalogo.
     $paisId       = drCtFiltroId($q['pais_id']      ?? $q['pais']      ?? null);
@@ -148,8 +149,8 @@ function handleList(PDO $pdo, array $q): void {
     // publico) pero se traducen a la columna renombrada.
     if ($orderBy === 'pais')      $orderBy = 'pais_id';
     if ($orderBy === 'provincia') $orderBy = 'provincia_id';
-    $allowedOrder = ['id', 'nombre', 'empresa', 'correo', 'registrado',
-                     'pais_id', 'provincia_id', 'origen'];
+    $allowedOrder = ['id', 'nombre', 'empresa_nombre', 'correo', 'registrado',
+                     'pais_id', 'provincia_id'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
 
@@ -157,8 +158,7 @@ function handleList(PDO $pdo, array $q): void {
     $params = [];
 
     if ($codigo       !== null) { $where[] = 'id = :codigo';                 $params[':codigo']       = $codigo; }
-    if ($genero       !== '')   { $where[] = 'genero = :genero';             $params[':genero']       = $genero; }
-    if ($origen       !== '')   { $where[] = 'origen = :origen';             $params[':origen']       = $origen; }
+    if ($genero       !== '')   { $where[] = 'persona_genero = :persona_genero'; $params[':persona_genero'] = $genero; }
     if ($paisId      !== null)  { $where[] = 'pais_id = :pais_id';           $params[':pais_id']      = $paisId; }
     if ($provinciaId !== null)  { $where[] = 'provincia_id = :provincia_id'; $params[':provincia_id'] = $provinciaId; }
     if ($correo       !== '')   { $where[] = 'correo LIKE :correo';          $params[':correo']       = '%' . $correo . '%'; }
@@ -167,9 +167,9 @@ function handleList(PDO $pdo, array $q): void {
     if ($hasta        !== '')   { $where[] = 'registrado <= :hasta';         $params[':hasta']        = $hasta . ' 23:59:59'; }
 
     if ($search !== '') {
-        $where[] = '(nombre LIKE :s1 OR empresa LIKE :s2 OR correo LIKE :s3
+        $where[] = '(nombre LIKE :s1 OR empresa_nombre LIKE :s2 OR correo LIKE :s3
                      OR telefono LIKE :s4 OR celular LIKE :s5 OR whatsapp LIKE :s6
-                     OR dni LIKE :s7 OR uuid LIKE :s8)';
+                     OR persona_dni LIKE :s7 OR uuid LIKE :s8)';
         $like = "%{$search}%";
         $params[':s1'] = $like; $params[':s2'] = $like; $params[':s3'] = $like;
         $params[':s4'] = $like; $params[':s5'] = $like; $params[':s6'] = $like;
@@ -348,6 +348,46 @@ function drCtAssertCorreo(array $in): void {
     }
 }
 
+// Invariante de identidad: el campo de nombre que corresponde al `tipo` tiene
+// que venir cargado, porque es el que alimenta a `nombre` (ver drCtDerivarNombre).
+// Un contacto persona sin `persona_nombre` no tiene de donde sacar el nombre
+// con el que se lista, se busca y se saluda en una plantilla.
+//
+// Solo se exige el campo del tipo. El del OTRO lado sigue siendo opcional y es
+// legitimo tenerlo cargado: en un contacto persona `empresa_nombre` es donde
+// trabaja, y en un contacto empresa `persona_nombre` es quien atiende.
+//
+// Este endpoint importa lotes, y fue justamente un importador el que dejo 989
+// filas con `tipo='persona'` y `persona_nombre` NULL (ver la migracion
+// 20260817_2100). Rechazar el alta aca es lo que evita que se repita.
+// Mismo criterio en el ABM cloud (cloud/api/datarocketcontactos.php).
+function drCtAssertIdentidad(array $p): void {
+    if ($p['tipo'] === 'persona' && (string)($p['persona_nombre'] ?? '') === '') {
+        jsonError('El nombre de la persona es obligatorio para un contacto de tipo persona.', 400);
+    }
+    if ($p['tipo'] === 'empresa' && (string)($p['empresa_nombre'] ?? '') === '') {
+        jsonError('El nombre de la empresa es obligatorio para un contacto de tipo empresa.', 400);
+    }
+}
+
+// `nombre` es DERIVADO, no un campo que el cliente elija: sale del campo de
+// identidad que corresponde al `tipo`. Se pisa lo que haya mandado el cliente
+// a proposito — asi la columna no puede volver a divergir de `persona_nombre`
+// / `empresa_nombre`, que es justamente como se ensucio la tabla antes de la
+// backfill 20260817_2100.
+//
+// OJO si venis de un importador que trae el formato compuesto de
+// datamarketcontactos (`EMPRESA - Persona` en un solo campo): partilo ANTES de
+// postear, mandando `empresa_nombre` y `persona_nombre` por separado. Si mandas
+// el compuesto entero en uno de los dos, se guarda entero.
+//
+// Se asume drCtAssertIdentidad() ya corrido: el campo de origen no es vacio.
+function drCtDerivarNombre(array $p): string {
+    return $p['tipo'] === 'persona'
+        ? (string)$p['persona_nombre']
+        : (string)$p['empresa_nombre'];
+}
+
 // Genera un UUID v4 RFC 4122 (36 chars con guiones) alineado con el formato
 // que ya persiste `datarocket_contactos.uuid` (regenerado por la migracion
 // 20260727_2000). Antes usabamos bin2hex(random_bytes(16)) que producia 32
@@ -372,41 +412,40 @@ function drCtNullableDateTime(mixed $v): ?string {
 
 function drCtSanitize(array $in): array {
     $p = [
-        'tipo'          => drCtNullableStr($in['tipo']          ?? null, 20),
-        'origen'        => drCtNullableStr($in['origen']        ?? null, 255),
-        'nombre'        => drCtNullableStr($in['nombre']        ?? null, 255),
-        'empresa'       => drCtNullableStr($in['empresa']       ?? null, 255),
-        'rubro'         => drCtNullableStr($in['rubro']         ?? null, 255),
-        'actividad'     => drCtNullableStr($in['actividad']     ?? null, 255),
-        'cargo'         => drCtNullableStr($in['cargo']         ?? null, 255),
-        'persona'       => drCtNullableStr($in['persona']       ?? null, 255),
-        'genero'        => drCtNullableStr($in['genero']        ?? null, 1),
-        'nacimiento'    => drCtNullableStr($in['nacimiento']    ?? null, 255),
-        'dni'           => drCtNullableStr($in['dni']           ?? null, 255),
-        'domicilio'     => drCtNullableStr($in['domicilio']     ?? null, 255),
-        'ciudad'        => drCtNullableStr($in['ciudad']        ?? null, 255),
-        'ubicacion'     => drCtNullableStr($in['ubicacion']     ?? null, 255),
+        'tipo'               => drCtNullableStr($in['tipo']                ?? null, 20),
+        'nombre'             => drCtNullableStr($in['nombre']              ?? null, 255),
+        'empresa_nombre'     => drCtNullableStr($in['empresa_nombre']      ?? null, 255),
+        'empresa_rubro'      => drCtNullableStr($in['empresa_rubro']       ?? null, 255),
+        'empresa_actividad'  => drCtNullableStr($in['empresa_actividad']   ?? null, 255),
+        'empresa_cargo'      => drCtNullableStr($in['empresa_cargo']       ?? null, 255),
+        'persona_nombre'     => drCtNullableStr($in['persona_nombre']      ?? null, 255),
+        'persona_genero'     => drCtNullableStr($in['persona_genero']      ?? null, 1),
+        'persona_nacimiento' => drCtNullableStr($in['persona_nacimiento']  ?? null, 255),
+        'persona_dni'        => drCtNullableStr($in['persona_dni']         ?? null, 255),
+        'domicilio'          => drCtNullableStr($in['domicilio']           ?? null, 255),
+        'ciudad'             => drCtNullableStr($in['ciudad']              ?? null, 255),
+        'ubicacion'          => drCtNullableStr($in['ubicacion']           ?? null, 255),
         // FK a los catalogos. Se acepta la clave nueva y la legacy (misma
         // semantica: el ID). Un valor no numerico deja de escribirse como texto
         // y pasa a NULL — con la FK puesta no hay otra opcion valida.
-        'localidad_id'  => drCtNullableInt($in['localidad_id']  ?? $in['localidad'] ?? null),
-        'provincia_id'  => drCtNullableInt($in['provincia_id']  ?? $in['provincia'] ?? null),
-        'pais_id'       => drCtNullableInt($in['pais_id']       ?? $in['pais']      ?? null),
+        'localidad_id' => drCtNullableInt($in['localidad_id']        ?? $in['localidad'] ?? null),
+        'provincia_id' => drCtNullableInt($in['provincia_id']        ?? $in['provincia'] ?? null),
+        'pais_id'      => drCtNullableInt($in['pais_id']             ?? $in['pais']      ?? null),
         // Telefonos a 10 digitos argentinos y correo a minuscula validada —
         // reglas en cloud/api/lib/contactos_normalizar.php, compartidas con el
         // ABM cloud y con la migracion 20260816_1700.
-        'telefono'      => contactoNormalizarTelefono($in['telefono'] ?? null),
-        'celular'       => contactoNormalizarTelefono($in['celular']  ?? null),
-        'whatsapp'      => contactoNormalizarTelefono($in['whatsapp'] ?? null),
-        'correo'        => contactoNormalizarCorreo($in['correo']     ?? null),
+        'telefono' => contactoNormalizarTelefono($in['telefono'] ?? null),
+        'celular'  => contactoNormalizarTelefono($in['celular']  ?? null),
+        'whatsapp' => contactoNormalizarTelefono($in['whatsapp'] ?? null),
+        'correo'   => contactoNormalizarCorreo($in['correo']     ?? null),
         // `web` se guarda como host + path sin esquema; lo que no es una URL
         // va a NULL. Mismas reglas, mismo lib, migracion 20260816_1800.
-        'web'           => contactoNormalizarWeb($in['web']           ?? null),
-        'facebook'      => drCtNullableStr($in['facebook']      ?? null, 255),
-        'instagram'     => drCtNullableStr($in['instagram']     ?? null, 255),
-        'tiktok'        => drCtNullableStr($in['tiktok']        ?? null, 255),
-        'comentarios'   => drCtNullableStr($in['comentarios']   ?? null, 500),
-        'registrado'    => drCtNullableDateTime($in['registrado'] ?? null),
+        'web'         => contactoNormalizarWeb($in['web']           ?? null),
+        'facebook'    => drCtNullableStr($in['facebook']            ?? null, 255),
+        'instagram'   => drCtNullableStr($in['instagram']           ?? null, 255),
+        'tiktok'      => drCtNullableStr($in['tiktok']              ?? null, 255),
+        'comentarios' => drCtNullableStr($in['comentarios']         ?? null, 500),
+        'registrado'  => drCtNullableDateTime($in['registrado']     ?? null),
     ];
     // Un correo cargado por error en `web` se rescata a `correo` cuando ese
     // campo viene vacio; si el contacto ya trae correo, se descarta con el
@@ -425,6 +464,8 @@ function handleCreate(PDO $pdo, array $in): void {
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
+    drCtAssertIdentidad($p);
+    $p['nombre'] = drCtDerivarNombre($p);
     drCtAssertUbicacion($pdo, $p);
     $p['uuid'] = drCtNullableStr($in['uuid'] ?? null, 255) ?? drCtUuidV4();
     if ($p['registrado'] === null) {
@@ -437,45 +478,48 @@ function handleCreate(PDO $pdo, array $in): void {
     $pdo->beginTransaction();
     try {
         $sql = "INSERT INTO datarocket_contactos
-                    (uuid, tipo, origen, nombre, empresa, rubro, actividad, cargo, persona,
-                     genero, nacimiento, dni, domicilio, ciudad, ubicacion, localidad_id,
+                    (uuid, tipo, nombre,
+                     empresa_nombre, empresa_rubro, empresa_actividad, empresa_cargo,
+                     persona_nombre, persona_genero, persona_nacimiento, persona_dni,
+                     domicilio, ciudad, ubicacion, localidad_id,
                      provincia_id, pais_id, telefono, celular, whatsapp, correo, web, facebook,
                      instagram, tiktok, comentarios, registrado)
                 VALUES
-                    (:uuid, :tipo, :origen, :nombre, :empresa, :rubro, :actividad, :cargo, :persona,
-                     :genero, :nacimiento, :dni, :domicilio, :ciudad, :ubicacion, :localidad_id,
+                    (:uuid, :tipo, :nombre,
+                     :empresa_nombre, :empresa_rubro, :empresa_actividad, :empresa_cargo,
+                     :persona_nombre, :persona_genero, :persona_nacimiento, :persona_dni,
+                     :domicilio, :ciudad, :ubicacion, :localidad_id,
                      :provincia_id, :pais_id, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
                      :instagram, :tiktok, :comentarios, :registrado)";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
-            ':uuid'          => $p['uuid'],
-            ':tipo'          => $p['tipo'],
-            ':origen'        => $p['origen'],
-            ':nombre'        => $p['nombre'],
-            ':empresa'       => $p['empresa'],
-            ':rubro'         => $p['rubro'],
-            ':actividad'     => $p['actividad'],
-            ':cargo'         => $p['cargo'],
-            ':persona'       => $p['persona'],
-            ':genero'        => $p['genero'],
-            ':nacimiento'    => $p['nacimiento'],
-            ':dni'           => $p['dni'],
-            ':domicilio'     => $p['domicilio'],
-            ':ciudad'        => $p['ciudad'],
-            ':ubicacion'     => $p['ubicacion'],
-            ':localidad_id'  => $p['localidad_id'],
-            ':provincia_id'  => $p['provincia_id'],
-            ':pais_id'       => $p['pais_id'],
-            ':telefono'      => $p['telefono'],
-            ':celular'       => $p['celular'],
-            ':whatsapp'      => $p['whatsapp'],
-            ':correo'        => $p['correo'],
-            ':web'           => $p['web'],
-            ':facebook'      => $p['facebook'],
-            ':instagram'     => $p['instagram'],
-            ':tiktok'        => $p['tiktok'],
-            ':comentarios'   => $p['comentarios'],
-            ':registrado'    => $p['registrado'],
+            ':uuid'               => $p['uuid'],
+            ':tipo'               => $p['tipo'],
+            ':nombre'             => $p['nombre'],
+            ':empresa_nombre'     => $p['empresa_nombre'],
+            ':empresa_rubro'      => $p['empresa_rubro'],
+            ':empresa_actividad'  => $p['empresa_actividad'],
+            ':empresa_cargo'      => $p['empresa_cargo'],
+            ':persona_nombre'     => $p['persona_nombre'],
+            ':persona_genero'     => $p['persona_genero'],
+            ':persona_nacimiento' => $p['persona_nacimiento'],
+            ':persona_dni'        => $p['persona_dni'],
+            ':domicilio'          => $p['domicilio'],
+            ':ciudad'             => $p['ciudad'],
+            ':ubicacion'          => $p['ubicacion'],
+            ':localidad_id'       => $p['localidad_id'],
+            ':provincia_id'       => $p['provincia_id'],
+            ':pais_id'            => $p['pais_id'],
+            ':telefono'           => $p['telefono'],
+            ':celular'            => $p['celular'],
+            ':whatsapp'           => $p['whatsapp'],
+            ':correo'             => $p['correo'],
+            ':web'                => $p['web'],
+            ':facebook'           => $p['facebook'],
+            ':instagram'          => $p['instagram'],
+            ':tiktok'             => $p['tiktok'],
+            ':comentarios'        => $p['comentarios'],
+            ':registrado'         => $p['registrado'],
         ]);
         $newId = (int)$pdo->lastInsertId();
         drCtSyncListas($pdo, $newId, $listaIds);
@@ -503,6 +547,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
+    drCtAssertIdentidad($p);
+    $p['nombre'] = drCtDerivarNombre($p);
     drCtAssertUbicacion($pdo, $p);
     // `lista_ids` / `etiqueta_ids` opcionales en PUT: si no vienen, no se
     // toca la puente. Solo cuando el cliente los manda explicitamente (aun
@@ -517,64 +563,62 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $pdo->beginTransaction();
     try {
         $sql = "UPDATE datarocket_contactos SET
-                    tipo          = :tipo,
-                    origen        = :origen,
-                    nombre        = :nombre,
-                    empresa       = :empresa,
-                    rubro         = :rubro,
-                    actividad     = :actividad,
-                    cargo         = :cargo,
-                    persona       = :persona,
-                    genero        = :genero,
-                    nacimiento    = :nacimiento,
-                    dni           = :dni,
-                    domicilio     = :domicilio,
-                    ciudad        = :ciudad,
-                    ubicacion     = :ubicacion,
-                    localidad_id  = :localidad_id,
-                    provincia_id  = :provincia_id,
-                    pais_id       = :pais_id,
-                    telefono      = :telefono,
-                    celular       = :celular,
-                    whatsapp      = :whatsapp,
-                    correo        = :correo,
-                    web           = :web,
-                    facebook      = :facebook,
-                    instagram     = :instagram,
-                    tiktok        = :tiktok,
-                    comentarios   = :comentarios,
-                    registrado    = :registrado
+                    tipo               = :tipo,
+                    nombre             = :nombre,
+                    empresa_nombre     = :empresa_nombre,
+                    empresa_rubro      = :empresa_rubro,
+                    empresa_actividad  = :empresa_actividad,
+                    empresa_cargo      = :empresa_cargo,
+                    persona_nombre     = :persona_nombre,
+                    persona_genero     = :persona_genero,
+                    persona_nacimiento = :persona_nacimiento,
+                    persona_dni        = :persona_dni,
+                    domicilio          = :domicilio,
+                    ciudad             = :ciudad,
+                    ubicacion          = :ubicacion,
+                    localidad_id       = :localidad_id,
+                    provincia_id       = :provincia_id,
+                    pais_id            = :pais_id,
+                    telefono           = :telefono,
+                    celular            = :celular,
+                    whatsapp           = :whatsapp,
+                    correo             = :correo,
+                    web                = :web,
+                    facebook           = :facebook,
+                    instagram          = :instagram,
+                    tiktok             = :tiktok,
+                    comentarios        = :comentarios,
+                    registrado         = :registrado
                 WHERE id = :id";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
-            ':tipo'          => $p['tipo'],
-            ':origen'        => $p['origen'],
-            ':nombre'        => $p['nombre'],
-            ':empresa'       => $p['empresa'],
-            ':rubro'         => $p['rubro'],
-            ':actividad'     => $p['actividad'],
-            ':cargo'         => $p['cargo'],
-            ':persona'       => $p['persona'],
-            ':genero'        => $p['genero'],
-            ':nacimiento'    => $p['nacimiento'],
-            ':dni'           => $p['dni'],
-            ':domicilio'     => $p['domicilio'],
-            ':ciudad'        => $p['ciudad'],
-            ':ubicacion'     => $p['ubicacion'],
-            ':localidad_id'  => $p['localidad_id'],
-            ':provincia_id'  => $p['provincia_id'],
-            ':pais_id'       => $p['pais_id'],
-            ':telefono'      => $p['telefono'],
-            ':celular'       => $p['celular'],
-            ':whatsapp'      => $p['whatsapp'],
-            ':correo'        => $p['correo'],
-            ':web'           => $p['web'],
-            ':facebook'      => $p['facebook'],
-            ':instagram'     => $p['instagram'],
-            ':tiktok'        => $p['tiktok'],
-            ':comentarios'   => $p['comentarios'],
-            ':registrado'    => $p['registrado'],
-            ':id'            => $id,
+            ':tipo'               => $p['tipo'],
+            ':nombre'             => $p['nombre'],
+            ':empresa_nombre'     => $p['empresa_nombre'],
+            ':empresa_rubro'      => $p['empresa_rubro'],
+            ':empresa_actividad'  => $p['empresa_actividad'],
+            ':empresa_cargo'      => $p['empresa_cargo'],
+            ':persona_nombre'     => $p['persona_nombre'],
+            ':persona_genero'     => $p['persona_genero'],
+            ':persona_nacimiento' => $p['persona_nacimiento'],
+            ':persona_dni'        => $p['persona_dni'],
+            ':domicilio'          => $p['domicilio'],
+            ':ciudad'             => $p['ciudad'],
+            ':ubicacion'          => $p['ubicacion'],
+            ':localidad_id'       => $p['localidad_id'],
+            ':provincia_id'       => $p['provincia_id'],
+            ':pais_id'            => $p['pais_id'],
+            ':telefono'           => $p['telefono'],
+            ':celular'            => $p['celular'],
+            ':whatsapp'           => $p['whatsapp'],
+            ':correo'             => $p['correo'],
+            ':web'                => $p['web'],
+            ':facebook'           => $p['facebook'],
+            ':instagram'          => $p['instagram'],
+            ':tiktok'             => $p['tiktok'],
+            ':comentarios'        => $p['comentarios'],
+            ':registrado'         => $p['registrado'],
+            ':id'                 => $id,
         ]);
         if ($listaIds    !== null) drCtSyncListas($pdo, $id, $listaIds);
         if ($etiquetaIds !== null) drCtSyncEtiquetas($pdo, $id, $etiquetaIds);

@@ -265,10 +265,12 @@ function aplicarPlantillaAws(PDO $pdo, array $in): array {
  *     grupo), toma el primero — un mensaje solo puede apuntar a un contacto.
  *   - El lookup es case-insensitive porque `datarocket_contactos.correo` usa
  *     `utf8mb4_general_ci`.
- *   - Al dar de alta un contacto nuevo usamos `origen = 'aws_mensajes'` para
- *     poder distinguir en el ABM los contactos creados automaticamente por
- *     el canalizador de envios de los que carga el operador a mano o los que
- *     importan otros sistemas.
+ *   - El alta automatica ya NO deja marca de procedencia: la columna `origen`
+ *     se dropeo en la migracion 20260817_2000. Para saber que un contacto
+ *     nacio de un envio hay que mirar `datarocket_interacciones`.
+ *   - El alta automatica crea el contacto como `tipo='persona'` y completa
+ *     `persona_nombre` (cayendo al correo si el envio no trajo destinatario),
+ *     para cumplir la invariante de identidad documentada en db/schema.sql.
  */
 function resolverContactoIdAws(PDO $pdo, ?string $destino, ?string $destinatario): ?int {
     if ($destino === null) return null;
@@ -284,15 +286,29 @@ function resolverContactoIdAws(PDO $pdo, ?string $destino, ?string $destinatario
 
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
              ->format('Y-m-d H:i:s');
+    // Invariante de identidad (ver db/schema.sql): un contacto creado al vuelo
+    // igual necesita `tipo` y el nombre del lado que corresponda, porque es el
+    // que alimenta a `nombre`. Un alta automatica desde un envio es siempre un
+    // individuo, asi que va como 'persona'.
+    //
+    // Si el envio no trajo `destinatario` se cae al correo: es el unico dato
+    // identificatorio disponible, y dejar el nombre vacio reintroduce
+    // exactamente las filas sin nombre que limpio la migracion 20260817_2100.
+    // Mostrar "juan@example.com" como nombre de un contacto que todavia nadie
+    // completo es preferible a un contacto anonimo que no se puede ni listar.
+    $nombre = trim((string)($destinatario ?? ''));
+    if ($nombre === '') $nombre = $correo;
+
     $ins = $pdo->prepare("
-        INSERT INTO datarocket_contactos (uuid, origen, nombre, correo, registrado)
-        VALUES (:uuid, 'aws_mensajes', :nombre, :correo, :registrado)
+        INSERT INTO datarocket_contactos (uuid, tipo, nombre, persona_nombre, correo, registrado)
+        VALUES (:uuid, 'persona', :nombre, :persona_nombre, :correo, :registrado)
     ");
     $ins->execute([
-        ':uuid'       => bin2hex(random_bytes(16)),
-        ':nombre'     => trim((string)($destinatario ?? '')),
-        ':correo'     => $correo,
-        ':registrado' => $ahora,
+        ':uuid'           => bin2hex(random_bytes(16)),
+        ':nombre'         => $nombre,
+        ':persona_nombre' => $nombre,
+        ':correo'         => $correo,
+        ':registrado'     => $ahora,
     ]);
     return (int)$pdo->lastInsertId();
 }

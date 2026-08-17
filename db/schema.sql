@@ -1539,17 +1539,37 @@ DROP TABLE IF EXISTS `datarocket_contactos`;
 CREATE TABLE `datarocket_contactos`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `uuid` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  -- INVARIANTE DE IDENTIDAD — el campo de nombre del lado que marca `tipo` es
+  -- obligatorio, y `nombre` se DERIVA de el:
+  --
+  --   tipo='persona' -> persona_nombre obligatorio -> nombre = persona_nombre
+  --   tipo='empresa' -> empresa_nombre obligatorio -> nombre = empresa_nombre
+  --
+  -- El campo del OTRO lado sigue siendo opcional y es legitimo tenerlo
+  -- cargado: en un contacto persona `empresa_nombre` es donde trabaja, y en un
+  -- contacto empresa `persona_nombre` es quien atiende.
+  --
+  -- No hay CHECK ni columna generada — este schema no usa ninguno de los dos y
+  -- prod es MariaDB. La invariante la sostiene la capa PHP, en los DOS
+  -- escritores: assertIdentidadValida()/drCtDerivarNombre() en
+  -- cloud/api/datarocketcontactos.php y drCtAssertIdentidad()/drCtDerivarNombre()
+  -- en api/v4/datarocket/contactos.php. Cualquier tercer escritor que se agregue
+  -- tiene que replicarla o la tabla se vuelve a ensuciar.
+  --
+  -- La migracion 20260817_2100 puso al dia las 17.117 filas historicas que
+  -- tenian el dato solo en `nombre`. Quedan 5 filas sin ningun nombre en
+  -- ninguna de las tres columnas (solo celular): ids 148494, 148498, 148633,
+  -- 148769, 149209. Se resuelven al editarlas — la validacion las frena.
   `tipo` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `origen` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
-  `empresa` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `rubro` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
-  `actividad` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
-  `cargo` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `persona` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `genero` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `nacimiento` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `dni` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `empresa_nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `empresa_rubro` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
+  `empresa_actividad` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
+  `empresa_cargo` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `persona_nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `persona_genero` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `persona_nacimiento` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `persona_dni` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `domicilio` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
   `ciudad` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `ubicacion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
@@ -1819,7 +1839,6 @@ CREATE TABLE `datarocket_prospectos`  (
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `sentido` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `origen` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `tipo` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `producto` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `monto` decimal(14, 2) NULL DEFAULT NULL,
   `moneda` varchar(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT 'ARS',

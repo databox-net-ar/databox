@@ -235,7 +235,15 @@ function attachTagsEditor(container, initialTags) {
 // confirma la sugerencia resaltada, click tambien la agrega, Backspace con
 // el input vacio borra la ultima pill, la "×" de cada pill la quita.
 // `opts.placeholder` personaliza el texto del input (por defecto generico).
-// Devuelve `{ getIds(): number[] }` para que el caller arme el payload.
+// `opts.onChange(ids)` — si viene, se llama cada vez que el usuario agrega o
+// quita una seleccion. Lo usa el modal de filtros del listado para refrescar
+// la tabla al toque; el modal de Alta/Edicion no lo pasa y lee con getIds()
+// al guardar.
+// `opts.ayuda` reemplaza el texto de ayuda de abajo; '' lo oculta.
+// Devuelve `{ getIds(): number[], setIds(ids) }`. `setIds` es para sincronizar
+// el widget desde afuera (ej. "Limpiar" en el modal de filtros) y a proposito
+// NO dispara onChange: el caller ya sabe lo que hizo y si no evitariamos un
+// refresco doble del listado.
 function attachChipsPicker(container, catalogo, initialIds, opts = {}) {
   const placeholder = opts.placeholder || 'Escribí para buscar…';
   const cat = Array.isArray(catalogo) ? catalogo : [];
@@ -253,9 +261,9 @@ function attachChipsPicker(container, catalogo, initialIds, opts = {}) {
       <div data-slot="drop" hidden
            style="position:fixed;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow:auto;box-shadow:0 6px 20px rgba(0,0,0,.35)"></div>
     </div>
-    <div style="font-size:.72rem;color:var(--muted);margin-top:4px">
-      Buscá por nombre y elegí una sugerencia · Enter confirma la resaltada · Backspace borra la última
-    </div>
+    ${opts.ayuda === '' ? '' : `<div style="font-size:.72rem;color:var(--muted);margin-top:4px">
+      ${esc(opts.ayuda || 'Buscá por nombre y elegí una sugerencia · Enter confirma la resaltada · Backspace borra la última')}
+    </div>`}
   `;
   const wrap  = container.querySelector('[data-slot="wrap"]');
   const pills = container.querySelector('[data-slot="pills"]');
@@ -355,6 +363,12 @@ function attachChipsPicker(container, catalogo, initialIds, opts = {}) {
     mostrarDrop();
   };
 
+  // Aviso al caller. Se dispara solo por interaccion del usuario (agregar,
+  // quitar con la ×, borrar con Backspace), nunca desde setIds().
+  const notificar = () => {
+    if (typeof opts.onChange === 'function') opts.onChange(state.ids.slice());
+  };
+
   const agregar = (id) => {
     const n = +id;
     if (!nombreMap.has(n) || state.ids.includes(n)) return;
@@ -362,6 +376,7 @@ function attachChipsPicker(container, catalogo, initialIds, opts = {}) {
     input.value = '';
     pintarPills();
     filtrar();
+    notificar();
   };
 
   input.addEventListener('input', filtrar);
@@ -385,6 +400,7 @@ function attachChipsPicker(container, catalogo, initialIds, opts = {}) {
       state.ids.pop();
       pintarPills();
       filtrar();
+      notificar();
     }
   });
   // Cierre por blur con delay chico para que el mousedown del dropdown pueda
@@ -404,11 +420,23 @@ function attachChipsPicker(container, catalogo, initialIds, opts = {}) {
     state.ids.splice(Number(b.dataset.remove), 1);
     pintarPills();
     filtrar();
+    notificar();
   });
   wrap.addEventListener('click', (ev) => { if (ev.target === wrap) input.focus(); });
 
   pintarPills();
-  return { getIds: () => state.ids.slice() };
+  return {
+    getIds: () => state.ids.slice(),
+    // Sincroniza el widget desde afuera, filtrando los ids que no esten en el
+    // catalogo (mismo criterio que el estado inicial). Silencioso: ver el
+    // comentario de opts.onChange arriba.
+    setIds: (ids) => {
+      state.ids = (Array.isArray(ids) ? ids : []).map(Number).filter(n => nombreMap.has(n));
+      input.value = '';
+      pintarPills();
+      ocultarDrop();
+    },
+  };
 }
 
 async function apiGet(url) {
@@ -22690,7 +22718,7 @@ async function eliminarDrLi(id) {
 // unico filtro activo `lista_id`. El JOIN con datarocket_contactos_listas
 // lo aplica el API (ver handleList() en api/datarocketcontactos.php).
 function verSuscriptosDrLi(id) {
-  Object.assign(drCtFiltros, drCtFiltrosDefaults, { lista_id: id });
+  Object.assign(drCtFiltros, drCtFiltrosDefaults, { lista_id: String(id) });
   location.hash = '#/datarocketcontactos';
 }
 
@@ -23687,9 +23715,15 @@ async function cambiarEnUsoDido(id, valor) {
 }
 
 // ------------------------- Vista: Datarocket > Contactos (ABM) -------------------------
+// `etiqueta_id` y `lista_id` son MULTI-VALOR y viajan como CSV de ids
+// ('5,14'). Se guardan como string y no como array a proposito: `drCtFiltros`
+// se clona con spread (`{ ...drCtFiltrosDefaults }`), que es shallow — un array
+// en los defaults quedaria compartido por referencia entre defaults y estado
+// vivo, y mutarlo pisaria los defaults. Con CSV ademas el badge de filtros
+// activos y `cargarDrCt()` siguen comparando/serializando strings sin cambios.
 const drCtFiltrosDefaults = {
-  q: '', codigo: '', tipo: '', lista_id: '', etiqueta_id: '', genero: '',
-  origen: '', pais_id: '', provincia_id: '', correo: '', celular: '',
+  q: '', codigo: '', tipo: '', nombre: '', lista_id: '', etiqueta_id: '',
+  pais_id: '', provincia_id: '', correo: '', celular: '', web: '',
   desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -23759,6 +23793,25 @@ function drCtTipoBotones(currentTipo) {
   return `${btn('persona', 'fa-user', 'Persona')}${btn('empresa', 'fa-building', 'Empresa')}`;
 }
 
+// Recalcula el `Nombre` (readonly) de la pestaña General a partir del tipo
+// elegido y del nombre del lado que corresponda. Es la MISMA regla que aplica
+// el backend al guardar (drCtDerivarNombre en cloud/api/datarocketcontactos.php
+// y en api/v4/datarocket/contactos.php), replicada en el cliente para que el
+// campo muestre lo que realmente se va a persistir.
+//
+// Se llama al abrir el modal, al alternar el tipo y en cada tecla de los dos
+// campos de origen. Si todavia no se eligio tipo el campo queda vacio: no hay
+// de donde derivarlo y mostrar el valor viejo seria mentir.
+function drCtRefrescarNombre() {
+  const campo = document.querySelector('#drcNombre');
+  if (!campo) return;
+  const tipo = document.querySelector('#drcTipoSelector')?.dataset.value || '';
+  const origen = tipo === 'persona' ? document.querySelector('#drcPersona')
+               : tipo === 'empresa' ? document.querySelector('#drcEmpresa')
+               : null;
+  campo.value = origen ? origen.value.trim() : '';
+}
+
 route('/datarocketcontactos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
@@ -23786,7 +23839,7 @@ route('/datarocketcontactos', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="drCtSearch"
-                   placeholder="🔍 Buscar nombre, empresa, correo, teléfono, celular, whatsapp, DNI o UUID…">
+                   placeholder="🔍 Buscar nombre, empresa, correo, teléfono, celular, whatsapp, DNI, UUID, etiqueta o lista…">
             <button class="search-clear" id="drCtSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="drCtFiltrosBtn" title="Filtros">
@@ -23859,35 +23912,26 @@ route('/datarocketcontactos', async (mount) => {
               </select>
             </div>
             <div class="form-group">
-              <label>Origen</label>
-              <input type="text" id="fDrCtOrigen" maxlength="255" placeholder="ej. web, importado…"
-                     oninput="onFiltroDrCt('origen', this.value)">
+              <label>Nombre</label>
+              <input type="text" id="fDrCtNombre" maxlength="255" placeholder="ej. Pérez"
+                     oninput="onFiltroDrCt('nombre', this.value)">
             </div>
           </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Lista</label>
-              <select id="fDrCtLista" onchange="onFiltroDrCt('lista_id', this.value)">
-                <option value="">— Todas —</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Etiqueta</label>
-              <select id="fDrCtEtiqueta" onchange="onFiltroDrCt('etiqueta_id', this.value)">
-                <option value="">— Todas —</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Género</label>
-              <select id="fDrCtGenero" onchange="onFiltroDrCt('genero', this.value)">
-                <option value="">— Todos —</option>
-                <option value="M">Masculino</option>
-                <option value="F">Femenino</option>
-                <option value="X">Otro</option>
-              </select>
-            </div>
+          <!-- Etiquetas y Listas son multi-seleccion con typeahead (el mismo
+               attachChipsPicker del modal de Alta/Edicion), no selects: se
+               tipea, aparecen las sugerencias del catalogo y Enter confirma.
+               Van a ancho completo porque las pills necesitan lugar para
+               envolver. Varias seleccionadas filtran por CUALQUIERA de ellas
+               (OR); entre Etiquetas y Listas se combina con AND. -->
+          <div class="form-group" style="margin-top:12px">
+            <label>Etiquetas</label>
+            <div id="fDrCtEtiquetasHost"></div>
           </div>
-          <div class="form-row">
+          <div class="form-group" style="margin-top:12px">
+            <label>Listas</label>
+            <div id="fDrCtListasHost"></div>
+          </div>
+          <div class="form-row" style="margin-top:12px">
             <div class="form-group">
               <label>País</label>
               <select id="fDrCtPais" onchange="onFiltroPaisDrCt(this.value)">
@@ -23901,7 +23945,7 @@ route('/datarocketcontactos', async (mount) => {
               </select>
             </div>
           </div>
-          <div class="form-row">
+          <div class="form-row form-row-3">
             <div class="form-group">
               <label>Correo</label>
               <input type="text" id="fDrCtCorreo" maxlength="255" placeholder="ej. @gmail.com"
@@ -23911,6 +23955,11 @@ route('/datarocketcontactos', async (mount) => {
               <label>Celular</label>
               <input type="text" id="fDrCtCelular" maxlength="255" placeholder="ej. 11 5555…"
                      oninput="onFiltroDrCt('celular', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Web</label>
+              <input type="text" id="fDrCtWeb" maxlength="255" placeholder="ej. .com.ar"
+                     oninput="onFiltroDrCt('web', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -23938,7 +23987,6 @@ route('/datarocketcontactos', async (mount) => {
                 <option value="registrado">Registrado</option>
                 <option value="pais_id">País</option>
                 <option value="provincia_id">Provincia</option>
-                <option value="origen">Origen</option>
               </select>
             </div>
             <div class="form-group">
@@ -24013,12 +24061,17 @@ route('/datarocketcontactos', async (mount) => {
   });
 
   refrescarBadgeFiltrosDrCt();
-  // Pre-cargar los selects "Lista" y "Etiqueta" del modal de filtros para
-  // que ya esten armados si el usuario abre el modal, y para que reflejen
-  // la seleccion actual si un filtro vino seteado desde afuera (opciones
-  // "Suscriptos" del ABM de listas / "Etiquetados" del ABM de etiquetas).
-  poblarListasFiltroDrCt();
-  poblarEtiquetasFiltroDrCt();
+  // El HTML del modal de filtros se acaba de reescribir: los pickers de la
+  // entrada anterior a la ruta quedaron colgando de nodos ya desconectados,
+  // asi que se descartan para que montarPickersFiltrosDrCt() los rearme
+  // contra los hosts nuevos.
+  drCtEtiquetasFiltroPicker = null;
+  drCtListasFiltroPicker    = null;
+  // Pre-montar los pickers "Etiquetas" y "Listas" para que ya esten armados
+  // si el usuario abre el modal, y para que reflejen la seleccion actual si
+  // un filtro vino seteado desde afuera (opciones "Suscriptos" del ABM de
+  // listas / "Etiquetados" del ABM de etiquetas).
+  montarPickersFiltrosDrCt();
   await cargarDrCt();
 }, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Contactos');
 
@@ -24077,10 +24130,10 @@ function pintarTablaDrCt(rows) {
 }
 
 function onFiltroDrCt(key, value) {
-  if (['tipo', 'genero', 'origen', 'pais_id', 'provincia_id',
-       'correo', 'celular', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+  if (['tipo', 'nombre', 'pais_id', 'provincia_id',
+       'correo', 'celular', 'web', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drCtFiltros[key] = value;
-  } else if (['codigo', 'lista_id', 'etiqueta_id'].includes(key)) {
+  } else if (key === 'codigo') {
     const v = String(value).trim();
     drCtFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
@@ -24110,35 +24163,33 @@ function sincronizarControlesFiltrosDrCt() {
   const f = drCtFiltros;
   $('#fDrCtCodigo').value       = f.codigo;
   $('#fDrCtTipo').value         = f.tipo;
-  $('#fDrCtOrigen').value       = f.origen;
-  $('#fDrCtLista').value        = f.lista_id;
-  $('#fDrCtEtiqueta').value     = f.etiqueta_id;
-  $('#fDrCtGenero').value       = f.genero;
+  $('#fDrCtNombre').value       = f.nombre;
   $('#fDrCtPais').value         = f.pais_id;
   $('#fDrCtProvincia').value    = f.provincia_id;
   $('#fDrCtCorreo').value       = f.correo;
   $('#fDrCtCelular').value      = f.celular;
+  $('#fDrCtWeb').value          = f.web;
   $('#fDrCtDesde').value        = f.desde;
   $('#fDrCtHasta').value        = f.hasta;
   $('#fDrCtLimite').value       = f.limite;
   $('#fDrCtOrderBy').value      = f.order_by;
   $('#fDrCtDir').value          = f.dir;
+  // Los pickers de chips no son <input>: se sincronizan por su propia API.
+  // Pueden no estar montados todavia (el catalogo se pide async).
+  drCtEtiquetasFiltroPicker?.setIds(drCtCsvAIds(f.etiqueta_id));
+  drCtListasFiltroPicker?.setIds(drCtCsvAIds(f.lista_id));
 }
 
-async function poblarListasFiltroDrCt() {
-  const sel = $('#fDrCtLista');
-  if (!sel || sel.dataset.poblado === '1') return;
-  try {
-    const listas = await drCtCargarListas();
-    const actual = String(drCtFiltros.lista_id ?? '');
-    sel.innerHTML = `<option value="">— Todas —</option>` + listas.map((l) =>
-      `<option value="${esc(l.id)}" ${String(l.id) === actual ? 'selected' : ''}>${esc(l.nombre || ('Lista #' + l.id))}</option>`
-    ).join('');
-    sel.dataset.poblado = '1';
-  } catch (_) { /* silencioso: si falla, queda el placeholder */ }
+// '5,14' -> [5, 14]. Tolera number (deep-link desde los ABM de listas y
+// etiquetas, que setean un id solo) y vacio -> [].
+function drCtCsvAIds(csv) {
+  return String(csv ?? '')
+    .split(',')
+    .map(s => Number(String(s).trim()))
+    .filter(n => Number.isInteger(n) && n > 0);
 }
 
-// Cache de etiquetas para poblar el select del modal de filtros y evitar
+// Cache de etiquetas para poblar el picker del modal de filtros y evitar
 // pedir el catalogo cada vez que se abre. Se invalida por refresh de pagina.
 let drCtEtiquetasCache = null;
 async function drCtCargarEtiquetas() {
@@ -24147,17 +24198,49 @@ async function drCtCargarEtiquetas() {
   drCtEtiquetasCache = data.items || [];
   return drCtEtiquetasCache;
 }
-async function poblarEtiquetasFiltroDrCt() {
-  const sel = $('#fDrCtEtiqueta');
-  if (!sel || sel.dataset.poblado === '1') return;
-  try {
-    const etiquetas = await drCtCargarEtiquetas();
-    const actual = String(drCtFiltros.etiqueta_id ?? '');
-    sel.innerHTML = `<option value="">— Todas —</option>` + etiquetas.map((e) =>
-      `<option value="${esc(e.id)}" ${String(e.id) === actual ? 'selected' : ''}>${esc(e.nombre)}</option>`
-    ).join('');
-    sel.dataset.poblado = '1';
-  } catch (_) { /* silencioso: si falla, queda el placeholder */ }
+
+// Pickers multi-seleccion de Etiquetas y Listas del modal de filtros. Se
+// montan una sola vez por entrada a la ruta (el modal vive en el HTML de la
+// vista, no se recrea al abrirlo) y desde ahi se sincronizan con setIds().
+let drCtEtiquetasFiltroPicker = null;
+let drCtListasFiltroPicker    = null;
+
+async function montarPickersFiltrosDrCt() {
+  const hostEt = $('#fDrCtEtiquetasHost');
+  const hostLi = $('#fDrCtListasHost');
+  if (!hostEt || !hostLi) return;
+  // Cada picker se monta por separado: si falla un catalogo, el otro anda.
+  if (!drCtEtiquetasFiltroPicker) {
+    try {
+      drCtEtiquetasFiltroPicker = attachChipsPicker(
+        hostEt, await drCtCargarEtiquetas(), drCtCsvAIds(drCtFiltros.etiqueta_id),
+        {
+          placeholder: 'Escribí para buscar etiquetas…',
+          ayuda: 'Enter agrega la etiqueta resaltada · filtra por cualquiera de las elegidas',
+          onChange: (ids) => onFiltroChipsDrCt('etiqueta_id', ids),
+        }
+      );
+    } catch (_) { /* silencioso: sin catalogo el host queda vacio */ }
+  }
+  if (!drCtListasFiltroPicker) {
+    try {
+      drCtListasFiltroPicker = attachChipsPicker(
+        hostLi, await drCtCargarListas(), drCtCsvAIds(drCtFiltros.lista_id),
+        {
+          placeholder: 'Escribí para buscar listas…',
+          ayuda: 'Enter agrega la lista resaltada · filtra por cualquiera de las elegidas',
+          onChange: (ids) => onFiltroChipsDrCt('lista_id', ids),
+        }
+      );
+    } catch (_) { /* silencioso */ }
+  }
+}
+
+// Handler de los pickers de chips. Guarda la seleccion como CSV y refresca.
+function onFiltroChipsDrCt(key, ids) {
+  drCtFiltros[key] = (Array.isArray(ids) ? ids : []).join(',');
+  refrescarBadgeFiltrosDrCt();
+  cargarDrCt();
 }
 
 // Catalogo de paises para los selects (filtros y formulario). Es chico (8
@@ -24218,7 +24301,7 @@ window.onFiltroPaisDrCt = onFiltroPaisDrCt;
 
 function abrirModalFiltrosDrCt() {
   drCtFiltrosSnapshot = { ...drCtFiltros };
-  Promise.all([poblarListasFiltroDrCt(), poblarEtiquetasFiltroDrCt(), poblarPaisesFiltroDrCt()])
+  Promise.all([montarPickersFiltrosDrCt(), poblarPaisesFiltroDrCt()])
     .then(() => sincronizarControlesFiltrosDrCt());
   sincronizarControlesFiltrosDrCt();
   $('#filtrosDrCtBackdrop').classList.add('open');
@@ -24302,6 +24385,10 @@ function drCtSwitchTab(ev) {
 }
 
 function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
+  // Decide cual de las dos pestañas de identidad (Persona / Empresa) arranca
+  // abierta. Los contactos historicos tienen `tipo` NULL: caen en Persona.
+  const esEmpresa = c.tipo === 'empresa';
+
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
     const inner = empty ? 'Sin dato'
@@ -24347,7 +24434,7 @@ function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
           <span title="${esc(DR_CT_TIPO_LABELS[c.tipo] || 'Sin definir')}">${drCtTipoIcon(c.tipo)}</span>
           <span>${esc(c.nombre || '—')}</span>
         </div>
-        <div style="font-size:.9rem;color:var(--muted);margin-top:4px">${esc(c.empresa || '')}${c.empresa && c.cargo ? ' · ' : ''}${esc(c.cargo || '')}</div>
+        <div style="font-size:.9rem;color:var(--muted);margin-top:4px">${esc(c.empresa_nombre || '')}${c.empresa_nombre && c.empresa_cargo ? ' · ' : ''}${esc(c.empresa_cargo || '')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code></div>
       </div>
       <div style="text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
@@ -24356,64 +24443,92 @@ function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
     </div>
 
     <div class="modal-tabs">
-      <button type="button" class="modal-tab active" data-tab="identidad">Identidad</button>
+      <button type="button" class="modal-tab${esEmpresa ? ' active' : ''}" data-tab="empresa">Empresa</button>
+      <button type="button" class="modal-tab${esEmpresa ? '' : ' active'}" data-tab="persona">Persona</button>
       <button type="button" class="modal-tab"        data-tab="contacto">Contacto</button>
-      <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
       <button type="button" class="modal-tab"        data-tab="prospectos">Prospectos${prospectos.length ? ` <span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${prospectos.length}</span>` : ''}</button>
       <button type="button" class="modal-tab"        data-tab="interacciones">Interacciones${drIntTabBadge(interacciones.length)}</button>
     </div>
 
-    <div class="modal-tabpanel" data-panel="identidad">
+    <!-- La vieja pestaña "Identidad" se partio en dos, una por cada valor de
+         tipo. Cada pestaña muestra EXACTAMENTE las columnas de su prefijo:
+         Empresa las empresa_* y Persona las persona_*. Ninguna cruza al otro
+         grupo — la web se mudo a la pestaña Contacto. En particular
+         persona_nombre vive en la pestaña Persona, no en Empresa. La columna
+         nombre no esta en ninguna de las dos: es el nombre del contacto como
+         registro (valga persona o empresa) y ya se muestra en el encabezado
+         del modal. Los dos paneles se renderizan siempre porque un contacto
+         puede tener datos cargados en ambos lados, pero arranca abierta la que
+         corresponde al tipo. Sin backticks en este comentario: esta dentro de
+         un template literal y lo cortarian. -->
+    <div class="modal-tabpanel" data-panel="empresa" ${esEmpresa ? '' : 'hidden'}>
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-        ${card('Nombre',     c.nombre)}
-        ${card('Empresa',    c.empresa)}
-        ${card('Rubro',      c.rubro)}
-        ${card('Actividad',  c.actividad)}
-        ${card('Cargo',      c.cargo)}
-        ${card('Persona',    c.persona)}
-        ${card('Género',     DR_CT_GENERO_MAP[c.genero] || c.genero)}
-        ${card('Nacimiento', c.nacimiento)}
-        ${card('DNI',        c.dni, false, true)}
-        ${card('Origen',     c.origen)}
+        ${card('Nombre',     c.empresa_nombre)}
+        ${card('Rubro',      c.empresa_rubro)}
+        ${card('Actividad',  c.empresa_actividad)}
+        ${card('Cargo',      c.empresa_cargo)}
       </dl>
     </div>
 
+    <div class="modal-tabpanel" data-panel="persona" ${esEmpresa ? 'hidden' : ''}>
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Nombre',     c.persona_nombre)}
+        ${card('Género',     DR_CT_GENERO_MAP[c.persona_genero] || c.persona_genero)}
+        ${card('Nacimiento', c.persona_nacimiento)}
+        ${card('DNI',        c.persona_dni, false, true)}
+      </dl>
+    </div>
+
+    <!-- Todos los canales de contacto en una sola pestaña: los cuatro directos
+         (correo, celular, telefono, whatsapp), las tres redes que antes vivian
+         en una pestaña "Redes" aparte, y la web al final — antes estaba en la
+         pestaña Empresa, pero es un canal mas del contacto.
+         Web/Facebook/Instagram/TikTok van con linkCard (abren en pestaña
+         nueva); el resto con card monoespaciada. -->
     <div class="modal-tabpanel" data-panel="contacto" hidden>
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-        ${card('Teléfono', c.telefono, false, true)}
-        ${card('Celular',  c.celular,  false, true)}
-        ${card('WhatsApp', c.whatsapp, false, true)}
         ${card('Correo',   c.correo,   false, true)}
-      </dl>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="webredes" hidden>
-      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-        ${linkCard('Web',       c.web)}
+        ${card('Celular',  c.celular,  false, true)}
+        ${card('Teléfono', c.telefono, false, true)}
+        ${card('WhatsApp', c.whatsapp, false, true)}
         ${linkCard('Facebook',  c.facebook)}
         ${linkCard('Instagram', c.instagram)}
         ${linkCard('TikTok',    c.tiktok)}
+        ${linkCard('Web',       c.web)}
       </dl>
     </div>
 
+    <!-- Ubicacion en tres filas: domicilio + ciudad al 50/50, despues el trio
+         geografico (localidad / provincia / pais) en tercios, y la ubicacion
+         cruda (lat,lng) sola a lo ancho. -->
     <div class="modal-tabpanel" data-panel="ubicacion" hidden>
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-        ${card('Domicilio', c.domicilio, true)}
+        ${card('Domicilio', c.domicilio)}
         ${card('Ciudad',    c.ciudad)}
+      </dl>
+
+      <dl class="data-list" style="grid-template-columns:repeat(3,1fr)">
         ${card('Localidad', c.localidad_nombre)}
         ${card('Provincia', c.provincia_nombre)}
         ${card('País',      c.pais_nombre)}
+      </dl>
+
+      <dl class="data-list" style="grid-template-columns:1fr">
         ${card('Ubicación', c.ubicacion, true, true)}
       </dl>
     </div>
 
+    <!-- Orden de Clasificacion: Etiquetas, Listas y Comentarios al final.
+         Primero como esta clasificado el contacto (etiquetas y listas, que es
+         lo que se consulta seguido) y despues el texto libre. La tarjeta
+         Origen se fue con la columna (migracion 20260817_2000). -->
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <dl class="data-list" style="grid-template-columns:1fr">
-        ${card('Comentarios', c.comentarios, true)}
         ${pillsRow('Etiquetas', c.etiqueta_nombres)}
         ${pillsRow('Listas',    c.lista_nombres)}
+        ${card('Comentarios', c.comentarios, true)}
       </dl>
     </div>
 
@@ -24511,16 +24626,29 @@ async function abrirAltaEdicionDrCt(id) {
       const nuevoTipo = tipoBtn.dataset.tipo;
       selector.dataset.value = nuevoTipo;
       selector.innerHTML = drCtTipoBotones(nuevoTipo);
+      // Cambiar el tipo cambia de que lado sale `nombre`.
+      drCtRefrescarNombre();
       return;
     }
     // Cambio de pestaña — mismas pestañas que el modal de consulta
-    // (identidad / contacto / web y redes / ubicacion / comentarios).
+    // (empresa / persona / contacto / ubicacion / clasificacion) mas la
+    // pestaña General propia del formulario.
     drCtSwitchTab(ev);
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
     if (a.dataset.act === 'guardar') await guardarDrCt(id, a);
   });
+
+  // `nombre` sigue en vivo al campo del que se deriva. Delegado igual que el
+  // click porque los inputs se re-inyectan con el modal.
+  $('#modalRoot').addEventListener('input', (ev) => {
+    if (ev.target.id === 'drcPersona' || ev.target.id === 'drcEmpresa') drCtRefrescarNombre();
+  });
+
+  // Estado inicial: alinea el campo con lo que se va a guardar apenas abre el
+  // modal, sin esperar a que el usuario toque nada.
+  drCtRefrescarNombre();
 }
 
 // Repuebla el select de provincias del formulario filtrado por pais.
@@ -24661,20 +24789,26 @@ function formDrCtHtml(c, paises) {
     return esc(String(raw).replace(' ', 'T').slice(0, 16));
   };
   // Pestañas espejan la distribucion del modal de consulta (renderConsultaDrCt)
-  // para que consultar y editar tengan el mismo mapa mental: identidad ·
-  // contacto · web y redes · ubicacion · comentarios y clasificacion.
+  // para que consultar y editar tengan el mismo mapa mental: empresa · persona ·
+  // contacto (canales directos + web y redes) · ubicacion · comentarios y
+  // clasificacion. La unica diferencia es la pestaña "General" al principio,
+  // que no existe en el consultar: aloja los dos campos que son del registro y
+  // no de una de las dos identidades — el selector de `tipo` (obligatorio) y el
+  // `nombre` del contacto, que en el consultar se muestran en el encabezado del
+  // modal y por eso no tienen pestaña propia.
   // `drCtSwitchTab` (mismo helper que usa el consultar) se encarga de
   // mostrar/ocultar los paneles desde el listener del modal.
   return `
     <div class="modal-tabs">
-      <button type="button" class="modal-tab active" data-tab="identidad">Identidad</button>
+      <button type="button" class="modal-tab active" data-tab="general">General</button>
+      <button type="button" class="modal-tab"        data-tab="empresa">Empresa</button>
+      <button type="button" class="modal-tab"        data-tab="persona">Persona</button>
       <button type="button" class="modal-tab"        data-tab="contacto">Contacto</button>
-      <button type="button" class="modal-tab"        data-tab="webredes">Redes</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
     </div>
 
-    <div class="modal-tabpanel" data-panel="identidad">
+    <div class="modal-tabpanel" data-panel="general">
       <div class="form-group">
         <label>Tipo <span style="color:var(--danger)">*</span></label>
         <div id="drcTipoSelector" data-value="${esc(c?.tipo || '')}" style="display:flex;gap:8px">
@@ -24684,56 +24818,14 @@ function formDrCtHtml(c, paises) {
       <div class="form-row">
         <div class="form-group">
           <label>Nombre</label>
-          <input type="text" id="drcNombre" maxlength="255" value="${v('nombre')}">
-        </div>
-        <div class="form-group">
-          <label>Empresa</label>
-          <input type="text" id="drcEmpresa" maxlength="255" value="${v('empresa')}">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Rubro</label>
-          <input type="text" id="drcRubro" maxlength="255" value="${v('rubro')}">
-        </div>
-        <div class="form-group">
-          <label>Actividad</label>
-          <input type="text" id="drcActividad" maxlength="255" value="${v('actividad')}">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Cargo</label>
-          <input type="text" id="drcCargo" maxlength="255" value="${v('cargo')}">
-        </div>
-        <div class="form-group">
-          <label>Persona</label>
-          <input type="text" id="drcPersona" maxlength="255" value="${v('persona')}">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Género</label>
-          <select id="drcGenero">
-            <option value=""  ${sel('genero','')}>—</option>
-            <option value="M" ${sel('genero','M')}>Masculino</option>
-            <option value="F" ${sel('genero','F')}>Femenino</option>
-            <option value="X" ${sel('genero','X')}>Otro</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Nacimiento</label>
-          <input type="text" id="drcNacimiento" maxlength="255" value="${v('nacimiento')}" placeholder="AAAA-MM-DD">
-        </div>
-      </div>
-      <div class="form-row form-row-3">
-        <div class="form-group">
-          <label>DNI</label>
-          <input type="text" id="drcDni" maxlength="255" value="${v('dni')}" style="font-family:monospace">
-        </div>
-        <div class="form-group">
-          <label>Origen</label>
-          <input type="text" id="drcOrigen" maxlength="255" value="${v('origen')}">
+          <!-- Derivado, no editable: sale del Nombre de la pestaña Persona o de
+               la de Empresa segun el Tipo elegido arriba. drCtRefrescarNombre()
+               lo recalcula en vivo y el backend aplica la misma regla al
+               guardar (ver drCtDerivarNombre en cloud/api/datarocketcontactos.php),
+               asi que editarlo a mano no tendria ningun efecto. -->
+          <input type="text" id="drcNombre" maxlength="255" value="${v('nombre')}" readonly
+                 style="opacity:.7;cursor:not-allowed">
+          <small style="color:var(--text-muted)">Se completa solo con el nombre de la pestaña Persona o Empresa, según el tipo.</small>
         </div>
         <div class="form-group">
           <label>Registrado</label>
@@ -24742,12 +24834,72 @@ function formDrCtHtml(c, paises) {
       </div>
     </div>
 
+    <!-- Empresa y Persona: mismas columnas (y mismo orden) que los paneles
+         homonimos del modal de consulta. Los dos paneles existen siempre,
+         independientemente del tipo elegido en General, porque un contacto
+         puede tener datos cargados de los dos lados. Sin backticks en este
+         comentario: esta dentro de un template literal y lo cortarian. -->
+    <div class="modal-tabpanel" data-panel="empresa" hidden>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nombre</label>
+          <input type="text" id="drcEmpresa" maxlength="255" value="${v('empresa_nombre')}">
+        </div>
+        <div class="form-group">
+          <label>Rubro</label>
+          <input type="text" id="drcRubro" maxlength="255" value="${v('empresa_rubro')}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Actividad</label>
+          <input type="text" id="drcActividad" maxlength="255" value="${v('empresa_actividad')}">
+        </div>
+        <div class="form-group">
+          <label>Cargo</label>
+          <input type="text" id="drcCargo" maxlength="255" value="${v('empresa_cargo')}">
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-tabpanel" data-panel="persona" hidden>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nombre</label>
+          <input type="text" id="drcPersona" maxlength="255" value="${v('persona_nombre')}">
+        </div>
+        <div class="form-group">
+          <label>Género</label>
+          <select id="drcGenero">
+            <option value=""  ${sel('persona_genero','')}>—</option>
+            <option value="M" ${sel('persona_genero','M')}>Masculino</option>
+            <option value="F" ${sel('persona_genero','F')}>Femenino</option>
+            <option value="X" ${sel('persona_genero','X')}>Otro</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nacimiento</label>
+          <input type="text" id="drcNacimiento" maxlength="255" value="${v('persona_nacimiento')}" placeholder="AAAA-MM-DD">
+        </div>
+        <div class="form-group">
+          <label>DNI</label>
+          <input type="text" id="drcDni" maxlength="255" value="${v('persona_dni')}" style="font-family:monospace">
+        </div>
+      </div>
+    </div>
+
+    <!-- Un solo panel con todos los canales, en el mismo orden que el modal de
+         consulta: correo · celular · telefono · whatsapp · facebook ·
+         instagram · tiktok · web. La web va ultima de todas. La pestaña
+         "Redes" se fusiono aca. -->
     <div class="modal-tabpanel" data-panel="contacto" hidden>
       <div class="form-row">
         <div class="form-group">
-          <label>Teléfono</label>
-          <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace"
-                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
+          <label>Correo</label>
+          <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace"
+                 placeholder="nombre@empresa.com" onblur="drCtNormalizarInput(this, 'correo')">
         </div>
         <div class="form-group">
           <label>Celular</label>
@@ -24757,54 +24909,57 @@ function formDrCtHtml(c, paises) {
       </div>
       <div class="form-row">
         <div class="form-group">
+          <label>Teléfono</label>
+          <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace"
+                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
+        </div>
+        <div class="form-group">
           <label>WhatsApp</label>
           <input type="text" id="drcWhatsapp" maxlength="255" value="${v('whatsapp')}" style="font-family:monospace"
                  inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
         </div>
-        <div class="form-group">
-          <label>Correo</label>
-          <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace"
-                 placeholder="nombre@empresa.com" onblur="drCtNormalizarInput(this, 'correo')">
-        </div>
       </div>
-      <p style="margin:4px 0 0;font-size:.75rem;color:var(--muted)">
-        Los teléfonos se guardan como 10 dígitos, sin 0, sin 15 y sin
-        separadores; el correo siempre en minúscula.
-      </p>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="webredes" hidden>
       <div class="form-row">
-        <div class="form-group">
-          <label>Web</label>
-          <input type="text" id="drcWeb" maxlength="255" value="${v('web')}"
-                 placeholder="ej. www.ejemplo.com.ar/contacto" style="font-family:monospace">
-        </div>
         <div class="form-group">
           <label>Facebook</label>
           <input type="text" id="drcFacebook" maxlength="255" value="${v('facebook')}" style="font-family:monospace">
         </div>
-      </div>
-      <div class="form-row">
         <div class="form-group">
           <label>Instagram</label>
           <input type="text" id="drcInstagram" maxlength="255" value="${v('instagram')}" style="font-family:monospace">
         </div>
+      </div>
+      <div class="form-row">
         <div class="form-group">
           <label>TikTok</label>
           <input type="text" id="drcTiktok" maxlength="255" value="${v('tiktok')}" style="font-family:monospace">
         </div>
+        <div class="form-group">
+          <label>Web</label>
+          <input type="text" id="drcWeb" maxlength="255" value="${v('web')}"
+                 placeholder="www.empresa.com" style="font-family:monospace">
+        </div>
       </div>
       <p style="margin:4px 0 0;font-size:.75rem;color:var(--muted)">
-        La web se guarda sin <code>http://</code>: se pega la dirección completa
-        y se recorta sola. Lo que no sea una dirección válida se descarta.
+        Los teléfonos se guardan como 10 dígitos, sin 0, sin 15 y sin
+        separadores; el correo siempre en minúscula. La web se guarda sin
+        <code>http://</code>: se pega la dirección completa y se recorta sola.
       </p>
     </div>
 
+    <!-- Domicilio y ciudad comparten fila al 50/50 (igual que el modal de
+         consulta). Debajo el trio de selects encadenados, que van pais →
+         provincia → localidad porque cada uno filtra al siguiente. -->
     <div class="modal-tabpanel" data-panel="ubicacion" hidden>
-      <div class="form-group">
-        <label>Domicilio</label>
-        <input type="text" id="drcDomicilio" maxlength="255" value="${v('domicilio')}">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Domicilio</label>
+          <input type="text" id="drcDomicilio" maxlength="255" value="${v('domicilio')}">
+        </div>
+        <div class="form-group">
+          <label>Ciudad</label>
+          <input type="text" id="drcCiudad" maxlength="255" value="${v('ciudad')}">
+        </div>
       </div>
       <div class="form-row form-row-3">
         <div class="form-group">
@@ -24827,20 +24982,14 @@ function formDrCtHtml(c, paises) {
         </div>
       </div>
       <div class="form-group">
-        <label>Ciudad</label>
-        <input type="text" id="drcCiudad" maxlength="255" value="${v('ciudad')}">
-      </div>
-      <div class="form-group">
         <label>Ubicación</label>
         <input type="text" id="drcUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace">
       </div>
     </div>
 
+    <!-- Mismo orden que el modal de consulta: primero como se clasifica el
+         contacto (etiquetas y listas) y recien al final el texto libre. -->
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
-      <div class="form-group">
-        <label>Comentarios</label>
-        <textarea id="drcComentarios" rows="3" maxlength="500">${v('comentarios')}</textarea>
-      </div>
       <div class="form-group">
         <label>Etiquetas</label>
         <div id="drcEtiquetasHost"></div>
@@ -24848,6 +24997,10 @@ function formDrCtHtml(c, paises) {
       <div class="form-group">
         <label>Listas suscriptas</label>
         <div id="drcListasHost"></div>
+      </div>
+      <div class="form-group">
+        <label>Comentarios</label>
+        <textarea id="drcComentarios" rows="3" maxlength="500">${v('comentarios')}</textarea>
       </div>
     </div>
 
@@ -24861,12 +25014,28 @@ async function guardarDrCt(id, btn) {
 
   // Validacion cliente: `tipo` es obligatorio (persona o empresa). El backend
   // tambien rechaza; se hace aca ademas para dar feedback inmediato sin viaje
-  // ida y vuelta al servidor. Se salta al tab Identidad si esta en otro.
+  // ida y vuelta al servidor. Se salta al tab General si esta en otro.
   const tipoSel = $('#drcTipoSelector')?.dataset.value || '';
   if (tipoSel !== 'persona' && tipoSel !== 'empresa') {
-    const btnIdentidad = $('#modalRoot .modal-tab[data-tab="identidad"]');
-    if (btnIdentidad) btnIdentidad.click();
+    const btnGeneral = $('#modalRoot .modal-tab[data-tab="general"]');
+    if (btnGeneral) btnGeneral.click();
     err.textContent = 'Elegí un tipo (Persona o Empresa) antes de guardar.';
+    err.style.display = '';
+    return;
+  }
+
+  // Invariante de identidad: el nombre del lado que marca el tipo es
+  // obligatorio, porque es el que alimenta a `nombre`. El backend rechaza
+  // igual (assertIdentidadValida); acá además se salta al tab del campo que
+  // falta, que es lo único que el 400 no puede hacer.
+  const ladoTipo = tipoSel === 'persona'
+    ? { input: '#drcPersona', tab: 'persona', msg: 'Cargá el nombre de la persona: es el que se usa como nombre del contacto.' }
+    : { input: '#drcEmpresa', tab: 'empresa', msg: 'Cargá el nombre de la empresa: es el que se usa como nombre del contacto.' };
+  if ($(ladoTipo.input).value.trim() === '') {
+    const btnLado = $(`#modalRoot .modal-tab[data-tab="${ladoTipo.tab}"]`);
+    if (btnLado) btnLado.click();
+    $(ladoTipo.input).focus();
+    err.textContent = ladoTipo.msg;
     err.style.display = '';
     return;
   }
@@ -24884,17 +25053,16 @@ async function guardarDrCt(id, btn) {
   }
 
   const payload = {
-    tipo:          tipoSel,
-    nombre:        $('#drcNombre').value.trim(),
-    empresa:       $('#drcEmpresa').value.trim(),
-    cargo:         $('#drcCargo').value.trim(),
-    rubro:         $('#drcRubro').value.trim(),
-    actividad:     $('#drcActividad').value.trim(),
-    origen:        $('#drcOrigen').value.trim(),
-    persona:       $('#drcPersona').value.trim(),
-    genero:        $('#drcGenero').value,
-    nacimiento:    $('#drcNacimiento').value.trim(),
-    dni:           $('#drcDni').value.trim(),
+    tipo:               tipoSel,
+    nombre:             $('#drcNombre').value.trim(),
+    empresa_nombre:     $('#drcEmpresa').value.trim(),
+    empresa_cargo:      $('#drcCargo').value.trim(),
+    empresa_rubro:      $('#drcRubro').value.trim(),
+    empresa_actividad:  $('#drcActividad').value.trim(),
+    persona_nombre:     $('#drcPersona').value.trim(),
+    persona_genero:     $('#drcGenero').value,
+    persona_nacimiento: $('#drcNacimiento').value.trim(),
+    persona_dni:        $('#drcDni').value.trim(),
     domicilio:     $('#drcDomicilio').value.trim(),
     ciudad:        $('#drcCiudad').value.trim(),
     ubicacion:     $('#drcUbicacion').value.trim(),
@@ -24940,16 +25108,23 @@ async function guardarDrCt(id, btn) {
   }
 }
 
+// La baja es en cascada: el endpoint borra primero las interacciones del
+// contacto (y las de sus prospectos), despues los prospectos y recien ahi el
+// contacto. Por eso el confirm lo avisa y el toast informa cuanto se llevo
+// puesto — no es solo una fila.
 async function eliminarDrCt(id) {
   const ok = await confirmar({
     title: 'Eliminar contacto',
-    message: `Se eliminará el contacto #${id}. Esta acción no se puede deshacer.`,
+    message: `Se eliminará el contacto #${id} junto con todos sus prospectos e interacciones. Esta acción no se puede deshacer.`,
     confirmText: 'Eliminar',
   });
   if (!ok) return;
   try {
-    await apiSend(`api/datarocketcontactos.php?id=${id}`, 'DELETE');
-    toast('Contacto eliminado.');
+    const r = await apiSend(`api/datarocketcontactos.php?id=${id}`, 'DELETE');
+    const extra = [];
+    if (r?.prospectos)    extra.push(`${r.prospectos} prospecto${r.prospectos === 1 ? '' : 's'}`);
+    if (r?.interacciones) extra.push(`${r.interacciones} interacci${r.interacciones === 1 ? 'ón' : 'ones'}`);
+    toast(extra.length ? `Contacto eliminado (${extra.join(' y ')}).` : 'Contacto eliminado.');
     cargarDrCt();
   } catch (e) {
     toast(e.message, { error: true });
@@ -26193,7 +26368,7 @@ async function eliminarDre(id) {
 // LIKE contra el campo legacy `tags` lo aplica el API (handleList() en
 // api/datarocketcontactos.php).
 function verEtiquetadosDre(id) {
-  Object.assign(drCtFiltros, drCtFiltrosDefaults, { etiqueta_id: id });
+  Object.assign(drCtFiltros, drCtFiltrosDefaults, { etiqueta_id: String(id) });
   location.hash = '#/datarocketcontactos';
 }
 
@@ -27174,7 +27349,6 @@ let dpFiltroAsignado  = '';
 let dpFiltroAtendido  = '';
 let dpFiltroEstado    = '';
 let dpFiltroSentido   = '';
-let dpFiltroTipo      = '';
 let dpFiltroOrigen    = '';
 let dpFiltroDesde     = '';
 let dpFiltroHasta     = '';
@@ -27322,17 +27496,15 @@ route('/datarocket_prospectos', async (mount) => {
               ${thOrdenable('id',            'Código',   'width:80px')}
               ${thOrdenable('ingreso',       'Ingreso',  'width:130px')}
               ${thOrdenable('proyecto_id',   'Proyecto', 'width:130px')}
+              ${thOrdenable('embudo_id',     'Embudo / Etapa', 'width:180px')}
               ${thOrdenable('contacto_nombre', 'Nombre / Organización')}
-              ${thOrdenable('monto',         'Monto',    'width:130px;text-align:right')}
-              ${thOrdenable('embudo_id',     'Embudo',   'width:150px')}
-              ${thOrdenable('etapa_id',      'Etapa',    'width:150px')}
               ${thOrdenable('estado',        'Estado',   'width:110px;text-align:center')}
               <th style="width:130px">Asignado</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="dpTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -27539,7 +27711,7 @@ route('/datarocket_prospectos', async (mount) => {
 async function cargarDp() {
   const tbody = $('#dpTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (dpBusqueda)                 qs.set('q', dpBusqueda);
@@ -27551,7 +27723,6 @@ async function cargarDp() {
   if (dpFiltroAtendido)           qs.set('atendido',    dpFiltroAtendido);
   if (dpFiltroEstado !== '')      qs.set('estado',      dpFiltroEstado);
   if (dpFiltroSentido)            qs.set('sentido',     dpFiltroSentido);
-  if (dpFiltroTipo)               qs.set('tipo',        dpFiltroTipo);
   if (dpFiltroOrigen)             qs.set('origen',      dpFiltroOrigen);
   if (dpFiltroDesde)              qs.set('desde',       dpFiltroDesde);
   if (dpFiltroHasta)              qs.set('hasta',       dpFiltroHasta);
@@ -27567,7 +27738,7 @@ async function cargarDp() {
     pintarForecastDp(data.forecast || []);
     renderDp();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -27586,17 +27757,12 @@ function dpFmtMonto(monto, moneda) {
   return `${moneda || 'ARS'} ${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// Celda "Monto" del listado. Debajo del importe se muestra el ponderado por la
-// probabilidad de la etapa, que es el numero que realmente importa para el
-// forecast. Solo aparece si la etapa es activa y tiene probabilidad cargada.
-function dpMontoCelda(p) {
-  if (p.monto == null) return '<span style="color:var(--muted)">—</span>';
-  const base = `<div style="font-weight:600;white-space:nowrap">${esc(dpFmtMonto(p.monto, p.moneda))}</div>`;
-  if (p.monto_ponderado == null) return base;
-  return base + `<div style="color:var(--muted);font-size:.76rem;white-space:nowrap" title="Monto ponderado por la probabilidad de la etapa (${p.etapa_probabilidad}%)">
-      ${esc(dpFmtMonto(p.monto_ponderado, p.moneda))} · ${p.etapa_probabilidad}%
-    </div>`;
-}
+// El listado NO tiene columna "Monto": el importe sigue visible en la barra de
+// valor del embudo (pintarForecastDp, arriba de la tabla) y en el tab
+// Seguimiento de los modales de Consultar/Editar, que es donde se trabaja el
+// numero. El API lo sigue devolviendo en cada fila (`monto`, `moneda`,
+// `monto_ponderado`), asi que reponer la columna es solo cuestion de agregar el
+// th + td.
 
 // Tarjetas de valor del embudo. El API devuelve una fila por moneda (nunca suma
 // monedas distintas), asi que se pinta un bloque por moneda dentro de cada
@@ -27643,7 +27809,7 @@ function renderDp() {
   if (!tbody) return;
   actualizarSortIndicadores($('#dpThead'), { order_by: dpFiltroOrden, dir: dpFiltroDir });
   if (!dpItems.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin prospectos registrados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin prospectos registrados.</td></tr>`;
     return;
   }
 
@@ -27655,15 +27821,19 @@ function renderDp() {
     const nomOrg = org
       ? `<div style="font-weight:600">${esc(nombre)}</div><div style="color:var(--muted);font-size:.82rem">${esc(org)}</div>`
       : `<div style="font-weight:600">${esc(nombre)}</div>`;
+    // Celda "Embudo / Etapa": el embudo arriba en el color de texto normal y la
+    // etapa debajo atenuada y mas chica, mismo patron que "Nombre / Organizacion".
+    // La etapa va como texto plano (sin la pill de color de dpEtapaPill, que se
+    // sigue usando en los modales) para no competir con el badge de Estado.
+    const embudoEtapa = `<div>${esc(p.embudo_nombre || '—')}</div>`
+      + `<div style="color:var(--muted);font-size:.78rem">${esc(p.etapa_nombre || (p.etapa_id ? `#${p.etapa_id}` : '—'))}</div>`;
     return `
       <tr data-id="${p.id}" class="row-clickable">
         <td><code style="font-size:.82rem">${p.id}</code></td>
         <td style="font-size:.82rem;color:var(--muted)">${esc(fmtFecha(p.ingreso) || '—')}</td>
         <td style="font-size:.85rem">${esc(p.proyecto_nombre || (p.proyecto_id ? `#${p.proyecto_id}` : '—'))}</td>
+        <td style="font-size:.85rem;line-height:1.35">${embudoEtapa}</td>
         <td>${nomOrg}</td>
-        <td style="text-align:right">${dpMontoCelda(p)}</td>
-        <td style="font-size:.85rem">${esc(p.embudo_nombre || '—')}</td>
-        <td>${dpEtapaPill(p)}</td>
         <td style="text-align:center">${dpEstadoLegacyBadge(p.estado)}</td>
         <td style="font-size:.85rem">${esc(p.asignado_nombre || '—')}</td>
         <td style="text-align:center">
@@ -27685,7 +27855,7 @@ function abrirModalFiltrosDp() {
     codigo: dpFiltroCodigo, proyecto: dpFiltroProyecto,
     embudo: dpFiltroEmbudo, etapa: dpFiltroEtapa,
     asignado: dpFiltroAsignado, atendido: dpFiltroAtendido,
-    estado: dpFiltroEstado, sentido: dpFiltroSentido, tipo: dpFiltroTipo, origen: dpFiltroOrigen,
+    estado: dpFiltroEstado, sentido: dpFiltroSentido, origen: dpFiltroOrigen,
     desde: dpFiltroDesde, hasta: dpFiltroHasta,
     limite: dpFiltroLimite, orden: dpFiltroOrden, dir: dpFiltroDir,
   };
@@ -27718,7 +27888,6 @@ function cancelarFiltrosDp() {
     dpFiltroAtendido = dpFiltrosSnapshot.atendido;
     dpFiltroEstado   = dpFiltrosSnapshot.estado;
     dpFiltroSentido  = dpFiltrosSnapshot.sentido;
-    dpFiltroTipo     = dpFiltrosSnapshot.tipo;
     dpFiltroOrigen   = dpFiltrosSnapshot.origen;
     dpFiltroDesde    = dpFiltrosSnapshot.desde;
     dpFiltroHasta    = dpFiltrosSnapshot.hasta;
@@ -27740,7 +27909,6 @@ function limpiarFiltrosDp() {
   dpFiltroAtendido = '';
   dpFiltroEstado   = '';
   dpFiltroSentido  = '';
-  dpFiltroTipo     = '';
   dpFiltroOrigen   = '';
   dpFiltroDesde    = '';
   dpFiltroHasta    = '';
@@ -27772,7 +27940,6 @@ function onFiltroDp(campo, valor) {
   if (campo === 'atendido') dpFiltroAtendido = (valor || '').trim();
   if (campo === 'estado')   { dpFiltroEstado = valor === '' ? '' : String(valor); dpReflejarChipsEstado(); }
   if (campo === 'sentido')  dpFiltroSentido  = (valor || '').trim();
-  if (campo === 'tipo')     dpFiltroTipo     = (valor || '').trim();
   if (campo === 'origen')   dpFiltroOrigen   = (valor || '').trim();
   if (campo === 'desde')    dpFiltroDesde    = (valor || '').trim();
   if (campo === 'hasta')    dpFiltroHasta    = (valor || '').trim();
@@ -27814,7 +27981,6 @@ function dpActualizarBadgeFiltros() {
   if (dpFiltroAtendido)               n++;
   if (dpFiltroEstado !== '')          n++;
   if (dpFiltroSentido)                n++;
-  if (dpFiltroTipo)                   n++;
   if (dpFiltroOrigen)                 n++;
   if (dpFiltroDesde)                  n++;
   if (dpFiltroHasta)                  n++;
@@ -27934,6 +28100,17 @@ function dpContactoLinkedPanel(p) {
     ? '<span style="color:var(--muted)">—</span>'
     : esc(v);
 
+  // La web se muestra como link que abre en pestaña nueva. Si el dato viene sin
+  // esquema (lo habitual: "vigicom.com.ar") se le antepone https:// para que el
+  // href no quede relativo al panel. Mismo criterio que linkCard() del ABM de
+  // Contactos.
+  const valWeb = (v) => {
+    if (v === null || v === undefined || v === '') return '<span style="color:var(--muted)">—</span>';
+    const href = String(v).match(/^https?:\/\//i) ? String(v) : ('https://' + v);
+    return `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer"
+               style="color:inherit;text-decoration:underline">${esc(v)}</a>`;
+  };
+
   if (!p.contacto_id) {
     return `
       <div style="padding:20px;text-align:center;color:var(--muted);background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px">
@@ -27961,22 +28138,19 @@ function dpContactoLinkedPanel(p) {
         Para modificar nombre, correo, celular o cualquier otro dato de identidad,
         abrí la ficha del contacto.
       </div>
+      <!-- Resumen de identidad en 4 filas: tipo/nombre, correo/celular, web
+           (ancho completo, link a pestaña nueva) y provincia/pais. Es un
+           extracto, no la ficha entera: el resto de los campos del contacto
+           (empresa, whatsapp, telefono, domicilio, ciudad, localidad,
+           ubicacion) se consultan con el boton de abajo. -->
       <div style="display:flex;flex-wrap:wrap;gap:12px">
-        ${card('Código contacto', `<code>${Number(p.contacto_id)}</code>`)}
         ${card('Tipo',            val((p.contacto_tipo || '').toString().replace(/^./, (c) => c.toUpperCase()) || null))}
-        ${card('Nombre',          val(p.contacto_nombre), 'full')}
-        ${card('Empresa',         val(p.contacto_empresa))}
+        ${card('Nombre',          val(p.contacto_nombre))}
         ${card('Correo',          val(p.contacto_correo))}
         ${card('Celular',         val(p.contacto_celular))}
-        ${card('WhatsApp',        val(p.contacto_whatsapp))}
-        ${card('Teléfono',        val(p.contacto_telefono))}
-        ${card('Web',             val(p.contacto_web), 'full')}
-        ${card('Domicilio',       val(p.contacto_domicilio), 'full')}
-        ${card('Ciudad',          val(p.contacto_ciudad))}
-        ${card('Localidad',       val(p.contacto_localidad))}
+        ${card('Web',             valWeb(p.contacto_web), 'full')}
         ${card('Provincia',       val(p.contacto_provincia))}
         ${card('País',            val(p.contacto_pais))}
-        ${card('Ubicación',       val(p.contacto_ubicacion), 'full')}
       </div>
       ${btnFicha}
     </div>
@@ -28197,7 +28371,7 @@ function abrirAltaEdicionDp(id) {
               <input type="text" id="dpProducto" maxlength="100" placeholder="Producto o servicio">
             </div>
           </div>
-          <div class="form-row form-row-3">
+          <div class="form-row">
             <div class="form-group">
               <label>Sentido</label>
               <select id="dpSentido"><option value="">—</option>${dpOpcionesCombo('sentido')}</select>
@@ -28205,10 +28379,6 @@ function abrirAltaEdicionDp(id) {
             <div class="form-group">
               <label>Origen</label>
               <select id="dpOrigen"><option value="">—</option>${dpOpcionesCombo('origen')}</select>
-            </div>
-            <div class="form-group">
-              <label>Tipo</label>
-              <select id="dpTipo"><option value="">—</option>${dpOpcionesCombo('tipo')}</select>
             </div>
           </div>
         </div>
@@ -28334,7 +28504,6 @@ function abrirAltaEdicionDp(id) {
     $('#dpProducto').value    = p.producto     || '';
     $('#dpSentido').value     = p.sentido      || '';
     $('#dpOrigen').value      = p.origen       || '';
-    $('#dpTipo').value        = p.tipo         || '';
     // El monto viaja como number; se muestra con separadores es-AR para que el
     // usuario lo lea igual que en el listado. El API vuelve a normalizarlo.
     $('#dpMonto').value       = p.monto != null
@@ -28409,7 +28578,6 @@ async function guardarDp() {
     proyecto_id:   nullIfEmpty($('#dpProyectoId').value),
     sentido:       nullIfEmpty($('#dpSentido').value),
     origen:        nullIfEmpty($('#dpOrigen').value),
-    tipo:          nullIfEmpty($('#dpTipo').value),
     producto:      nullIfEmpty($('#dpProducto').value.trim()),
     // El monto va crudo tal como lo tipeo el usuario ("1.250.000,50"): el
     // parseo de separadores lo hace drProNullableMonto() en el backend, que es
@@ -28547,7 +28715,6 @@ async function abrirConsultaDp(id) {
             ${card('Producto',     val(p.producto))}
             ${card('Sentido',      val(p.sentido_texto || p.sentido))}
             ${card('Origen',       val(p.origen_texto  || p.origen))}
-            ${card('Tipo',         val(p.tipo_texto    || p.tipo))}
             ${card('Actualizado',  val(fmtFecha(p.actualizado)))}
           </div>
         </div>
