@@ -84,10 +84,6 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
                data-perm-prefix="datarocket.">
               <span class="nav-icon">🚀</span> Datarocket
             </a>
-            <a href="#/datasale" class="nav-item nav-sub-item" data-route="/datasale"
-               data-perm-prefix="datasale.">
-              <span class="nav-icon">💰</span> Datasale
-            </a>
             <a href="#/datainfra" class="nav-item nav-sub-item" data-route="/datainfra"
                data-perm-prefix="datainfra.">
               <span class="nav-icon">🖧</span> Datainfra

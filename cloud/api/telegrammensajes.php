@@ -20,7 +20,7 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/telegram_mensajes.php';
 
-const TG_MSG_COLS = "id, uuid, fecha, proyecto_id, canal_id, plantilla_id, contacto_id,
+const TG_MSG_COLS = "id, uuid, fecha, proyecto_id, canal_id, plantilla_id, prospecto_id,
                      remitente, remite, destinatario, destino, prioridad,
                      asunto, cuerpo, formato, adjunto, tags, estado, error,
                      encolado, programado, enviado, demora";
@@ -155,7 +155,7 @@ function handleList(PDO $pdo, array $q): void {
 function handleGetOne(PDO $pdo, int $id): void {
     // JOINs a las tablas maestras para exponer los nombres humanos que el
     // modal Consultar muestra en las tarjetas Proyecto / Canal / Plantilla /
-    // Contacto. LEFT JOIN: si la FK apunta a un id inexistente devolvemos
+    // Prospecto. LEFT JOIN: si la FK apunta a un id inexistente devolvemos
     // NULL en el *_nombre y el frontend cae al "Sin dato" habitual.
     $cols = preg_replace('/\s+/', ' ', TG_MSG_COLS);
     $qualified = implode(', ', array_map(
@@ -169,13 +169,13 @@ function handleGetOne(PDO $pdo, int $id): void {
                tc.telefono  AS canal_telefono,
                tc.slug      AS canal_slug,
                dp.nombre    AS plantilla_nombre,
-               dc.nombre    AS contacto_nombre,
-               dc.celular   AS contacto_celular
+               dpr.nombre   AS prospecto_nombre,
+               dpr.celular  AS prospecto_celular
         FROM telegram_mensajes tm
         LEFT JOIN proyectos             pr ON pr.id = tm.proyecto_id
         LEFT JOIN telegram_canales      tc ON tc.id = tm.canal_id
         LEFT JOIN datarocket_plantillas dp ON dp.id = tm.plantilla_id
-        LEFT JOIN datarocket_contactos  dc ON dc.id = tm.contacto_id
+        LEFT JOIN datarocket_prospectos dpr ON dpr.id = tm.prospecto_id
         WHERE tm.id = :id
     ");
     $stmt->execute([':id' => $id]);

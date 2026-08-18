@@ -2,7 +2,7 @@
 // api/datarocketlistas_recalcular.php
 // Recalcula la columna denormalizada `datarocket_listas.suscriptos` de TODAS
 // las listas contando las filas de la tabla puente
-// `datarocket_contactos_listas` para cada lista. Es el "reset" oficial del
+// `datarocket_prospectos_listas` para cada lista. Es el "reset" oficial del
 // contador cuando queda desactualizado (por ejemplo, si otra via alteró
 // suscripciones sin actualizar el denormalizado).
 //
@@ -36,7 +36,7 @@ try {
         UPDATE datarocket_listas dl
         SET dl.suscriptos = (
             SELECT COUNT(*)
-              FROM datarocket_contactos_listas dcl
+              FROM datarocket_prospectos_listas dcl
              WHERE dcl.lista_id = dl.id
         )
     ";

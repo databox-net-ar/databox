@@ -3,12 +3,12 @@
 // Etiquetas Datarocket (CRUD). Lee/escribe sobre la tabla
 // `datarocket_etiquetas` definida en db/schema.sql — catalogo de etiquetas
 // reutilizables que se aplican a otros recursos del stack Datarocket via
-// tablas de union (por ahora solo `datarocket_contactos_etiquetas`).
+// tablas de union (por ahora solo `datarocket_prospectos_etiquetas`).
 //
 //   GET    api/datarocket_etiquetas.php[?q=...&limite=100&orden=id&dir=desc]
 //                                          -> listado + stats (incluye
 //                                             `etiquetados` = contador
-//                                             denormalizado de contactos
+//                                             denormalizado de prospectos
 //                                             con la etiqueta)
 //   GET    api/datarocket_etiquetas.php?id=N
 //                                          -> registro individual
@@ -151,16 +151,16 @@ function handleGetOneEtiqueta(PDO $pdo, int $id): void {
 }
 
 // Recomputa `datarocket_etiquetas.etiquetados` para TODAS las filas desde la
-// tabla puente `datarocket_contactos_etiquetas`. Es la operacion que dispara
+// tabla puente `datarocket_prospectos_etiquetas`. Es la operacion que dispara
 // el boton "Recalcular etiquetados" del ABM. Idempotente: correrlo dos veces
 // no cambia los valores. LEFT JOIN + subquery agrupada asegura que las
-// etiquetas sin contactos asignados queden en 0 (no NULL).
+// etiquetas sin prospectos asignados queden en 0 (no NULL).
 function handleRecalcularEtiquetados(PDO $pdo): void {
     $st = $pdo->prepare('
         UPDATE datarocket_etiquetas e
      LEFT JOIN (
                 SELECT etiqueta_id, COUNT(*) AS c
-                  FROM datarocket_contactos_etiquetas
+                  FROM datarocket_prospectos_etiquetas
                  GROUP BY etiqueta_id
               ) g ON g.etiqueta_id = e.id
            SET e.etiquetados = COALESCE(g.c, 0)

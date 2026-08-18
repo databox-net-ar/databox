@@ -33,7 +33,7 @@ const TG_MSG_SANITIZERS = [
     'proyecto_id'  => 'int',
     'canal_id'     => 'int',
     'plantilla_id' => 'int',
-    'contacto_id'  => 'int',
+    'prospecto_id'  => 'int',
     'remitente'    => 'str:255',
     'remite'       => 'str:255',
     'destinatario' => 'str:255',
@@ -124,11 +124,11 @@ function encolarTelegramMensaje(PDO $pdo, array $datos): int {
 
     $sql = "
         INSERT INTO telegram_mensajes
-            (uuid, fecha, proyecto_id, canal_id, plantilla_id, contacto_id, remitente,
+            (uuid, fecha, proyecto_id, canal_id, plantilla_id, prospecto_id, remitente,
              remite, destinatario, destino, prioridad, asunto, cuerpo, formato,
              adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
-            (:uuid, :fecha, :proyecto_id, :canal_id, :plantilla_id, :contacto_id, :remitente,
+            (:uuid, :fecha, :proyecto_id, :canal_id, :plantilla_id, :prospecto_id, :remitente,
              :remite, :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
@@ -139,7 +139,7 @@ function encolarTelegramMensaje(PDO $pdo, array $datos): int {
         ':proyecto_id'  => $p['proyecto_id'],
         ':canal_id'     => $p['canal_id'],
         ':plantilla_id' => $p['plantilla_id'],
-        ':contacto_id'  => $p['contacto_id'],
+        ':prospecto_id'  => $p['prospecto_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
@@ -159,11 +159,11 @@ function encolarTelegramMensaje(PDO $pdo, array $datos): int {
     ]);
     $id = (int)$pdo->lastInsertId();
 
-    // Registrar interaccion en el historial del contacto (best-effort).
-    if (!empty($p['contacto_id'])) {
+    // Registrar interaccion en el historial del prospecto (best-effort).
+    if (!empty($p['prospecto_id'])) {
         registrarInteraccionMensaje(
             $pdo,
-            (int)$p['contacto_id'],
+            (int)$p['prospecto_id'],
             'saliente',
             'telegram',
             // Telegram tampoco tiene asunto propio — ver evolution_mensajes.php.

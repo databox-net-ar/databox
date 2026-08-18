@@ -208,7 +208,7 @@ function handleList(array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    $sql = "SELECT id, uuid, canal_id, proyecto_id, plantilla_id, contacto_id,
+    $sql = "SELECT id, uuid, canal_id, proyecto_id, plantilla_id, prospecto_id,
                    remite, remitente, destino, destinatario, asunto,
                    estado, resultado, error, fecha, encolado, programado,
                    enviado, demora
@@ -226,7 +226,7 @@ function handleList(array $q): void {
         $r['canal_id']        = $r['canal_id']     !== null ? (int)$r['canal_id']     : null;
         $r['proyecto_id']     = $r['proyecto_id']  !== null ? (int)$r['proyecto_id']  : null;
         $r['plantilla_id']    = $r['plantilla_id'] !== null ? (int)$r['plantilla_id'] : null;
-        $r['contacto_id']     = $r['contacto_id']  !== null ? (int)$r['contacto_id']  : null;
+        $r['prospecto_id']     = $r['prospecto_id']  !== null ? (int)$r['prospecto_id']  : null;
         $r['demora']          = $r['demora']       !== null ? (int)$r['demora']       : null;
         $r['estado_label']    = AWS_MSG_ESTADO_LABEL[$r['estado']] ?? $r['estado'];
         $r['resultado_label'] = $r['resultado'] !== null

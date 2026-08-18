@@ -258,7 +258,7 @@ CREATE TABLE `aws_mensajes`  (
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `canal_id` int(11) NULL DEFAULT NULL,
   `plantilla_id` int(11) NULL DEFAULT NULL,
-  `contacto_id` int(11) NULL DEFAULT NULL,
+  `prospecto_id` int(11) NULL DEFAULT NULL,
   `remitente` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `remite` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `destinatario` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -611,7 +611,7 @@ CREATE TABLE `datacount_asientos_adjuntos` (
 -- Table structure for datacount_empleados
 -- ----------------------------
 -- Empleados asociados a una empresa Datacount. Cada fila combina datos
--- personales (nombre, documento, nacimiento, domicilio), de contacto
+-- personales (nombre, documento, nacimiento, domicilio), de prospecto
 -- (celular, correo) y laborales (cuenta contable donde imputa el sueldo,
 -- sueldo mensual, CVU/CBU, estado y observaciones). `empresa_id` referencia
 -- `datacount_empresas.id` y `cuenta_id` referencia `datacount_cuentas.id`
@@ -703,7 +703,7 @@ CREATE TABLE `datacount_recurrentes`  (
 -- una empresa en particular (multiempresa): el mismo cliente puede
 -- facturarse desde cualquiera de las `datacount_empresas`. Cada fila
 -- reúne los datos identificatorios (nombre, razón social, condición
--- fiscal AFIP, CUIT), de contacto (domicilio, celular, correo, web)
+-- fiscal AFIP, CUIT), de prospecto (domicilio, celular, correo, web)
 -- y bancarios (CBU).
 DROP TABLE IF EXISTS `datacount_clientes`;
 CREATE TABLE `datacount_clientes`  (
@@ -731,7 +731,7 @@ CREATE TABLE `datacount_clientes`  (
 -- a una empresa en particular (multiempresa): el mismo proveedor puede
 -- recibir pagos desde cualquiera de las `datacount_empresas`. Cada fila
 -- reúne los datos identificatorios (nombre, razón social, condición
--- fiscal AFIP, CUIT), de contacto (domicilio, celular, correo, web)
+-- fiscal AFIP, CUIT), de prospecto (domicilio, celular, correo, web)
 -- y bancarios (CBU, para transferencias).
 DROP TABLE IF EXISTS `datacount_proveedores`;
 CREATE TABLE `datacount_proveedores`  (
@@ -1533,10 +1533,10 @@ CREATE TABLE `dataphonechips`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datarocket_contactos
+-- Table structure for datarocket_prospectos
 -- ----------------------------
-DROP TABLE IF EXISTS `datarocket_contactos`;
-CREATE TABLE `datarocket_contactos`  (
+DROP TABLE IF EXISTS `datarocket_prospectos`;
+CREATE TABLE `datarocket_prospectos`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `uuid` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
   -- INVARIANTE DE IDENTIDAD — el campo de nombre del lado que marca `tipo` es
@@ -1546,14 +1546,14 @@ CREATE TABLE `datarocket_contactos`  (
   --   tipo='empresa' -> empresa_nombre obligatorio -> nombre = empresa_nombre
   --
   -- El campo del OTRO lado sigue siendo opcional y es legitimo tenerlo
-  -- cargado: en un contacto persona `empresa_nombre` es donde trabaja, y en un
-  -- contacto empresa `persona_nombre` es quien atiende.
+  -- cargado: en un prospecto persona `empresa_nombre` es donde trabaja, y en un
+  -- prospecto empresa `persona_nombre` es quien atiende.
   --
   -- No hay CHECK ni columna generada — este schema no usa ninguno de los dos y
   -- prod es MariaDB. La invariante la sostiene la capa PHP, en los DOS
-  -- escritores: assertIdentidadValida()/drCtDerivarNombre() en
-  -- cloud/api/datarocketcontactos.php y drCtAssertIdentidad()/drCtDerivarNombre()
-  -- en api/v4/datarocket/contactos.php. Cualquier tercer escritor que se agregue
+  -- escritores: assertIdentidadValida()/drPrDerivarNombre() en
+  -- cloud/api/datarocketprospectos.php y drPrAssertIdentidad()/drPrDerivarNombre()
+  -- en api/v4/datarocket/prospectos.php. Cualquier tercer escritor que se agregue
   -- tiene que replicarla o la tabla se vuelve a ensuciar.
   --
   -- La migracion 20260817_2100 puso al dia las 17.117 filas historicas que
@@ -1584,7 +1584,7 @@ CREATE TABLE `datarocket_contactos`  (
   -- `https://www.bna.com.ar/sucursales`. Ojo al filtrar: un LIKE 'http%' no
   -- matchea nada. El host va en minuscula y el path se respeta tal cual (es
   -- case sensitive: `bit.ly/3SSePnt`). Lo normaliza
-  -- cloud/api/lib/contactos_normalizar.php en toda escritura; la migracion
+  -- cloud/api/lib/prospectos_normalizar.php en toda escritura; la migracion
   -- 20260816_1800 puso al dia lo que ya estaba cargado.
   `web` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
   `facebook` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
@@ -1593,12 +1593,12 @@ CREATE TABLE `datarocket_contactos`  (
   `comentarios` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `registrado` datetime(0) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  INDEX `idx_dr_contactos_localidad`(`localidad_id`) USING BTREE,
-  INDEX `idx_dr_contactos_provincia`(`provincia_id`) USING BTREE,
-  INDEX `idx_dr_contactos_pais`(`pais_id`) USING BTREE,
-  CONSTRAINT `fk_dr_contactos_localidad` FOREIGN KEY (`localidad_id`) REFERENCES `localidades` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT `fk_dr_contactos_provincia` FOREIGN KEY (`provincia_id`) REFERENCES `provincias` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT `fk_dr_contactos_pais` FOREIGN KEY (`pais_id`) REFERENCES `paises` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+  INDEX `idx_dr_prospectos_localidad`(`localidad_id`) USING BTREE,
+  INDEX `idx_dr_prospectos_provincia`(`provincia_id`) USING BTREE,
+  INDEX `idx_dr_prospectos_pais`(`pais_id`) USING BTREE,
+  CONSTRAINT `fk_dr_prospectos_localidad` FOREIGN KEY (`localidad_id`) REFERENCES `localidades` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dr_prospectos_provincia` FOREIGN KEY (`provincia_id`) REFERENCES `provincias` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dr_prospectos_pais` FOREIGN KEY (`pais_id`) REFERENCES `paises` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE = InnoDB AUTO_INCREMENT = 148287 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -1610,18 +1610,18 @@ CREATE TABLE `datarocket_contactos`  (
 -- automatico (el envio de un correo o un whatsapp, escrito por el
 -- canalizador que encola el mensaje) o manual (una nota que carga un
 -- vendedor tras hablar con la persona).
---   * `contacto_id` + `prospecto_id`: la interaccion se cuelga de la
+--   * `prospecto_id` + `oportunidad_id`: la interaccion se cuelga de la
 --     PERSONA y opcionalmente de la OPORTUNIDAD (equivalente al par
 --     WhoId / WhatId de Salesforce). Ambas son NULLABLE, pero la
 --     invariante es que al menos una este presente — se valida en la
 --     API, no hay CHECK constraint (no hay ninguna en este schema).
---     `contacto_id` es nullable porque `datarocket_prospectos.contacto_id`
---     tambien lo es: sin eso no se podria anotar nada sobre un prospecto
---     que todavia no tiene contacto asociado.
---   * FK del prospecto ON DELETE SET NULL (y no RESTRICT como el resto
---     del proyecto): la interaccion es un hecho sobre el contacto y tiene
---     que sobrevivir al descarte de la oportunidad comercial. `contacto_id`
---     todavia no lleva FK a `datarocket_contactos` — pendiente, requiere
+--     `prospecto_id` es nullable porque `datarocket_oportunidades.prospecto_id`
+--     tambien lo es: sin eso no se podria anotar nada sobre una oportunidad
+--     que todavia no tiene prospecto asociado.
+--   * FK de la oportunidad ON DELETE SET NULL (y no RESTRICT como el resto
+--     del proyecto): la interaccion es un hecho sobre el prospecto y tiene
+--     que sobrevivir al descarte de la oportunidad comercial. `prospecto_id`
+--     todavia no lleva FK a `datarocket_prospectos` — pendiente, requiere
 --     relevar huerfanos en produccion primero.
 --   * `tipo` es un codigo corto — la UI lo mapea a etiqueta legible. Se
 --     deja VARCHAR(30) para sumar variantes sin migrar. Automaticos:
@@ -1634,10 +1634,12 @@ CREATE TABLE `datarocket_contactos`  (
 --     / 'telegram_mensajes'). Ambas son NULLABLE para permitir
 --     interacciones sin mensaje. Las filas del backfill historico usan
 --     `origen` como marcador de procedencia con `mensaje_id` NULL:
---     'datarocket_prospectos.comentarios' / '...acciones'.
+--     'datarocket_prospectos.comentarios' / '...acciones' (el nombre de la
+--     tabla en esos marcadores historicos es previo al rename a
+--     `datarocket_oportunidades` y se deja tal cual: son datos, no schema).
 --   * `asunto` es la etiqueta corta del listado y `mensaje` el contenido
 --     completo. En las filas migradas salen 1:1 de
---     `datarocket_prospectos.asunto` y `.comentarios`; en las automaticas
+--     `datarocket_oportunidades.asunto` y `.comentarios`; en las automaticas
 --     los escribe el canalizador (`asunto` queda NULL en WhatsApp y
 --     Telegram, que no tienen asunto).
 --     OJO: `mensaje` (texto) NO es `mensaje_id` (puntero polimorfico).
@@ -1647,21 +1649,21 @@ DROP TABLE IF EXISTS `datarocket_interacciones`;
 CREATE TABLE `datarocket_interacciones`  (
   `id`           int(11)      NOT NULL AUTO_INCREMENT,
   `fecha`        datetime     NOT NULL,
-  `contacto_id`  int(11)      NULL DEFAULT NULL,
-  `prospecto_id` int(11)      NULL DEFAULT NULL,
+  `prospecto_id`  int(11)      NULL DEFAULT NULL,
+  `oportunidad_id` int(11)    NULL DEFAULT NULL,
   `sentido`      varchar(10)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `canal`        varchar(20)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `respondida`   datetime     NULL DEFAULT NULL,
   `asunto`       varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `mensaje`      mediumtext   CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  INDEX `idx_dri_contacto_fecha`(`contacto_id`, `fecha`) USING BTREE,
   INDEX `idx_dri_prospecto_fecha`(`prospecto_id`, `fecha`) USING BTREE,
+  INDEX `idx_dri_oportunidad_fecha`(`oportunidad_id`, `fecha`) USING BTREE,
   INDEX `idx_dri_fecha`(`fecha`) USING BTREE,
   INDEX `idx_dri_sentido_canal`(`sentido`, `canal`) USING BTREE,
   INDEX `idx_dri_canal`(`canal`) USING BTREE,
   INDEX `idx_dri_sentido_respondida`(`sentido`, `respondida`) USING BTREE,
-  CONSTRAINT `fk_dri_prospecto` FOREIGN KEY (`prospecto_id`) REFERENCES `datarocket_prospectos` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT
+  CONSTRAINT `fk_dri_oportunidad` FOREIGN KEY (`oportunidad_id`) REFERENCES `datarocket_oportunidades` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -1810,31 +1812,35 @@ CREATE TABLE `datarocket_plantillas`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 17640 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datarocket_prospectos
+-- Table structure for datarocket_oportunidades
 -- ----------------------------
 -- Oportunidad de venta en el sentido CRM: un negocio concreto con su embudo,
 -- su etapa, su valor y su fecha estimada de cierre. NO es un "lead" — la
--- identidad de la persona vive en `datarocket_contactos` y se referencia por
--- `contacto_id` (por eso un mismo contacto puede tener varios prospectos).
+-- identidad de la persona vive en `datarocket_prospectos` y se referencia por
+-- `prospecto_id` (por eso un mismo prospecto puede tener varias oportunidades).
 --
--- Las 12 columnas de identidad que la tabla arrastraba del ABM legacy
--- `datasaleprospectos` (organizacion / nombre / contacto / celular / correo /
--- web / domicilio / ciudad / localidad / provincia / pais / ubicacion) se
--- dropearon en la migracion 20260816_1500 tras volcar sus huecos al contacto
--- (20260816_1400).
+-- Se llamaba `datarocket_prospectos` hasta la migracion 20260817_2300; el
+-- nombre venia arrastrado del ABM legacy y contradecia lo que la tabla ya era.
+--
+-- Las 12 columnas de identidad que la tabla arrastraba del ABM legacy de
+-- Datasale (organizacion / nombre / prospecto / celular / correo / web /
+-- domicilio / ciudad / localidad / provincia / pais / ubicacion) se dropearon
+-- en la migracion 20260816_1500 tras volcar sus huecos al prospecto
+-- (20260816_1400). Ese modulo se elimino entero en la 20260817_2600.
 --
 -- `monto` + `moneda` + `cierre_esperado` (migracion 20260816_1300) son los que
 -- habilitan el forecast: combinados con `datarocket_etapas.tipo`
 -- (activa/ganada/perdida) y `.probabilidad` dan el valor del embudo y el
 -- pipeline ponderado. `moneda` es ISO-4217 y NUNCA se suman monedas distintas.
 --
--- Los combos sentido / origen / tipo / estado / producto salen del catalogo
--- `estados` con prefijo `datasale_prospecto_` (heredado del ABM legacy);
--- `moneda` usa el prefijo propio `datarocket_prospecto_`.
-DROP TABLE IF EXISTS `datarocket_prospectos`;
-CREATE TABLE `datarocket_prospectos`  (
+-- Los combos sentido / origen / estado / producto / moneda salen del catalogo
+-- `estados` con prefijo `datarocket_oportunidad_`. Los cuatro primeros vivian
+-- bajo `datasale_prospecto_` mientras el catalogo era compartido con el ABM
+-- legacy; pasaron al prefijo propio al eliminarse Datasale (20260817_2600).
+DROP TABLE IF EXISTS `datarocket_oportunidades`;
+CREATE TABLE `datarocket_oportunidades`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `contacto_id` int(11) NULL DEFAULT NULL,
+  `prospecto_id` int(11) NULL DEFAULT NULL,
   `ingreso` datetime(0) NULL DEFAULT NULL,
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `sentido` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -1854,20 +1860,20 @@ CREATE TABLE `datarocket_prospectos`  (
   `aplazado` datetime(0) NULL DEFAULT NULL,
   `comentarios` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  INDEX `idx_dr_prospectos_embudo`(`embudo_id`) USING BTREE,
-  INDEX `idx_dr_prospectos_etapa`(`etapa_id`) USING BTREE,
-  INDEX `idx_dr_prospectos_etapa_ingreso`(`etapa_ingreso`) USING BTREE,
-  INDEX `idx_dr_prospectos_contacto`(`contacto_id`) USING BTREE,
-  INDEX `idx_dr_prospectos_proyecto`(`proyecto_id`) USING BTREE,
-  INDEX `idx_dr_prospectos_cierre`(`cierre_esperado`) USING BTREE,
-  INDEX `idx_dr_prospectos_asignado`(`asignado`) USING BTREE,
-  INDEX `idx_dr_prospectos_atendido`(`atendido`) USING BTREE,
-  CONSTRAINT `fk_dr_prospectos_asignado` FOREIGN KEY (`asignado`) REFERENCES `usuarios` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT `fk_dr_prospectos_atendido` FOREIGN KEY (`atendido`) REFERENCES `usuarios` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT `fk_dr_prospectos_contacto` FOREIGN KEY (`contacto_id`) REFERENCES `datarocket_contactos` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT `fk_dr_prospectos_embudo` FOREIGN KEY (`embudo_id`) REFERENCES `datarocket_embudos` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT `fk_dr_prospectos_etapa` FOREIGN KEY (`etapa_id`) REFERENCES `datarocket_etapas` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT `fk_dr_prospectos_proyecto` FOREIGN KEY (`proyecto_id`) REFERENCES `proyectos` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+  INDEX `idx_dr_oportunidades_embudo`(`embudo_id`) USING BTREE,
+  INDEX `idx_dr_oportunidades_etapa`(`etapa_id`) USING BTREE,
+  INDEX `idx_dr_oportunidades_etapa_ingreso`(`etapa_ingreso`) USING BTREE,
+  INDEX `idx_dr_oportunidades_prospecto`(`prospecto_id`) USING BTREE,
+  INDEX `idx_dr_oportunidades_proyecto`(`proyecto_id`) USING BTREE,
+  INDEX `idx_dr_oportunidades_cierre`(`cierre_esperado`) USING BTREE,
+  INDEX `idx_dr_oportunidades_asignado`(`asignado`) USING BTREE,
+  INDEX `idx_dr_oportunidades_atendido`(`atendido`) USING BTREE,
+  CONSTRAINT `fk_dr_oportunidades_asignado` FOREIGN KEY (`asignado`) REFERENCES `usuarios` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dr_oportunidades_atendido` FOREIGN KEY (`atendido`) REFERENCES `usuarios` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dr_oportunidades_prospecto` FOREIGN KEY (`prospecto_id`) REFERENCES `datarocket_prospectos` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dr_oportunidades_embudo` FOREIGN KEY (`embudo_id`) REFERENCES `datarocket_embudos` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dr_oportunidades_etapa` FOREIGN KEY (`etapa_id`) REFERENCES `datarocket_etapas` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dr_oportunidades_proyecto` FOREIGN KEY (`proyecto_id`) REFERENCES `proyectos` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE = InnoDB AUTO_INCREMENT = 4927 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -2033,67 +2039,6 @@ CREATE TABLE `datarocketsuscripciones`  (
   `estado` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 40331 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
-
--- ----------------------------
--- Table structure for datasalecarteras
--- ----------------------------
-DROP TABLE IF EXISTS `datasalecarteras`;
-CREATE TABLE `datasalecarteras`  (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `usuario` int(11) NULL DEFAULT NULL,
-  PRIMARY KEY (`id`) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 119 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
-
--- ----------------------------
--- Table structure for datasaleprospectos
--- ----------------------------
-DROP TABLE IF EXISTS `datasaleprospectos`;
-CREATE TABLE `datasaleprospectos`  (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `ingreso` datetime(0) NULL DEFAULT NULL,
-  `proyecto` int(11) NULL DEFAULT NULL,
-  `sentido` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `origen` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `tipo` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `producto` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `asunto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `organizacion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `contacto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `celular` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `correo` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `web` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `domicilio` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `ciudad` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `localidad` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `provincia` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `pais` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `ubicacion` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `calificacion` int(5) NULL DEFAULT NULL,
-  `estado` tinyint(255) NULL DEFAULT NULL,
-  `asignado` int(11) NULL DEFAULT NULL,
-  `atendido` int(11) NULL DEFAULT NULL,
-  `actualizado` datetime(0) NULL DEFAULT NULL,
-  `aplazado` datetime(0) NULL DEFAULT NULL,
-  `comentarios` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `acciones` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
-  PRIMARY KEY (`id`) USING BTREE
-) ENGINE = MyISAM AUTO_INCREMENT = 4919 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
-
--- ----------------------------
--- Table structure for datasaleprospectoscomunicaciones
--- ----------------------------
-DROP TABLE IF EXISTS `datasaleprospectoscomunicaciones`;
-CREATE TABLE `datasaleprospectoscomunicaciones`  (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `prospecto` int(11) NULL DEFAULT NULL,
-  `fecha` datetime(0) NULL DEFAULT NULL,
-  `usuario` int(11) NULL DEFAULT NULL,
-  `medio` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
-  `detalle` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
-  PRIMARY KEY (`id`) USING BTREE
-) ENGINE = MyISAM AUTO_INCREMENT = 929 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for dolarhoy_cotizaciones
@@ -2288,7 +2233,7 @@ CREATE TABLE `evolution_mensajes`  (
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `canal_id` int(11) NULL DEFAULT NULL,
   `plantilla_id` int(11) NULL DEFAULT NULL,
-  `contacto_id` int(11) NULL DEFAULT NULL,
+  `prospecto_id` int(11) NULL DEFAULT NULL,
   `remitente` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `remite` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `destinatario` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -3175,7 +3120,7 @@ CREATE TABLE `telegram_mensajes`  (
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `canal_id` int(11) NULL DEFAULT NULL,
   `plantilla_id` int(11) NULL DEFAULT NULL,
-  `contacto_id` int(11) NULL DEFAULT NULL,
+  `prospecto_id` int(11) NULL DEFAULT NULL,
   `remitente` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `remite` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `destinatario` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,

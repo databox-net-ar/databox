@@ -21,6 +21,17 @@ function fmtFecha(iso) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Igual que fmtFecha pero con el año ('DD/MM/YYYY HH:MM'). Para listados y
+// cabeceras donde se consultan registros historicos y el año es parte del
+// dato (un "17/08" a secas no distingue el de este año del de hace tres).
+function fmtFechaAnio(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 // Fecha SIN hora ('YYYY-MM-DD' -> 'DD/MM/YYYY'). No usa `new Date()` a
 // proposito: `new Date('2026-09-30')` se interpreta como medianoche UTC y en
 // una zona negativa (aca -03:00) retrocede al dia anterior — el 30/09 se
@@ -721,15 +732,12 @@ const ROUTE_PERMS = {
 
   '/datarocket':               { prefix: 'datarocket.' },
   '/datarocketinteracciones':    { perm:   'datarocket.interacciones.consultar' },
-  '/datarocketcontactos':      { perm:   'datarocket.contactos.consultar' },
+  '/datarocketprospectos':      { perm:   'datarocket.prospectos.consultar' },
   '/datarocketlistas':         { perm:   'datarocket.listas.consultar' },
   '/datarocketplantillas':     { perm:   'sistemas.datarocket.plantillas.consultar' },
   '/datarocket_etiquetas':     { perm:   'datarocket.etiquetas.consultar' },
   '/datarocket_embudos':       { perm:   'datarocket.embudos.consultar' },
-  '/datarocket_prospectos':    { perm:   'datarocket.prospectos.consultar' },
-
-  '/datasale':                 { prefix: 'datasale.' },
-  '/prospectos':               { perm:   'datasale.prospectos.consultar' },
+  '/datarocket_oportunidades':  { perm:   'datarocket.oportunidades.consultar' },
 
   '/datainfra':                { prefix: 'datainfra.' },
   '/datainfradominios':        { perm:   'datainfra.dominios.consultar' },
@@ -1034,7 +1042,6 @@ route('/dashboard', async (mount) => {
     </div>
 
     ${renderDashDatainfraEndpoints(data.datainfra_endpoints)}
-    ${renderDashDatasaleProspectosEsperando(data.datasale_prospectos_esperando)}
     ${renderDashDatainfraDominios(data.datainfra_dominios)}
     ${renderDashAwsCuentas(data.aws_cuentas)}
     ${renderDashEvolutionCanales(data.evolution_canales)}
@@ -1098,69 +1105,6 @@ function renderDashDatainfraEndpoints(ep) {
             <th>Estado</th>
             <th style="text-align:center">HTTP</th>
             <th>Error</th>
-          </tr>
-        </thead>
-        <tbody>${filas}</tbody>
-      </table>
-    </div>
-  `;
-}
-
-// Bloque "Prospectos esperando" del dashboard. La API lo omite si el usuario no
-// tiene permiso `datasale.prospectos.consultar`; en ese caso no renderizamos
-// nada. Muestra los prospectos con `estado = 1` (esperando) ordenados por
-// ingreso ASC — los mas viejos arriba, que son los que llevan mas tiempo sin
-// atencion. Fila roja + reloj para llamar la atencion, "Todo bien" cuando no
-// hay ninguno.
-function renderDashDatasaleProspectosEsperando(dsp) {
-  if (!dsp) return '';
-  const esperando = Number(dsp.esperando) || 0;
-  const items     = dsp.items || [];
-
-  const filas = items.length
-    ? items.map((p) => {
-        const nombre = p.nombre || `Prospecto #${p.id}`;
-        const asuntoNombre = p.asunto
-          ? `<small><b>${esc(p.asunto)}</b></small><br>${esc(nombre)}`
-          : esc(nombre);
-        const organizacion = p.organizacion
-          ? `<br><small style="opacity:.8">${esc(p.organizacion)}</small>`
-          : '';
-        return `
-          <tr class="row-clickable" onclick="location.hash='#/prospectos'"
-              style="background:rgba(230,42,42,.12)">
-            <td class="td-id">#${esc(p.id)}</td>
-            <td>${esc(p.proyecto_nombre || '—')}</td>
-            <td style="line-height:1.35">${asuntoNombre}${organizacion}</td>
-            <td>${esc(p.asignado_nombre || '—')}</td>
-            <td style="font-family:monospace;white-space:nowrap"
-                title="${esc(p.ingreso || '')}">
-              <i class="fa-solid fa-clock" style="color:var(--danger)"></i>
-              ${esc(fmtHace(p.ingreso) || '—')}
-            </td>
-          </tr>
-        `;
-      }).join('')
-    : `<tr><td colspan="5" class="table-empty">Todo bien.</td></tr>`;
-
-  const badgeHeader = esperando > 0
-    ? `<span class="badge badge-danger" style="margin-left:6px">${esperando} esperando</span>`
-    : '';
-
-  return `
-    <div class="table-card" style="margin-top:16px">
-      <div class="dash-table-header">
-        <span>⏳ Prospectos esperando ${badgeHeader}</span>
-        <span class="dash-ver-mas" onclick="location.hash='#/prospectos'" style="cursor:pointer">Ver más</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Código</th>
-            <th>Proyecto</th>
-            <th>Asunto / Nombre</th>
-            <th>Asignado</th>
-            <th>Esperando</th>
           </tr>
         </thead>
         <tbody>${filas}</tbody>
@@ -7338,7 +7282,7 @@ function renderConsultaAwsMsg(m) {
         </div>
         <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
-        ${m.contacto_id ? `<div style="font-size:.75rem;color:var(--muted);margin-top:4px"><i class="fa-solid fa-address-card" style="opacity:.7;margin-right:4px"></i>Contacto: ${esc(m.contacto_nombre || m.contacto_correo || 'sin nombre')} <span style="opacity:.7">(#${esc(m.contacto_id)})</span></div>` : ''}
+        ${m.prospecto_id ? `<div style="font-size:.75rem;color:var(--muted);margin-top:4px"><i class="fa-solid fa-address-card" style="opacity:.7;margin-right:4px"></i>Prospecto: ${esc(m.prospecto_nombre || m.prospecto_correo || 'sin nombre')} <span style="opacity:.7">(#${esc(m.prospecto_id)})</span></div>` : ''}
         ${m.uuid ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all"><span>uuid:</span> ${esc(m.uuid)}</div>` : ''}
       </div>
       <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
@@ -22109,43 +22053,43 @@ route('/datarocket', async (mount) => {
   mount.innerHTML = `
     <div class="page-header">
       <div class="page-title">Datarocket</div>
-      <div class="page-subtitle">Motor de mensajería masiva multi-canal: contactos y envíos.</div>
+      <div class="page-subtitle">Motor de mensajería masiva multi-canal: prospectos y envíos.</div>
     </div>
 
     <!-- Orden de tarjetas fijado por el usuario (no alfabetico): sigue el flujo
-         CRM "quien" (Contactos, Prospectos) -> "que paso" (Interacciones) ->
+         CRM "quien" (Prospectos, Oportunidades) -> "que paso" (Interacciones) ->
          "pipeline" (Embudos, Etapas) -> "insumos de mensajeria" (Listas,
          Etiquetas, Plantillas). NO reordenar a alfabetico sin acuerdo. -->
     <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/datarocketcontactos'">
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocketprospectos'">
         <span class="tile-icon">👥</span>
-        <span class="tile-title">Contactos</span>
-        <span class="tile-desc">Base de contactos destino con nombre, canal, teléfono, email y estado.</span>
-      </button>
-      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_prospectos'">
-        <span class="tile-icon">🎯</span>
         <span class="tile-title">Prospectos</span>
-        <span class="tile-desc">Interesados que entraron al embudo con producto, estado, asignación, atendido, embudo y etapa actual.</span>
+        <span class="tile-desc">Base de prospectos destino con nombre, canal, teléfono, email y estado.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_oportunidades'">
+        <span class="tile-icon">🎯</span>
+        <span class="tile-title">Oportunidades</span>
+        <span class="tile-desc">Negocios en curso: prospecto, producto, monto, estado, asignación, atendido, embudo y etapa actual.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketinteracciones'">
         <span class="tile-icon">💬</span>
         <span class="tile-title">Interacciones</span>
-        <span class="tile-desc">Historial de interacciones sobre cada contacto: correos y whatsapps enviados y otros eventos registrados por las APIs de envío.</span>
+        <span class="tile-desc">Historial de interacciones sobre cada prospecto: correos y whatsapps enviados y otros eventos registrados por las APIs de envío.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocket_embudos'">
         <span class="tile-icon">🪣</span>
         <span class="tile-title">Embudos</span>
-        <span class="tile-desc">Pipelines de captación / venta por los que avanzan los prospectos. Cada embudo agrupa un conjunto ordenado de etapas configurables desde el mismo embudo.</span>
+        <span class="tile-desc">Pipelines de captación / venta por los que avanzan las oportunidades. Cada embudo agrupa un conjunto ordenado de etapas configurables desde el mismo embudo.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketlistas'">
         <span class="tile-icon">📇</span>
         <span class="tile-title">Listas</span>
-        <span class="tile-desc">Listas de distribución que agrupan contactos por proyecto y sirven de destino para las campañas de envío.</span>
+        <span class="tile-desc">Listas de distribución que agrupan prospectos por proyecto y sirven de destino para las campañas de envío.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocket_etiquetas'">
         <span class="tile-icon">🏷️</span>
         <span class="tile-title">Etiquetas</span>
-        <span class="tile-desc">Catálogo de etiquetas reutilizables para clasificar plantillas, contactos, interacciones y otros recursos Datarocket.</span>
+        <span class="tile-desc">Catálogo de etiquetas reutilizables para clasificar plantillas, prospectos, interacciones y otros recursos Datarocket.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketplantillas'">
         <span class="tile-icon">📄</span>
@@ -22158,7 +22102,7 @@ route('/datarocket', async (mount) => {
 
 // ------------------------- Vista: Datarocket > Listas (ABM) -------------------------
 // Listas de distribucion del motor Datarocket. Cada lista pertenece
-// opcionalmente a un proyecto y agrupa contactos suscriptos. `suscriptos`
+// opcionalmente a un proyecto y agrupa prospectos suscriptos. `suscriptos`
 // es un contador denormalizado que la UI solo muestra (no lo edita el ABM;
 // lo recalculan las APIs de suscripcion desde afuera).
 const drLiFiltrosDefaults = {
@@ -22181,7 +22125,7 @@ route('/datarocketlistas', async (mount) => {
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
           <div style="font-size:1.6rem;line-height:1">📇</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Las listas de Datarocket son agrupaciones de contactos suscriptos
+            Las listas de Datarocket son agrupaciones de prospectos suscriptos
             a un mismo proyecto que las campañas usan como destino para
             segmentar los envíos de correo y whatsapp.
           </div>
@@ -22713,17 +22657,17 @@ async function eliminarDrLi(id) {
   }
 }
 
-// Navega al ABM de contactos filtrando por los suscriptos a esta lista.
+// Navega al ABM de prospectos filtrando por los suscriptos a esta lista.
 // Resetea el resto de los filtros para que la lista aterrice "limpia" con
-// unico filtro activo `lista_id`. El JOIN con datarocket_contactos_listas
-// lo aplica el API (ver handleList() en api/datarocketcontactos.php).
+// unico filtro activo `lista_id`. El JOIN con datarocket_prospectos_listas
+// lo aplica el API (ver handleList() en api/datarocketprospectos.php).
 function verSuscriptosDrLi(id) {
-  Object.assign(drCtFiltros, drCtFiltrosDefaults, { lista_id: String(id) });
-  location.hash = '#/datarocketcontactos';
+  Object.assign(drPrFiltros, drPrFiltrosDefaults, { lista_id: String(id) });
+  location.hash = '#/datarocketprospectos';
 }
 
 // Recalcula el contador denormalizado `suscriptos` de TODAS las listas contra
-// la tabla puente datarocket_contactos_listas. Endpoint POST idempotente.
+// la tabla puente datarocket_prospectos_listas. Endpoint POST idempotente.
 async function recalcularSuscriptosDrLi() {
   const ok = await confirmar({
     title:       'Recalcular suscriptos',
@@ -22734,7 +22678,7 @@ async function recalcularSuscriptosDrLi() {
   try {
     const r = await apiSend('api/datarocketlistas_recalcular.php', 'POST');
     toast(`Recalculadas ${fmtNum(r.recalculadas ?? 0)} listas en ${fmtNum(r.duracion_ms ?? 0)} ms.`);
-    drCtListasCache = null; // el select "Lista" del ABM de contactos se re-cachea al reabrir
+    drPrListasCache = null; // el select "Lista" del ABM de prospectos se re-cachea al reabrir
     cargarDrLi();
   } catch (e) {
     toast(e.message, { error: true });
@@ -23714,46 +23658,46 @@ async function cambiarEnUsoDido(id, valor) {
   }
 }
 
-// ------------------------- Vista: Datarocket > Contactos (ABM) -------------------------
+// ------------------------- Vista: Datarocket > Prospectos (ABM) -------------------------
 // `etiqueta_id` y `lista_id` son MULTI-VALOR y viajan como CSV de ids
-// ('5,14'). Se guardan como string y no como array a proposito: `drCtFiltros`
-// se clona con spread (`{ ...drCtFiltrosDefaults }`), que es shallow — un array
+// ('5,14'). Se guardan como string y no como array a proposito: `drPrFiltros`
+// se clona con spread (`{ ...drPrFiltrosDefaults }`), que es shallow — un array
 // en los defaults quedaria compartido por referencia entre defaults y estado
 // vivo, y mutarlo pisaria los defaults. Con CSV ademas el badge de filtros
-// activos y `cargarDrCt()` siguen comparando/serializando strings sin cambios.
-const drCtFiltrosDefaults = {
+// activos y `cargarDrPr()` siguen comparando/serializando strings sin cambios.
+const drPrFiltrosDefaults = {
   q: '', codigo: '', tipo: '', nombre: '', lista_id: '', etiqueta_id: '',
   pais_id: '', provincia_id: '', correo: '', celular: '', web: '',
   desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
-const drCtFiltros = { ...drCtFiltrosDefaults };
-let drCtBuscadorTimer   = null;
-let drCtFiltrosSnapshot = null;
-let drCtListasCache     = null;
+const drPrFiltros = { ...drPrFiltrosDefaults };
+let drPrBuscadorTimer   = null;
+let drPrFiltrosSnapshot = null;
+let drPrListasCache     = null;
 // Pickers de listas suscriptas y etiquetas asignadas del modal Alta/Edicion.
 // Se remontan en cada apertura del modal y se leen al guardar (via getIds()).
-let drCtListasEditor    = null;
-let drCtEtiquetasEditor = null;
+let drPrListasEditor    = null;
+let drPrEtiquetasEditor = null;
 
 // Cache de listas Datarocket para poblar el select del modal de filtros.
-async function drCtCargarListas() {
-  if (drCtListasCache) return drCtListasCache;
+async function drPrCargarListas() {
+  if (drPrListasCache) return drPrListasCache;
   const resp = await apiGet('api/datarocketlistas.php?limite=1000&order_by=nombre&dir=asc');
-  drCtListasCache = resp.items || [];
-  return drCtListasCache;
+  drPrListasCache = resp.items || [];
+  return drPrListasCache;
 }
 
 const DR_CT_GENERO_MAP = { M: 'Masculino', F: 'Femenino', X: 'Otro' };
 
-// Icono del tipo de contacto para el listado y el modal Consultar. Los
-// contactos historicos tienen tipo=NULL — se muestran con un signo neutro y
+// Icono del tipo de prospecto para el listado y el modal Consultar. Los
+// prospectos historicos tienen tipo=NULL — se muestran con un signo neutro y
 // tooltip pidiendo definir; al editarlos, el ABM obliga a elegir uno de los
 // dos valores validos antes de guardar.
-function drCtTipoIcon(t) {
+function drPrTipoIcon(t) {
   if (t === 'persona') return `<i class="fa-solid fa-user"     title="Persona" style="color:var(--primary)"></i>`;
   if (t === 'empresa') return `<i class="fa-solid fa-building" title="Empresa" style="color:var(--primary)"></i>`;
-  return `<i class="fa-regular fa-circle-question" title="Sin definir — editá el contacto para asignarle un tipo" style="color:var(--muted)"></i>`;
+  return `<i class="fa-regular fa-circle-question" title="Sin definir — editá el prospecto para asignarle un tipo" style="color:var(--muted)"></i>`;
 }
 
 // Etiqueta legible del tipo (para el modal Consultar). El listado usa solo
@@ -23763,7 +23707,7 @@ const DR_CT_TIPO_LABELS = { persona: 'Persona', empresa: 'Empresa' };
 // Renderizador de pills mini para las columnas Listas/Etiquetas del listado.
 // Texto ~10px (0.65rem) y padding chiquito para que varias pills entren en
 // la fila sin desbordarla. Si el array esta vacio, un guion muted.
-function drCtMiniPills(names) {
+function drPrMiniPills(names) {
   const arr = Array.isArray(names) ? names : [];
   if (arr.length === 0) return `<span style="color:var(--muted)">—</span>`;
   return `<span style="display:inline-flex;flex-wrap:wrap;gap:3px">${arr.map(n =>
@@ -23774,8 +23718,8 @@ function drCtMiniPills(names) {
 // HTML de los dos botones del selector de tipo en el modal edicion. Un
 // unico click sobre el boton alterna la seleccion — mas comodo que un
 // <select> con dos opciones. La seleccion se guarda en `data-value` del
-// contenedor padre (`#drcTipoSelector`) y `guardarDrCt` la lee de ahi.
-function drCtTipoBotones(currentTipo) {
+// contenedor padre (`#drcTipoSelector`) y `guardarDrPr` la lee de ahi.
+function drPrTipoBotones(currentTipo) {
   const btn = (val, iconClass, label) => {
     const active = currentTipo === val;
     return `
@@ -23795,14 +23739,14 @@ function drCtTipoBotones(currentTipo) {
 
 // Recalcula el `Nombre` (readonly) de la pestaña General a partir del tipo
 // elegido y del nombre del lado que corresponda. Es la MISMA regla que aplica
-// el backend al guardar (drCtDerivarNombre en cloud/api/datarocketcontactos.php
-// y en api/v4/datarocket/contactos.php), replicada en el cliente para que el
+// el backend al guardar (drPrDerivarNombre en cloud/api/datarocketprospectos.php
+// y en api/v4/datarocket/prospectos.php), replicada en el cliente para que el
 // campo muestre lo que realmente se va a persistir.
 //
 // Se llama al abrir el modal, al alternar el tipo y en cada tecla de los dos
 // campos de origen. Si todavia no se eligio tipo el campo queda vacio: no hay
 // de donde derivarlo y mostrar el valor viejo seria mentir.
-function drCtRefrescarNombre() {
+function drPrRefrescarNombre() {
   const campo = document.querySelector('#drcNombre');
   if (!campo) return;
   const tipo = document.querySelector('#drcTipoSelector')?.dataset.value || '';
@@ -23812,7 +23756,7 @@ function drCtRefrescarNombre() {
   campo.value = origen ? origen.value.trim() : '';
 }
 
-route('/datarocketcontactos', async (mount) => {
+route('/datarocketprospectos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -23823,14 +23767,14 @@ route('/datarocketcontactos', async (mount) => {
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
           <div style="font-size:1.6rem;line-height:1">👥</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los contactos de Datarocket son las personas y empresas registradas en la
-            base del motor de envíos, con sus datos personales, medios de contacto,
+            Los prospectos de Datarocket son las personas y empresas registradas en la
+            base del motor de envíos, con sus datos personales, medios de prospecto,
             ubicación, etiquetas y suscripciones a listas de distribución.
           </div>
         </div>
       </div>
 
-      <div class="stats-bar" id="drCtStats">
+      <div class="stats-bar" id="drPrStats">
         <div class="stat-card"><span class="stat-label">Mostrados</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
       </div>
@@ -23838,20 +23782,20 @@ route('/datarocketcontactos', async (mount) => {
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
-            <input type="search" class="search-input" id="drCtSearch"
+            <input type="search" class="search-input" id="drPrSearch"
                    placeholder="🔍 Buscar nombre, empresa, correo, teléfono, celular, whatsapp, DNI, UUID, etiqueta o lista…">
-            <button class="search-clear" id="drCtSearchClear" style="display:none">×</button>
+            <button class="search-clear" id="drPrSearchClear" style="display:none">×</button>
           </div>
-          <button class="btn btn-ghost btn-icon" id="drCtFiltrosBtn" title="Filtros">
+          <button class="btn btn-ghost btn-icon" id="drPrFiltrosBtn" title="Filtros">
             <i class="fa-solid fa-filter"></i>
-            <span class="btn-icon-badge" id="drCtFiltrosBadge" style="display:none">0</span>
+            <span class="btn-icon-badge" id="drPrFiltrosBadge" style="display:none">0</span>
           </button>
-          <button class="btn btn-ghost btn-icon" id="drCtRefrescarBtn" title="Refrescar">
+          <button class="btn btn-ghost btn-icon" id="drPrRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
         </div>
         <div class="toolbar-right">
-          <button class="btn btn-primary" id="drCtNuevoBtn">+ Nuevo contacto</button>
+          <button class="btn btn-primary" id="drPrNuevoBtn">+ Nuevo prospecto</button>
         </div>
       </div>
 
@@ -23869,14 +23813,14 @@ route('/datarocketcontactos', async (mount) => {
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
-          <tbody id="drCtTbody">
+          <tbody id="drPrTbody">
             <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <div id="drCtCtxMenu" class="ctx-menu" role="menu">
+    <div id="drPrCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
@@ -23889,22 +23833,22 @@ route('/datarocketcontactos', async (mount) => {
       </button>
     </div>
 
-    <div class="modal-backdrop" id="filtrosDrCtBackdrop"
-         onclick="if(event.target===this)cancelarFiltrosDrCt()">
+    <div class="modal-backdrop" id="filtrosDrPrBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrPr()">
       <div class="modal" style="max-width:620px">
         <div class="modal-header">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrCt()" title="Cerrar">✕</button>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrPr()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Código</label>
-              <input type="number" id="fDrCtCodigo" min="1" placeholder="ID …" oninput="onFiltroDrCt('codigo', this.value)">
+              <input type="number" id="fDrPrCodigo" min="1" placeholder="ID …" oninput="onFiltroDrPr('codigo', this.value)">
             </div>
             <div class="form-group">
               <label>Tipo</label>
-              <select id="fDrCtTipo" onchange="onFiltroDrCt('tipo', this.value)">
+              <select id="fDrPrTipo" onchange="onFiltroDrPr('tipo', this.value)">
                 <option value="">— Todos —</option>
                 <option value="persona">Persona</option>
                 <option value="empresa">Empresa</option>
@@ -23913,8 +23857,8 @@ route('/datarocketcontactos', async (mount) => {
             </div>
             <div class="form-group">
               <label>Nombre</label>
-              <input type="text" id="fDrCtNombre" maxlength="255" placeholder="ej. Pérez"
-                     oninput="onFiltroDrCt('nombre', this.value)">
+              <input type="text" id="fDrPrNombre" maxlength="255" placeholder="ej. Pérez"
+                     oninput="onFiltroDrPr('nombre', this.value)">
             </div>
           </div>
           <!-- Etiquetas y Listas son multi-seleccion con typeahead (el mismo
@@ -23925,22 +23869,22 @@ route('/datarocketcontactos', async (mount) => {
                (OR); entre Etiquetas y Listas se combina con AND. -->
           <div class="form-group" style="margin-top:12px">
             <label>Etiquetas</label>
-            <div id="fDrCtEtiquetasHost"></div>
+            <div id="fDrPrEtiquetasHost"></div>
           </div>
           <div class="form-group" style="margin-top:12px">
             <label>Listas</label>
-            <div id="fDrCtListasHost"></div>
+            <div id="fDrPrListasHost"></div>
           </div>
           <div class="form-row" style="margin-top:12px">
             <div class="form-group">
               <label>País</label>
-              <select id="fDrCtPais" onchange="onFiltroPaisDrCt(this.value)">
+              <select id="fDrPrPais" onchange="onFiltroPaisDrPr(this.value)">
                 <option value="">— Todos —</option>
               </select>
             </div>
             <div class="form-group">
               <label>Provincia</label>
-              <select id="fDrCtProvincia" onchange="onFiltroDrCt('provincia_id', this.value)">
+              <select id="fDrPrProvincia" onchange="onFiltroDrPr('provincia_id', this.value)">
                 <option value="">— Todas —</option>
               </select>
             </div>
@@ -23948,38 +23892,38 @@ route('/datarocketcontactos', async (mount) => {
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Correo</label>
-              <input type="text" id="fDrCtCorreo" maxlength="255" placeholder="ej. @gmail.com"
-                     oninput="onFiltroDrCt('correo', this.value)">
+              <input type="text" id="fDrPrCorreo" maxlength="255" placeholder="ej. @gmail.com"
+                     oninput="onFiltroDrPr('correo', this.value)">
             </div>
             <div class="form-group">
               <label>Celular</label>
-              <input type="text" id="fDrCtCelular" maxlength="255" placeholder="ej. 11 5555…"
-                     oninput="onFiltroDrCt('celular', this.value)">
+              <input type="text" id="fDrPrCelular" maxlength="255" placeholder="ej. 11 5555…"
+                     oninput="onFiltroDrPr('celular', this.value)">
             </div>
             <div class="form-group">
               <label>Web</label>
-              <input type="text" id="fDrCtWeb" maxlength="255" placeholder="ej. .com.ar"
-                     oninput="onFiltroDrCt('web', this.value)">
+              <input type="text" id="fDrPrWeb" maxlength="255" placeholder="ej. .com.ar"
+                     oninput="onFiltroDrPr('web', this.value)">
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label>Desde (registrado)</label>
-              <input type="date" id="fDrCtDesde" onchange="onFiltroDrCt('desde', this.value)">
+              <input type="date" id="fDrPrDesde" onchange="onFiltroDrPr('desde', this.value)">
             </div>
             <div class="form-group">
               <label>Hasta (registrado)</label>
-              <input type="date" id="fDrCtHasta" onchange="onFiltroDrCt('hasta', this.value)">
+              <input type="date" id="fDrPrHasta" onchange="onFiltroDrPr('hasta', this.value)">
             </div>
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Límite</label>
-              <input type="number" id="fDrCtLimite" min="1" max="1000" value="100" onchange="onFiltroDrCt('limite', this.value)">
+              <input type="number" id="fDrPrLimite" min="1" max="1000" value="100" onchange="onFiltroDrPr('limite', this.value)">
             </div>
             <div class="form-group">
               <label>Ordenar por</label>
-              <select id="fDrCtOrderBy" onchange="onFiltroDrCt('order_by', this.value)">
+              <select id="fDrPrOrderBy" onchange="onFiltroDrPr('order_by', this.value)">
                 <option value="id">Código</option>
                 <option value="nombre">Nombre</option>
                 <option value="empresa">Empresa</option>
@@ -23991,7 +23935,7 @@ route('/datarocketcontactos', async (mount) => {
             </div>
             <div class="form-group">
               <label>Dirección</label>
-              <select id="fDrCtDir" onchange="onFiltroDrCt('dir', this.value)">
+              <select id="fDrPrDir" onchange="onFiltroDrPr('dir', this.value)">
                 <option value="desc">Descendente</option>
                 <option value="asc">Ascendente</option>
               </select>
@@ -23999,95 +23943,95 @@ route('/datarocketcontactos', async (mount) => {
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrCt()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrCt()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrCt()">Aplicar</button>
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrPr()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrPr()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrPr()">Aplicar</button>
         </div>
       </div>
     </div>
   `;
 
-  $('#drCtNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrCt(null));
-  $('#drCtFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrCt());
-  $('#drCtRefrescarBtn').addEventListener('click', () => cargarDrCt());
+  $('#drPrNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrPr(null));
+  $('#drPrFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrPr());
+  $('#drPrRefrescarBtn').addEventListener('click', () => cargarDrPr());
 
-  const inp = $('#drCtSearch');
-  const clr = $('#drCtSearchClear');
-  inp.value = drCtFiltros.q || '';
+  const inp = $('#drPrSearch');
+  const clr = $('#drPrSearchClear');
+  inp.value = drPrFiltros.q || '';
   clr.style.display = inp.value ? '' : 'none';
   inp.addEventListener('input', () => {
     clr.style.display = inp.value ? '' : 'none';
-    drCtFiltros.q = inp.value.trim();
-    clearTimeout(drCtBuscadorTimer);
-    drCtBuscadorTimer = setTimeout(() => { cargarDrCt(); refrescarBadgeFiltrosDrCt(); }, 250);
+    drPrFiltros.q = inp.value.trim();
+    clearTimeout(drPrBuscadorTimer);
+    drPrBuscadorTimer = setTimeout(() => { cargarDrPr(); refrescarBadgeFiltrosDrPr(); }, 250);
   });
   clr.addEventListener('click', () => {
     inp.value = '';
     clr.style.display = 'none';
-    drCtFiltros.q = '';
-    cargarDrCt();
-    refrescarBadgeFiltrosDrCt();
+    drPrFiltros.q = '';
+    cargarDrPr();
+    refrescarBadgeFiltrosDrPr();
   });
 
-  $('#drCtCtxMenu').addEventListener('click', (ev) => {
+  $('#drPrCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
     if (!b) return;
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar') abrirConsultarDrCt(data.id);
-    if (b.dataset.action === 'editar')    abrirAltaEdicionDrCt(data.id);
-    if (b.dataset.action === 'eliminar')  eliminarDrCt(data.id);
+    if (b.dataset.action === 'consultar') abrirConsultarDrPr(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDrPr(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDrPr(data.id);
   });
 
-  $('#drCtTbody').addEventListener('click', (ev) => {
+  $('#drPrTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#drCtCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      abrirCtxMenu($('#drPrCtxMenu'), r.right - 190, r.bottom + 4, { id });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
-    abrirConsultarDrCt(Number(tr.dataset.id));
+    abrirConsultarDrPr(Number(tr.dataset.id));
   });
-  $('#drCtTbody').addEventListener('contextmenu', (ev) => {
+  $('#drPrTbody').addEventListener('contextmenu', (ev) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#drCtCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    abrirCtxMenu($('#drPrCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
   });
 
-  refrescarBadgeFiltrosDrCt();
+  refrescarBadgeFiltrosDrPr();
   // El HTML del modal de filtros se acaba de reescribir: los pickers de la
   // entrada anterior a la ruta quedaron colgando de nodos ya desconectados,
-  // asi que se descartan para que montarPickersFiltrosDrCt() los rearme
+  // asi que se descartan para que montarPickersFiltrosDrPr() los rearme
   // contra los hosts nuevos.
-  drCtEtiquetasFiltroPicker = null;
-  drCtListasFiltroPicker    = null;
+  drPrEtiquetasFiltroPicker = null;
+  drPrListasFiltroPicker    = null;
   // Pre-montar los pickers "Etiquetas" y "Listas" para que ya esten armados
   // si el usuario abre el modal, y para que reflejen la seleccion actual si
   // un filtro vino seteado desde afuera (opciones "Suscriptos" del ABM de
   // listas / "Etiquetados" del ABM de etiquetas).
-  montarPickersFiltrosDrCt();
-  await cargarDrCt();
-}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Contactos');
+  montarPickersFiltrosDrPr();
+  await cargarDrPr();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Prospectos');
 
-async function cargarDrCt() {
-  const tbody = $('#drCtTbody');
+async function cargarDrPr() {
+  const tbody = $('#drPrTbody');
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
-  Object.entries(drCtFiltros).forEach(([k, v]) => {
+  Object.entries(drPrFiltros).forEach(([k, v]) => {
     if (v !== '' && v != null) qs.set(k, v);
   });
   try {
-    const data = await apiGet('api/datarocketcontactos.php?' + qs.toString());
-    pintarStatsDrCt(data.stats, (data.items || []).length);
-    pintarTablaDrCt(data.items || []);
+    const data = await apiGet('api/datarocketprospectos.php?' + qs.toString());
+    pintarStatsDrPr(data.stats, (data.items || []).length);
+    pintarTablaDrPr(data.items || []);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
@@ -24096,28 +24040,28 @@ async function cargarDrCt() {
 // `mostrados` = filas actualmente pintadas en la tabla (post-filtro + limite),
 // `s.filtrado` = total que matchea los filtros ignorando el limite (viene del
 // backend).
-function pintarStatsDrCt(s, mostrados) {
-  const cards = $$('#drCtStats .stat-card .stat-value');
+function pintarStatsDrPr(s, mostrados) {
+  const cards = $$('#drPrStats .stat-card .stat-value');
   if (cards.length < 2) return;
   cards[0].textContent = fmtNum(mostrados);
   cards[1].textContent = fmtNum(s.filtrado ?? s.total);
 }
 
-function pintarTablaDrCt(rows) {
-  const tbody = $('#drCtTbody');
+function pintarTablaDrPr(rows) {
+  const tbody = $('#drPrTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin contactos.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin prospectos.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
     <tr data-id="${c.id}" class="row-clickable">
       <td class="td-id">#${esc(c.id)}</td>
-      <td style="text-align:center">${drCtTipoIcon(c.tipo)}</td>
+      <td style="text-align:center">${drPrTipoIcon(c.tipo)}</td>
       <td class="td-nombre">${esc(c.nombre || '—')}</td>
       <td style="font-family:monospace">${esc(c.correo || '—')}</td>
       <td style="font-family:monospace">${esc(c.celular || '—')}</td>
-      <td>${drCtMiniPills(c.lista_nombres)}</td>
-      <td>${drCtMiniPills(c.etiqueta_nombres)}</td>
+      <td>${drPrMiniPills(c.lista_nombres)}</td>
+      <td>${drPrMiniPills(c.etiqueta_nombres)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
@@ -24129,60 +24073,60 @@ function pintarTablaDrCt(rows) {
   `).join('');
 }
 
-function onFiltroDrCt(key, value) {
+function onFiltroDrPr(key, value) {
   if (['tipo', 'nombre', 'pais_id', 'provincia_id',
        'correo', 'celular', 'web', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
-    drCtFiltros[key] = value;
+    drPrFiltros[key] = value;
   } else if (key === 'codigo') {
     const v = String(value).trim();
-    drCtFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+    drPrFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
     let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
-    drCtFiltros.limite = n;
+    drPrFiltros.limite = n;
   } else {
-    drCtFiltros[key] = value;
+    drPrFiltros[key] = value;
   }
-  refrescarBadgeFiltrosDrCt();
-  cargarDrCt();
+  refrescarBadgeFiltrosDrPr();
+  cargarDrPr();
 }
 
-function refrescarBadgeFiltrosDrCt() {
-  const btn   = $('#drCtFiltrosBtn');
-  const badge = $('#drCtFiltrosBadge');
+function refrescarBadgeFiltrosDrPr() {
+  const btn   = $('#drPrFiltrosBtn');
+  const badge = $('#drPrFiltrosBadge');
   if (!btn || !badge) return;
   let count = 0;
-  for (const k of Object.keys(drCtFiltrosDefaults)) {
+  for (const k of Object.keys(drPrFiltrosDefaults)) {
     if (k === 'q') continue;
-    if (String(drCtFiltros[k]) !== String(drCtFiltrosDefaults[k])) count++;
+    if (String(drPrFiltros[k]) !== String(drPrFiltrosDefaults[k])) count++;
   }
   if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
   else           { btn.classList.remove('active'); badge.style.display = 'none'; }
 }
 
-function sincronizarControlesFiltrosDrCt() {
-  const f = drCtFiltros;
-  $('#fDrCtCodigo').value       = f.codigo;
-  $('#fDrCtTipo').value         = f.tipo;
-  $('#fDrCtNombre').value       = f.nombre;
-  $('#fDrCtPais').value         = f.pais_id;
-  $('#fDrCtProvincia').value    = f.provincia_id;
-  $('#fDrCtCorreo').value       = f.correo;
-  $('#fDrCtCelular').value      = f.celular;
-  $('#fDrCtWeb').value          = f.web;
-  $('#fDrCtDesde').value        = f.desde;
-  $('#fDrCtHasta').value        = f.hasta;
-  $('#fDrCtLimite').value       = f.limite;
-  $('#fDrCtOrderBy').value      = f.order_by;
-  $('#fDrCtDir').value          = f.dir;
+function sincronizarControlesFiltrosDrPr() {
+  const f = drPrFiltros;
+  $('#fDrPrCodigo').value       = f.codigo;
+  $('#fDrPrTipo').value         = f.tipo;
+  $('#fDrPrNombre').value       = f.nombre;
+  $('#fDrPrPais').value         = f.pais_id;
+  $('#fDrPrProvincia').value    = f.provincia_id;
+  $('#fDrPrCorreo').value       = f.correo;
+  $('#fDrPrCelular').value      = f.celular;
+  $('#fDrPrWeb').value          = f.web;
+  $('#fDrPrDesde').value        = f.desde;
+  $('#fDrPrHasta').value        = f.hasta;
+  $('#fDrPrLimite').value       = f.limite;
+  $('#fDrPrOrderBy').value      = f.order_by;
+  $('#fDrPrDir').value          = f.dir;
   // Los pickers de chips no son <input>: se sincronizan por su propia API.
   // Pueden no estar montados todavia (el catalogo se pide async).
-  drCtEtiquetasFiltroPicker?.setIds(drCtCsvAIds(f.etiqueta_id));
-  drCtListasFiltroPicker?.setIds(drCtCsvAIds(f.lista_id));
+  drPrEtiquetasFiltroPicker?.setIds(drPrCsvAIds(f.etiqueta_id));
+  drPrListasFiltroPicker?.setIds(drPrCsvAIds(f.lista_id));
 }
 
 // '5,14' -> [5, 14]. Tolera number (deep-link desde los ABM de listas y
 // etiquetas, que setean un id solo) y vacio -> [].
-function drCtCsvAIds(csv) {
+function drPrCsvAIds(csv) {
   return String(csv ?? '')
     .split(',')
     .map(s => Number(String(s).trim()))
@@ -24191,45 +24135,45 @@ function drCtCsvAIds(csv) {
 
 // Cache de etiquetas para poblar el picker del modal de filtros y evitar
 // pedir el catalogo cada vez que se abre. Se invalida por refresh de pagina.
-let drCtEtiquetasCache = null;
-async function drCtCargarEtiquetas() {
-  if (drCtEtiquetasCache) return drCtEtiquetasCache;
+let drPrEtiquetasCache = null;
+async function drPrCargarEtiquetas() {
+  if (drPrEtiquetasCache) return drPrEtiquetasCache;
   const data = await apiGet('api/datarocket_etiquetas.php?limite=1000&orden=nombre&dir=asc');
-  drCtEtiquetasCache = data.items || [];
-  return drCtEtiquetasCache;
+  drPrEtiquetasCache = data.items || [];
+  return drPrEtiquetasCache;
 }
 
 // Pickers multi-seleccion de Etiquetas y Listas del modal de filtros. Se
 // montan una sola vez por entrada a la ruta (el modal vive en el HTML de la
 // vista, no se recrea al abrirlo) y desde ahi se sincronizan con setIds().
-let drCtEtiquetasFiltroPicker = null;
-let drCtListasFiltroPicker    = null;
+let drPrEtiquetasFiltroPicker = null;
+let drPrListasFiltroPicker    = null;
 
-async function montarPickersFiltrosDrCt() {
-  const hostEt = $('#fDrCtEtiquetasHost');
-  const hostLi = $('#fDrCtListasHost');
+async function montarPickersFiltrosDrPr() {
+  const hostEt = $('#fDrPrEtiquetasHost');
+  const hostLi = $('#fDrPrListasHost');
   if (!hostEt || !hostLi) return;
   // Cada picker se monta por separado: si falla un catalogo, el otro anda.
-  if (!drCtEtiquetasFiltroPicker) {
+  if (!drPrEtiquetasFiltroPicker) {
     try {
-      drCtEtiquetasFiltroPicker = attachChipsPicker(
-        hostEt, await drCtCargarEtiquetas(), drCtCsvAIds(drCtFiltros.etiqueta_id),
+      drPrEtiquetasFiltroPicker = attachChipsPicker(
+        hostEt, await drPrCargarEtiquetas(), drPrCsvAIds(drPrFiltros.etiqueta_id),
         {
           placeholder: 'Escribí para buscar etiquetas…',
           ayuda: 'Enter agrega la etiqueta resaltada · filtra por cualquiera de las elegidas',
-          onChange: (ids) => onFiltroChipsDrCt('etiqueta_id', ids),
+          onChange: (ids) => onFiltroChipsDrPr('etiqueta_id', ids),
         }
       );
     } catch (_) { /* silencioso: sin catalogo el host queda vacio */ }
   }
-  if (!drCtListasFiltroPicker) {
+  if (!drPrListasFiltroPicker) {
     try {
-      drCtListasFiltroPicker = attachChipsPicker(
-        hostLi, await drCtCargarListas(), drCtCsvAIds(drCtFiltros.lista_id),
+      drPrListasFiltroPicker = attachChipsPicker(
+        hostLi, await drPrCargarListas(), drPrCsvAIds(drPrFiltros.lista_id),
         {
           placeholder: 'Escribí para buscar listas…',
           ayuda: 'Enter agrega la lista resaltada · filtra por cualquiera de las elegidas',
-          onChange: (ids) => onFiltroChipsDrCt('lista_id', ids),
+          onChange: (ids) => onFiltroChipsDrPr('lista_id', ids),
         }
       );
     } catch (_) { /* silencioso */ }
@@ -24237,25 +24181,25 @@ async function montarPickersFiltrosDrCt() {
 }
 
 // Handler de los pickers de chips. Guarda la seleccion como CSV y refresca.
-function onFiltroChipsDrCt(key, ids) {
-  drCtFiltros[key] = (Array.isArray(ids) ? ids : []).join(',');
-  refrescarBadgeFiltrosDrCt();
-  cargarDrCt();
+function onFiltroChipsDrPr(key, ids) {
+  drPrFiltros[key] = (Array.isArray(ids) ? ids : []).join(',');
+  refrescarBadgeFiltrosDrPr();
+  cargarDrPr();
 }
 
 // Catalogo de paises para los selects (filtros y formulario). Es chico (8
 // filas) asi que se cachea entero; provincias y localidades se piden por
 // demanda al elegir el nivel de arriba — `localidades` tiene ~94k filas.
-let drCtPaisesCache = null;
-async function drCtCargarPaises() {
-  if (drCtPaisesCache) return drCtPaisesCache;
-  const data = await apiGet('api/datarocketcontactos.php?lookups=1');
-  drCtPaisesCache = data.paises || [];
-  return drCtPaisesCache;
+let drPrPaisesCache = null;
+async function drPrCargarPaises() {
+  if (drPrPaisesCache) return drPrPaisesCache;
+  const data = await apiGet('api/datarocketprospectos.php?lookups=1');
+  drPrPaisesCache = data.paises || [];
+  return drPrPaisesCache;
 }
 
 // <option> de una lista [{id, nombre}], con `valorActual` preseleccionado.
-function drCtOpcionesIdNombre(items, valorActual, labelVacio) {
+function drPrOpcionesIdNombre(items, valorActual, labelVacio) {
   const parts = [`<option value="">${esc(labelVacio)}</option>`];
   for (const it of (items || [])) {
     const sel = String(it.id) === String(valorActual ?? '') ? ' selected' : '';
@@ -24264,25 +24208,25 @@ function drCtOpcionesIdNombre(items, valorActual, labelVacio) {
   return parts.join('');
 }
 
-async function poblarPaisesFiltroDrCt() {
-  const sel = $('#fDrCtPais');
+async function poblarPaisesFiltroDrPr() {
+  const sel = $('#fDrPrPais');
   if (!sel || sel.dataset.poblado === '1') return;
   try {
-    sel.innerHTML = drCtOpcionesIdNombre(await drCtCargarPaises(), drCtFiltros.pais_id, '— Todos —');
+    sel.innerHTML = drPrOpcionesIdNombre(await drPrCargarPaises(), drPrFiltros.pais_id, '— Todos —');
     sel.dataset.poblado = '1';
     // Si ya habia un pais filtrado, el select de provincias tiene que llegar
     // poblado y con su valor puesto — si no, al abrir el modal se veria vacio.
-    if (drCtFiltros.pais_id) await poblarProvinciasFiltroDrCt(drCtFiltros.pais_id, drCtFiltros.provincia_id);
+    if (drPrFiltros.pais_id) await poblarProvinciasFiltroDrPr(drPrFiltros.pais_id, drPrFiltros.provincia_id);
   } catch (_) { /* silencioso: si falla, queda el placeholder */ }
 }
 
-async function poblarProvinciasFiltroDrCt(paisId, keepProv) {
-  const sel = $('#fDrCtProvincia');
+async function poblarProvinciasFiltroDrPr(paisId, keepProv) {
+  const sel = $('#fDrPrProvincia');
   if (!sel) return;
   if (!paisId) { sel.innerHTML = '<option value="">— Todas —</option>'; return; }
   try {
-    const items = await apiGet('api/datarocketcontactos.php?provincias=1&pais=' + encodeURIComponent(paisId));
-    sel.innerHTML = drCtOpcionesIdNombre(items, keepProv, '— Todas —');
+    const items = await apiGet('api/datarocketprospectos.php?provincias=1&pais=' + encodeURIComponent(paisId));
+    sel.innerHTML = drPrOpcionesIdNombre(items, keepProv, '— Todas —');
   } catch (_) {
     sel.innerHTML = '<option value="">— Todas —</option>';
   }
@@ -24290,48 +24234,48 @@ async function poblarProvinciasFiltroDrCt(paisId, keepProv) {
 
 // Cambiar el pais del filtro invalida la provincia elegida (pertenecia al pais
 // anterior). Se limpia y se dispara un solo refresco del listado.
-async function onFiltroPaisDrCt(paisId) {
-  drCtFiltros.pais_id      = paisId;
-  drCtFiltros.provincia_id = '';
-  await poblarProvinciasFiltroDrCt(paisId, '');
-  refrescarBadgeFiltrosDrCt();
-  cargarDrCt();
+async function onFiltroPaisDrPr(paisId) {
+  drPrFiltros.pais_id      = paisId;
+  drPrFiltros.provincia_id = '';
+  await poblarProvinciasFiltroDrPr(paisId, '');
+  refrescarBadgeFiltrosDrPr();
+  cargarDrPr();
 }
-window.onFiltroPaisDrCt = onFiltroPaisDrCt;
+window.onFiltroPaisDrPr = onFiltroPaisDrPr;
 
-function abrirModalFiltrosDrCt() {
-  drCtFiltrosSnapshot = { ...drCtFiltros };
-  Promise.all([montarPickersFiltrosDrCt(), poblarPaisesFiltroDrCt()])
-    .then(() => sincronizarControlesFiltrosDrCt());
-  sincronizarControlesFiltrosDrCt();
-  $('#filtrosDrCtBackdrop').classList.add('open');
+function abrirModalFiltrosDrPr() {
+  drPrFiltrosSnapshot = { ...drPrFiltros };
+  Promise.all([montarPickersFiltrosDrPr(), poblarPaisesFiltroDrPr()])
+    .then(() => sincronizarControlesFiltrosDrPr());
+  sincronizarControlesFiltrosDrPr();
+  $('#filtrosDrPrBackdrop').classList.add('open');
 }
-function cerrarModalFiltrosDrCt() { $('#filtrosDrCtBackdrop').classList.remove('open'); }
-function cancelarFiltrosDrCt() {
-  if (drCtFiltrosSnapshot) {
-    Object.assign(drCtFiltros, drCtFiltrosSnapshot);
-    refrescarBadgeFiltrosDrCt();
-    cargarDrCt();
+function cerrarModalFiltrosDrPr() { $('#filtrosDrPrBackdrop').classList.remove('open'); }
+function cancelarFiltrosDrPr() {
+  if (drPrFiltrosSnapshot) {
+    Object.assign(drPrFiltros, drPrFiltrosSnapshot);
+    refrescarBadgeFiltrosDrPr();
+    cargarDrPr();
   }
-  cerrarModalFiltrosDrCt();
+  cerrarModalFiltrosDrPr();
 }
-function limpiarFiltrosDrCt() {
-  Object.assign(drCtFiltros, drCtFiltrosDefaults);
-  drCtFiltros.q = $('#drCtSearch')?.value.trim() || '';
-  sincronizarControlesFiltrosDrCt();
-  refrescarBadgeFiltrosDrCt();
-  cargarDrCt();
+function limpiarFiltrosDrPr() {
+  Object.assign(drPrFiltros, drPrFiltrosDefaults);
+  drPrFiltros.q = $('#drPrSearch')?.value.trim() || '';
+  sincronizarControlesFiltrosDrPr();
+  refrescarBadgeFiltrosDrPr();
+  cargarDrPr();
 }
-window.onFiltroDrCt           = onFiltroDrCt;
-window.cancelarFiltrosDrCt    = cancelarFiltrosDrCt;
-window.limpiarFiltrosDrCt     = limpiarFiltrosDrCt;
-window.cerrarModalFiltrosDrCt = cerrarModalFiltrosDrCt;
+window.onFiltroDrPr           = onFiltroDrPr;
+window.cancelarFiltrosDrPr    = cancelarFiltrosDrPr;
+window.limpiarFiltrosDrPr     = limpiarFiltrosDrPr;
+window.cerrarModalFiltrosDrPr = cerrarModalFiltrosDrPr;
 
-async function abrirConsultarDrCt(id) {
+async function abrirConsultarDrPr(id) {
   openModal(`
     <div class="modal" style="width:80vw;max-width:1000px">
       <div class="modal-header">
-        <div class="modal-title">Contacto Datarocket <span class="modal-subtitle">#${id}</span></div>
+        <div class="modal-title">Prospecto Datarocket <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
@@ -24342,41 +24286,41 @@ async function abrirConsultarDrCt(id) {
     </div>
   `);
   $('#modalRoot').addEventListener('click', async (ev) => {
-    // Fila de prospecto → cerramos este modal y abrimos la ficha de prospecto.
-    // `abrirConsultaDp` es async (hace fetch por id si el prospecto no esta
-    // en dpItems), asi que aca esperamos antes de cerrar por si falla.
-    const filaProspecto = ev.target.closest('#modalRoot .drct-prospecto-fila[data-prospecto-id]');
-    if (filaProspecto) {
-      const pid = Number(filaProspecto.dataset.prospectoId);
+    // Fila de oportunidad → cerramos este modal y abrimos la ficha de oportunidad.
+    // `abrirConsultaOp` es async (hace fetch por id si la oportunidad no esta
+    // en opItems), asi que aca esperamos antes de cerrar por si falla.
+    const filaOportunidad = ev.target.closest('#modalRoot .drct-oportunidad-fila[data-oportunidad-id]');
+    if (filaOportunidad) {
+      const pid = Number(filaOportunidad.dataset.oportunidadId);
       closeModal();
-      await abrirConsultaDp(pid);
+      await abrirConsultaOp(pid);
       return;
     }
     // Fila de interacción → abrimos la ficha de la interacción.
     if (drIntFilaEmbebidaClick(ev)) return;
     if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrCt(id); }
-    drCtSwitchTab(ev);
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrPr(id); }
+    drPrSwitchTab(ev);
   });
 
   try {
-    // Traemos contacto + sus prospectos + sus interacciones en paralelo — cada
+    // Traemos prospecto + sus oportunidades + sus interacciones en paralelo — cada
     // listado va en su propia pestaña del modal.
-    const [c, prospectosResp, interacciones] = await Promise.all([
-      apiGet(`api/datarocketcontactos.php?id=${id}`),
-      apiGet(`api/datarocket_prospectos.php?contacto_id=${id}&limite=200&order_by=ingreso&dir=desc`)
+    const [c, oportunidadesResp, interacciones] = await Promise.all([
+      apiGet(`api/datarocketprospectos.php?id=${id}`),
+      apiGet(`api/datarocket_oportunidades.php?prospecto_id=${id}&limite=200&order_by=ingreso&dir=desc`)
         .catch(() => ({ items: [] })),
-      drIntCargarDeRecurso('contacto_id', id),
+      drIntCargarDeRecurso('prospecto_id', id),
     ]);
-    const prospectos = prospectosResp?.items || [];
-    $('#modalRoot .modal-body').innerHTML = renderConsultaDrCt(c, prospectos, interacciones);
+    const oportunidades = oportunidadesResp?.items || [];
+    $('#modalRoot .modal-body').innerHTML = renderConsultaDrPr(c, oportunidades, interacciones);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
 
-// Delegado de tabs para el modal de consulta de contacto Datarocket.
-function drCtSwitchTab(ev) {
+// Delegado de tabs para el modal de consulta de prospecto Datarocket.
+function drPrSwitchTab(ev) {
   const tabBtn = ev.target.closest('#modalRoot [data-tab]');
   if (!tabBtn) return;
   const target = tabBtn.dataset.tab;
@@ -24384,9 +24328,9 @@ function drCtSwitchTab(ev) {
   $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
 }
 
-function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
+function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
   // Decide cual de las dos pestañas de identidad (Persona / Empresa) arranca
-  // abierta. Los contactos historicos tienen `tipo` NULL: caen en Persona.
+  // abierta. Los prospectos historicos tienen `tipo` NULL: caen en Persona.
   const esEmpresa = c.tipo === 'empresa';
 
   const card = (label, value, full = false, isCode = false) => {
@@ -24431,35 +24375,35 @@ function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
     <div style="padding:18px 20px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
       <div>
         <div style="font-size:1.3rem;font-weight:700;display:flex;align-items:center;gap:12px">
-          <span title="${esc(DR_CT_TIPO_LABELS[c.tipo] || 'Sin definir')}">${drCtTipoIcon(c.tipo)}</span>
+          <span title="${esc(DR_CT_TIPO_LABELS[c.tipo] || 'Sin definir')}">${drPrTipoIcon(c.tipo)}</span>
           <span>${esc(c.nombre || '—')}</span>
         </div>
         <div style="font-size:.9rem;color:var(--muted);margin-top:4px">${esc(c.empresa_nombre || '')}${c.empresa_nombre && c.empresa_cargo ? ' · ' : ''}${esc(c.empresa_cargo || '')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(c.id)} · UUID <code>${esc(c.uuid || '—')}</code></div>
       </div>
       <div style="text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-        <div style="font-size:.85rem;color:var(--muted)">Registrado: ${esc(fmtFecha(c.registrado))}</div>
+        <div style="font-size:.85rem;color:var(--muted)">Registrado: ${esc(fmtFechaAnio(c.registrado))}</div>
       </div>
     </div>
 
     <div class="modal-tabs">
       <button type="button" class="modal-tab${esEmpresa ? ' active' : ''}" data-tab="empresa">Empresa</button>
       <button type="button" class="modal-tab${esEmpresa ? '' : ' active'}" data-tab="persona">Persona</button>
-      <button type="button" class="modal-tab"        data-tab="contacto">Contacto</button>
+      <button type="button" class="modal-tab"        data-tab="prospecto">Prospecto</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
-      <button type="button" class="modal-tab"        data-tab="prospectos">Prospectos${prospectos.length ? ` <span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${prospectos.length}</span>` : ''}</button>
+      <button type="button" class="modal-tab"        data-tab="oportunidades">Oportunidades${oportunidades.length ? ` <span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${oportunidades.length}</span>` : ''}</button>
       <button type="button" class="modal-tab"        data-tab="interacciones">Interacciones${drIntTabBadge(interacciones.length)}</button>
     </div>
 
     <!-- La vieja pestaña "Identidad" se partio en dos, una por cada valor de
          tipo. Cada pestaña muestra EXACTAMENTE las columnas de su prefijo:
          Empresa las empresa_* y Persona las persona_*. Ninguna cruza al otro
-         grupo — la web se mudo a la pestaña Contacto. En particular
+         grupo — la web se mudo a la pestaña Prospecto. En particular
          persona_nombre vive en la pestaña Persona, no en Empresa. La columna
-         nombre no esta en ninguna de las dos: es el nombre del contacto como
+         nombre no esta en ninguna de las dos: es el nombre del prospecto como
          registro (valga persona o empresa) y ya se muestra en el encabezado
-         del modal. Los dos paneles se renderizan siempre porque un contacto
+         del modal. Los dos paneles se renderizan siempre porque un prospecto
          puede tener datos cargados en ambos lados, pero arranca abierta la que
          corresponde al tipo. Sin backticks en este comentario: esta dentro de
          un template literal y lo cortarian. -->
@@ -24481,13 +24425,13 @@ function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
       </dl>
     </div>
 
-    <!-- Todos los canales de contacto en una sola pestaña: los cuatro directos
+    <!-- Todos los canales de prospecto en una sola pestaña: los cuatro directos
          (correo, celular, telefono, whatsapp), las tres redes que antes vivian
          en una pestaña "Redes" aparte, y la web al final — antes estaba en la
-         pestaña Empresa, pero es un canal mas del contacto.
+         pestaña Empresa, pero es un canal mas del prospecto.
          Web/Facebook/Instagram/TikTok van con linkCard (abren en pestaña
          nueva); el resto con card monoespaciada. -->
-    <div class="modal-tabpanel" data-panel="contacto" hidden>
+    <div class="modal-tabpanel" data-panel="prospecto" hidden>
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
         ${card('Correo',   c.correo,   false, true)}
         ${card('Celular',  c.celular,  false, true)}
@@ -24521,7 +24465,7 @@ function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
     </div>
 
     <!-- Orden de Clasificacion: Etiquetas, Listas y Comentarios al final.
-         Primero como esta clasificado el contacto (etiquetas y listas, que es
+         Primero como esta clasificado el prospecto (etiquetas y listas, que es
          lo que se consulta seguido) y despues el texto libre. La tarjeta
          Origen se fue con la columna (migracion 20260817_2000). -->
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
@@ -24532,24 +24476,24 @@ function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
       </dl>
     </div>
 
-    <div class="modal-tabpanel" data-panel="prospectos" hidden>
-      ${prospectos.length === 0
-        ? `<div class="table-empty">Este contacto no tiene prospectos.</div>`
+    <div class="modal-tabpanel" data-panel="oportunidades" hidden>
+      ${oportunidades.length === 0
+        ? `<div class="table-empty">Este prospecto no tiene oportunidades.</div>`
         : `<div class="table-card">
              <table>
                <thead>
                  <tr>
                    <th style="width:80px">Código</th>
-                   <th style="width:130px">Ingreso</th>
+                   <th style="width:150px">Ingreso</th>
                    <th>Producto</th>
                    <th>Comentarios</th>
                  </tr>
                </thead>
                <tbody>
-                 ${prospectos.map(p => `
-                   <tr class="drct-prospecto-fila row-clickable" data-prospecto-id="${p.id}">
+                 ${oportunidades.map(p => `
+                   <tr class="drct-oportunidad-fila row-clickable" data-oportunidad-id="${p.id}">
                      <td class="td-id">#${esc(p.id)}</td>
-                     <td>${esc(fmtFecha(p.ingreso) || '—')}</td>
+                     <td>${esc(fmtFechaAnio(p.ingreso) || '—')}</td>
                      <td>${esc(p.producto || '—')}</td>
                      <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                          title="${esc(p.comentarios || '')}">${esc(String(p.comentarios || '').split('\n')[0] || '—')}</td>
@@ -24561,17 +24505,17 @@ function renderConsultaDrCt(c, prospectos = [], interacciones = []) {
     </div>
 
     <div class="modal-tabpanel" data-panel="interacciones" hidden>
-      ${drIntTablaEmbebida(interacciones, 'Este contacto no tiene interacciones registradas.')}
+      ${drIntTablaEmbebida(interacciones, 'Este prospecto no tiene interacciones registradas.')}
     </div>
   `;
 }
 
-async function abrirAltaEdicionDrCt(id) {
+async function abrirAltaEdicionDrPr(id) {
   const esEdicion = id != null;
   openModal(`
     <div class="modal" style="width:80vw;max-width:1000px">
       <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar contacto <span class="modal-subtitle">#${id}</span>` : 'Nuevo contacto'}</div>
+        <div class="modal-title">${esEdicion ? `Editar prospecto <span class="modal-subtitle">#${id}</span>` : 'Nuevo prospecto'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
@@ -24584,30 +24528,30 @@ async function abrirAltaEdicionDrCt(id) {
     </div>
   `);
 
-  // Cargamos catalogos de listas + etiquetas en paralelo con el contacto —
+  // Cargamos catalogos de listas + etiquetas en paralelo con el prospecto —
   // necesarios para los pickers typeahead de suscripciones/etiquetas. Fetch
   // unico incluso en el alta: son GETs baratos y hace la UI consistente
   // entre alta y edicion.
-  drCtListasEditor    = null;
-  drCtEtiquetasEditor = null;
+  drPrListasEditor    = null;
+  drPrEtiquetasEditor = null;
   try {
     const [c, listasResp, etiqsResp, paises] = await Promise.all([
-      esEdicion ? apiGet(`api/datarocketcontactos.php?id=${id}`) : Promise.resolve({}),
+      esEdicion ? apiGet(`api/datarocketprospectos.php?id=${id}`) : Promise.resolve({}),
       apiGet('api/datarocketlistas.php?limite=1000&order_by=nombre&dir=asc'),
       apiGet('api/datarocket_etiquetas.php?limite=1000&orden=nombre&dir=asc'),
-      drCtCargarPaises(),
+      drPrCargarPaises(),
     ]);
     const listasCatalogo = listasResp?.items || [];
     const etiqsCatalogo  = etiqsResp?.items  || [];
-    $('#modalRoot .modal-body').innerHTML = formDrCtHtml(c, paises);
-    // Encadenado: puebla provincias del pais del contacto y, dentro, las
+    $('#modalRoot .modal-body').innerHTML = formDrPrHtml(c, paises);
+    // Encadenado: puebla provincias del pais del prospecto y, dentro, las
     // localidades de esa provincia, dejando ambos valores preseleccionados.
-    await cargarProvinciasDrCt(c.pais_id, c.provincia_id, c.localidad_id);
-    drCtListasEditor = attachChipsPicker(
+    await cargarProvinciasDrPr(c.pais_id, c.provincia_id, c.localidad_id);
+    drPrListasEditor = attachChipsPicker(
       $('#drcListasHost'), listasCatalogo, c.lista_ids || [],
       { placeholder: 'Escribí para buscar una lista…' }
     );
-    drCtEtiquetasEditor = attachChipsPicker(
+    drPrEtiquetasEditor = attachChipsPicker(
       $('#drcEtiquetasHost'), etiqsCatalogo, c.etiqueta_ids || [],
       { placeholder: 'Escribí para buscar una etiqueta…' }
     );
@@ -24625,37 +24569,37 @@ async function abrirAltaEdicionDrCt(id) {
       const selector = $('#drcTipoSelector');
       const nuevoTipo = tipoBtn.dataset.tipo;
       selector.dataset.value = nuevoTipo;
-      selector.innerHTML = drCtTipoBotones(nuevoTipo);
+      selector.innerHTML = drPrTipoBotones(nuevoTipo);
       // Cambiar el tipo cambia de que lado sale `nombre`.
-      drCtRefrescarNombre();
+      drPrRefrescarNombre();
       return;
     }
     // Cambio de pestaña — mismas pestañas que el modal de consulta
-    // (empresa / persona / contacto / ubicacion / clasificacion) mas la
+    // (empresa / persona / prospecto / ubicacion / clasificacion) mas la
     // pestaña General propia del formulario.
-    drCtSwitchTab(ev);
+    drPrSwitchTab(ev);
     const a = ev.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarDrCt(id, a);
+    if (a.dataset.act === 'guardar') await guardarDrPr(id, a);
   });
 
   // `nombre` sigue en vivo al campo del que se deriva. Delegado igual que el
   // click porque los inputs se re-inyectan con el modal.
   $('#modalRoot').addEventListener('input', (ev) => {
-    if (ev.target.id === 'drcPersona' || ev.target.id === 'drcEmpresa') drCtRefrescarNombre();
+    if (ev.target.id === 'drcPersona' || ev.target.id === 'drcEmpresa') drPrRefrescarNombre();
   });
 
   // Estado inicial: alinea el campo con lo que se va a guardar apenas abre el
   // modal, sin esperar a que el usuario toque nada.
-  drCtRefrescarNombre();
+  drPrRefrescarNombre();
 }
 
 // Repuebla el select de provincias del formulario filtrado por pais.
 // `keepProv` es el valor a preservar tras el refresco (al inicializar el form
 // con datos existentes) y `keepLoc` se propaga al select de localidades.
 // Vaciar el pais limpia ambos dependientes.
-async function cargarProvinciasDrCt(paisId, keepProv, keepLoc) {
+async function cargarProvinciasDrPr(paisId, keepProv, keepLoc) {
   const selProv = document.getElementById('drcProvincia');
   const selLoc  = document.getElementById('drcLocalidad');
   if (!selProv) return;
@@ -24668,39 +24612,39 @@ async function cargarProvinciasDrCt(paisId, keepProv, keepLoc) {
   selProv.innerHTML = '<option value="">Cargando…</option>';
   if (selLoc) selLoc.innerHTML = '<option value="">—</option>';
   try {
-    const items = await apiGet('api/datarocketcontactos.php?provincias=1&pais=' + encodeURIComponent(paisId));
-    selProv.innerHTML = drCtOpcionesIdNombre(items, keepProv || '', '—');
-    if (keepProv) await cargarLocalidadesDrCt(keepProv, keepLoc || '');
+    const items = await apiGet('api/datarocketprospectos.php?provincias=1&pais=' + encodeURIComponent(paisId));
+    selProv.innerHTML = drPrOpcionesIdNombre(items, keepProv || '', '—');
+    if (keepProv) await cargarLocalidadesDrPr(keepProv, keepLoc || '');
   } catch (e) {
     selProv.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
   }
 }
 
 // Analogo para localidades filtradas por provincia.
-async function cargarLocalidadesDrCt(provinciaId, keepLoc) {
+async function cargarLocalidadesDrPr(provinciaId, keepLoc) {
   const selLoc = document.getElementById('drcLocalidad');
   if (!selLoc) return;
 
   if (!provinciaId) { selLoc.innerHTML = '<option value="">—</option>'; return; }
   selLoc.innerHTML = '<option value="">Cargando…</option>';
   try {
-    const items = await apiGet('api/datarocketcontactos.php?localidades=1&provincia=' + encodeURIComponent(provinciaId));
-    selLoc.innerHTML = drCtOpcionesIdNombre(items, keepLoc || '', '—');
+    const items = await apiGet('api/datarocketprospectos.php?localidades=1&provincia=' + encodeURIComponent(provinciaId));
+    selLoc.innerHTML = drPrOpcionesIdNombre(items, keepLoc || '', '—');
   } catch (e) {
     selLoc.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
   }
 }
 
-window.cargarProvinciasDrCt  = cargarProvinciasDrCt;
-window.cargarLocalidadesDrCt = cargarLocalidadesDrCt;
+window.cargarProvinciasDrPr  = cargarProvinciasDrPr;
+window.cargarLocalidadesDrPr = cargarLocalidadesDrPr;
 
-// `paises` llega ya resuelto desde abrirAltaEdicionDrCt: los selects de
+// `paises` llega ya resuelto desde abrirAltaEdicionDrPr: los selects de
 // provincia y localidad se pueblan despues de inyectar el HTML, encadenados
-// al valor del nivel de arriba (ver cargarProvinciasDrCt).
+// al valor del nivel de arriba (ver cargarProvinciasDrPr).
 // ---------------------------------------------------------------------------
-// Normalizacion de teléfonos y correo del contacto
+// Normalizacion de teléfonos y correo del prospecto
 // ---------------------------------------------------------------------------
-// Espejo en cliente de cloud/api/lib/contactos_normalizar.php. Existe sólo
+// Espejo en cliente de cloud/api/lib/prospectos_normalizar.php. Existe sólo
 // para que al salir del campo el usuario vea exactamente lo que va a quedar
 // guardado, sin esperar el viaje al servidor. La fuente de verdad sigue siendo
 // el API, que renormaliza todo lo que recibe.
@@ -24715,7 +24659,7 @@ const DRC_AREAS_3 = new Set([
   '362','364','370','376','379','381','383','385','387','388',
 ]);
 
-function drCtAreaLen(d) {
+function drPrAreaLen(d) {
   if (d.startsWith('11'))            return 2;
   if (DRC_AREAS_3.has(d.slice(0, 3))) return 3;
   return 4;
@@ -24724,7 +24668,7 @@ function drCtAreaLen(d) {
 // Saca prefijos: 00 internacional, 0 de larga distancia, 54 de país, 9 de
 // móvil, 15 intercalado, y convierte el móvil de CABA en formato local
 // (15-6780-5502) a 11-6780-5502.
-function drCtDespejar(d) {
+function drPrDespejar(d) {
   if (d.startsWith('00')) d = d.slice(2);
   while (d.length > 10 && d.startsWith('0')) d = d.slice(1);
   if (d.length > 10 && d.startsWith('54')) d = d.slice(2);
@@ -24732,7 +24676,7 @@ function drCtDespejar(d) {
   // abonado ("+54 9 341 15-307-4305", con los dos marcadores de móvil).
   if ((d.length === 11 || d.length === 13) && d.startsWith('9')) d = d.slice(1);
   if (d.length === 12) {
-    let a = drCtAreaLen(d);
+    let a = drPrAreaLen(d);
     if (d.substr(a, 2) !== '15') {
       a = 0;
       for (const t of [2, 3, 4]) if (d.substr(t, 2) === '15') { a = t; break; }
@@ -24743,22 +24687,22 @@ function drCtDespejar(d) {
   return d;
 }
 
-function drCtTelValido(d) {
+function drPrTelValido(d) {
   return d.length === 10 && /^(11|[23]|600|800|810)/.test(d);
 }
 
 // Devuelve los 10 dígitos cuando las reglas llegan a un número nacional
-// válido; si no, los dígitos crudos (hay contactos del exterior y fijos sin
+// válido; si no, los dígitos crudos (hay prospectos del exterior y fijos sin
 // código de área que no queremos perder); '' si no hay ningún dígito.
-function drCtNormalizarTel(v) {
+function drPrNormalizarTel(v) {
   const raw = String(v ?? '').trim();
   if (raw === '') return '';
-  const entero = drCtDespejar(raw.replace(/\D+/g, ''));
-  if (drCtTelValido(entero)) return entero;
+  const entero = drPrDespejar(raw.replace(/\D+/g, ''));
+  if (drPrTelValido(entero)) return entero;
   // El campo puede traer dos números separados por espacios ("fijo móvil").
   for (const token of raw.split(/\s+/).filter(Boolean)) {
-    const cand = drCtDespejar(token.replace(/\D+/g, ''));
-    if (drCtTelValido(cand)) return cand;
+    const cand = drPrDespejar(token.replace(/\D+/g, ''));
+    if (drPrTelValido(cand)) return cand;
   }
   return raw.replace(/\D+/g, '');
 }
@@ -24767,7 +24711,7 @@ const DRC_CORREO_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/;
 
 // Minúscula y sin espacios; si el campo trae una lista separada por comas o
 // barras se queda con la primera dirección. '' si no hay ninguna parseable.
-function drCtNormalizarCorreo(v) {
+function drPrNormalizarCorreo(v) {
   const s = String(v ?? '').trim().toLowerCase();
   if (s === '') return '';
   const m = s.match(DRC_CORREO_RE);
@@ -24775,12 +24719,12 @@ function drCtNormalizarCorreo(v) {
 }
 
 // Handler de blur de los cuatro campos: reescribe el valor ya normalizado.
-function drCtNormalizarInput(inp, tipo) {
-  inp.value = tipo === 'correo' ? drCtNormalizarCorreo(inp.value)
-                                : drCtNormalizarTel(inp.value);
+function drPrNormalizarInput(inp, tipo) {
+  inp.value = tipo === 'correo' ? drPrNormalizarCorreo(inp.value)
+                                : drPrNormalizarTel(inp.value);
 }
 
-function formDrCtHtml(c, paises) {
+function formDrPrHtml(c, paises) {
   const v   = (k) => esc(c?.[k] ?? '');
   const sel = (k, val) => (c?.[k] ?? '') === val ? 'selected' : '';
   const dt  = (k) => {
@@ -24788,22 +24732,22 @@ function formDrCtHtml(c, paises) {
     if (!raw) return '';
     return esc(String(raw).replace(' ', 'T').slice(0, 16));
   };
-  // Pestañas espejan la distribucion del modal de consulta (renderConsultaDrCt)
+  // Pestañas espejan la distribucion del modal de consulta (renderConsultaDrPr)
   // para que consultar y editar tengan el mismo mapa mental: empresa · persona ·
-  // contacto (canales directos + web y redes) · ubicacion · comentarios y
+  // prospecto (canales directos + web y redes) · ubicacion · comentarios y
   // clasificacion. La unica diferencia es la pestaña "General" al principio,
   // que no existe en el consultar: aloja los dos campos que son del registro y
   // no de una de las dos identidades — el selector de `tipo` (obligatorio) y el
-  // `nombre` del contacto, que en el consultar se muestran en el encabezado del
+  // `nombre` del prospecto, que en el consultar se muestran en el encabezado del
   // modal y por eso no tienen pestaña propia.
-  // `drCtSwitchTab` (mismo helper que usa el consultar) se encarga de
+  // `drPrSwitchTab` (mismo helper que usa el consultar) se encarga de
   // mostrar/ocultar los paneles desde el listener del modal.
   return `
     <div class="modal-tabs">
       <button type="button" class="modal-tab active" data-tab="general">General</button>
       <button type="button" class="modal-tab"        data-tab="empresa">Empresa</button>
       <button type="button" class="modal-tab"        data-tab="persona">Persona</button>
-      <button type="button" class="modal-tab"        data-tab="contacto">Contacto</button>
+      <button type="button" class="modal-tab"        data-tab="prospecto">Prospecto</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
     </div>
@@ -24812,16 +24756,16 @@ function formDrCtHtml(c, paises) {
       <div class="form-group">
         <label>Tipo <span style="color:var(--danger)">*</span></label>
         <div id="drcTipoSelector" data-value="${esc(c?.tipo || '')}" style="display:flex;gap:8px">
-          ${drCtTipoBotones(c?.tipo || '')}
+          ${drPrTipoBotones(c?.tipo || '')}
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label>Nombre</label>
           <!-- Derivado, no editable: sale del Nombre de la pestaña Persona o de
-               la de Empresa segun el Tipo elegido arriba. drCtRefrescarNombre()
+               la de Empresa segun el Tipo elegido arriba. drPrRefrescarNombre()
                lo recalcula en vivo y el backend aplica la misma regla al
-               guardar (ver drCtDerivarNombre en cloud/api/datarocketcontactos.php),
+               guardar (ver drPrDerivarNombre en cloud/api/datarocketprospectos.php),
                asi que editarlo a mano no tendria ningun efecto. -->
           <input type="text" id="drcNombre" maxlength="255" value="${v('nombre')}" readonly
                  style="opacity:.7;cursor:not-allowed">
@@ -24836,7 +24780,7 @@ function formDrCtHtml(c, paises) {
 
     <!-- Empresa y Persona: mismas columnas (y mismo orden) que los paneles
          homonimos del modal de consulta. Los dos paneles existen siempre,
-         independientemente del tipo elegido en General, porque un contacto
+         independientemente del tipo elegido en General, porque un prospecto
          puede tener datos cargados de los dos lados. Sin backticks en este
          comentario: esta dentro de un template literal y lo cortarian. -->
     <div class="modal-tabpanel" data-panel="empresa" hidden>
@@ -24894,29 +24838,29 @@ function formDrCtHtml(c, paises) {
          consulta: correo · celular · telefono · whatsapp · facebook ·
          instagram · tiktok · web. La web va ultima de todas. La pestaña
          "Redes" se fusiono aca. -->
-    <div class="modal-tabpanel" data-panel="contacto" hidden>
+    <div class="modal-tabpanel" data-panel="prospecto" hidden>
       <div class="form-row">
         <div class="form-group">
           <label>Correo</label>
           <input type="email" id="drcCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace"
-                 placeholder="nombre@empresa.com" onblur="drCtNormalizarInput(this, 'correo')">
+                 placeholder="nombre@empresa.com" onblur="drPrNormalizarInput(this, 'correo')">
         </div>
         <div class="form-group">
           <label>Celular</label>
           <input type="text" id="drcCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace"
-                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
+                 inputmode="tel" placeholder="1148554442" onblur="drPrNormalizarInput(this)">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label>Teléfono</label>
           <input type="text" id="drcTelefono" maxlength="255" value="${v('telefono')}" style="font-family:monospace"
-                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
+                 inputmode="tel" placeholder="1148554442" onblur="drPrNormalizarInput(this)">
         </div>
         <div class="form-group">
           <label>WhatsApp</label>
           <input type="text" id="drcWhatsapp" maxlength="255" value="${v('whatsapp')}" style="font-family:monospace"
-                 inputmode="tel" placeholder="1148554442" onblur="drCtNormalizarInput(this)">
+                 inputmode="tel" placeholder="1148554442" onblur="drPrNormalizarInput(this)">
         </div>
       </div>
       <div class="form-row">
@@ -24964,13 +24908,13 @@ function formDrCtHtml(c, paises) {
       <div class="form-row form-row-3">
         <div class="form-group">
           <label>País</label>
-          <select id="drcPais" onchange="cargarProvinciasDrCt(this.value, '')">
-            ${drCtOpcionesIdNombre(paises, c?.pais_id, '—')}
+          <select id="drcPais" onchange="cargarProvinciasDrPr(this.value, '')">
+            ${drPrOpcionesIdNombre(paises, c?.pais_id, '—')}
           </select>
         </div>
         <div class="form-group">
           <label>Provincia</label>
-          <select id="drcProvincia" onchange="cargarLocalidadesDrCt(this.value, '')">
+          <select id="drcProvincia" onchange="cargarLocalidadesDrPr(this.value, '')">
             <option value="">—</option>
           </select>
         </div>
@@ -24988,7 +24932,7 @@ function formDrCtHtml(c, paises) {
     </div>
 
     <!-- Mismo orden que el modal de consulta: primero como se clasifica el
-         contacto (etiquetas y listas) y recien al final el texto libre. -->
+         prospecto (etiquetas y listas) y recien al final el texto libre. -->
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <div class="form-group">
         <label>Etiquetas</label>
@@ -25008,7 +24952,7 @@ function formDrCtHtml(c, paises) {
   `;
 }
 
-async function guardarDrCt(id, btn) {
+async function guardarDrPr(id, btn) {
   const err = $('#drcFormError');
   err.style.display = 'none';
 
@@ -25029,8 +24973,8 @@ async function guardarDrCt(id, btn) {
   // igual (assertIdentidadValida); acá además se salta al tab del campo que
   // falta, que es lo único que el 400 no puede hacer.
   const ladoTipo = tipoSel === 'persona'
-    ? { input: '#drcPersona', tab: 'persona', msg: 'Cargá el nombre de la persona: es el que se usa como nombre del contacto.' }
-    : { input: '#drcEmpresa', tab: 'empresa', msg: 'Cargá el nombre de la empresa: es el que se usa como nombre del contacto.' };
+    ? { input: '#drcPersona', tab: 'persona', msg: 'Cargá el nombre de la persona: es el que se usa como nombre del prospecto.' }
+    : { input: '#drcEmpresa', tab: 'empresa', msg: 'Cargá el nombre de la empresa: es el que se usa como nombre del prospecto.' };
   if ($(ladoTipo.input).value.trim() === '') {
     const btnLado = $(`#modalRoot .modal-tab[data-tab="${ladoTipo.tab}"]`);
     if (btnLado) btnLado.click();
@@ -25043,10 +24987,10 @@ async function guardarDrCt(id, btn) {
   // Correo: si trae algo escrito tiene que contener una dirección parseable.
   // El backend rechaza igual con 400; se chequea acá además para dar feedback
   // inmediato y saltar al tab donde está el campo.
-  const correoNorm = drCtNormalizarCorreo($('#drcCorreo').value);
+  const correoNorm = drPrNormalizarCorreo($('#drcCorreo').value);
   if (correoNorm !== '' && !DRC_CORREO_RE.test(correoNorm)) {
-    const btnContacto = $('#modalRoot .modal-tab[data-tab="contacto"]');
-    if (btnContacto) btnContacto.click();
+    const btnProspecto = $('#modalRoot .modal-tab[data-tab="prospecto"]');
+    if (btnProspecto) btnProspecto.click();
     err.textContent = 'El correo no es válido.';
     err.style.display = '';
     return;
@@ -25070,10 +25014,10 @@ async function guardarDrCt(id, btn) {
     provincia_id:  $('#drcProvincia').value.trim() || null,
     pais_id:       $('#drcPais').value.trim() || null,
     // Ya normalizados en cliente (el API los renormaliza igual — ver
-    // cloud/api/lib/contactos_normalizar.php).
-    telefono:      drCtNormalizarTel($('#drcTelefono').value),
-    celular:       drCtNormalizarTel($('#drcCelular').value),
-    whatsapp:      drCtNormalizarTel($('#drcWhatsapp').value),
+    // cloud/api/lib/prospectos_normalizar.php).
+    telefono:      drPrNormalizarTel($('#drcTelefono').value),
+    celular:       drPrNormalizarTel($('#drcCelular').value),
+    whatsapp:      drPrNormalizarTel($('#drcWhatsapp').value),
     correo:        correoNorm,
     web:           $('#drcWeb').value.trim(),
     facebook:      $('#drcFacebook').value.trim(),
@@ -25081,26 +25025,26 @@ async function guardarDrCt(id, btn) {
     tiktok:        $('#drcTiktok').value.trim(),
     comentarios:   $('#drcComentarios').value,
     // Suscripciones a listas y etiquetas asignadas → tablas puente
-    // `datarocket_contactos_listas` / `datarocket_contactos_etiquetas`. El
+    // `datarocket_prospectos_listas` / `datarocket_prospectos_etiquetas`. El
     // API hace full-replace: mandamos el estado deseado (incluido `[]` para
     // desasignar de todo) y borra/inserta lo que corresponda. Los pickers
     // (attachChipsPicker) devuelven el array de ids seleccionados.
-    lista_ids:     drCtListasEditor    ? drCtListasEditor.getIds()    : [],
-    etiqueta_ids:  drCtEtiquetasEditor ? drCtEtiquetasEditor.getIds() : [],
+    lista_ids:     drPrListasEditor    ? drPrListasEditor.getIds()    : [],
+    etiqueta_ids:  drPrEtiquetasEditor ? drPrEtiquetasEditor.getIds() : [],
     registrado:    $('#drcRegistrado').value || null,
   };
 
   btn.disabled = true;
   try {
     if (id == null) {
-      await apiSend('api/datarocketcontactos.php', 'POST', payload);
-      toast('Contacto creado.');
+      await apiSend('api/datarocketprospectos.php', 'POST', payload);
+      toast('Prospecto creado.');
     } else {
-      await apiSend(`api/datarocketcontactos.php?id=${id}`, 'PUT', payload);
-      toast('Contacto actualizado.');
+      await apiSend(`api/datarocketprospectos.php?id=${id}`, 'PUT', payload);
+      toast('Prospecto actualizado.');
     }
     closeModal();
-    cargarDrCt();
+    cargarDrPr();
   } catch (e) {
     err.textContent = e.message;
     err.style.display = '';
@@ -25109,37 +25053,37 @@ async function guardarDrCt(id, btn) {
 }
 
 // La baja es en cascada: el endpoint borra primero las interacciones del
-// contacto (y las de sus prospectos), despues los prospectos y recien ahi el
-// contacto. Por eso el confirm lo avisa y el toast informa cuanto se llevo
+// prospecto (y las de sus oportunidades), despues las oportunidades y recien ahi el
+// prospecto. Por eso el confirm lo avisa y el toast informa cuanto se llevo
 // puesto — no es solo una fila.
-async function eliminarDrCt(id) {
+async function eliminarDrPr(id) {
   const ok = await confirmar({
-    title: 'Eliminar contacto',
-    message: `Se eliminará el contacto #${id} junto con todos sus prospectos e interacciones. Esta acción no se puede deshacer.`,
+    title: 'Eliminar prospecto',
+    message: `Se eliminará el prospecto #${id} junto con todas sus oportunidades e interacciones. Esta acción no se puede deshacer.`,
     confirmText: 'Eliminar',
   });
   if (!ok) return;
   try {
-    const r = await apiSend(`api/datarocketcontactos.php?id=${id}`, 'DELETE');
+    const r = await apiSend(`api/datarocketprospectos.php?id=${id}`, 'DELETE');
     const extra = [];
-    if (r?.prospectos)    extra.push(`${r.prospectos} prospecto${r.prospectos === 1 ? '' : 's'}`);
+    if (r?.oportunidades)    extra.push(`${r.oportunidades} oportunidad${r.oportunidades === 1 ? '' : 'es'}`);
     if (r?.interacciones) extra.push(`${r.interacciones} interacci${r.interacciones === 1 ? 'ón' : 'ones'}`);
-    toast(extra.length ? `Contacto eliminado (${extra.join(' y ')}).` : 'Contacto eliminado.');
-    cargarDrCt();
+    toast(extra.length ? `Prospecto eliminado (${extra.join(' y ')}).` : 'Prospecto eliminado.');
+    cargarDrPr();
   } catch (e) {
     toast(e.message, { error: true });
   }
 }
 
 // ------------------------- Vista: Datarocket > Interacciones (read-only ABM) -------------------------
-// Historial de interacciones sobre cada contacto Datarocket. Las altas
+// Historial de interacciones sobre cada prospecto Datarocket. Las altas
 // las escriben las APIs de envio (aws_mensajes / evolution_mensajes) — el
 // panel es solo lectura: no hay "+ Nueva" ni "Editar". Solo Consultar y
 // Eliminar. `mensaje_id` + `origen` forman una asociacion polimorfica al
 // mensaje que origino la interaccion (origen ∈ {'aws_mensajes',
 // 'evolution_mensajes'}).
 const drIntFiltrosDefaults = {
-  q: '', codigo: '', contacto_id: '', sentido: '', canal: '', respuesta: '',
+  q: '', codigo: '', prospecto_id: '', sentido: '', canal: '', respuesta: '',
   desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -25222,7 +25166,7 @@ function drIntViaCelda(a) {
 //
 // Los dos campos son opcionales y rara vez estan los dos: la mayoria de las
 // interacciones no tiene asunto —los canales que no lo manejan (WhatsApp,
-// Telegram) y las migradas desde prospectos, donde solo 79 de 1336 lo traian—
+// Telegram) y las migradas desde oportunidades, donde solo 79 de 1336 lo traian—
 // asi que cuando falta uno se renderiza solo el otro, sin dejar una linea
 // vacia ocupando alto de fila.
 //
@@ -25251,7 +25195,7 @@ function drIntAsuntoCelda(a) {
 // Celda "Asignado": arriba el nombre del usuario responsable y debajo, atenuado
 // y en cuerpo chico, cuanto lleva esperando la interaccion.
 //
-// El asignado sale del PROSPECTO relacionado (`datarocket_prospectos.asignado`),
+// El asignado sale de la OPORTUNIDAD relacionada (`datarocket_oportunidades.asignado`),
 // no de la interaccion: `datarocket_interacciones.usuario_id` es el autor de una
 // carga manual y esta NULL en el 100% de las filas de hoy. Ver DR_INT_JOINS.
 //
@@ -25271,15 +25215,15 @@ function drIntAsignadoCelda(a) {
 }
 
 // ---- Pestaña "Interacciones" embebida en otros modales -------------------
-// El listado de interacciones de un contacto / prospecto se muestra dentro de
+// El listado de interacciones de un prospecto / oportunidad se muestra dentro de
 // los modales de Consultar de esos recursos. Se comparte el render para que
 // las dos pestañas se vean igual y sigan las mismas columnas que el listado
-// principal (menos Contacto y Acciones, redundantes dentro de una ficha).
+// principal (menos Prospecto y Acciones, redundantes dentro de una ficha).
 
-// Trae las interacciones de un recurso. `filtro` es 'contacto_id' o
-// 'prospecto_id'. Nunca lanza: si el usuario no tiene el permiso de consulta
+// Trae las interacciones de un recurso. `filtro` es 'prospecto_id' o
+// 'oportunidad_id'. Nunca lanza: si el usuario no tiene el permiso de consulta
 // —o el endpoint falla— devolvemos [] y la pestaña muestra el vacío, en vez de
-// romper el modal entero de contacto/prospecto por una pestaña secundaria.
+// romper el modal entero de prospecto/oportunidad por una pestaña secundaria.
 async function drIntCargarDeRecurso(filtro, id) {
   if (!hasPermission('datarocket.interacciones.consultar')) return [];
   try {
@@ -25294,7 +25238,7 @@ async function drIntCargarDeRecurso(filtro, id) {
 }
 
 // Badge con el contador para el botón de la pestaña. Se omite en 0 para no
-// ensuciar la barra de tabs (mismo criterio que la pestaña Prospectos).
+// ensuciar la barra de tabs (mismo criterio que la pestaña Oportunidades).
 function drIntTabBadge(n) {
   if (!n) return '';
   return `<span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${n}</span>`;
@@ -25320,7 +25264,7 @@ function drIntTablaEmbebida(items, vacioTxt) {
             <tr class="drint-fila-embebida row-clickable" data-interaccion-id="${a.id}"
                 title="Ver interacción #${esc(a.id)}">
               <td class="td-id">#${esc(a.id)}</td>
-              <td>${esc(fmtFecha(a.fecha) || '—')}</td>
+              <td>${esc(fmtFechaAnio(a.fecha) || '—')}</td>
               <td style="text-align:center">${drIntViaCelda(a)}</td>
               <td>${drIntAsuntoCelda(a)}</td>
             </tr>
@@ -25352,7 +25296,7 @@ route('/datarocketinteracciones', async (mount) => {
           <div style="font-size:1.6rem;line-height:1">💬</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
             Las interacciones de Datarocket son los eventos registrados
-            automáticamente por las APIs de envío sobre cada contacto —correos y
+            automáticamente por las APIs de envío sobre cada prospecto —correos y
             whatsapps enviados, aperturas y otros—, con su tipo, mensaje asociado
             y fecha.
           </div>
@@ -25361,7 +25305,7 @@ route('/datarocketinteracciones', async (mount) => {
 
       <div class="stats-bar" id="drIntStats">
         <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Contactos únicos</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Prospectos únicos</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Entrantes</span><span class="stat-value green">—</span></div>
         <div class="stat-card"><span class="stat-label">Sin responder</span><span class="stat-value orange">—</span></div>
         <div class="stat-card"><span class="stat-label">Respuesta promedio</span><span class="stat-value">—</span></div>
@@ -25371,7 +25315,7 @@ route('/datarocketinteracciones', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="drIntSearch"
-                   placeholder="🔍 Buscar por contacto, correo, asunto o mensaje…">
+                   placeholder="🔍 Buscar por prospecto, correo, asunto o mensaje…">
             <button class="search-clear" id="drIntSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="drIntFiltrosBtn" title="Filtros">
@@ -25390,7 +25334,7 @@ route('/datarocketinteracciones', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Fecha</th>
-              <th>Contacto</th>
+              <th>Prospecto</th>
               <th style="width:70px;text-align:center" title="Sentido y canal">Vía</th>
               <th>Asunto / Mensaje</th>
               <th style="width:170px">Asignado</th>
@@ -25472,8 +25416,8 @@ route('/datarocketinteracciones', async (mount) => {
           </div>
           <div class="form-row">
             <div class="form-group">
-              <label>Contacto (ID)</label>
-              <input type="number" id="fDrIntContacto" min="1" oninput="onFiltroDrInt('contacto_id', this.value)">
+              <label>Prospecto (ID)</label>
+              <input type="number" id="fDrIntProspecto" min="1" oninput="onFiltroDrInt('prospecto_id', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -25496,7 +25440,7 @@ route('/datarocketinteracciones', async (mount) => {
               <select id="fDrIntOrderBy" onchange="onFiltroDrInt('order_by', this.value)">
                 <option value="id">Código</option>
                 <option value="fecha">Fecha</option>
-                <option value="contacto_id">Contacto</option>
+                <option value="prospecto_id">Prospecto</option>
                 <option value="sentido">Sentido</option>
                 <option value="canal">Canal</option>
                 <option value="respondida">Respuesta</option>
@@ -25631,7 +25575,7 @@ function pintarStatsDrInt(s) {
   const cards = $$('#drIntStats .stat-card .stat-value');
   if (cards.length < 5) return;
   cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.contactos);
+  cards[1].textContent = fmtNum(s.prospectos);
   cards[2].textContent = fmtNum(s.entrantes);
   cards[3].textContent = fmtNum(s.pendientes);
   // null cuando todavía no se marcó ninguna respondida: no hay promedio que
@@ -25647,13 +25591,13 @@ function pintarTablaDrInt(rows) {
     return;
   }
   tbody.innerHTML = rows.map((a) => {
-    // Solo el nombre: el "#id" del contacto no aporta al operador y competia
+    // Solo el nombre: el "#id" del prospecto no aporta al operador y competia
     // visualmente con el codigo de la propia interaccion, que ya va en la
     // primera columna. Cuando no hay nombre cargado si cae al id, que es lo
     // unico identificable que queda.
-    const contactoTxt = a.contacto_nombre
-      ? esc(a.contacto_nombre)
-      : `<span style="color:var(--muted)">#${esc(a.contacto_id)}</span>`;
+    const prospectoTxt = a.prospecto_nombre
+      ? esc(a.prospecto_nombre)
+      : `<span style="color:var(--muted)">#${esc(a.prospecto_id)}</span>`;
     // `data-sentido` / `data-respondida` los lee el menú contextual para
     // decidir si ofrece "Marcar respondida" o "Volver a pendiente".
     return `
@@ -25661,7 +25605,7 @@ function pintarTablaDrInt(rows) {
         data-sentido="${esc(a.sentido || '')}" data-respondida="${a.respondida ? '1' : ''}">
       <td class="td-id">#${esc(a.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(a.fecha))}</td>
-      <td>${contactoTxt}</td>
+      <td>${prospectoTxt}</td>
       <td style="text-align:center">${drIntViaCelda(a)}</td>
       <td>${drIntAsuntoCelda(a)}</td>
       <td>${drIntAsignadoCelda(a)}</td>
@@ -25682,7 +25626,7 @@ function pintarTablaDrInt(rows) {
 function onFiltroDrInt(key, value) {
   if (['sentido', 'canal', 'respuesta', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drIntFiltros[key] = value;
-  } else if (['codigo', 'contacto_id'].includes(key)) {
+  } else if (['codigo', 'prospecto_id'].includes(key)) {
     const v = String(value).trim();
     drIntFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
   } else if (key === 'limite') {
@@ -25714,7 +25658,7 @@ function sincronizarControlesFiltrosDrInt() {
   $('#fDrIntSentido').value  = f.sentido;
   $('#fDrIntCanal').value    = f.canal;
   $('#fDrIntRespuesta').value = f.respuesta;
-  $('#fDrIntContacto').value = f.contacto_id;
+  $('#fDrIntProspecto').value = f.prospecto_id;
   $('#fDrIntDesde').value    = f.desde;
   $('#fDrIntHasta').value    = f.hasta;
   $('#fDrIntLimite').value   = f.limite;
@@ -25795,7 +25739,7 @@ function renderConsultaDrInt(a) {
   };
 
   // Variante con HTML crudo (no escapa el value) — usada para renderizar
-  // enlaces a los modales de Consultar contacto / mensaje.
+  // enlaces a los modales de Consultar prospecto / mensaje.
   const cardHtml = (label, valueHtml, full = false) => `
     <div class="data-row${full ? ' full' : ''}">
       <span class="data-label">${esc(label)}</span>
@@ -25804,19 +25748,19 @@ function renderConsultaDrInt(a) {
 
   const linkStyle = 'color:var(--primary);cursor:pointer;text-decoration:underline';
 
-  // Contacto: nombre clickeable que abre el modal de Consultar contacto.
+  // Prospecto: nombre clickeable que abre el modal de Consultar prospecto.
   // Si no hay nombre mostramos "#id" y linkeamos igual.
-  const contactoNombre = a.contacto_nombre || `#${a.contacto_id}`;
-  const contactoHtml   = `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); abrirConsultarDrCt(${Number(a.contacto_id)})">${esc(contactoNombre)}</a>`
-                       + (a.contacto_nombre ? ` <span style="color:var(--muted)">(#${esc(a.contacto_id)})</span>` : '');
+  const prospectoNombre = a.prospecto_nombre || `#${a.prospecto_id}`;
+  const prospectoHtml   = `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); abrirConsultarDrPr(${Number(a.prospecto_id)})">${esc(prospectoNombre)}</a>`
+                       + (a.prospecto_nombre ? ` <span style="color:var(--muted)">(#${esc(a.prospecto_id)})</span>` : '');
 
-  // Prospecto: producto clickeable que abre el modal de Consultar prospecto.
+  // Oportunidad: producto clickeable que abre el modal de Consultar oportunidad.
   // Era el asunto hasta que la migracion 20260817_1700 dropeo esa columna.
-  // `prospecto_id` es NULL-able (las interacciones anteriores al backfill y
-  // las que no nacen de un prospecto no lo tienen), asi que cae a "Sin dato".
-  const prospectoHtml = a.prospecto_id
-    ? `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); abrirConsultaDp(${Number(a.prospecto_id)})">${esc(a.prospecto_producto || ('#' + a.prospecto_id))}</a>`
-      + (a.prospecto_producto ? ` <span style="color:var(--muted)">(#${esc(a.prospecto_id)})</span>` : '')
+  // `oportunidad_id` es NULL-able (las interacciones anteriores al backfill y
+  // las que no nacen de una oportunidad no lo tienen), asi que cae a "Sin dato".
+  const oportunidadHtml = a.oportunidad_id
+    ? `<a href="#" style="${linkStyle}" onclick="event.preventDefault(); abrirConsultaOp(${Number(a.oportunidad_id)})">${esc(a.oportunidad_producto || ('#' + a.oportunidad_id))}</a>`
+      + (a.oportunidad_producto ? ` <span style="color:var(--muted)">(#${esc(a.oportunidad_id)})</span>` : '')
     : '<span style="color:var(--muted)">Sin dato</span>';
 
   const sentidoTxt = DR_INT_SENTIDO_MAP[a.sentido]?.label ?? (a.sentido || '—');
@@ -25828,9 +25772,9 @@ function renderConsultaDrInt(a) {
     <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
       ${card('Código',      '#' + a.id)}
       ${card('Fecha',       fmtFechaLarga(a.fecha))}
-      ${cardHtml('Contacto',  contactoHtml)}
-      ${cardHtml('Prospecto', prospectoHtml)}
-      ${card('Correo',      a.contacto_correo)}
+      ${cardHtml('Prospecto',  prospectoHtml)}
+      ${cardHtml('Oportunidad', oportunidadHtml)}
+      ${card('Correo',      a.prospecto_correo)}
       ${card('Sentido',     sentidoTxt)}
       ${card('Canal',       canalTxt)}
       ${card('Respondida',  a.respondida ? fmtFechaLarga(a.respondida)
@@ -25863,7 +25807,7 @@ async function eliminarDrInt(id) {
 
 // ------------------------- Vista: Datarocket > Etiquetas (ABM) -------------------------
 // Catalogo de etiquetas reutilizables que despues se aplicaran a otros
-// recursos Datarocket (plantillas, contactos, interacciones, etc.). Este
+// recursos Datarocket (plantillas, prospectos, interacciones, etc.). Este
 // modulo solo administra el catalogo — las relaciones con cada recurso
 // destino viven en tablas de union que se crean al enchufar el uso en
 // cada modulo.
@@ -25891,8 +25835,8 @@ route('/datarocket_etiquetas', async (mount) => {
           <div style="font-size:1.6rem;line-height:1">🏷️</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
             Las etiquetas son las marcas reutilizables del catálogo Datarocket que se aplican
-            a otros recursos (plantillas, contactos, interacciones, etc.) para agruparlos y
-            filtrarlos. La columna "Etiquetados" muestra cuántos contactos tiene asignada
+            a otros recursos (plantillas, prospectos, interacciones, etc.) para agruparlos y
+            filtrarlos. La columna "Etiquetados" muestra cuántos prospectos tiene asignada
             cada etiqueta.
           </div>
         </div>
@@ -26362,14 +26306,14 @@ async function eliminarDre(id) {
   }
 }
 
-// Navega al ABM de contactos filtrando por los que tienen esta etiqueta.
+// Navega al ABM de prospectos filtrando por los que tienen esta etiqueta.
 // Mismo patron que `verSuscriptosDrLi`: resetea el resto de los filtros para
 // que la vista aterrice "limpia" con unico filtro activo `etiqueta_id`. El
 // LIKE contra el campo legacy `tags` lo aplica el API (handleList() en
-// api/datarocketcontactos.php).
+// api/datarocketprospectos.php).
 function verEtiquetadosDre(id) {
-  Object.assign(drCtFiltros, drCtFiltrosDefaults, { etiqueta_id: String(id) });
-  location.hash = '#/datarocketcontactos';
+  Object.assign(drPrFiltros, drPrFiltrosDefaults, { etiqueta_id: String(id) });
+  location.hash = '#/datarocketprospectos';
 }
 
 // Dispara el recalculo masivo de `datarocket_etiquetas.etiquetados`
@@ -26387,7 +26331,7 @@ async function recalcularDre() {
 }
 
 // ------------------------- Vista: Datarocket > Embudos (ABM) -------------------------
-// Catalogo de embudos (pipelines) por los que avanzan los prospectos. Un
+// Catalogo de embudos (pipelines) por los que avanzan las oportunidades. Un
 // embudo agrupa un conjunto ordenado de etapas (ver ABM de Etapas). Este
 // ABM administra solo el catalogo; las etapas se editan desde su propio
 // modulo. El default del proyecto es un embudo unico 'Captacion general';
@@ -26441,7 +26385,7 @@ route('/datarocket_embudos', async (mount) => {
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
           <div style="font-size:1.6rem;line-height:1">🪣</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los embudos son los pipelines de captación / venta por los que avanzan los prospectos.
+            Los embudos son los pipelines de captación / venta por los que avanzan las oportunidades.
             Cada embudo agrupa un conjunto ordenado de etapas y define el proceso comercial de
             uno o varios productos.
           </div>
@@ -26482,7 +26426,7 @@ route('/datarocket_embudos', async (mount) => {
               ${thOrdenable('nombre',      'Nombre')}
               <th>Descripción</th>
               <th style="width:90px;text-align:right">Etapas</th>
-              <th style="width:110px;text-align:right">Prospectos</th>
+              <th style="width:110px;text-align:right">Oportunidades</th>
               ${thOrdenable('activo',      'Activo',   'width:80px;text-align:center')}
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
@@ -26695,7 +26639,7 @@ function renderDrem() {
         <td style="font-weight:600">${esc(e.nombre)}</td>
         <td style="color:var(--muted);font-size:.88rem">${esc(e.descripcion || '—')}</td>
         <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.etapas_count || 0)}</td>
-        <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.prospectos_count || 0)}</td>
+        <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.oportunidades_count || 0)}</td>
         <td style="text-align:center">${activo}</td>
         <td style="text-align:center">
           <div class="actions" style="justify-content:center">
@@ -27081,7 +27025,7 @@ async function dremEliminarEtapa(id) {
   if (!e) return;
   const ok = await confirmar({
     title:       'Eliminar etapa',
-    message:     `¿Eliminás la etapa "${e.nombre}"? Si tiene prospectos asignados, la operación se bloquea.`,
+    message:     `¿Eliminás la etapa "${e.nombre}"? Si tiene oportunidades asignadas, la operación se bloquea.`,
     confirmText: 'Eliminar',
     danger:      true,
   });
@@ -27131,7 +27075,7 @@ function abrirAltaEdicionDrem(id) {
 
       <div class="modal-body">
         <!-- .modal-tabs va DENTRO de .modal-body para heredar el padding
-             horizontal de 24px (mismo patron que awsMsg y Contacto Datarocket).
+             horizontal de 24px (mismo patron que awsMsg y Prospecto Datarocket).
              Si se mueve afuera, las tabs quedan pegadas al borde del modal. -->
         <div class="modal-tabs" role="tablist">
           <button type="button" class="modal-tab active" role="tab"
@@ -27163,7 +27107,7 @@ function abrirAltaEdicionDrem(id) {
             <label class="toggle-switch" style="align-self:flex-start">
               <input type="checkbox" id="dremActivo" checked>
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              <span class="toggle-label">Activo <span style="color:var(--muted);font-weight:normal;font-size:.85em">— si está apagado el embudo no aparece en el selector para nuevos prospectos</span></span>
+              <span class="toggle-label">Activo <span style="color:var(--muted);font-weight:normal;font-size:.85em">— si está apagado el embudo no aparece en el selector para nuevas oportunidades</span></span>
             </label>
           </div>
         </div>
@@ -27287,7 +27231,7 @@ function abrirConsultaDrem(id) {
             ${card('Estado',     activoBadge)}
             ${card('Nombre',     esc(e.nombre), 'full')}
             ${card('Etapas',     `<span style="font-family:monospace">${fmtNum(e.etapas_count || 0)}</span>`)}
-            ${card('Prospectos', `<span style="font-family:monospace">${fmtNum(e.prospectos_count || 0)}</span>`)}
+            ${card('Oportunidades', `<span style="font-family:monospace">${fmtNum(e.oportunidades_count || 0)}</span>`)}
             ${card('Modificado', esc(fmtFecha(e.fecha_modificacion)))}
             ${card('Alta',       esc(fmtFecha(e.fecha_creacion)))}
             ${card('Descripción', esc(e.descripcion || '—'), 'full')}
@@ -27330,53 +27274,53 @@ async function eliminarDrem(id) {
 }
 
 
-// ------------------------- Vista: Datarocket > Prospectos (ABM) -------------------------
-// Los prospectos son los interesados que respondieron a una campaña o llegaron
-// por un canal orgánico (web, whatsapp, referido) y estan siendo trabajados en
-// el embudo. Cada fila apunta a un embudo + una etapa y guarda el snapshot
-// de datos de contacto/empresa capturados al momento del alta (mientras no
-// migremos a `datarocket_contactos` via `contacto_id`).
-const DP_API = 'api/datarocket_prospectos.php';
+// ------------------------- Vista: Datarocket > Oportunidades (ABM) -------------------------
+// Una oportunidad es un negocio concreto en curso: apunta a un prospecto
+// (`prospecto_id`, la fuente de verdad de la identidad) y a un embudo + una
+// etapa, y guarda producto, monto, moneda y fecha estimada de cierre. Se
+// llamaba "prospecto" hasta la migracion 20260817_2300 — el nombre venia del
+// ABM legacy de Datasale y contradecia lo que la fila ya era.
+const OP_API = 'api/datarocket_oportunidades.php';
 
-let dpItems           = [];
-let dpLookups         = null;        // { proyectos, usuarios, paises, embudos, etapas, opciones }
-let dpBusqueda        = '';
-let dpFiltroCodigo    = '';
-let dpFiltroEmbudo    = '';
-let dpFiltroEtapa     = '';
-let dpFiltroProyecto  = '';
-let dpFiltroAsignado  = '';
-let dpFiltroAtendido  = '';
-let dpFiltroEstado    = '';
-let dpFiltroSentido   = '';
-let dpFiltroOrigen    = '';
-let dpFiltroDesde     = '';
-let dpFiltroHasta     = '';
-let dpFiltroLimite    = 100;
-let dpFiltroOrden     = 'id';
-let dpFiltroDir       = 'desc';
-let dpEditandoId      = null;
-let dpBuscadorTimer   = null;
-let dpFiltrosSnapshot = null;
+let opItems           = [];
+let opLookups         = null;        // { proyectos, usuarios, paises, embudos, etapas, opciones }
+let opBusqueda        = '';
+let opFiltroCodigo    = '';
+let opFiltroEmbudo    = '';
+let opFiltroEtapa     = '';
+let opFiltroProyecto  = '';
+let opFiltroAsignado  = '';
+let opFiltroAtendido  = '';
+let opFiltroEstado    = '';
+let opFiltroSentido   = '';
+let opFiltroOrigen    = '';
+let opFiltroDesde     = '';
+let opFiltroHasta     = '';
+let opFiltroLimite    = 100;
+let opFiltroOrden     = 'id';
+let opFiltroDir       = 'desc';
+let opEditandoId      = null;
+let opBuscadorTimer   = null;
+let opFiltrosSnapshot = null;
 
-// Mapeo legacy de `estado` tinyint del prospecto (mismo del ABM legacy
-// /prospectos). Se mantiene mientras se conviva con la columna. La nueva
+// Mapeo legacy de `estado` tinyint de la oportunidad (mismo del ABM legacy
+// /oportunidades). Se mantiene mientras se conviva con la columna. La nueva
 // dimension viva del embudo va por `etapa_id`, no por este campo.
-const DP_ESTADO_LEGACY = {
+const OP_ESTADO_LEGACY = {
   1: { label: 'Esperando',  cls: 'badge-warn' },
   2: { label: 'Atendido',   cls: 'badge-info' },
   3: { label: 'Despachado', cls: 'badge-success' },
 };
 
-function dpEstadoLegacyBadge(v) {
+function opEstadoLegacyBadge(v) {
   if (v === null || v === undefined || v === '') return `<span class="badge badge-info">—</span>`;
-  const def = DP_ESTADO_LEGACY[Number(v)];
+  const def = OP_ESTADO_LEGACY[Number(v)];
   return def
     ? `<span class="badge ${def.cls}">${esc(def.label)}</span>`
     : `<span class="badge badge-info">${esc(String(v))}</span>`;
 }
 
-function dpEtapaPill(e) {
+function opEtapaPill(e) {
   if (!e.etapa_id) return `<span style="color:var(--muted)">—</span>`;
   const color = e.etapa_color || '#3b82f6';
   const nombre = e.etapa_nombre || `#${e.etapa_id}`;
@@ -27386,35 +27330,35 @@ function dpEtapaPill(e) {
   </span>`;
 }
 
-// Devuelve las etapas del embudo indicado (usa dpLookups). Vacio si el
-// embudo no existe o dpLookups no cargo aun.
-function dpEtapasDelEmbudo(embudoId) {
-  if (!dpLookups || !dpLookups.etapas) return [];
+// Devuelve las etapas del embudo indicado (usa opLookups). Vacio si el
+// embudo no existe o opLookups no cargo aun.
+function opEtapasDelEmbudo(embudoId) {
+  if (!opLookups || !opLookups.etapas) return [];
   const eid = Number(embudoId) || 0;
   if (!eid) return [];
-  return dpLookups.etapas.filter((x) => Number(x.embudo_id) === eid);
+  return opLookups.etapas.filter((x) => Number(x.embudo_id) === eid);
 }
 
-async function dpCargarLookups(force = false) {
-  if (dpLookups && !force) return dpLookups;
+async function opCargarLookups(force = false) {
+  if (opLookups && !force) return opLookups;
   try {
-    dpLookups = await apiGet(`${DP_API}?lookups=1`);
+    opLookups = await apiGet(`${OP_API}?lookups=1`);
   } catch {
-    dpLookups = { proyectos: [], usuarios: [], paises: [], embudos: [], etapas: [], opciones: {} };
+    opLookups = { proyectos: [], usuarios: [], paises: [], embudos: [], etapas: [], opciones: {} };
   }
   // Enriquecer cada item con etapa_color / etapa_nombre desde el lookup
   // (el backend ya devuelve etapa_nombre pero no color).
-  return dpLookups;
+  return opLookups;
 }
 
 // Se ejecuta cada vez que llegan items nuevos: le pega a cada fila los
 // campos `etapa_color` / `embudo_color` que necesita el render, resueltos
 // desde el lookup en memoria (sin round-trip extra al backend).
-function dpEnriquecerConColores() {
-  if (!dpLookups) return;
-  const embMap = new Map(dpLookups.embudos.map((e) => [e.id, e]));
-  const etaMap = new Map(dpLookups.etapas.map((e) => [e.id, e]));
-  for (const it of dpItems) {
+function opEnriquecerConColores() {
+  if (!opLookups) return;
+  const embMap = new Map(opLookups.embudos.map((e) => [e.id, e]));
+  const etaMap = new Map(opLookups.etapas.map((e) => [e.id, e]));
+  for (const it of opItems) {
     const em = embMap.get(Number(it.embudo_id));
     const et = etaMap.get(Number(it.etapa_id));
     it.embudo_color = em ? em.color : null;
@@ -27426,20 +27370,20 @@ function dpEnriquecerConColores() {
   }
 }
 
-route('/datarocket_prospectos', async (mount) => {
-  await dpCargarLookups();
+route('/datarocket_oportunidades', async (mount) => {
+  await opCargarLookups();
 
   const opProy = ['<option value="">— Todos los proyectos —</option>']
-    .concat(dpLookups.proyectos.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`))
+    .concat(opLookups.proyectos.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`))
     .join('');
   const opUsr  = ['<option value="">— Todos —</option>']
-    .concat(dpLookups.usuarios.map((u) => `<option value="${u.id}">${esc(u.nombre)}</option>`))
+    .concat(opLookups.usuarios.map((u) => `<option value="${u.id}">${esc(u.nombre)}</option>`))
     .join('');
   const opEmb  = ['<option value="">— Todos los embudos —</option>']
-    .concat(dpLookups.embudos.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`))
+    .concat(opLookups.embudos.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`))
     .join('');
   // Las etapas del filtro se pintan al cambiar el embudo (funcion
-  // `dpReflejarEtapasFiltro`), no las hardcodeamos aca.
+  // `opReflejarEtapasFiltro`), no las hardcodeamos aca.
 
   mount.innerHTML = `
     <div class="section">
@@ -27451,66 +27395,66 @@ route('/datarocket_prospectos', async (mount) => {
         <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
           <div style="font-size:1.6rem;line-height:1">🎯</div>
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los prospectos son los interesados que entraron al embudo desde una campaña, la web
-            u otro canal, con sus datos de contacto, producto de interés, embudo y etapa
-            actual, y el usuario asignado para atenderlos.
+            Las oportunidades son los negocios en curso del embudo: cada una vincula un prospecto
+            con un producto de interés, un monto estimado, la etapa en la que está y el usuario
+            asignado para trabajarla.
           </div>
         </div>
       </div>
 
-      <div class="stats-bar" id="dpStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dpStatTotal">—</span></div>
-        <div class="stat-card"><span class="stat-label">Sin atender</span><span class="stat-value" id="dpStatSinAtender">—</span></div>
-        <div class="stat-card"><span class="stat-label">Asignados</span><span class="stat-value" id="dpStatAsignados">—</span></div>
+      <div class="stats-bar" id="opStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="opStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin atender</span><span class="stat-value" id="opStatSinAtender">—</span></div>
+        <div class="stat-card"><span class="stat-label">Asignados</span><span class="stat-value" id="opStatAsignados">—</span></div>
       </div>
 
       <!-- Valor del embudo. Se puebla desde el bloque forecast del API (una
-           fila por moneda) y queda oculta mientras ningun prospecto tenga
+           fila por moneda) y queda oculta mientras ninguna oportunidad tenga
            monto cargado. Sin backticks: estamos dentro de un template literal. -->
-      <div class="stats-bar" id="dpForecast" style="display:none"></div>
+      <div class="stats-bar" id="opForecast" style="display:none"></div>
 
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
-            <input type="search" class="search-input" id="dpSearch"
-                   placeholder="🔍 Buscar contacto, empresa, correo, celular, producto…">
-            <button class="search-clear" id="dpSearchClear" style="display:none">×</button>
+            <input type="search" class="search-input" id="opSearch"
+                   placeholder="🔍 Buscar prospecto, empresa, correo, celular, producto…">
+            <button class="search-clear" id="opSearchClear" style="display:none">×</button>
           </div>
-          <button class="btn btn-ghost btn-icon" id="dpFiltrosBtn" title="Filtros">
+          <button class="btn btn-ghost btn-icon" id="opFiltrosBtn" title="Filtros">
             <i class="fa-solid fa-filter"></i>
-            <span class="btn-icon-badge" id="dpFiltrosBadge" style="display:none">0</span>
+            <span class="btn-icon-badge" id="opFiltrosBadge" style="display:none">0</span>
           </button>
-          <button class="btn btn-ghost btn-icon" id="dpRefrescarBtn" title="Refrescar">
+          <button class="btn btn-ghost btn-icon" id="opRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
         </div>
         <div class="toolbar-right">
-          <button class="btn btn-primary" id="dpNuevoBtn">+ Nuevo prospecto</button>
+          <button class="btn btn-primary" id="opNuevoBtn">+ Nueva oportunidad</button>
         </div>
       </div>
 
       <div class="table-card">
         <table>
-          <thead id="dpThead">
+          <thead id="opThead">
             <tr>
               ${thOrdenable('id',            'Código',   'width:80px')}
               ${thOrdenable('ingreso',       'Ingreso',  'width:130px')}
               ${thOrdenable('proyecto_id',   'Proyecto', 'width:130px')}
               ${thOrdenable('embudo_id',     'Embudo / Etapa', 'width:180px')}
-              ${thOrdenable('contacto_nombre', 'Nombre / Organización')}
+              ${thOrdenable('prospecto_nombre', 'Nombre / Organización')}
               ${thOrdenable('estado',        'Estado',   'width:110px;text-align:center')}
               <th style="width:130px">Asignado</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
-          <tbody id="dpTbody">
+          <tbody id="opTbody">
             <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <div id="dpCtxMenu" class="ctx-menu" role="menu">
+    <div id="opCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
@@ -27526,37 +27470,37 @@ route('/datarocket_prospectos', async (mount) => {
       </button>
     </div>
 
-    <!-- Submenu emergente con las etapas del embudo del prospecto seleccionado.
+    <!-- Submenu emergente con las etapas del embudo de la oportunidad seleccionada.
          Se pobla dinamicamente al hacer click en "Cambiar etapa". -->
-    <div id="dpEtapasCtxMenu" class="ctx-menu" role="menu"></div>
+    <div id="opEtapasCtxMenu" class="ctx-menu" role="menu"></div>
 
-    <div class="modal-backdrop" id="filtrosDpBackdrop"
-         onclick="if(event.target===this)cancelarFiltrosDp()">
+    <div class="modal-backdrop" id="filtrosOpBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosOp()">
       <div class="modal" style="max-width:640px">
         <div class="modal-header">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDp()" title="Cerrar">✕</button>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosOp()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
           <div class="form-row">
             <div class="form-group">
               <label>Código</label>
-              <input type="number" id="fDpCodigo" min="1" placeholder="ID …"
-                     oninput="onFiltroDp('codigo', this.value)">
+              <input type="number" id="fOpCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroOp('codigo', this.value)">
             </div>
             <div class="form-group">
               <label>Proyecto</label>
-              <select id="fDpProyecto" onchange="onFiltroDp('proyecto', this.value)">${opProy}</select>
+              <select id="fOpProyecto" onchange="onFiltroOp('proyecto', this.value)">${opProy}</select>
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label>Embudo</label>
-              <select id="fDpEmbudo" onchange="onFiltroDp('embudo', this.value)">${opEmb}</select>
+              <select id="fOpEmbudo" onchange="onFiltroOp('embudo', this.value)">${opEmb}</select>
             </div>
             <div class="form-group">
               <label>Etapa</label>
-              <select id="fDpEtapa" onchange="onFiltroDp('etapa', this.value)">
+              <select id="fOpEtapa" onchange="onFiltroOp('etapa', this.value)">
                 <option value="">— Todas —</option>
               </select>
             </div>
@@ -27564,41 +27508,41 @@ route('/datarocket_prospectos', async (mount) => {
           <div class="form-row">
             <div class="form-group">
               <label>Asignado</label>
-              <select id="fDpAsignado" onchange="onFiltroDp('asignado', this.value)">${opUsr}</select>
+              <select id="fOpAsignado" onchange="onFiltroOp('asignado', this.value)">${opUsr}</select>
             </div>
             <div class="form-group">
               <label>Atendido</label>
-              <select id="fDpAtendido" onchange="onFiltroDp('atendido', this.value)">${opUsr}</select>
+              <select id="fOpAtendido" onchange="onFiltroOp('atendido', this.value)">${opUsr}</select>
             </div>
           </div>
           <div class="form-group">
             <label>Estado (legacy)</label>
-            <div id="fDpEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
-              <button type="button" class="filter-chip" data-val=""  onclick="onFiltroDp('estado', '')">Todos</button>
-              <button type="button" class="filter-chip" data-val="1" onclick="onFiltroDp('estado', '1')">Esperando</button>
-              <button type="button" class="filter-chip" data-val="2" onclick="onFiltroDp('estado', '2')">Atendidos</button>
-              <button type="button" class="filter-chip" data-val="3" onclick="onFiltroDp('estado', '3')">Despachados</button>
+            <div id="fOpEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-val=""  onclick="onFiltroOp('estado', '')">Todos</button>
+              <button type="button" class="filter-chip" data-val="1" onclick="onFiltroOp('estado', '1')">Esperando</button>
+              <button type="button" class="filter-chip" data-val="2" onclick="onFiltroOp('estado', '2')">Atendidos</button>
+              <button type="button" class="filter-chip" data-val="3" onclick="onFiltroOp('estado', '3')">Despachados</button>
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label>Desde</label>
-              <input type="date" id="fDpDesde" onchange="onFiltroDp('desde', this.value)">
+              <input type="date" id="fOpDesde" onchange="onFiltroOp('desde', this.value)">
             </div>
             <div class="form-group">
               <label>Hasta</label>
-              <input type="date" id="fDpHasta" onchange="onFiltroDp('hasta', this.value)">
+              <input type="date" id="fOpHasta" onchange="onFiltroOp('hasta', this.value)">
             </div>
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Límite</label>
-              <input type="number" id="fDpLimite" min="1" max="1000" value="100"
-                     onchange="onFiltroDp('limite', this.value)">
+              <input type="number" id="fOpLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroOp('limite', this.value)">
             </div>
             <div class="form-group">
               <label>Ordenar por</label>
-              <select id="fDpOrden" onchange="onFiltroDp('orden', this.value)">
+              <select id="fOpOrden" onchange="onFiltroOp('orden', this.value)">
                 <option value="id">Código</option>
                 <option value="ingreso">Ingreso</option>
                 <option value="etapa_ingreso">Ingreso a la etapa</option>
@@ -27608,14 +27552,14 @@ route('/datarocket_prospectos', async (mount) => {
                 <option value="estado">Estado</option>
                 <option value="asignado">Asignado</option>
                 <option value="actualizado">Actualizado</option>
-                <option value="contacto_nombre">Contacto</option>
+                <option value="prospecto_nombre">Prospecto</option>
                 <option value="monto">Monto</option>
                 <option value="cierre_esperado">Cierre esperado</option>
               </select>
             </div>
             <div class="form-group">
               <label>Dirección</label>
-              <select id="fDpDir" onchange="onFiltroDp('dir', this.value)">
+              <select id="fOpDir" onchange="onFiltroOp('dir', this.value)">
                 <option value="desc">Descendente</option>
                 <option value="asc">Ascendente</option>
               </select>
@@ -27623,134 +27567,134 @@ route('/datarocket_prospectos', async (mount) => {
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDp()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDp()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDp()">Aplicar</button>
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosOp()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosOp()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosOp()">Aplicar</button>
         </div>
       </div>
     </div>
   `;
 
-  const inp = $('#dpSearch');
-  const clr = $('#dpSearchClear');
-  inp.value = dpBusqueda;
+  const inp = $('#opSearch');
+  const clr = $('#opSearchClear');
+  inp.value = opBusqueda;
   clr.style.display = inp.value ? '' : 'none';
   inp.addEventListener('input', () => {
     clr.style.display = inp.value ? '' : 'none';
-    dpBusqueda = inp.value.trim();
-    clearTimeout(dpBuscadorTimer);
-    dpBuscadorTimer = setTimeout(cargarDp, 250);
+    opBusqueda = inp.value.trim();
+    clearTimeout(opBuscadorTimer);
+    opBuscadorTimer = setTimeout(cargarOp, 250);
   });
   clr.addEventListener('click', () => {
-    inp.value = ''; clr.style.display = 'none'; dpBusqueda = ''; cargarDp();
+    inp.value = ''; clr.style.display = 'none'; opBusqueda = ''; cargarOp();
   });
 
-  $('#dpFiltrosBtn').addEventListener('click', abrirModalFiltrosDp);
-  $('#dpRefrescarBtn').addEventListener('click', cargarDp);
-  $('#dpNuevoBtn').addEventListener('click', () => abrirAltaEdicionDp(null));
+  $('#opFiltrosBtn').addEventListener('click', abrirModalFiltrosOp);
+  $('#opRefrescarBtn').addEventListener('click', cargarOp);
+  $('#opNuevoBtn').addEventListener('click', () => abrirAltaEdicionOp(null));
 
-  $('#dpThead').addEventListener('click', (ev) => {
+  $('#opThead').addEventListener('click', (ev) => {
     const th = ev.target.closest('th[data-sort]');
     if (!th) return;
     const col = th.dataset.sort;
-    if (dpFiltroOrden === col) {
-      dpFiltroDir = dpFiltroDir === 'asc' ? 'desc' : 'asc';
+    if (opFiltroOrden === col) {
+      opFiltroDir = opFiltroDir === 'asc' ? 'desc' : 'asc';
     } else {
-      dpFiltroOrden = col;
-      dpFiltroDir   = 'asc';
+      opFiltroOrden = col;
+      opFiltroDir   = 'asc';
     }
-    dpActualizarBadgeFiltros();
-    cargarDp();
+    opActualizarBadgeFiltros();
+    cargarOp();
   });
 
-  $('#dpCtxMenu').addEventListener('click', (ev) => {
+  $('#opCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
     if (!b || b.disabled) return;
     const data = getCtxMenuData();
     if (!data) return;
     cerrarCtxMenu();
-    if (b.dataset.action === 'consultar')     abrirConsultaDp(data.id);
-    if (b.dataset.action === 'cambiar_etapa') abrirMenuCambiarEtapaDp(data.id);
-    if (b.dataset.action === 'editar')        abrirAltaEdicionDp(data.id);
-    if (b.dataset.action === 'eliminar')      eliminarDp(data.id);
+    if (b.dataset.action === 'consultar')     abrirConsultaOp(data.id);
+    if (b.dataset.action === 'cambiar_etapa') abrirMenuCambiarEtapaOp(data.id);
+    if (b.dataset.action === 'editar')        abrirAltaEdicionOp(data.id);
+    if (b.dataset.action === 'eliminar')      eliminarOp(data.id);
   });
 
-  $('#dpEtapasCtxMenu').addEventListener('click', (ev) => {
+  $('#opEtapasCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-etapa-id]');
     if (!b) return;
-    const prospectoId = Number(b.dataset.prospectoId) || 0;
+    const oportunidadId = Number(b.dataset.oportunidadId) || 0;
     const etapaId     = Number(b.dataset.etapaId) || 0;
     cerrarCtxMenu();
-    if (prospectoId && etapaId) cambiarEtapaDp(prospectoId, etapaId);
+    if (oportunidadId && etapaId) cambiarEtapaOp(oportunidadId, etapaId);
   });
 
-  $('#dpTbody').addEventListener('click', (ev) => {
+  $('#opTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
       ev.stopPropagation();
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
-      abrirCtxMenu($('#dpCtxMenu'), r.right - 220, r.bottom + 4, { id });
+      abrirCtxMenu($('#opCtxMenu'), r.right - 220, r.bottom + 4, { id });
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
-    abrirConsultaDp(Number(tr.dataset.id));
+    abrirConsultaOp(Number(tr.dataset.id));
   });
-  $('#dpTbody').addEventListener('contextmenu', (ev) => {
+  $('#opTbody').addEventListener('contextmenu', (ev) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    abrirCtxMenu($('#dpCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
+    abrirCtxMenu($('#opCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id) });
   });
 
-  dpActualizarBadgeFiltros();
-  await cargarDp();
-}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Prospectos');
+  opActualizarBadgeFiltros();
+  await cargarOp();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Oportunidades');
 
-async function cargarDp() {
-  const tbody = $('#dpTbody');
+async function cargarOp() {
+  const tbody = $('#opTbody');
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
-  if (dpBusqueda)                 qs.set('q', dpBusqueda);
-  if (dpFiltroCodigo)             qs.set('codigo',      dpFiltroCodigo);
-  if (dpFiltroProyecto)           qs.set('proyecto_id', dpFiltroProyecto);
-  if (dpFiltroEmbudo)             qs.set('embudo_id',   dpFiltroEmbudo);
-  if (dpFiltroEtapa)              qs.set('etapa_id',    dpFiltroEtapa);
-  if (dpFiltroAsignado)           qs.set('asignado',    dpFiltroAsignado);
-  if (dpFiltroAtendido)           qs.set('atendido',    dpFiltroAtendido);
-  if (dpFiltroEstado !== '')      qs.set('estado',      dpFiltroEstado);
-  if (dpFiltroSentido)            qs.set('sentido',     dpFiltroSentido);
-  if (dpFiltroOrigen)             qs.set('origen',      dpFiltroOrigen);
-  if (dpFiltroDesde)              qs.set('desde',       dpFiltroDesde);
-  if (dpFiltroHasta)              qs.set('hasta',       dpFiltroHasta);
-  if (dpFiltroLimite)             qs.set('limite',      dpFiltroLimite);
-  if (dpFiltroOrden)              qs.set('order_by',    dpFiltroOrden);
-  if (dpFiltroDir)                qs.set('dir',         dpFiltroDir);
+  if (opBusqueda)                 qs.set('q', opBusqueda);
+  if (opFiltroCodigo)             qs.set('codigo',      opFiltroCodigo);
+  if (opFiltroProyecto)           qs.set('proyecto_id', opFiltroProyecto);
+  if (opFiltroEmbudo)             qs.set('embudo_id',   opFiltroEmbudo);
+  if (opFiltroEtapa)              qs.set('etapa_id',    opFiltroEtapa);
+  if (opFiltroAsignado)           qs.set('asignado',    opFiltroAsignado);
+  if (opFiltroAtendido)           qs.set('atendido',    opFiltroAtendido);
+  if (opFiltroEstado !== '')      qs.set('estado',      opFiltroEstado);
+  if (opFiltroSentido)            qs.set('sentido',     opFiltroSentido);
+  if (opFiltroOrigen)             qs.set('origen',      opFiltroOrigen);
+  if (opFiltroDesde)              qs.set('desde',       opFiltroDesde);
+  if (opFiltroHasta)              qs.set('hasta',       opFiltroHasta);
+  if (opFiltroLimite)             qs.set('limite',      opFiltroLimite);
+  if (opFiltroOrden)              qs.set('order_by',    opFiltroOrden);
+  if (opFiltroDir)                qs.set('dir',         opFiltroDir);
 
   try {
-    const data = await apiGet(DP_API + (qs.toString() ? '?' + qs.toString() : ''));
-    dpItems = data.items || [];
-    dpEnriquecerConColores();
-    pintarStatsDp(data.stats || {});
-    pintarForecastDp(data.forecast || []);
-    renderDp();
+    const data = await apiGet(OP_API + (qs.toString() ? '?' + qs.toString() : ''));
+    opItems = data.items || [];
+    opEnriquecerConColores();
+    pintarStatsOp(data.stats || {});
+    pintarForecastOp(data.forecast || []);
+    renderOp();
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
-function pintarStatsDp(s) {
-  $('#dpStatTotal').textContent      = fmtNum(s.total       ?? dpItems.length);
-  $('#dpStatSinAtender').textContent = fmtNum(s.sin_atender ?? 0);
-  $('#dpStatAsignados').textContent  = fmtNum(s.asignados   ?? 0);
+function pintarStatsOp(s) {
+  $('#opStatTotal').textContent      = fmtNum(s.total       ?? opItems.length);
+  $('#opStatSinAtender').textContent = fmtNum(s.sin_atender ?? 0);
+  $('#opStatAsignados').textContent  = fmtNum(s.asignados   ?? 0);
 }
 
 // Importe con separadores es-AR y el codigo de moneda adelante ("ARS 1.250.000,50").
 // Se usa el codigo y no el simbolo porque $ es ambiguo entre pesos y dolares.
-function dpFmtMonto(monto, moneda) {
+function opFmtMonto(monto, moneda) {
   if (monto == null || monto === '') return '—';
   const n = Number(monto);
   if (isNaN(n)) return '—';
@@ -27758,7 +27702,7 @@ function dpFmtMonto(monto, moneda) {
 }
 
 // El listado NO tiene columna "Monto": el importe sigue visible en la barra de
-// valor del embudo (pintarForecastDp, arriba de la tabla) y en el tab
+// valor del embudo (pintarForecastOp, arriba de la tabla) y en el tab
 // Seguimiento de los modales de Consultar/Editar, que es donde se trabaja el
 // numero. El API lo sigue devolviendo en cada fila (`monto`, `moneda`,
 // `monto_ponderado`), asi que reponer la columna es solo cuestion de agregar el
@@ -27768,8 +27712,8 @@ function dpFmtMonto(monto, moneda) {
 // monedas distintas), asi que se pinta un bloque por moneda dentro de cada
 // tarjeta. Si no hay ninguna oportunidad con monto cargado, la fila entera se
 // oculta para no mostrar cuatro tarjetas en cero.
-function pintarForecastDp(forecast) {
-  const cont = $('#dpForecast');
+function pintarForecastOp(forecast) {
+  const cont = $('#opForecast');
   if (!cont) return;
   const filas = Array.isArray(forecast) ? forecast : [];
   if (!filas.length) { cont.style.display = 'none'; cont.innerHTML = ''; return; }
@@ -27782,7 +27726,7 @@ function pintarForecastDp(forecast) {
     const conValor = filas.filter((f) => Number(f[campo]) > 0);
     const cuerpo = conValor.length
       ? conValor.map((f) => `
-          <span class="stat-value ${color}" style="font-size:1rem;white-space:nowrap">${esc(dpFmtMonto(f[campo], f.moneda))}</span>
+          <span class="stat-value ${color}" style="font-size:1rem;white-space:nowrap">${esc(opFmtMonto(f[campo], f.moneda))}</span>
           <span style="color:var(--muted);font-size:.72rem">${fmtNum(f[campoN])} oportunidad${f[campoN] === 1 ? '' : 'es'}</span>
         `).join('')
       : `<span class="stat-value" style="font-size:1rem;color:var(--muted)">—</span>`;
@@ -27804,26 +27748,26 @@ function pintarForecastDp(forecast) {
               'Suma de los montos en etapas de tipo perdida');
 }
 
-function renderDp() {
-  const tbody = $('#dpTbody');
+function renderOp() {
+  const tbody = $('#opTbody');
   if (!tbody) return;
-  actualizarSortIndicadores($('#dpThead'), { order_by: dpFiltroOrden, dir: dpFiltroDir });
-  if (!dpItems.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin prospectos registrados.</td></tr>`;
+  actualizarSortIndicadores($('#opThead'), { order_by: opFiltroOrden, dir: opFiltroDir });
+  if (!opItems.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin oportunidades registradas.</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = dpItems.map((p) => {
-    // Identidad 100% derivada del contacto vinculado — las columnas legacy del
-    // prospecto se dropearon en la migracion 20260816_1500.
-    const nombre = p.contacto_nombre || '—';
-    const org    = p.contacto_empresa || '';
+  tbody.innerHTML = opItems.map((p) => {
+    // Identidad 100% derivada del prospecto vinculado — las columnas legacy del
+    // oportunidad se dropearon en la migracion 20260816_1500.
+    const nombre = p.prospecto_nombre || '—';
+    const org    = p.prospecto_empresa || '';
     const nomOrg = org
       ? `<div style="font-weight:600">${esc(nombre)}</div><div style="color:var(--muted);font-size:.82rem">${esc(org)}</div>`
       : `<div style="font-weight:600">${esc(nombre)}</div>`;
     // Celda "Embudo / Etapa": el embudo arriba en el color de texto normal y la
     // etapa debajo atenuada y mas chica, mismo patron que "Nombre / Organizacion".
-    // La etapa va como texto plano (sin la pill de color de dpEtapaPill, que se
+    // La etapa va como texto plano (sin la pill de color de opEtapaPill, que se
     // sigue usando en los modales) para no competir con el badge de Estado.
     const embudoEtapa = `<div>${esc(p.embudo_nombre || '—')}</div>`
       + `<div style="color:var(--muted);font-size:.78rem">${esc(p.etapa_nombre || (p.etapa_id ? `#${p.etapa_id}` : '—'))}</div>`;
@@ -27834,7 +27778,7 @@ function renderDp() {
         <td style="font-size:.85rem">${esc(p.proyecto_nombre || (p.proyecto_id ? `#${p.proyecto_id}` : '—'))}</td>
         <td style="font-size:.85rem;line-height:1.35">${embudoEtapa}</td>
         <td>${nomOrg}</td>
-        <td style="text-align:center">${dpEstadoLegacyBadge(p.estado)}</td>
+        <td style="text-align:center">${opEstadoLegacyBadge(p.estado)}</td>
         <td style="font-size:.85rem">${esc(p.asignado_nombre || '—')}</td>
         <td style="text-align:center">
           <div class="actions" style="justify-content:center">
@@ -27850,145 +27794,145 @@ function renderDp() {
 
 // ---------- Filtros ----------
 
-function abrirModalFiltrosDp() {
-  dpFiltrosSnapshot = {
-    codigo: dpFiltroCodigo, proyecto: dpFiltroProyecto,
-    embudo: dpFiltroEmbudo, etapa: dpFiltroEtapa,
-    asignado: dpFiltroAsignado, atendido: dpFiltroAtendido,
-    estado: dpFiltroEstado, sentido: dpFiltroSentido, origen: dpFiltroOrigen,
-    desde: dpFiltroDesde, hasta: dpFiltroHasta,
-    limite: dpFiltroLimite, orden: dpFiltroOrden, dir: dpFiltroDir,
+function abrirModalFiltrosOp() {
+  opFiltrosSnapshot = {
+    codigo: opFiltroCodigo, proyecto: opFiltroProyecto,
+    embudo: opFiltroEmbudo, etapa: opFiltroEtapa,
+    asignado: opFiltroAsignado, atendido: opFiltroAtendido,
+    estado: opFiltroEstado, sentido: opFiltroSentido, origen: opFiltroOrigen,
+    desde: opFiltroDesde, hasta: opFiltroHasta,
+    limite: opFiltroLimite, orden: opFiltroOrden, dir: opFiltroDir,
   };
-  $('#fDpCodigo').value    = dpFiltroCodigo || '';
-  $('#fDpProyecto').value  = dpFiltroProyecto || '';
-  $('#fDpEmbudo').value    = dpFiltroEmbudo || '';
-  $('#fDpAsignado').value  = dpFiltroAsignado || '';
-  $('#fDpAtendido').value  = dpFiltroAtendido || '';
-  $('#fDpDesde').value     = dpFiltroDesde || '';
-  $('#fDpHasta').value     = dpFiltroHasta || '';
-  $('#fDpLimite').value    = dpFiltroLimite || 100;
-  $('#fDpOrden').value     = dpFiltroOrden  || 'id';
-  $('#fDpDir').value       = dpFiltroDir    || 'desc';
-  dpReflejarChipsEstado();
-  dpReflejarEtapasFiltro();
-  document.getElementById('filtrosDpBackdrop').classList.add('open');
+  $('#fOpCodigo').value    = opFiltroCodigo || '';
+  $('#fOpProyecto').value  = opFiltroProyecto || '';
+  $('#fOpEmbudo').value    = opFiltroEmbudo || '';
+  $('#fOpAsignado').value  = opFiltroAsignado || '';
+  $('#fOpAtendido').value  = opFiltroAtendido || '';
+  $('#fOpDesde').value     = opFiltroDesde || '';
+  $('#fOpHasta').value     = opFiltroHasta || '';
+  $('#fOpLimite').value    = opFiltroLimite || 100;
+  $('#fOpOrden').value     = opFiltroOrden  || 'id';
+  $('#fOpDir').value       = opFiltroDir    || 'desc';
+  opReflejarChipsEstado();
+  opReflejarEtapasFiltro();
+  document.getElementById('filtrosOpBackdrop').classList.add('open');
 }
 
-function cerrarModalFiltrosDp() {
-  document.getElementById('filtrosDpBackdrop').classList.remove('open');
+function cerrarModalFiltrosOp() {
+  document.getElementById('filtrosOpBackdrop').classList.remove('open');
 }
 
-function cancelarFiltrosDp() {
-  if (dpFiltrosSnapshot) {
-    dpFiltroCodigo   = dpFiltrosSnapshot.codigo;
-    dpFiltroProyecto = dpFiltrosSnapshot.proyecto;
-    dpFiltroEmbudo   = dpFiltrosSnapshot.embudo;
-    dpFiltroEtapa    = dpFiltrosSnapshot.etapa;
-    dpFiltroAsignado = dpFiltrosSnapshot.asignado;
-    dpFiltroAtendido = dpFiltrosSnapshot.atendido;
-    dpFiltroEstado   = dpFiltrosSnapshot.estado;
-    dpFiltroSentido  = dpFiltrosSnapshot.sentido;
-    dpFiltroOrigen   = dpFiltrosSnapshot.origen;
-    dpFiltroDesde    = dpFiltrosSnapshot.desde;
-    dpFiltroHasta    = dpFiltrosSnapshot.hasta;
-    dpFiltroLimite   = dpFiltrosSnapshot.limite;
-    dpFiltroOrden    = dpFiltrosSnapshot.orden;
-    dpFiltroDir      = dpFiltrosSnapshot.dir;
-    dpActualizarBadgeFiltros();
-    cargarDp();
+function cancelarFiltrosOp() {
+  if (opFiltrosSnapshot) {
+    opFiltroCodigo   = opFiltrosSnapshot.codigo;
+    opFiltroProyecto = opFiltrosSnapshot.proyecto;
+    opFiltroEmbudo   = opFiltrosSnapshot.embudo;
+    opFiltroEtapa    = opFiltrosSnapshot.etapa;
+    opFiltroAsignado = opFiltrosSnapshot.asignado;
+    opFiltroAtendido = opFiltrosSnapshot.atendido;
+    opFiltroEstado   = opFiltrosSnapshot.estado;
+    opFiltroSentido  = opFiltrosSnapshot.sentido;
+    opFiltroOrigen   = opFiltrosSnapshot.origen;
+    opFiltroDesde    = opFiltrosSnapshot.desde;
+    opFiltroHasta    = opFiltrosSnapshot.hasta;
+    opFiltroLimite   = opFiltrosSnapshot.limite;
+    opFiltroOrden    = opFiltrosSnapshot.orden;
+    opFiltroDir      = opFiltrosSnapshot.dir;
+    opActualizarBadgeFiltros();
+    cargarOp();
   }
-  cerrarModalFiltrosDp();
+  cerrarModalFiltrosOp();
 }
 
-function limpiarFiltrosDp() {
-  dpFiltroCodigo   = '';
-  dpFiltroProyecto = '';
-  dpFiltroEmbudo   = '';
-  dpFiltroEtapa    = '';
-  dpFiltroAsignado = '';
-  dpFiltroAtendido = '';
-  dpFiltroEstado   = '';
-  dpFiltroSentido  = '';
-  dpFiltroOrigen   = '';
-  dpFiltroDesde    = '';
-  dpFiltroHasta    = '';
-  dpFiltroLimite   = 100;
-  dpFiltroOrden    = 'id';
-  dpFiltroDir      = 'desc';
-  $('#fDpCodigo').value   = '';
-  $('#fDpProyecto').value = '';
-  $('#fDpEmbudo').value   = '';
-  $('#fDpAsignado').value = '';
-  $('#fDpAtendido').value = '';
-  $('#fDpDesde').value    = '';
-  $('#fDpHasta').value    = '';
-  $('#fDpLimite').value   = 100;
-  $('#fDpOrden').value    = 'id';
-  $('#fDpDir').value      = 'desc';
-  dpReflejarChipsEstado();
-  dpReflejarEtapasFiltro();
-  dpActualizarBadgeFiltros();
-  cargarDp();
+function limpiarFiltrosOp() {
+  opFiltroCodigo   = '';
+  opFiltroProyecto = '';
+  opFiltroEmbudo   = '';
+  opFiltroEtapa    = '';
+  opFiltroAsignado = '';
+  opFiltroAtendido = '';
+  opFiltroEstado   = '';
+  opFiltroSentido  = '';
+  opFiltroOrigen   = '';
+  opFiltroDesde    = '';
+  opFiltroHasta    = '';
+  opFiltroLimite   = 100;
+  opFiltroOrden    = 'id';
+  opFiltroDir      = 'desc';
+  $('#fOpCodigo').value   = '';
+  $('#fOpProyecto').value = '';
+  $('#fOpEmbudo').value   = '';
+  $('#fOpAsignado').value = '';
+  $('#fOpAtendido').value = '';
+  $('#fOpDesde').value    = '';
+  $('#fOpHasta').value    = '';
+  $('#fOpLimite').value   = 100;
+  $('#fOpOrden').value    = 'id';
+  $('#fOpDir').value      = 'desc';
+  opReflejarChipsEstado();
+  opReflejarEtapasFiltro();
+  opActualizarBadgeFiltros();
+  cargarOp();
 }
 
-function onFiltroDp(campo, valor) {
-  if (campo === 'codigo')   dpFiltroCodigo   = (valor || '').trim();
-  if (campo === 'proyecto') dpFiltroProyecto = (valor || '').trim();
-  if (campo === 'embudo')   { dpFiltroEmbudo = (valor || '').trim(); dpFiltroEtapa = ''; dpReflejarEtapasFiltro(); }
-  if (campo === 'etapa')    dpFiltroEtapa    = (valor || '').trim();
-  if (campo === 'asignado') dpFiltroAsignado = (valor || '').trim();
-  if (campo === 'atendido') dpFiltroAtendido = (valor || '').trim();
-  if (campo === 'estado')   { dpFiltroEstado = valor === '' ? '' : String(valor); dpReflejarChipsEstado(); }
-  if (campo === 'sentido')  dpFiltroSentido  = (valor || '').trim();
-  if (campo === 'origen')   dpFiltroOrigen   = (valor || '').trim();
-  if (campo === 'desde')    dpFiltroDesde    = (valor || '').trim();
-  if (campo === 'hasta')    dpFiltroHasta    = (valor || '').trim();
-  if (campo === 'limite')   dpFiltroLimite   = Math.max(1, Math.min(1000, Number(valor) || 100));
-  if (campo === 'orden')    dpFiltroOrden    = valor || 'id';
-  if (campo === 'dir')      dpFiltroDir      = valor || 'desc';
-  dpActualizarBadgeFiltros();
-  cargarDp();
+function onFiltroOp(campo, valor) {
+  if (campo === 'codigo')   opFiltroCodigo   = (valor || '').trim();
+  if (campo === 'proyecto') opFiltroProyecto = (valor || '').trim();
+  if (campo === 'embudo')   { opFiltroEmbudo = (valor || '').trim(); opFiltroEtapa = ''; opReflejarEtapasFiltro(); }
+  if (campo === 'etapa')    opFiltroEtapa    = (valor || '').trim();
+  if (campo === 'asignado') opFiltroAsignado = (valor || '').trim();
+  if (campo === 'atendido') opFiltroAtendido = (valor || '').trim();
+  if (campo === 'estado')   { opFiltroEstado = valor === '' ? '' : String(valor); opReflejarChipsEstado(); }
+  if (campo === 'sentido')  opFiltroSentido  = (valor || '').trim();
+  if (campo === 'origen')   opFiltroOrigen   = (valor || '').trim();
+  if (campo === 'desde')    opFiltroDesde    = (valor || '').trim();
+  if (campo === 'hasta')    opFiltroHasta    = (valor || '').trim();
+  if (campo === 'limite')   opFiltroLimite   = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')    opFiltroOrden    = valor || 'id';
+  if (campo === 'dir')      opFiltroDir      = valor || 'desc';
+  opActualizarBadgeFiltros();
+  cargarOp();
 }
 
-function dpReflejarChipsEstado() {
-  const cont = document.getElementById('fDpEstadoChips');
+function opReflejarChipsEstado() {
+  const cont = document.getElementById('fOpEstadoChips');
   if (!cont) return;
   cont.querySelectorAll('.filter-chip').forEach((el) => {
-    el.classList.toggle('active', String(el.dataset.val || '') === String(dpFiltroEstado || ''));
+    el.classList.toggle('active', String(el.dataset.val || '') === String(opFiltroEstado || ''));
   });
 }
 
 // Repuebla el select de etapas del filtro en funcion del embudo elegido.
-function dpReflejarEtapasFiltro() {
-  const sel = document.getElementById('fDpEtapa');
+function opReflejarEtapasFiltro() {
+  const sel = document.getElementById('fOpEtapa');
   if (!sel) return;
-  const etapas = dpEtapasDelEmbudo(dpFiltroEmbudo);
+  const etapas = opEtapasDelEmbudo(opFiltroEmbudo);
   const opts = ['<option value="">— Todas —</option>']
     .concat(etapas.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`))
     .join('');
   sel.innerHTML = opts;
-  sel.value = dpFiltroEtapa || '';
-  sel.disabled = !dpFiltroEmbudo;
+  sel.value = opFiltroEtapa || '';
+  sel.disabled = !opFiltroEmbudo;
 }
 
-function dpActualizarBadgeFiltros() {
+function opActualizarBadgeFiltros() {
   let n = 0;
-  if (dpFiltroCodigo)                 n++;
-  if (dpFiltroProyecto)               n++;
-  if (dpFiltroEmbudo)                 n++;
-  if (dpFiltroEtapa)                  n++;
-  if (dpFiltroAsignado)               n++;
-  if (dpFiltroAtendido)               n++;
-  if (dpFiltroEstado !== '')          n++;
-  if (dpFiltroSentido)                n++;
-  if (dpFiltroOrigen)                 n++;
-  if (dpFiltroDesde)                  n++;
-  if (dpFiltroHasta)                  n++;
-  if (Number(dpFiltroLimite) !== 100) n++;
-  if (dpFiltroOrden !== 'id')         n++;
-  if (dpFiltroDir   !== 'desc')       n++;
-  const badge = $('#dpFiltrosBadge');
-  const btn   = $('#dpFiltrosBtn');
+  if (opFiltroCodigo)                 n++;
+  if (opFiltroProyecto)               n++;
+  if (opFiltroEmbudo)                 n++;
+  if (opFiltroEtapa)                  n++;
+  if (opFiltroAsignado)               n++;
+  if (opFiltroAtendido)               n++;
+  if (opFiltroEstado !== '')          n++;
+  if (opFiltroSentido)                n++;
+  if (opFiltroOrigen)                 n++;
+  if (opFiltroDesde)                  n++;
+  if (opFiltroHasta)                  n++;
+  if (Number(opFiltroLimite) !== 100) n++;
+  if (opFiltroOrden !== 'id')         n++;
+  if (opFiltroDir   !== 'desc')       n++;
+  const badge = $('#opFiltrosBadge');
+  const btn   = $('#opFiltrosBtn');
   if (!badge || !btn) return;
   if (n > 0) {
     badge.style.display = '';
@@ -28002,20 +27946,20 @@ function dpActualizarBadgeFiltros() {
 
 // ---------- Cambiar etapa (submenu contextual) ----------
 
-function abrirMenuCambiarEtapaDp(id) {
-  const p = dpItems.find((x) => x.id === id);
+function abrirMenuCambiarEtapaOp(id) {
+  const p = opItems.find((x) => x.id === id);
   if (!p) return;
   if (!p.embudo_id) {
-    toast('El prospecto no tiene embudo asignado. Editalo primero para asignarle uno.', { error: true });
+    toast('La oportunidad no tiene embudo asignado. Editala primero para asignarle uno.', { error: true });
     return;
   }
-  const etapas = dpEtapasDelEmbudo(p.embudo_id);
+  const etapas = opEtapasDelEmbudo(p.embudo_id);
   if (!etapas.length) {
-    toast('El embudo del prospecto no tiene etapas cargadas.', { error: true });
+    toast('El embudo de la oportunidad no tiene etapas cargadas.', { error: true });
     return;
   }
 
-  const menu = document.getElementById('dpEtapasCtxMenu');
+  const menu = document.getElementById('opEtapasCtxMenu');
   if (!menu) return;
   menu.innerHTML = etapas.map((e) => {
     const swatch = e.color
@@ -28026,14 +27970,14 @@ function abrirMenuCambiarEtapaDp(id) {
       ? '<i class="fa-solid fa-check" style="opacity:.6;margin-right:6px"></i>'
       : '<i class="fa-solid fa-circle-dot" style="opacity:0;margin-right:6px"></i>';
     return `
-      <button type="button" role="menuitem" data-prospecto-id="${p.id}" data-etapa-id="${e.id}"${marca}>
+      <button type="button" role="menuitem" data-oportunidad-id="${p.id}" data-etapa-id="${e.id}"${marca}>
         ${chk}${swatch}<span>${esc(e.nombre)}</span>
       </button>
     `;
   }).join('');
 
   // Posicionamos el submenu cerca del hamburguesa; si no se puede, en el centro.
-  const btn = document.querySelector(`#dpTbody [data-act="menu"][data-id="${p.id}"]`);
+  const btn = document.querySelector(`#opTbody [data-act="menu"][data-id="${p.id}"]`);
   const x = btn ? (btn.getBoundingClientRect().right - 240) : (window.innerWidth / 2 - 120);
   const y = btn ? (btn.getBoundingClientRect().bottom + 4) : (window.innerHeight / 2);
 
@@ -28046,15 +27990,15 @@ function abrirMenuCambiarEtapaDp(id) {
   setTimeout(() => abrirCtxMenu(menu, x, y, {}), 0);
 }
 
-async function cambiarEtapaDp(id, etapaId) {
+async function cambiarEtapaOp(id, etapaId) {
   try {
-    const r = await apiSend(`${DP_API}?id=${id}&action=cambiar_etapa`, 'POST', { etapa_id: etapaId });
+    const r = await apiSend(`${OP_API}?id=${id}&action=cambiar_etapa`, 'POST', { etapa_id: etapaId });
     if (r.cambio === false) {
-      toast('El prospecto ya estaba en esa etapa');
+      toast('La oportunidad ya estaba en esa etapa');
     } else {
       toast('Etapa actualizada');
     }
-    await cargarDp();
+    await cargarOp();
   } catch (err) {
     toast(err.message, { error: true });
   }
@@ -28062,32 +28006,32 @@ async function cambiarEtapaDp(id, etapaId) {
 
 // ---------- Modales ----------
 
-function dpOpcionesCombo(campo) {
-  if (!dpLookups || !dpLookups.opciones) return '';
-  const arr = dpLookups.opciones[campo] || [];
+function opOpcionesCombo(campo) {
+  if (!opLookups || !opLookups.opciones) return '';
+  const arr = opLookups.opciones[campo] || [];
   return arr.map((o) => `<option value="${esc(o.valor)}">${esc(o.texto)}</option>`).join('');
 }
 
-// Alterna entre las 4 pestañas del modal de prospecto (General / Seguimiento
-// / Contacto / Notas). Registrado en window para usarse desde onclick inline
+// Alterna entre las 4 pestañas del modal de oportunidad (General / Seguimiento
+// / Prospecto / Notas). Registrado en window para usarse desde onclick inline
 // de los botones, siguiendo el patron de awsMsgCambiarTab y dremCambiarTab.
-function dpCambiarTab(tab) {
-  document.querySelectorAll('#modalRoot .modal-tab[data-dp-tab]').forEach((b) => {
-    b.classList.toggle('active', b.dataset.dpTab === tab);
+function opCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-op-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.opTab === tab);
   });
-  document.querySelectorAll('#modalRoot .modal-tabpanel[data-dp-tab]').forEach((p) => {
-    p.hidden = p.dataset.dpTab !== tab;
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-op-tab]').forEach((p) => {
+    p.hidden = p.dataset.opTab !== tab;
   });
 }
-window.dpCambiarTab = dpCambiarTab;
+window.opCambiarTab = opCambiarTab;
 
-// Renderiza el panel read-only del contacto vinculado al prospecto. Se usa
+// Renderiza el panel read-only del prospecto vinculado a la oportunidad. Se usa
 // tanto en el modal Consulta como en el modal Editar (los datos de identidad
-// del prospecto no se editan mas desde aca, la fuente de verdad es
-// datarocket_contactos). Si el prospecto es viejo y todavia no tiene
-// contacto_id (transicion Fase 1 -> 2 del refactor), muestra un aviso en
+// de la oportunidad no se editan mas desde aca, la fuente de verdad es
+// datarocket_prospectos). Si la oportunidad es vieja y todavia no tiene
+// prospecto_id (transicion Fase 1 -> 2 del refactor), muestra un aviso en
 // lugar de los datos.
-function dpContactoLinkedPanel(p) {
+function opProspectoLinkedPanel(p) {
   const card = (label, valor, ancho) => `
     <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
                 background:color-mix(in srgb, var(--surface) 90%, #000);
@@ -28103,7 +28047,7 @@ function dpContactoLinkedPanel(p) {
   // La web se muestra como link que abre en pestaña nueva. Si el dato viene sin
   // esquema (lo habitual: "vigicom.com.ar") se le antepone https:// para que el
   // href no quede relativo al panel. Mismo criterio que linkCard() del ABM de
-  // Contactos.
+  // Prospectos.
   const valWeb = (v) => {
     if (v === null || v === undefined || v === '') return '<span style="color:var(--muted)">—</span>';
     const href = String(v).match(/^https?:\/\//i) ? String(v) : ('https://' + v);
@@ -28111,12 +28055,12 @@ function dpContactoLinkedPanel(p) {
                style="color:inherit;text-decoration:underline">${esc(v)}</a>`;
   };
 
-  if (!p.contacto_id) {
+  if (!p.prospecto_id) {
     return `
       <div style="padding:20px;text-align:center;color:var(--muted);background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px">
         <div style="font-size:2rem;margin-bottom:8px">🔗</div>
-        <div style="font-weight:600;color:var(--text);margin-bottom:4px">Sin contacto vinculado</div>
-        <div style="font-size:.85rem">Este prospecto todavía no fue asociado a un contacto de Datarocket.<br>
+        <div style="font-weight:600;color:var(--text);margin-bottom:4px">Sin prospecto vinculado</div>
+        <div style="font-size:.85rem">Esta oportunidad todavía no fue asociada a un prospecto de Datarocket.<br>
           Corré el backfill (migración <code>20260812_1100</code>) o editalo manualmente para vincularlo.</div>
       </div>
     `;
@@ -28124,8 +28068,8 @@ function dpContactoLinkedPanel(p) {
 
   const btnFicha = `
     <div style="grid-column:1/-1;flex:1 1 100%;display:flex;justify-content:flex-end;margin-top:4px">
-      <button type="button" class="btn btn-ghost" onclick="verFichaContactoDp(${Number(p.contacto_id)})">
-        <i class="fa-solid fa-arrow-up-right-from-square"></i>&nbsp; Abrir ficha del contacto
+      <button type="button" class="btn btn-ghost" onclick="verFichaProspectoOp(${Number(p.prospecto_id)})">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i>&nbsp; Abrir ficha del prospecto
       </button>
     </div>
   `;
@@ -28134,89 +28078,89 @@ function dpContactoLinkedPanel(p) {
     <div style="display:flex;flex-direction:column;gap:12px">
       <div style="font-size:.85rem;color:var(--muted);padding:6px 2px">
         <i class="fa-solid fa-circle-info" style="opacity:.7"></i>&nbsp;
-        Los datos del contacto se administran desde el módulo <b>Contactos</b>.
+        Los datos del prospecto se administran desde el módulo <b>Prospectos</b>.
         Para modificar nombre, correo, celular o cualquier otro dato de identidad,
-        abrí la ficha del contacto.
+        abrí la ficha del prospecto.
       </div>
       <!-- Resumen de identidad en 4 filas: tipo/nombre, correo/celular, web
            (ancho completo, link a pestaña nueva) y provincia/pais. Es un
-           extracto, no la ficha entera: el resto de los campos del contacto
+           extracto, no la ficha entera: el resto de los campos del prospecto
            (empresa, whatsapp, telefono, domicilio, ciudad, localidad,
            ubicacion) se consultan con el boton de abajo. -->
       <div style="display:flex;flex-wrap:wrap;gap:12px">
-        ${card('Tipo',            val((p.contacto_tipo || '').toString().replace(/^./, (c) => c.toUpperCase()) || null))}
-        ${card('Nombre',          val(p.contacto_nombre))}
-        ${card('Correo',          val(p.contacto_correo))}
-        ${card('Celular',         val(p.contacto_celular))}
-        ${card('Web',             valWeb(p.contacto_web), 'full')}
-        ${card('Provincia',       val(p.contacto_provincia))}
-        ${card('País',            val(p.contacto_pais))}
+        ${card('Tipo',            val((p.prospecto_tipo || '').toString().replace(/^./, (c) => c.toUpperCase()) || null))}
+        ${card('Nombre',          val(p.prospecto_nombre))}
+        ${card('Correo',          val(p.prospecto_correo))}
+        ${card('Celular',         val(p.prospecto_celular))}
+        ${card('Web',             valWeb(p.prospecto_web), 'full')}
+        ${card('Provincia',       val(p.prospecto_provincia))}
+        ${card('País',            val(p.prospecto_pais))}
       </div>
       ${btnFicha}
     </div>
   `;
 }
 
-// Navega al ABM de Contactos prefiltrado por el id del contacto — el usuario
+// Navega al ABM de Prospectos prefiltrado por el id del prospecto — el usuario
 // ve una unica fila y hace click para abrir la ficha. Reutiliza el filtro
-// `codigo` que el ABM de contactos ya soporta (drCtFiltros.codigo).
-function verFichaContactoDp(contactoId) {
-  if (!contactoId) return;
-  Object.assign(drCtFiltros, drCtFiltrosDefaults, { codigo: String(contactoId) });
-  location.hash = '#/datarocketcontactos';
+// `codigo` que el ABM de prospectos ya soporta (drPrFiltros.codigo).
+function verFichaProspectoOp(prospectoId) {
+  if (!prospectoId) return;
+  Object.assign(drPrFiltros, drPrFiltrosDefaults, { codigo: String(prospectoId) });
+  location.hash = '#/datarocketprospectos';
 }
-window.verFichaContactoDp = verFichaContactoDp;
+window.verFichaProspectoOp = verFichaProspectoOp;
 
-// Selector de contacto para el modal Nuevo prospecto. Renderiza:
+// Selector de prospecto para el modal Nueva oportunidad. Renderiza:
 //   - Input de busqueda con typeahead (300ms debounce) que llama a
-//     api/datarocketcontactos.php?q=<query>&limite=20
-//   - Resultados en una lista desplegable — click elige el contacto
-//   - Card con los datos del contacto elegido (o placeholder si vacio)
-//   - Boton "Abrir ABM de Contactos" para crear uno nuevo desde ahi
+//     api/datarocketprospectos.php?q=<query>&limite=20
+//   - Resultados en una lista desplegable — click elige el prospecto
+//   - Card con los datos del prospecto elegido (o placeholder si vacio)
+//   - Boton "Abrir ABM de Prospectos" para crear uno nuevo desde ahi
 //
-// El id elegido queda en el hidden `#dpNuevoContactoId` que guardarDp() lee.
-function dpRenderNuevoContactoSelector() {
-  const body = document.getElementById('dpTabContactoBody');
+// El id elegido queda en el hidden `#opNuevoProspectoId` que guardarOp() lee.
+function opRenderNuevoProspectoSelector() {
+  const body = document.getElementById('opTabProspectoBody');
   if (!body) return;
   body.innerHTML = `
-    <input type="hidden" id="dpNuevoContactoId" value="">
+    <input type="hidden" id="opNuevoProspectoId" value="">
 
     <div style="font-size:.85rem;color:var(--muted);margin-bottom:8px">
       <i class="fa-solid fa-circle-info" style="opacity:.7"></i>&nbsp;
-      El prospecto necesita un contacto vinculado. Buscá uno existente por
-      nombre, correo o celular. Si no existe, creá el contacto desde el ABM
-      de <b>Contactos</b> y volvé acá.
+      La oportunidad necesita un prospecto vinculado. Buscá uno existente por
+      nombre, correo o celular. Si no existe, creá el prospecto desde el ABM
+      de <b>Prospectos</b> y volvé acá.
     </div>
 
     <div style="position:relative">
-      <input type="search" id="dpNuevoContactoSearch" class="search-input"
-             placeholder="🔍 Buscar contacto por nombre, correo o celular…"
+      <input type="search" id="opNuevoProspectoSearch" class="search-input"
+             placeholder="🔍 Buscar prospecto por nombre, correo o celular…"
              autocomplete="off" style="width:100%">
-      <div id="dpNuevoContactoResults"
+      <div id="opNuevoProspectoResults"
            style="position:absolute;top:100%;left:0;right:0;background:var(--surface);
                   border:1px solid var(--border);border-radius:8px;margin-top:4px;
                   max-height:280px;overflow-y:auto;z-index:5;display:none;box-shadow:var(--shadow-lg)"></div>
     </div>
 
-    <div id="dpNuevoContactoElegido" style="margin-top:14px"></div>
+    <div id="opNuevoProspectoElegido" style="margin-top:14px"></div>
 
     <div style="display:flex;justify-content:flex-end;margin-top:10px">
-      <button type="button" class="btn btn-ghost" onclick="window.open('#/datarocketcontactos', '_blank')">
-        <i class="fa-solid fa-arrow-up-right-from-square"></i>&nbsp; Abrir ABM de Contactos
+      <button type="button" class="btn btn-ghost" onclick="window.open('#/datarocketprospectos', '_blank')">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i>&nbsp; Abrir ABM de Prospectos
       </button>
     </div>
   `;
 
-  const inp     = document.getElementById('dpNuevoContactoSearch');
-  const results = document.getElementById('dpNuevoContactoResults');
-  const hidden  = document.getElementById('dpNuevoContactoId');
-  const chosen  = document.getElementById('dpNuevoContactoElegido');
+  const inp     = document.getElementById('opNuevoProspectoSearch');
+  const results = document.getElementById('opNuevoProspectoResults');
+  const hidden  = document.getElementById('opNuevoProspectoId');
+  const chosen  = document.getElementById('opNuevoProspectoElegido');
   let debounce  = null;
 
   const renderPlaceholder = () => {
     chosen.innerHTML = `
       <div style="padding:14px;text-align:center;color:var(--muted);background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;font-size:.88rem">
-        Ningún contacto seleccionado todavía.
+        Ningún prospecto seleccionado todavía.
       </div>`;
   };
   renderPlaceholder();
@@ -28235,14 +28179,14 @@ function dpRenderNuevoContactoSelector() {
               ${c.celular ? ' · ' + esc(c.celular) : ''}
             </div>
           </div>
-          <button type="button" class="btn-icon-sm" title="Quitar" onclick="dpQuitarContactoElegido()">
+          <button type="button" class="btn-icon-sm" title="Quitar" onclick="opQuitarProspectoElegido()">
             <i class="fa-solid fa-xmark"></i>
           </button>
         </div>
       </div>`;
   };
 
-  window.dpQuitarContactoElegido = () => {
+  window.opQuitarProspectoElegido = () => {
     hidden.value = '';
     inp.value = '';
     results.style.display = 'none';
@@ -28255,13 +28199,13 @@ function dpRenderNuevoContactoSelector() {
     if (q.length < 2) { results.style.display = 'none'; return; }
     debounce = setTimeout(async () => {
       try {
-        const data = await apiGet(`api/datarocketcontactos.php?q=${encodeURIComponent(q)}&limite=20`);
+        const data = await apiGet(`api/datarocketprospectos.php?q=${encodeURIComponent(q)}&limite=20`);
         const items = data.items || [];
         if (!items.length) {
           results.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:.85rem;text-align:center">Sin resultados</div>`;
         } else {
           results.innerHTML = items.map((c) => `
-            <button type="button" data-contacto-id="${c.id}"
+            <button type="button" data-prospecto-id="${c.id}"
                     style="display:block;width:100%;text-align:left;padding:10px 12px;background:none;border:none;border-bottom:1px solid var(--border);cursor:pointer;color:var(--text)"
                     onmouseover="this.style.background='var(--row-hover)'"
                     onmouseout="this.style.background='none'">
@@ -28283,18 +28227,18 @@ function dpRenderNuevoContactoSelector() {
     }, 300);
   });
 
-  // Click en un resultado -> elegir contacto y cerrar el dropdown.
+  // Click en un resultado -> elegir prospecto y cerrar el dropdown.
   results.addEventListener('click', async (ev) => {
-    const b = ev.target.closest('[data-contacto-id]');
+    const b = ev.target.closest('[data-prospecto-id]');
     if (!b) return;
-    const id = Number(b.dataset.contactoId);
+    const id = Number(b.dataset.prospectoId);
     try {
-      const data = await apiGet(`api/datarocketcontactos.php?id=${id}`);
+      const data = await apiGet(`api/datarocketprospectos.php?id=${id}`);
       renderChosen(data);
       inp.value = data.nombre || '';
       results.style.display = 'none';
     } catch (e) {
-      toast('Error al cargar contacto: ' + e.message, { error: true });
+      toast('Error al cargar prospecto: ' + e.message, { error: true });
     }
   });
 
@@ -28304,20 +28248,20 @@ function dpRenderNuevoContactoSelector() {
   }, { once: false });
 }
 
-function abrirAltaEdicionDp(id) {
-  dpEditandoId = id;
+function abrirAltaEdicionOp(id) {
+  opEditandoId = id;
   const editando = !!id;
-  const p = editando ? dpItems.find((x) => x.id === id) : null;
-  const titulo = editando ? `Editar prospecto #${id}` : 'Nuevo prospecto';
+  const p = editando ? opItems.find((x) => x.id === id) : null;
+  const titulo = editando ? `Editar oportunidad #${id}` : 'Nueva oportunidad';
 
   const opProy = ['<option value="">— (Ninguno) —</option>']
-    .concat(dpLookups.proyectos.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
+    .concat(opLookups.proyectos.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
     .join('');
   const opUsr  = ['<option value="">— (Ninguno) —</option>']
-    .concat(dpLookups.usuarios.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
+    .concat(opLookups.usuarios.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
     .join('');
   const opEmb  = ['<option value="">— (Ninguno) —</option>']
-    .concat(dpLookups.embudos.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
+    .concat(opLookups.embudos.map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`))
     .join('');
 
   // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — misma razon
@@ -28332,18 +28276,18 @@ function abrirAltaEdicionDp(id) {
 
       <div class="modal-body">
         <!-- .modal-tabs va DENTRO de .modal-body (mismo patron que awsMsg y
-             Contacto Datarocket). Afuera queda pegado al borde del modal. -->
+             Prospecto Datarocket). Afuera queda pegado al borde del modal. -->
         <div class="modal-tabs" role="tablist">
-          <button type="button" class="modal-tab active" role="tab" data-dp-tab="general"     onclick="dpCambiarTab('general')">
+          <button type="button" class="modal-tab active" role="tab" data-op-tab="general"     onclick="opCambiarTab('general')">
             <i class="fa-solid fa-circle-info"></i> General
           </button>
-          <button type="button" class="modal-tab" role="tab" data-dp-tab="seguimiento" onclick="dpCambiarTab('seguimiento')">
+          <button type="button" class="modal-tab" role="tab" data-op-tab="seguimiento" onclick="opCambiarTab('seguimiento')">
             <i class="fa-solid fa-arrow-trend-up"></i> Seguimiento
           </button>
-          <button type="button" class="modal-tab" role="tab" data-dp-tab="contacto"    onclick="dpCambiarTab('contacto')">
-            <i class="fa-solid fa-address-book"></i> Contacto
+          <button type="button" class="modal-tab" role="tab" data-op-tab="prospecto"    onclick="opCambiarTab('prospecto')">
+            <i class="fa-solid fa-address-book"></i> Prospecto
           </button>
-          <button type="button" class="modal-tab" role="tab" data-dp-tab="notas"       onclick="dpCambiarTab('notas')">
+          <button type="button" class="modal-tab" role="tab" data-op-tab="notas"       onclick="opCambiarTab('notas')">
             <i class="fa-solid fa-note-sticky"></i> Notas
           </button>
         </div>
@@ -28351,34 +28295,34 @@ function abrirAltaEdicionDp(id) {
         <!-- ============================================================ -->
         <!-- TAB: General — ingreso, proyecto, producto, sentido, origen, -->
         <!-- tipo. Datos del mensaje/lead inicial que dio origen          -->
-        <!-- al prospecto. Los datos de identidad del humano (nombre,     -->
+        <!-- a la oportunidad. Los datos de identidad del humano (nombre,     -->
         <!-- correo, celular, empresa, ubicacion) NO viven mas aca — se   -->
-        <!-- muestran en el tab Contacto derivados del contacto vinculado -->
-        <!-- via datarocket_contactos.                                    -->
+        <!-- muestran en el tab Prospecto derivados del prospecto vinculado -->
+        <!-- via datarocket_prospectos.                                    -->
         <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-dp-tab="general">
+        <div class="modal-tabpanel" data-op-tab="general">
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Ingreso</label>
-              <input type="datetime-local" id="dpIngreso">
+              <input type="datetime-local" id="opIngreso">
             </div>
             <div class="form-group">
               <label>Proyecto</label>
-              <select id="dpProyectoId">${opProy}</select>
+              <select id="opProyectoId">${opProy}</select>
             </div>
             <div class="form-group">
               <label>Producto</label>
-              <input type="text" id="dpProducto" maxlength="100" placeholder="Producto o servicio">
+              <input type="text" id="opProducto" maxlength="100" placeholder="Producto o servicio">
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label>Sentido</label>
-              <select id="dpSentido"><option value="">—</option>${dpOpcionesCombo('sentido')}</select>
+              <select id="opSentido"><option value="">—</option>${opOpcionesCombo('sentido')}</select>
             </div>
             <div class="form-group">
               <label>Origen</label>
-              <select id="dpOrigen"><option value="">—</option>${dpOpcionesCombo('origen')}</select>
+              <select id="opOrigen"><option value="">—</option>${opOpcionesCombo('origen')}</select>
             </div>
           </div>
         </div>
@@ -28386,87 +28330,87 @@ function abrirAltaEdicionDp(id) {
         <!-- ============================================================ -->
         <!-- TAB: Seguimiento — monto, cierre esperado, embudo, etapa,    -->
         <!-- ingreso a la etapa, estado (legacy), calificacion, aplazado, -->
-        <!-- asignado, atendido. Donde vive el prospecto en el pipeline,  -->
+        <!-- asignado, atendido. Donde vive la oportunidad en el pipeline,  -->
         <!-- cuanto vale y quien lo trabaja.                              -->
         <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-dp-tab="seguimiento" hidden>
+        <div class="modal-tabpanel" data-op-tab="seguimiento" hidden>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Monto</label>
               <!-- type=text y no number: permite tipear "1.250.000,50" con los
                    separadores de es-AR; el API normaliza (drProNullableMonto). -->
-              <input type="text" id="dpMonto" inputmode="decimal" placeholder="Ej. 1.250.000,50">
+              <input type="text" id="opMonto" inputmode="decimal" placeholder="Ej. 1.250.000,50">
             </div>
             <div class="form-group">
               <label>Moneda</label>
-              <select id="dpMoneda">${dpOpcionesCombo('moneda')}</select>
+              <select id="opMoneda">${opOpcionesCombo('moneda')}</select>
             </div>
             <div class="form-group">
               <label>Cierre esperado</label>
-              <input type="date" id="dpCierreEsperado">
+              <input type="date" id="opCierreEsperado">
             </div>
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Embudo</label>
-              <select id="dpEmbudoId">${opEmb}</select>
+              <select id="opEmbudoId">${opEmb}</select>
             </div>
             <div class="form-group">
               <label>Etapa</label>
-              <select id="dpEtapaId"><option value="">— (Ninguna) —</option></select>
+              <select id="opEtapaId"><option value="">— (Ninguna) —</option></select>
             </div>
             <div class="form-group">
               <label>Ingreso a la etapa</label>
-              <input type="datetime-local" id="dpEtapaIngreso">
+              <input type="datetime-local" id="opEtapaIngreso">
             </div>
           </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Estado (legacy)</label>
-              <select id="dpEstado"><option value="">—</option>${dpOpcionesCombo('estado')}</select>
+              <select id="opEstado"><option value="">—</option>${opOpcionesCombo('estado')}</select>
             </div>
             <div class="form-group">
               <label>Calificación</label>
-              <input type="number" id="dpCalificacion" min="0" step="1">
+              <input type="number" id="opCalificacion" min="0" step="1">
             </div>
             <div class="form-group">
               <label>Aplazado hasta</label>
-              <input type="datetime-local" id="dpAplazado">
+              <input type="datetime-local" id="opAplazado">
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label>Asignado</label>
-              <select id="dpAsignado">${opUsr}</select>
+              <select id="opAsignado">${opUsr}</select>
             </div>
             <div class="form-group">
               <label>Atendido por</label>
-              <select id="dpAtendido">${opUsr}</select>
+              <select id="opAtendido">${opUsr}</select>
             </div>
           </div>
         </div>
 
         <!-- ============================================================ -->
-        <!-- TAB: Contacto — placeholder inicial. Se rellena con              -->
-        <!-- dpContactoLinkedPanel(p) para prospectos existentes, o con un   -->
-        <!-- selector de contacto para altas nuevas (via dpRenderContactoTab).-->
+        <!-- TAB: Prospecto — placeholder inicial. Se rellena con              -->
+        <!-- opProspectoLinkedPanel(p) para oportunidades existentes, o con un   -->
+        <!-- selector de prospecto para altas nuevas (via opRenderProspectoTab).-->
         <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-dp-tab="contacto" hidden id="dpTabContactoBody">
+        <div class="modal-tabpanel" data-op-tab="prospecto" hidden id="opTabProspectoBody">
           <div style="text-align:center;padding:40px;color:var(--muted)"><div class="spin"></div></div>
         </div>
 
         <!-- ============================================================ -->
         <!-- TAB: Notas — comentarios (max 1000). Unico bloque de notas   -->
-        <!-- libres del prospecto: el asunto se fusiono adentro y el log  -->
+        <!-- libres de la oportunidad: el asunto se fusiono adentro y el log  -->
         <!-- de acciones se dropeo (migraciones 20260817_1600 y 1700).    -->
         <!-- El historial estructurado vive en Interacciones. Sin         -->
         <!-- backticks en este comentario: esta dentro de un template     -->
         <!-- literal y lo cortarian.                                      -->
         <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-dp-tab="notas" hidden>
+        <div class="modal-tabpanel" data-op-tab="notas" hidden>
           <div class="form-group">
             <label>Comentarios (max 1000)</label>
-            <textarea id="dpComentarios" rows="10" maxlength="1000"></textarea>
+            <textarea id="opComentarios" rows="10" maxlength="1000"></textarea>
           </div>
         </div>
 
@@ -28479,10 +28423,10 @@ function abrirAltaEdicionDp(id) {
   `);
 
   // Handler del select de embudo para poblar el select de etapas dependiente.
-  const embSel   = $('#dpEmbudoId');
-  const etaSel   = $('#dpEtapaId');
+  const embSel   = $('#opEmbudoId');
+  const etaSel   = $('#opEtapaId');
   const repintarEtapas = (embudoId, seleccionar) => {
-    const etapas = dpEtapasDelEmbudo(embudoId);
+    const etapas = opEtapasDelEmbudo(embudoId);
     etaSel.innerHTML = ['<option value="">— (Ninguna) —</option>']
       .concat(etapas.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`))
       .join('');
@@ -28499,68 +28443,68 @@ function abrirAltaEdicionDp(id) {
   };
 
   if (editando && p) {
-    setDT('#dpIngreso',       p.ingreso);
-    $('#dpProyectoId').value  = p.proyecto_id  || '';
-    $('#dpProducto').value    = p.producto     || '';
-    $('#dpSentido').value     = p.sentido      || '';
-    $('#dpOrigen').value      = p.origen       || '';
+    setDT('#opIngreso',       p.ingreso);
+    $('#opProyectoId').value  = p.proyecto_id  || '';
+    $('#opProducto').value    = p.producto     || '';
+    $('#opSentido').value     = p.sentido      || '';
+    $('#opOrigen').value      = p.origen       || '';
     // El monto viaja como number; se muestra con separadores es-AR para que el
     // usuario lo lea igual que en el listado. El API vuelve a normalizarlo.
-    $('#dpMonto').value       = p.monto != null
+    $('#opMonto').value       = p.monto != null
       ? Number(p.monto).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
       : '';
-    $('#dpMoneda').value      = p.moneda       || 'ARS';
-    $('#dpCierreEsperado').value = p.cierre_esperado ? String(p.cierre_esperado).slice(0, 10) : '';
-    $('#dpEmbudoId').value    = p.embudo_id    || '';
+    $('#opMoneda').value      = p.moneda       || 'ARS';
+    $('#opCierreEsperado').value = p.cierre_esperado ? String(p.cierre_esperado).slice(0, 10) : '';
+    $('#opEmbudoId').value    = p.embudo_id    || '';
     repintarEtapas(p.embudo_id || '', p.etapa_id || '');
-    setDT('#dpEtapaIngreso',  p.etapa_ingreso);
-    $('#dpEstado').value      = (p.estado === null || p.estado === undefined) ? '' : String(p.estado);
-    $('#dpCalificacion').value = (p.calificacion === null || p.calificacion === undefined) ? '' : p.calificacion;
-    setDT('#dpAplazado',      p.aplazado);
-    $('#dpAsignado').value    = p.asignado     || '';
-    $('#dpAtendido').value    = p.atendido     || '';
-    $('#dpComentarios').value = p.comentarios  || '';
-    // Tab Contacto en modo Edicion: read-only + boton "Abrir ficha".
-    // Al editar no se puede re-vincular el prospecto a otro contacto (regla
+    setDT('#opEtapaIngreso',  p.etapa_ingreso);
+    $('#opEstado').value      = (p.estado === null || p.estado === undefined) ? '' : String(p.estado);
+    $('#opCalificacion').value = (p.calificacion === null || p.calificacion === undefined) ? '' : p.calificacion;
+    setDT('#opAplazado',      p.aplazado);
+    $('#opAsignado').value    = p.asignado     || '';
+    $('#opAtendido').value    = p.atendido     || '';
+    $('#opComentarios').value = p.comentarios  || '';
+    // Tab Prospecto en modo Edicion: read-only + boton "Abrir ficha".
+    // Al editar no se puede re-vincular la oportunidad a otro prospecto (regla
     // del backend + de producto: si el vendedor detecta el error debe borrar
-    // y crear de nuevo). El contacto es inmutable desde este modal.
-    $('#dpTabContactoBody').innerHTML = dpContactoLinkedPanel(p);
+    // y crear de nuevo). El prospecto es inmutable desde este modal.
+    $('#opTabProspectoBody').innerHTML = opProspectoLinkedPanel(p);
   } else {
     // Nuevo: si hay filtro de embudo activo, arrancamos ahi.
-    if (dpFiltroEmbudo) {
-      $('#dpEmbudoId').value = dpFiltroEmbudo;
-      repintarEtapas(dpFiltroEmbudo, '');
+    if (opFiltroEmbudo) {
+      $('#opEmbudoId').value = opFiltroEmbudo;
+      repintarEtapas(opFiltroEmbudo, '');
     } else {
       // Si hay embudo activo por default (el primero activo), seleccionarlo.
-      const def = dpLookups.embudos.find((e) => e.activo === 1);
+      const def = opLookups.embudos.find((e) => e.activo === 1);
       if (def) {
-        $('#dpEmbudoId').value = def.id;
+        $('#opEmbudoId').value = def.id;
         repintarEtapas(def.id, '');
       }
     }
-    // Tab Contacto en modo Alta: selector de contacto obligatorio con
-    // typeahead. Ver dpRenderNuevoContactoSelector() para el markup y la
-    // logica. El backend rechaza el POST sin contacto_id.
-    dpRenderNuevoContactoSelector();
+    // Tab Prospecto en modo Alta: selector de prospecto obligatorio con
+    // typeahead. Ver opRenderNuevoProspectoSelector() para el markup y la
+    // logica. El backend rechaza el POST sin prospecto_id.
+    opRenderNuevoProspectoSelector();
   }
 
-  // Foco inicial: en Alta arrancamos en el tab Contacto y focus al buscador
-  // (elegir contacto es el primer paso obligatorio). En Edicion, foco al
+  // Foco inicial: en Alta arrancamos en el tab Prospecto y focus al buscador
+  // (elegir prospecto es el primer paso obligatorio). En Edicion, foco al
   // primer control visible del tab General (proyecto).
   if (editando) {
-    setTimeout(() => $('#dpProyectoId')?.focus(), 50);
+    setTimeout(() => $('#opProyectoId')?.focus(), 50);
   } else {
-    dpCambiarTab('contacto');
-    setTimeout(() => document.getElementById('dpNuevoContactoSearch')?.focus(), 50);
+    opCambiarTab('prospecto');
+    setTimeout(() => document.getElementById('opNuevoProspectoSearch')?.focus(), 50);
   }
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))   closeModal();
-    if (ev.target.closest('[data-act="guardar"]')) guardarDp();
+    if (ev.target.closest('[data-act="guardar"]')) guardarOp();
   });
 }
 
-async function guardarDp() {
+async function guardarOp() {
   const nullIfEmpty = (v) => (v === null || v === undefined || String(v).trim() === '') ? null : v;
   const dtIfSet = (id) => {
     const v = $(id).value;
@@ -28570,82 +28514,82 @@ async function guardarDp() {
   };
 
   // Body base: data de mensaje inicial + seguimiento + notas. Los 12 campos
-  // de identidad (nombre / contacto / celular / correo / web / organizacion /
+  // de identidad (nombre / prospecto / celular / correo / web / organizacion /
   // domicilio / ciudad / localidad / provincia / pais / ubicacion) NO se
-  // envian mas — viven en el contacto vinculado.
+  // envian mas — viven en el prospecto vinculado.
   const body = {
-    ingreso:       dtIfSet('#dpIngreso'),
-    proyecto_id:   nullIfEmpty($('#dpProyectoId').value),
-    sentido:       nullIfEmpty($('#dpSentido').value),
-    origen:        nullIfEmpty($('#dpOrigen').value),
-    producto:      nullIfEmpty($('#dpProducto').value.trim()),
+    ingreso:       dtIfSet('#opIngreso'),
+    proyecto_id:   nullIfEmpty($('#opProyectoId').value),
+    sentido:       nullIfEmpty($('#opSentido').value),
+    origen:        nullIfEmpty($('#opOrigen').value),
+    producto:      nullIfEmpty($('#opProducto').value.trim()),
     // El monto va crudo tal como lo tipeo el usuario ("1.250.000,50"): el
     // parseo de separadores lo hace drProNullableMonto() en el backend, que es
     // el unico lugar donde tiene que estar la regla.
-    monto:           nullIfEmpty($('#dpMonto').value.trim()),
-    moneda:          $('#dpMoneda').value || 'ARS',
-    cierre_esperado: nullIfEmpty($('#dpCierreEsperado').value),
-    calificacion:  nullIfEmpty($('#dpCalificacion').value),
-    estado:        nullIfEmpty($('#dpEstado').value),
-    embudo_id:     nullIfEmpty($('#dpEmbudoId').value),
-    etapa_id:      nullIfEmpty($('#dpEtapaId').value),
-    etapa_ingreso: dtIfSet('#dpEtapaIngreso'),
-    asignado:      nullIfEmpty($('#dpAsignado').value),
-    atendido:      nullIfEmpty($('#dpAtendido').value),
-    aplazado:      dtIfSet('#dpAplazado'),
-    comentarios:   nullIfEmpty($('#dpComentarios').value.trim()),
+    monto:           nullIfEmpty($('#opMonto').value.trim()),
+    moneda:          $('#opMoneda').value || 'ARS',
+    cierre_esperado: nullIfEmpty($('#opCierreEsperado').value),
+    calificacion:  nullIfEmpty($('#opCalificacion').value),
+    estado:        nullIfEmpty($('#opEstado').value),
+    embudo_id:     nullIfEmpty($('#opEmbudoId').value),
+    etapa_id:      nullIfEmpty($('#opEtapaId').value),
+    etapa_ingreso: dtIfSet('#opEtapaIngreso'),
+    asignado:      nullIfEmpty($('#opAsignado').value),
+    atendido:      nullIfEmpty($('#opAtendido').value),
+    aplazado:      dtIfSet('#opAplazado'),
+    comentarios:   nullIfEmpty($('#opComentarios').value.trim()),
   };
 
-  // contacto_id solo se envia en alta (el backend rechaza el POST sin el).
+  // prospecto_id solo se envia en alta (el backend rechaza el POST sin el).
   // En edicion NO se puede re-vincular — el backend lo ignora aunque venga
   // en el payload.
-  if (!dpEditandoId) {
-    const contactoId = Number($('#dpNuevoContactoId')?.value || 0);
-    if (!contactoId) {
-      toast('Seleccioná un contacto (pestaña Contacto) antes de guardar', { error: true });
-      dpCambiarTab('contacto');
+  if (!opEditandoId) {
+    const prospectoId = Number($('#opNuevoProspectoId')?.value || 0);
+    if (!prospectoId) {
+      toast('Seleccioná un prospecto (pestaña Prospecto) antes de guardar', { error: true });
+      opCambiarTab('prospecto');
       return;
     }
-    body.contacto_id = contactoId;
+    body.prospecto_id = prospectoId;
   }
 
   try {
-    if (dpEditandoId) {
-      await apiSend(`${DP_API}?id=${dpEditandoId}`, 'PUT', body);
-      toast('Prospecto actualizado');
+    if (opEditandoId) {
+      await apiSend(`${OP_API}?id=${opEditandoId}`, 'PUT', body);
+      toast('Oportunidad actualizada');
     } else {
-      await apiSend(DP_API, 'POST', body);
-      toast('Prospecto creado');
+      await apiSend(OP_API, 'POST', body);
+      toast('Oportunidad creada');
     }
     closeModal();
-    dpEditandoId = null;
-    await cargarDp();
+    opEditandoId = null;
+    await cargarOp();
   } catch (err) {
     toast(err.message, { error: true });
   }
 }
 
-async function abrirConsultaDp(id) {
-  // Preferimos el registro en memoria (dpItems, ya enriquecido con contacto_*
+async function abrirConsultaOp(id) {
+  // Preferimos el registro en memoria (opItems, ya enriquecido con prospecto_*
   // y etapa_nombre) si esta cargado — asi el modal se abre sin viaje al
-  // servidor. Si no esta (caso tipico: abrimos desde el modal de Contacto
-  // Datarocket sin haber pasado antes por la vista de Prospectos), lo
+  // servidor. Si no esta (caso tipico: abrimos desde el modal de Prospecto
+  // Datarocket sin haber pasado antes por la vista de Oportunidades), lo
   // pedimos al API por id.
-  let p = dpItems.find((x) => x.id === id);
+  let p = opItems.find((x) => x.id === id);
   if (!p) {
     try {
-      p = await apiGet(`${DP_API}?id=${id}`);
+      p = await apiGet(`${OP_API}?id=${id}`);
     } catch (e) {
-      toast(`No se pudo cargar el prospecto: ${e.message}`, { error: true });
+      toast(`No se pudo cargar la oportunidad: ${e.message}`, { error: true });
       return;
     }
   }
   if (!p) return;
 
-  // Interacciones del prospecto — van en su propia pestaña. Se piden aca (no
-  // en paralelo con el prospecto) porque el prospecto puede venir de dpItems
+  // Interacciones de la oportunidad — van en su propia pestaña. Se piden aca (no
+  // en paralelo con la oportunidad) porque la oportunidad puede venir de opItems
   // sin viaje al servidor; el helper nunca lanza, asi que no hay try/catch.
-  const interacciones = await drIntCargarDeRecurso('prospecto_id', id);
+  const interacciones = await drIntCargarDeRecurso('oportunidad_id', id);
 
   const card = (label, valor, ancho) => `
     <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
@@ -28660,18 +28604,18 @@ async function abrirConsultaDp(id) {
     ? '<span style="color:var(--muted)">—</span>'
     : `<pre style="white-space:pre-wrap;margin:0;font-family:inherit;font-size:.9rem">${esc(v)}</pre>`;
 
-  // Contacto: nombre clickeable que abre el modal de Consultar contacto. Es el
-  // salto inverso al que ya hace abrirConsultarDrCt() (contacto → prospecto),
+  // Prospecto: nombre clickeable que abre el modal de Consultar prospecto. Es el
+  // salto inverso al que ya hace abrirConsultarDrPr() (prospecto → oportunidad),
   // asi que se navega igual: openModal() cierra solo el modal actual, no hace
   // falta closeModal() aca. La identidad (nombre, correo, teléfonos) vive en
-  // `datarocket_contactos`; el prospecto sólo la referencia.
-  const contactoNombre = p.contacto_nombre || ('#' + p.contacto_id);
-  const contactoHtml = p.contacto_id
+  // `datarocket_prospectos`; la oportunidad sólo la referencia.
+  const prospectoNombre = p.prospecto_nombre || ('#' + p.prospecto_id);
+  const prospectoHtml = p.prospecto_id
     ? `<a href="#" style="color:var(--primary);cursor:pointer;text-decoration:underline"
-           onclick="event.preventDefault(); abrirConsultarDrCt(${Number(p.contacto_id)})"
-        >${esc(contactoNombre)}</a>`
-      + (p.contacto_nombre ? ` <span style="color:var(--muted)">(#${Number(p.contacto_id)})</span>` : '')
-    : '<span style="color:var(--muted)">Sin contacto vinculado</span>';
+           onclick="event.preventDefault(); abrirConsultarDrPr(${Number(p.prospecto_id)})"
+        >${esc(prospectoNombre)}</a>`
+      + (p.prospecto_nombre ? ` <span style="color:var(--muted)">(#${Number(p.prospecto_id)})</span>` : '')
+    : '<span style="color:var(--muted)">Sin prospecto vinculado</span>';
 
   // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — misma razon.
   // Las 5 pestañas siguen la misma agrupacion que el modal de Edicion para que
@@ -28680,35 +28624,35 @@ async function abrirConsultaDp(id) {
     <div class="modal" style="max-width:820px;overflow-x:hidden">
       <div class="modal-header">
         <div class="modal-title">
-          🎯 <span class="modal-subtitle">${esc(p.contacto_nombre || '(sin nombre)')} — #${p.id}</span>
+          🎯 <span class="modal-subtitle">${esc(p.prospecto_nombre || '(sin nombre)')} — #${p.id}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
 
       <div class="modal-body">
         <!-- .modal-tabs va DENTRO de .modal-body (mismo patron que awsMsg y
-             Contacto Datarocket). Afuera queda pegado al borde del modal. -->
+             Prospecto Datarocket). Afuera queda pegado al borde del modal. -->
         <div class="modal-tabs" role="tablist">
-          <button type="button" class="modal-tab active" role="tab" data-dp-tab="general"     onclick="dpCambiarTab('general')">
+          <button type="button" class="modal-tab active" role="tab" data-op-tab="general"     onclick="opCambiarTab('general')">
             <i class="fa-solid fa-circle-info"></i> General
           </button>
-          <button type="button" class="modal-tab" role="tab" data-dp-tab="seguimiento" onclick="dpCambiarTab('seguimiento')">
+          <button type="button" class="modal-tab" role="tab" data-op-tab="seguimiento" onclick="opCambiarTab('seguimiento')">
             <i class="fa-solid fa-arrow-trend-up"></i> Seguimiento
           </button>
-          <button type="button" class="modal-tab" role="tab" data-dp-tab="contacto"    onclick="dpCambiarTab('contacto')">
-            <i class="fa-solid fa-address-book"></i> Contacto
+          <button type="button" class="modal-tab" role="tab" data-op-tab="prospecto"    onclick="opCambiarTab('prospecto')">
+            <i class="fa-solid fa-address-book"></i> Prospecto
           </button>
-          <button type="button" class="modal-tab" role="tab" data-dp-tab="notas"       onclick="dpCambiarTab('notas')">
+          <button type="button" class="modal-tab" role="tab" data-op-tab="notas"       onclick="opCambiarTab('notas')">
             <i class="fa-solid fa-note-sticky"></i> Notas
           </button>
-          <button type="button" class="modal-tab" role="tab" data-dp-tab="interacciones" onclick="dpCambiarTab('interacciones')">
+          <button type="button" class="modal-tab" role="tab" data-op-tab="interacciones" onclick="opCambiarTab('interacciones')">
             <i class="fa-solid fa-comments"></i> Interacciones${drIntTabBadge(interacciones.length)}
           </button>
         </div>
 
-        <div class="modal-tabpanel" data-dp-tab="general">
+        <div class="modal-tabpanel" data-op-tab="general">
           <div style="display:flex;flex-wrap:wrap;gap:12px">
-            ${card('Contacto',     contactoHtml, 'full')}
+            ${card('Prospecto',     prospectoHtml, 'full')}
             ${card('Código',       `<code>${p.id}</code>`)}
             ${card('Ingreso',      val(fmtFecha(p.ingreso)))}
             ${card('Proyecto',     val(p.proyecto_nombre))}
@@ -28719,22 +28663,22 @@ async function abrirConsultaDp(id) {
           </div>
         </div>
 
-        <div class="modal-tabpanel" data-dp-tab="seguimiento" hidden>
+        <div class="modal-tabpanel" data-op-tab="seguimiento" hidden>
           <div style="display:flex;flex-wrap:wrap;gap:12px">
             ${card('Monto',         p.monto != null
-                                      ? `<span style="font-weight:600">${esc(dpFmtMonto(p.monto, p.moneda))}</span>`
+                                      ? `<span style="font-weight:600">${esc(opFmtMonto(p.monto, p.moneda))}</span>`
                                       : '<span style="color:var(--muted)">Sin monto cargado</span>')}
             ${card('Cierre esperado', val(p.cierre_esperado ? fmtFechaSola(p.cierre_esperado) : null))}
             ${card('Embudo',        val(p.embudo_nombre))}
-            ${card('Etapa',         dpEtapaPill(p))}
+            ${card('Etapa',         opEtapaPill(p))}
             ${card('Probabilidad',  p.etapa_probabilidad != null
                                       ? `${p.etapa_probabilidad}%`
                                       : '<span style="color:var(--muted)">—</span>')}
             ${card('Monto ponderado', p.monto_ponderado != null
-                                      ? esc(dpFmtMonto(p.monto_ponderado, p.moneda))
+                                      ? esc(opFmtMonto(p.monto_ponderado, p.moneda))
                                       : '<span style="color:var(--muted)">—</span>')}
             ${card('Ingreso a la etapa', val(fmtFecha(p.etapa_ingreso)))}
-            ${card('Estado (legacy)', dpEstadoLegacyBadge(p.estado))}
+            ${card('Estado (legacy)', opEstadoLegacyBadge(p.estado))}
             ${card('Calificación',  val(p.calificacion))}
             ${card('Aplazado',      val(fmtFecha(p.aplazado)))}
             ${card('Asignado',      val(p.asignado_nombre))}
@@ -28743,14 +28687,14 @@ async function abrirConsultaDp(id) {
         </div>
 
         <!-- ============================================================ -->
-        <!-- TAB: Contacto — read-only, viene 100% de datarocket_contactos-->
-        <!-- via JOIN. Para modificar hay que abrir la ficha del contacto.-->
+        <!-- TAB: Prospecto — read-only, viene 100% de datarocket_prospectos-->
+        <!-- via JOIN. Para modificar hay que abrir la ficha del prospecto.-->
         <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-dp-tab="contacto" hidden>
-          ${dpContactoLinkedPanel(p)}
+        <div class="modal-tabpanel" data-op-tab="prospecto" hidden>
+          ${opProspectoLinkedPanel(p)}
         </div>
 
-        <div class="modal-tabpanel" data-dp-tab="notas" hidden>
+        <div class="modal-tabpanel" data-op-tab="notas" hidden>
           <div style="display:flex;flex-wrap:wrap;gap:12px">
             ${card('Comentarios',   preText(p.comentarios), 'full')}
           </div>
@@ -28758,12 +28702,12 @@ async function abrirConsultaDp(id) {
 
         <!-- ============================================================ -->
         <!-- TAB: Interacciones — filas de datarocket_interacciones con   -->
-        <!-- prospecto_id = este prospecto. Fila clickeable → ficha de la -->
+        <!-- oportunidad_id = esta oportunidad. Fila clickeable → ficha de la -->
         <!-- interacción. Sin backticks en este comentario: esta adentro  -->
         <!-- de un template literal y lo cortarian.                       -->
         <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-dp-tab="interacciones" hidden>
-          ${drIntTablaEmbebida(interacciones, 'Este prospecto no tiene interacciones registradas.')}
+        <div class="modal-tabpanel" data-op-tab="interacciones" hidden>
+          ${drIntTablaEmbebida(interacciones, 'Esta oportunidad no tiene interacciones registradas.')}
         </div>
 
       </div>
@@ -28777,47 +28721,29 @@ async function abrirConsultaDp(id) {
   $('#modalRoot').addEventListener('click', (ev) => {
     if (drIntFilaEmbebidaClick(ev)) return;
     if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDp(id); }
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionOp(id); }
   });
 }
 
-async function eliminarDp(id) {
-  const p = dpItems.find((x) => x.id === id);
+async function eliminarOp(id) {
+  const p = opItems.find((x) => x.id === id);
   if (!p) return;
-  const nombre = p.contacto_nombre || `#${id}`;
+  const nombre = p.prospecto_nombre || `#${id}`;
   const ok = await confirmar({
-    title:       'Eliminar prospecto',
-    message:     `¿Eliminás el prospecto "${nombre}"? Esta acción no se puede deshacer.`,
+    title:       'Eliminar oportunidad',
+    message:     `¿Eliminás la oportunidad "${nombre}"? Esta acción no se puede deshacer.`,
     confirmText: 'Eliminar',
     danger:      true,
   });
   if (!ok) return;
   try {
-    await apiSend(`${DP_API}?id=${id}`, 'DELETE');
-    toast('Prospecto eliminado');
-    await cargarDp();
+    await apiSend(`${OP_API}?id=${id}`, 'DELETE');
+    toast('Oportunidad eliminada');
+    await cargarOp();
   } catch (err) {
     toast(err.message, { error: true });
   }
 }
-
-// ------------------------- Vista: Datasale (landing) -------------------------
-route('/datasale', async (mount) => {
-  mount.innerHTML = `
-    <div class="page-header">
-      <div class="page-title">Datasale</div>
-      <div class="page-subtitle">Sistema comercial: gestión de prospectos y oportunidades.</div>
-    </div>
-
-    <div class="tile-grid">
-      <button type="button" class="tile-card" onclick="location.hash='#/prospectos'">
-        <span class="tile-icon">🎯</span>
-        <span class="tile-title">Prospectos</span>
-        <span class="tile-desc">Prospectos con proyecto, estado, asignación, atendido, sentido, tipo y origen.</span>
-      </button>
-    </div>
-  `;
-}, 'Datasale');
 
 // ------------------------- Vista: Datainfra (landing) -------------------------
 // Sistema de infraestructura: catalogo de servidores, bases de datos y
@@ -29823,1079 +29749,6 @@ async function testearDiep(id) {
   }
 }
 
-// ------------------------- Vista: Datasale > Prospectos (ABM) -------------------------
-const dsProFiltrosDefaults = {
-  q: '', codigo: '', proyecto: '', estado: '', asignado: '', atendido: '',
-  sentido: '', tipo: '', origen: '', desde: '', hasta: '',
-  order_by: 'id', dir: 'desc', limite: 100,
-};
-const dsProFiltros = { ...dsProFiltrosDefaults };
-let dsProBuscadorTimer   = null;
-let dsProFiltrosSnapshot = null;
-
-// Diccionarios para poblar selects (proyectos, usuarios, paises) y opciones de
-// combos (sentido / origen / tipo / estado / producto) leidas de la tabla
-// `estados`. Se piden una vez al montar la vista via ensureDsProLookups().
-let dsProLookups = null;
-
-async function ensureDsProLookups() {
-  if (dsProLookups) return dsProLookups;
-  dsProLookups = await apiGet('api/datasaleprospectos.php?lookups=1');
-  return dsProLookups;
-}
-
-// Renderiza el texto resuelto contra `estados` (o el valor crudo si no hay
-// traduccion) como badge. `texto` = campo `*_texto` que viene enriquecido en
-// el response; `valor` = valor crudo guardado en la fila.
-function dsProBadge(texto, valor) {
-  const label = (texto && String(texto).trim() !== '') ? texto : valor;
-  if (label == null || label === '') return `<span class="badge badge-info">—</span>`;
-  return `<span class="badge badge-info">${esc(label)}</span>`;
-}
-
-// Iconos por valor de `estado` (siguiendo el legacy: reloj para pendiente,
-// apreton de manos para atendido, check para despachado). El resto cae en
-// icono vacio + label neutro.
-const DS_PRO_ESTADO_ICONO = {
-  '1': 'fa-solid fa-clock',
-  '2': 'fa-solid fa-handshake',
-  '3': 'fa-solid fa-check',
-};
-
-// Celda "Estado" del listado. Replica el layout del legacy `listar.php`:
-//   <icono> | <estado>
-//   a/por <asignado|atendido>
-//   hace X (desde ingreso si pendiente, desde actualizado si atendido)
-// Los pendientes se pintan en rojo (--danger) para llamar la atencion.
-function dsProEstadoCelda(p) {
-  const estadoStr = p.estado != null ? String(p.estado) : '';
-  const pendiente = estadoStr === '1';
-  const icono = DS_PRO_ESTADO_ICONO[estadoStr] || '';
-  const label = p.estado_texto || p.estado || '—';
-
-  const iconoHtml = icono ? `<i class="${icono}"></i> ` : '';
-  const cabecera  = `${iconoHtml}${esc(label)}`;
-
-  const partes = [];
-  if (pendiente && p.asignado_nombre) {
-    partes.push(`<small style="opacity:.8">a ${esc(p.asignado_nombre)}</small>`);
-  } else if (!pendiente && p.atendido_nombre) {
-    partes.push(`<small style="opacity:.8">por ${esc(p.atendido_nombre)}</small>`);
-  }
-  const desde = pendiente ? p.ingreso : (p.actualizado || p.ingreso);
-  const hace  = fmtHace(desde);
-  if (hace) partes.push(`<small style="opacity:.8">${esc(hace)}</small>`);
-
-  const cuerpo = [cabecera, ...partes].join('<br>');
-  const color  = pendiente ? 'color:var(--danger)' : '';
-  return `<span style="line-height:1.35;${color}">${cuerpo}</span>`;
-}
-
-// Renderiza las <option> de un combo desde dsProLookups.opciones[campo]. Se
-// usa tanto en el modal de filtros como en el form de alta/edicion.
-function dsProOpcionesHtml(campo, valorActual, incluirTodos = false, todosLabel = '— Todos —') {
-  const opts = (dsProLookups?.opciones?.[campo]) || [];
-  const parts = [];
-  parts.push(`<option value="">${incluirTodos ? esc(todosLabel) : '—'}</option>`);
-  for (const o of opts) {
-    const sel = String(o.valor) === String(valorActual ?? '') ? ' selected' : '';
-    parts.push(`<option value="${esc(o.valor)}"${sel}>${esc(o.texto)}</option>`);
-  }
-  return parts.join('');
-}
-
-// Renderiza las <option> de una lista {id, nombre} (proyectos, usuarios,
-// paises, provincias, localidades).
-function dsProIdNombreHtml(items, valorActual, incluirTodos = false, todosLabel = '— Todos —') {
-  const parts = [];
-  parts.push(`<option value="">${incluirTodos ? esc(todosLabel) : '—'}</option>`);
-  for (const it of (items || [])) {
-    const sel = String(it.id) === String(valorActual ?? '') ? ' selected' : '';
-    parts.push(`<option value="${esc(it.id)}"${sel}>${esc(it.nombre)}</option>`);
-  }
-  return parts.join('');
-}
-
-function dsProCalificacion(n) {
-  const num = Number(n);
-  if (!num || num < 1) return `<span style="color:var(--muted)">—</span>`;
-  const stars = Math.max(0, Math.min(5, Math.round(num)));
-  return `<span style="color:#f5a623;letter-spacing:1px">${'★'.repeat(stars)}${'☆'.repeat(5 - stars)}</span>`;
-}
-
-route('/prospectos', async (mount) => {
-  // Los selects del modal de filtros y del formulario dependen de los
-  // diccionarios (proyectos, usuarios, opciones de combos). Se cargan una
-  // sola vez por sesion antes de renderizar la vista.
-  await ensureDsProLookups();
-
-  mount.innerHTML = `
-    <div class="section">
-      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
-        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
-                title="Volver a Datasale" onclick="location.hash='#/datasale'">
-          <i class="fa-solid fa-chevron-left"></i>
-        </button>
-        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
-          <div style="font-size:1.6rem;line-height:1">🎯</div>
-          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
-            Los prospectos son los interesados que llegan al equipo comercial desde los distintos
-            canales de captación, con sus datos de contacto, producto de interés, estado del
-            seguimiento y el usuario asignado para atenderlos.
-          </div>
-        </div>
-      </div>
-
-      <div class="stats-bar" id="dsProStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Sin atender</span><span class="stat-value orange">—</span></div>
-        <div class="stat-card"><span class="stat-label">Asignados</span><span class="stat-value">—</span></div>
-      </div>
-
-      <div class="toolbar">
-        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
-          <div class="search-wrap">
-            <input type="search" class="search-input" id="dsProSearch"
-                   placeholder="🔍 Buscar nombre, organización, contacto, correo, asunto…">
-            <button class="search-clear" id="dsProSearchClear" style="display:none">×</button>
-          </div>
-          <button class="btn btn-ghost btn-icon" id="dsProFiltrosBtn" title="Filtros">
-            <i class="fa-solid fa-filter"></i>
-            <span class="btn-icon-badge" id="dsProFiltrosBadge" style="display:none">0</span>
-          </button>
-          <button class="btn btn-ghost btn-icon" id="dsProRapidoBtn" title="Filtro rápido por estado">
-            <i class="fa-solid fa-bolt"></i>
-          </button>
-          <button class="btn btn-ghost btn-icon" id="dsProRefrescarBtn" title="Refrescar">
-            <i class="fa-solid fa-rotate"></i>
-          </button>
-        </div>
-        <div class="toolbar-right">
-          <button class="btn btn-primary" id="dsProNuevoBtn">+ Nuevo prospecto</button>
-        </div>
-      </div>
-
-      <div class="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Ingreso</th>
-              <th>Proyecto</th>
-              <th>Asunto / Nombre</th>
-              <th>Estado</th>
-              <th style="text-align:center">Acciones</th>
-            </tr>
-          </thead>
-          <tbody id="dsProTbody">
-            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Menú contextual del filtro rápido (icono de rayo). Refleja el legacy:
-         Todos / Pendientes / Atendidos / Despachados. -->
-    <div id="dsProRapidoMenu" class="ctx-menu" role="menu">
-      <button type="button" data-estado="" role="menuitem">
-        <i class="fa-solid fa-list-ul"></i><span>Todos</span>
-      </button>
-      <div class="ctx-menu-sep"></div>
-      <button type="button" data-estado="1" role="menuitem">
-        <i class="fa-solid fa-clock"></i><span>Esperando</span>
-      </button>
-      <button type="button" data-estado="2" role="menuitem">
-        <i class="fa-solid fa-handshake"></i><span>Atendidos</span>
-      </button>
-      <button type="button" data-estado="3" role="menuitem">
-        <i class="fa-solid fa-check"></i><span>Despachados</span>
-      </button>
-    </div>
-
-    <!-- Menú contextual único de la sección. Los items marcar-* se muestran u
-         ocultan segun el estado actual del prospecto (ver abrirMenuDsPro). -->
-    <div id="dsProCtxMenu" class="ctx-menu" role="menu">
-      <button type="button" data-action="consultar" role="menuitem">
-        <i class="fa-solid fa-eye"></i><span>Consultar</span>
-      </button>
-      <div class="ctx-menu-sep" data-role="sep-transiciones"></div>
-      <button type="button" data-action="marcar-esperando" role="menuitem">
-        <i class="fa-solid fa-clock"></i><span>Marcar como esperando</span>
-      </button>
-      <button type="button" data-action="marcar-atendido" role="menuitem">
-        <i class="fa-solid fa-handshake"></i><span>Marcar como atendido</span>
-      </button>
-      <button type="button" data-action="marcar-despachado" role="menuitem">
-        <i class="fa-solid fa-check"></i><span>Marcar como despachado</span>
-      </button>
-      <div class="ctx-menu-sep"></div>
-      <button type="button" data-action="editar" role="menuitem">
-        <i class="fa-solid fa-pen"></i><span>Editar</span>
-      </button>
-      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
-        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
-      </button>
-    </div>
-
-    <!-- Modal de filtros -->
-    <div class="modal-backdrop" id="filtrosDsProBackdrop"
-         onclick="if(event.target===this)cancelarFiltrosDsPro()">
-      <div class="modal" style="max-width:620px">
-        <div class="modal-header">
-          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDsPro()" title="Cerrar">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>Código</label>
-              <input type="number" id="fDsProCodigo" min="1" placeholder="ID …" oninput="onFiltroDsPro('codigo', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Proyecto</label>
-              <select id="fDsProProyecto" onchange="onFiltroDsPro('proyecto', this.value)">
-                ${dsProIdNombreHtml(dsProLookups?.proyectos, '', true)}
-              </select>
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Sentido</label>
-              <select id="fDsProSentido" onchange="onFiltroDsPro('sentido', this.value)">
-                ${dsProOpcionesHtml('sentido', '', true)}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Tipo</label>
-              <select id="fDsProTipo" onchange="onFiltroDsPro('tipo', this.value)">
-                ${dsProOpcionesHtml('tipo', '', true)}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Origen</label>
-              <select id="fDsProOrigen" onchange="onFiltroDsPro('origen', this.value)">
-                ${dsProOpcionesHtml('origen', '', true)}
-              </select>
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Estado</label>
-              <select id="fDsProEstado" onchange="onFiltroDsPro('estado', this.value)">
-                ${dsProOpcionesHtml('estado', '', true)}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Asignado</label>
-              <select id="fDsProAsignado" onchange="onFiltroDsPro('asignado', this.value)">
-                ${dsProIdNombreHtml(dsProLookups?.usuarios, '', true)}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Atendido</label>
-              <select id="fDsProAtendido" onchange="onFiltroDsPro('atendido', this.value)">
-                ${dsProIdNombreHtml(dsProLookups?.usuarios, '', true)}
-              </select>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Desde</label>
-              <input type="date" id="fDsProDesde" onchange="onFiltroDsPro('desde', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Hasta</label>
-              <input type="date" id="fDsProHasta" onchange="onFiltroDsPro('hasta', this.value)">
-            </div>
-          </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Límite</label>
-              <input type="number" id="fDsProLimite" min="1" max="1000" value="100" onchange="onFiltroDsPro('limite', this.value)">
-            </div>
-            <div class="form-group">
-              <label>Ordenar por</label>
-              <select id="fDsProOrderBy" onchange="onFiltroDsPro('order_by', this.value)">
-                <option value="id">Código</option>
-                <option value="ingreso">Ingreso</option>
-                <option value="proyecto">Proyecto</option>
-                <option value="sentido">Sentido</option>
-                <option value="origen">Origen</option>
-                <option value="tipo">Tipo</option>
-                <option value="producto">Producto</option>
-                <option value="organizacion">Organización</option>
-                <option value="nombre">Nombre</option>
-                <option value="estado">Estado</option>
-                <option value="calificacion">Calificación</option>
-                <option value="asignado">Asignado</option>
-                <option value="atendido">Atendido</option>
-                <option value="actualizado">Actualizado</option>
-                <option value="aplazado">Aplazado</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Dirección</label>
-              <select id="fDsProDir" onchange="onFiltroDsPro('dir', this.value)">
-                <option value="desc">Descendente</option>
-                <option value="asc">Ascendente</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDsPro()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDsPro()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDsPro()">Aplicar</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  $('#dsProNuevoBtn').addEventListener('click', () => abrirAltaEdicionDsPro(null));
-  $('#dsProFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDsPro());
-  $('#dsProRefrescarBtn').addEventListener('click', () => cargarDsPro());
-
-  // Filtro rápido por estado: abre menu contextual anclado al boton del rayo.
-  $('#dsProRapidoBtn').addEventListener('click', (ev) => {
-    ev.stopPropagation();
-    const r = ev.currentTarget.getBoundingClientRect();
-    abrirCtxMenu($('#dsProRapidoMenu'), r.right - 200, r.bottom + 4, null);
-  });
-  $('#dsProRapidoMenu').addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-estado]');
-    if (!b) return;
-    cerrarCtxMenu();
-    // El filtro rapido reemplaza al estado del modal de filtros — si estaban
-    // pisando el mismo campo, el ultimo click gana.
-    dsProFiltros.estado = b.dataset.estado;
-    refrescarBadgeFiltrosDsPro();
-    cargarDsPro();
-  });
-
-  const inp = $('#dsProSearch');
-  const clr = $('#dsProSearchClear');
-  inp.value = dsProFiltros.q || '';
-  clr.style.display = inp.value ? '' : 'none';
-  inp.addEventListener('input', () => {
-    clr.style.display = inp.value ? '' : 'none';
-    dsProFiltros.q = inp.value.trim();
-    clearTimeout(dsProBuscadorTimer);
-    dsProBuscadorTimer = setTimeout(() => { cargarDsPro(); refrescarBadgeFiltrosDsPro(); }, 250);
-  });
-  clr.addEventListener('click', () => {
-    inp.value = '';
-    clr.style.display = 'none';
-    dsProFiltros.q = '';
-    cargarDsPro();
-    refrescarBadgeFiltrosDsPro();
-  });
-
-  // Acciones del menú contextual
-  $('#dsProCtxMenu').addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-action]');
-    if (!b) return;
-    const data = getCtxMenuData();
-    if (!data) return;
-    cerrarCtxMenu();
-    if (b.dataset.action === 'consultar')        abrirConsultarDsPro(data.id);
-    if (b.dataset.action === 'editar')           abrirAltaEdicionDsPro(data.id);
-    if (b.dataset.action === 'eliminar')         eliminarDsPro(data.id);
-    if (b.dataset.action === 'marcar-esperando')  marcarEstadoDsPro(data.id, 1);
-    if (b.dataset.action === 'marcar-atendido')   marcarEstadoDsPro(data.id, 2);
-    if (b.dataset.action === 'marcar-despachado') marcarEstadoDsPro(data.id, 3);
-  });
-
-  // Clic en fila → consultar; clic en hamburguesa → menú
-  $('#dsProTbody').addEventListener('click', (ev) => {
-    const ham = ev.target.closest('[data-act="menu"]');
-    if (ham) {
-      ev.stopPropagation();
-      const id     = Number(ham.dataset.id);
-      const estado = ham.dataset.estado || '';
-      const r      = ham.getBoundingClientRect();
-      abrirMenuDsPro(r.right - 190, r.bottom + 4, { id, estado });
-      return;
-    }
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    abrirConsultarDsPro(Number(tr.dataset.id));
-  });
-  $('#dsProTbody').addEventListener('contextmenu', (ev) => {
-    const tr = ev.target.closest('tr[data-id]');
-    if (!tr) return;
-    ev.preventDefault();
-    abrirMenuDsPro(ev.clientX, ev.clientY, {
-      id:     Number(tr.dataset.id),
-      estado: tr.dataset.estado || '',
-    });
-  });
-
-  refrescarBadgeFiltrosDsPro();
-  await cargarDsPro();
-}, 'Datasale &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Prospectos');
-
-async function cargarDsPro() {
-  const tbody = $('#dsProTbody');
-  if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
-
-  const qs = new URLSearchParams();
-  Object.entries(dsProFiltros).forEach(([k, v]) => {
-    if (v !== '' && v != null) qs.set(k, v);
-  });
-  try {
-    const data = await apiGet('api/datasaleprospectos.php?' + qs.toString());
-    pintarStatsDsPro(data.stats);
-    pintarTablaDsPro(data.items || []);
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
-  }
-}
-
-function pintarStatsDsPro(s) {
-  const cards = $$('#dsProStats .stat-card .stat-value');
-  if (cards.length < 3) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = fmtNum(s.sin_atender);
-  cards[2].textContent = fmtNum(s.asignados);
-}
-
-// Layout de la columna "Asunto / Nombre" — replica del legacy:
-//   <asunto>       (small + bold, si viene)
-//   <nombre>
-//   <ubicacion>    (small; localidad, provincia, pais con etiquetas resueltas)
-//   Producto <producto>  (small, si viene)
-// Cuando no hay nombre (registros huerfanos), cae a "Prospecto #<id>".
-function dsProAsuntoNombreCelda(p) {
-  const ubicacion = [p.localidad_nombre, p.provincia_nombre, p.pais_nombre]
-    .filter(Boolean).join(', ');
-  const producto = p.producto_texto || p.producto || '';
-  const nombre = p.nombre || `Prospecto #${p.id}`;
-
-  const partes = [];
-  if (p.asunto) partes.push(`<small><b>${esc(p.asunto)}</b></small>`);
-  partes.push(esc(nombre));
-  if (ubicacion) partes.push(`<small style="opacity:.8">${esc(ubicacion)}</small>`);
-  if (producto)  partes.push(`<small style="opacity:.8">Producto ${esc(producto)}</small>`);
-  return `<span style="line-height:1.35">${partes.join('<br>')}</span>`;
-}
-
-function pintarTablaDsPro(rows) {
-  const tbody = $('#dsProTbody');
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin prospectos.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map((p) => `
-    <tr data-id="${p.id}" data-estado="${esc(p.estado ?? '')}" class="row-clickable">
-      <td class="td-id">#${esc(p.id)}</td>
-      <td style="font-family:monospace">${esc(fmtFechaLarga(p.ingreso))}</td>
-      <td>${esc(p.proyecto_nombre || p.proyecto || '—')}</td>
-      <td>${dsProAsuntoNombreCelda(p)}</td>
-      <td>${dsProEstadoCelda(p)}</td>
-      <td style="text-align:center">
-        <div class="actions" style="justify-content:center">
-          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}" data-estado="${esc(p.estado ?? '')}">
-            <i class="fa-solid fa-bars"></i>
-          </button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
-}
-
-// ---- Modal de Filtros ----
-function onFiltroDsPro(key, value) {
-  if (['sentido', 'tipo', 'origen', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
-    dsProFiltros[key] = value;
-  } else if (['codigo', 'proyecto', 'estado', 'asignado', 'atendido'].includes(key)) {
-    const v = String(value).trim();
-    dsProFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
-  } else if (key === 'limite') {
-    let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
-    dsProFiltros.limite = n;
-  } else {
-    dsProFiltros[key] = value;
-  }
-  refrescarBadgeFiltrosDsPro();
-  cargarDsPro();
-}
-
-function refrescarBadgeFiltrosDsPro() {
-  const btn   = $('#dsProFiltrosBtn');
-  const badge = $('#dsProFiltrosBadge');
-  if (!btn || !badge) return;
-  let count = 0;
-  for (const k of Object.keys(dsProFiltrosDefaults)) {
-    if (k === 'q') continue;
-    if (String(dsProFiltros[k]) !== String(dsProFiltrosDefaults[k])) count++;
-  }
-  if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
-  else           { btn.classList.remove('active'); badge.style.display = 'none'; }
-}
-
-function sincronizarControlesFiltrosDsPro() {
-  const f = dsProFiltros;
-  $('#fDsProCodigo').value   = f.codigo;
-  $('#fDsProProyecto').value = f.proyecto;
-  $('#fDsProSentido').value  = f.sentido;
-  $('#fDsProTipo').value     = f.tipo;
-  $('#fDsProOrigen').value   = f.origen;
-  $('#fDsProEstado').value   = f.estado;
-  $('#fDsProAsignado').value = f.asignado;
-  $('#fDsProAtendido').value = f.atendido;
-  $('#fDsProDesde').value    = f.desde;
-  $('#fDsProHasta').value    = f.hasta;
-  $('#fDsProLimite').value   = f.limite;
-  $('#fDsProOrderBy').value  = f.order_by;
-  $('#fDsProDir').value      = f.dir;
-}
-
-function abrirModalFiltrosDsPro() {
-  dsProFiltrosSnapshot = { ...dsProFiltros };
-  sincronizarControlesFiltrosDsPro();
-  $('#filtrosDsProBackdrop').classList.add('open');
-}
-
-function cerrarModalFiltrosDsPro() {
-  $('#filtrosDsProBackdrop').classList.remove('open');
-}
-
-function cancelarFiltrosDsPro() {
-  if (dsProFiltrosSnapshot) {
-    Object.assign(dsProFiltros, dsProFiltrosSnapshot);
-    refrescarBadgeFiltrosDsPro();
-    cargarDsPro();
-  }
-  cerrarModalFiltrosDsPro();
-}
-
-function limpiarFiltrosDsPro() {
-  Object.assign(dsProFiltros, dsProFiltrosDefaults);
-  dsProFiltros.q = $('#dsProSearch')?.value.trim() || '';
-  sincronizarControlesFiltrosDsPro();
-  refrescarBadgeFiltrosDsPro();
-  cargarDsPro();
-}
-
-// Exponer para los onclick del HTML
-window.onFiltroDsPro           = onFiltroDsPro;
-window.cancelarFiltrosDsPro    = cancelarFiltrosDsPro;
-window.limpiarFiltrosDsPro     = limpiarFiltrosDsPro;
-window.cerrarModalFiltrosDsPro = cerrarModalFiltrosDsPro;
-
-// ---- Modal Consultar ----
-async function abrirConsultarDsPro(id) {
-  openModal(`
-    <div class="modal modal-wide">
-      <div class="modal-header">
-        <div class="modal-title">Prospecto <span class="modal-subtitle">#${id}</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
-    </div>
-  `);
-  $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDsPro(id); }
-    dsProSwitchTab(ev);
-  });
-
-  try {
-    const p = await apiGet(`api/datasaleprospectos.php?id=${id}`);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaDsPro(p);
-  } catch (e) {
-    $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-  }
-}
-
-// Delegado de tabs para los modales de prospecto (consulta y alta/edicion).
-// Recorre solo el modal activo — no toca otros modales-tabs de la SPA.
-function dsProSwitchTab(ev) {
-  const tabBtn = ev.target.closest('#modalRoot [data-tab]');
-  if (!tabBtn) return;
-  const target = tabBtn.dataset.tab;
-  $$('#modalRoot .modal-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
-  $$('#modalRoot .modal-tabpanel').forEach((p) => { p.hidden = p.dataset.panel !== target; });
-}
-
-function renderConsultaDsPro(p) {
-  const card = (label, value, full = false, isCode = false) => {
-    const empty = value == null || value === '';
-    const inner = empty ? 'Sin dato'
-                : isCode ? `<code>${esc(value)}</code>`
-                : esc(value);
-    return `
-      <div class="data-row${full ? ' full' : ''}">
-        <span class="data-label">${esc(label)}</span>
-        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
-      </div>`;
-  };
-
-  const accionesTxt = p.acciones && String(p.acciones).trim() !== ''
-    ? `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(p.acciones)}</pre>`
-    : `<div style="color:var(--muted);font-style:italic">Sin historial de acciones</div>`;
-
-  // El listener de tabs esta enganchado en el mismo modalRoot que ya maneja
-  // "close" y "editar" (ver abrirConsultarDsPro).
-  return `
-    <div class="modal-tabs">
-      <button type="button" class="modal-tab active" data-tab="contacto">Contacto</button>
-      <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
-      <button type="button" class="modal-tab"        data-tab="oportunidad">Oportunidad</button>
-      <button type="button" class="modal-tab"        data-tab="seguimiento">Seguimiento</button>
-      <button type="button" class="modal-tab"        data-tab="comentarios">Comentarios</button>
-      <button type="button" class="modal-tab"        data-tab="historial">Historial</button>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="contacto">
-      <dl class="data-list">
-        ${card('Nombre',       p.nombre)}
-        ${card('Organización', p.organizacion)}
-        ${card('Contacto',     p.contacto)}
-        ${card('Celular',      p.celular, false, true)}
-        ${card('Correo',       p.correo,  false, true)}
-        ${card('Web',          p.web,     false, true)}
-      </dl>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="ubicacion" hidden>
-      <dl class="data-list">
-        ${card('Domicilio',  p.domicilio, true)}
-        ${card('Ciudad',     p.ciudad)}
-        ${card('Localidad',  p.localidad_nombre || p.localidad)}
-        ${card('Provincia',  p.provincia_nombre || p.provincia)}
-        ${card('País',       p.pais_nombre      || p.pais)}
-        ${card('Ubicación',  p.ubicacion, true, true)}
-      </dl>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="oportunidad" hidden>
-      <dl class="data-list">
-        ${card('Proyecto',      p.proyecto_nombre || p.proyecto)}
-        ${card('Producto',      p.producto_texto  || p.producto)}
-        ${card('Asunto',        p.asunto,  true)}
-        ${card('Sentido',       p.sentido_texto || p.sentido)}
-        ${card('Tipo',          p.tipo_texto    || p.tipo)}
-        ${card('Origen',        p.origen_texto  || p.origen)}
-        ${card('Estado',        p.estado_texto  || p.estado)}
-        ${card('Calificación',  p.calificacion)}
-      </dl>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="seguimiento" hidden>
-      <dl class="data-list">
-        ${card('Asignado a',     p.asignado_nombre || p.asignado)}
-        ${card('Atendido por',   p.atendido_nombre || p.atendido)}
-        ${card('Ingreso',        fmtFecha(p.ingreso))}
-        ${card('Actualizado',    fmtFecha(p.actualizado))}
-        ${card('Aplazado hasta', fmtFecha(p.aplazado))}
-      </dl>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="comentarios" hidden>
-      <dl class="data-list">
-        ${card('Comentarios', p.comentarios, true)}
-      </dl>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="historial" hidden>
-      ${accionesTxt}
-    </div>
-  `;
-}
-
-// ---- Modal Alta / Edición ----
-async function abrirAltaEdicionDsPro(id) {
-  const esEdicion = id != null;
-  openModal(`
-    <div class="modal modal-wide">
-      <div class="modal-header">
-        <div class="modal-title">${esEdicion ? `Editar prospecto <span class="modal-subtitle">#${id}</span>` : 'Nuevo prospecto'}</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
-      </div>
-      <div class="modal-body">
-        ${esEdicion
-          ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
-          : formDsProHtml({})}
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
-      </div>
-    </div>
-  `);
-
-  if (esEdicion) {
-    try {
-      const p = await apiGet(`api/datasaleprospectos.php?id=${id}`);
-      $('#modalRoot .modal-body').innerHTML = formDsProHtml(p);
-      // Los selects encadenados de provincia y localidad se hidratan tras el
-      // render: el form ya trae la provincia/localidad persistida como opcion
-      // seleccionada, pero la lista completa se pide filtrando por pais.
-      if (p.pais) {
-        await cargarProvinciasDsPro(p.pais, p.provincia || '');
-      }
-    } catch (e) {
-      $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
-    }
-  }
-
-  $('#modalRoot').addEventListener('click', async (ev) => {
-    dsProSwitchTab(ev);
-    const a = ev.target.closest('[data-act]');
-    if (!a) return;
-    if (a.dataset.act === 'close')   closeModal();
-    if (a.dataset.act === 'guardar') await guardarDsPro(id, a);
-  });
-}
-
-function formDsProHtml(p) {
-  const v  = (k) => esc(p?.[k] ?? '');
-  const dt = (k) => {
-    const raw = p?.[k];
-    if (!raw) return '';
-    return esc(String(raw).replace(' ', 'T').slice(0, 16));
-  };
-  // Los selects encadenados de provincia y localidad se hidratan tras el render
-  // via cargarProvinciasDsPro() / cargarLocalidadesDsPro(), asi el <select>
-  // arranca solo con la opcion ya persistida y luego se completa con la lista
-  // filtrada por el pais/provincia seleccionados.
-  const optProv = p?.provincia
-    ? `<option value="${esc(p.provincia)}" selected>${esc(p.provincia_nombre || p.provincia)}</option>`
-    : '<option value="">—</option>';
-  const optLoc  = p?.localidad
-    ? `<option value="${esc(p.localidad)}" selected>${esc(p.localidad_nombre || p.localidad)}</option>`
-    : '<option value="">—</option>';
-  // Los campos se agrupan en 6 tabs que espejan las secciones de la vista
-  // Consultar (Contacto / Ubicacion / Oportunidad / Seguimiento / Comentarios /
-  // Historial). El toggle se maneja con el mismo dsProSwitchTab que la consulta.
-  // `dspFormError` queda fuera de los paneles para ser visible en cualquier tab.
-  return `
-    <div class="modal-tabs">
-      <button type="button" class="modal-tab active" data-tab="contacto">Contacto</button>
-      <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
-      <button type="button" class="modal-tab"        data-tab="oportunidad">Oportunidad</button>
-      <button type="button" class="modal-tab"        data-tab="seguimiento">Seguimiento</button>
-      <button type="button" class="modal-tab"        data-tab="comentarios">Comentarios</button>
-      <button type="button" class="modal-tab"        data-tab="historial">Historial</button>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="contacto">
-      <div class="form-row">
-        <div class="form-group">
-          <label>Nombre</label>
-          <input type="text" id="dspNombre" maxlength="255" value="${v('nombre')}">
-        </div>
-        <div class="form-group">
-          <label>Organización</label>
-          <input type="text" id="dspOrganizacion" maxlength="255" value="${v('organizacion')}">
-        </div>
-      </div>
-      <div class="form-row form-row-3">
-        <div class="form-group">
-          <label>Contacto</label>
-          <input type="text" id="dspContacto" maxlength="255" value="${v('contacto')}">
-        </div>
-        <div class="form-group">
-          <label>Celular</label>
-          <input type="text" id="dspCelular" maxlength="255" value="${v('celular')}" style="font-family:monospace">
-        </div>
-        <div class="form-group">
-          <label>Correo</label>
-          <input type="email" id="dspCorreo" maxlength="255" value="${v('correo')}" style="font-family:monospace">
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Web</label>
-        <input type="text" id="dspWeb" maxlength="255" value="${v('web')}" style="font-family:monospace">
-      </div>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="ubicacion" hidden>
-      <div class="form-group">
-        <label>Domicilio</label>
-        <input type="text" id="dspDomicilio" maxlength="255" value="${v('domicilio')}">
-      </div>
-      <div class="form-row form-row-3">
-        <div class="form-group">
-          <label>País</label>
-          <select id="dspPais" onchange="cargarProvinciasDsPro(this.value, '')">
-            ${dsProIdNombreHtml(dsProLookups?.paises, p?.pais)}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Provincia</label>
-          <select id="dspProvincia" onchange="cargarLocalidadesDsPro(this.value, '')">
-            ${optProv}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Localidad</label>
-          <select id="dspLocalidad">
-            ${optLoc}
-          </select>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Ciudad</label>
-          <input type="text" id="dspCiudad" maxlength="255" value="${v('ciudad')}">
-        </div>
-        <div class="form-group">
-          <label>Ubicación (coordenadas)</label>
-          <input type="text" id="dspUbicacion" maxlength="255" value="${v('ubicacion')}" style="font-family:monospace"
-                 placeholder="lat,lng">
-        </div>
-      </div>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="oportunidad" hidden>
-      <div class="form-row form-row-3">
-        <div class="form-group">
-          <label>Proyecto</label>
-          <select id="dspProyecto">
-            ${dsProIdNombreHtml(dsProLookups?.proyectos, p?.proyecto)}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Origen</label>
-          <select id="dspOrigen">
-            ${dsProOpcionesHtml('origen', p?.origen)}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Producto</label>
-          <select id="dspProducto">
-            ${dsProOpcionesHtml('producto', p?.producto)}
-          </select>
-        </div>
-      </div>
-      <div class="form-row form-row-3">
-        <div class="form-group">
-          <label>Sentido</label>
-          <select id="dspSentido">
-            ${dsProOpcionesHtml('sentido', p?.sentido)}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Tipo</label>
-          <select id="dspTipo">
-            ${dsProOpcionesHtml('tipo', p?.tipo)}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Calificación (0-5)</label>
-          <input type="number" id="dspCalificacion" min="0" max="5" value="${v('calificacion')}">
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Asunto</label>
-        <input type="text" id="dspAsunto" maxlength="255" value="${v('asunto')}">
-      </div>
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="dspEstado">
-          ${dsProOpcionesHtml('estado', p?.estado)}
-        </select>
-      </div>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="seguimiento" hidden>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Ingreso</label>
-          <input type="datetime-local" id="dspIngreso" value="${dt('ingreso')}">
-        </div>
-        <div class="form-group">
-          <label>Aplazado hasta</label>
-          <input type="datetime-local" id="dspAplazado" value="${dt('aplazado')}">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Asignado a</label>
-          <select id="dspAsignado">
-            ${dsProIdNombreHtml(dsProLookups?.usuarios, p?.asignado)}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Atendido por</label>
-          <select id="dspAtendido">
-            ${dsProIdNombreHtml(dsProLookups?.usuarios, p?.atendido)}
-          </select>
-        </div>
-      </div>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="comentarios" hidden>
-      <div class="form-group">
-        <label>Comentarios</label>
-        <textarea id="dspComentarios" rows="10" maxlength="1000">${v('comentarios')}</textarea>
-      </div>
-    </div>
-
-    <div class="modal-tabpanel" data-panel="historial" hidden>
-      <div class="form-group">
-        <label>Historial de acciones</label>
-        <textarea id="dspAcciones" rows="12" style="font-family:monospace">${v('acciones')}</textarea>
-      </div>
-    </div>
-
-    <div class="field-error" id="dspFormError" style="display:none;margin-top:10px"></div>
-  `;
-}
-
-// Repoblar el select de provincias filtrado por pais. `keepProv` es el valor
-// a preservar despues del refresco (util al inicializar el form con datos
-// existentes). Al vaciar `keepProv` se limpia tambien el select dependiente de
-// localidad.
-async function cargarProvinciasDsPro(paisId, keepProv) {
-  const selProv = document.getElementById('dspProvincia');
-  const selLoc  = document.getElementById('dspLocalidad');
-  if (!selProv) return;
-
-  if (!paisId) {
-    selProv.innerHTML = '<option value="">—</option>';
-    if (selLoc) selLoc.innerHTML = '<option value="">—</option>';
-    return;
-  }
-  selProv.innerHTML = '<option value="">Cargando…</option>';
-  if (selLoc) selLoc.innerHTML = '<option value="">—</option>';
-  try {
-    const items = await apiGet('api/datasaleprospectos.php?provincias=1&pais=' + encodeURIComponent(paisId));
-    selProv.innerHTML = dsProIdNombreHtml(items, keepProv || '');
-    if (keepProv) {
-      await cargarLocalidadesDsPro(keepProv, '');
-    }
-  } catch (e) {
-    selProv.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
-  }
-}
-
-// Analogo a cargarProvinciasDsPro pero para localidades filtradas por
-// provincia. `keepLoc` es el valor a mantener seleccionado tras el refresco.
-async function cargarLocalidadesDsPro(provinciaId, keepLoc) {
-  const selLoc = document.getElementById('dspLocalidad');
-  if (!selLoc) return;
-
-  if (!provinciaId) {
-    selLoc.innerHTML = '<option value="">—</option>';
-    return;
-  }
-  selLoc.innerHTML = '<option value="">Cargando…</option>';
-  try {
-    const items = await apiGet('api/datasaleprospectos.php?localidades=1&provincia=' + encodeURIComponent(provinciaId));
-    selLoc.innerHTML = dsProIdNombreHtml(items, keepLoc || '');
-  } catch (e) {
-    selLoc.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
-  }
-}
-
-window.cargarProvinciasDsPro  = cargarProvinciasDsPro;
-window.cargarLocalidadesDsPro = cargarLocalidadesDsPro;
-
-async function guardarDsPro(id, btn) {
-  const err = $('#dspFormError');
-  err.style.display = 'none';
-
-  const payload = {
-    ingreso:      $('#dspIngreso').value || null,
-    proyecto:     $('#dspProyecto').value,
-    sentido:      $('#dspSentido').value,
-    origen:       $('#dspOrigen').value.trim(),
-    tipo:         $('#dspTipo').value,
-    producto:     $('#dspProducto').value.trim(),
-    asunto:       $('#dspAsunto').value.trim(),
-    organizacion: $('#dspOrganizacion').value.trim(),
-    nombre:       $('#dspNombre').value.trim(),
-    contacto:     $('#dspContacto').value.trim(),
-    celular:      $('#dspCelular').value.trim(),
-    correo:       $('#dspCorreo').value.trim(),
-    web:          $('#dspWeb').value.trim(),
-    domicilio:    $('#dspDomicilio').value.trim(),
-    ciudad:       $('#dspCiudad').value.trim(),
-    localidad:    $('#dspLocalidad').value.trim(),
-    provincia:    $('#dspProvincia').value.trim(),
-    pais:         $('#dspPais').value.trim(),
-    ubicacion:    $('#dspUbicacion').value.trim(),
-    calificacion: $('#dspCalificacion').value,
-    estado:       $('#dspEstado').value,
-    asignado:     $('#dspAsignado').value,
-    atendido:     $('#dspAtendido').value,
-    aplazado:     $('#dspAplazado').value || null,
-    comentarios:  $('#dspComentarios').value,
-    acciones:     $('#dspAcciones').value,
-  };
-
-  btn.disabled = true;
-  try {
-    if (id == null) {
-      await apiSend('api/datasaleprospectos.php', 'POST', payload);
-      toast('Prospecto creado.');
-    } else {
-      await apiSend(`api/datasaleprospectos.php?id=${id}`, 'PUT', payload);
-      toast('Prospecto actualizado.');
-    }
-    closeModal();
-    cargarDsPro();
-  } catch (e) {
-    err.textContent = e.message;
-    err.style.display = '';
-    btn.disabled = false;
-  }
-}
-
-async function eliminarDsPro(id) {
-  const ok = await confirmar({
-    title: 'Eliminar prospecto',
-    message: `Se eliminará el prospecto #${id}. Esta acción no se puede deshacer.`,
-    confirmText: 'Eliminar',
-  });
-  if (!ok) return;
-  try {
-    await apiSend(`api/datasaleprospectos.php?id=${id}`, 'DELETE');
-    toast('Prospecto eliminado.');
-    cargarDsPro();
-  } catch (e) {
-    toast(e.message, { error: true });
-  }
-}
-
-// Abre el menu contextual del listado ocultando el item "Marcar como ..." que
-// coincide con el estado actual del prospecto — no tiene sentido ofrecer la
-// transicion hacia el estado en el que ya esta.
-function abrirMenuDsPro(x, y, data) {
-  const menu = $('#dsProCtxMenu');
-  if (!menu) return;
-  const estadoActual = String(data?.estado ?? '');
-  const mapa = { '1': 'marcar-esperando', '2': 'marcar-atendido', '3': 'marcar-despachado' };
-  const actualAction = mapa[estadoActual] || null;
-
-  menu.querySelectorAll('[data-action^="marcar-"]').forEach((btn) => {
-    btn.style.display = (btn.dataset.action === actualAction) ? 'none' : '';
-  });
-  abrirCtxMenu(menu, x, y, data);
-}
-
-// Dispara la transicion de estado contra el endpoint POST ?action=estado. El
-// backend deriva `atendido` del JWT del usuario logueado; el frontend solo
-// manda el nuevo estado. Recarga el listado para reflejar el cambio.
-async function marcarEstadoDsPro(id, estado) {
-  const labels = { 1: 'esperando', 2: 'atendido', 3: 'despachado' };
-  try {
-    await apiSend(`api/datasaleprospectos.php?id=${id}&action=estado`, 'POST', { estado });
-    toast(`Prospecto marcado como ${labels[estado] || 'actualizado'}.`);
-    cargarDsPro();
-  } catch (e) {
-    toast(e.message, { error: true });
-  }
-}
-
 // ------------------------- Vista: Evolution API (landing) -------------------------
 route('/evolution', async (mount) => {
   mount.innerHTML = `
@@ -31518,7 +30371,7 @@ function renderConsultaEvoMsg(m) {
         </div>
         <div style="font-size:.85rem;color:var(--muted);margin-top:6px">${esc(m.asunto || 'Sin asunto')}</div>
         <div style="font-size:.75rem;color:var(--muted);margin-top:6px">#${esc(m.id)}</div>
-        ${m.contacto_id ? `<div style="font-size:.75rem;color:var(--muted);margin-top:4px"><i class="fa-solid fa-address-card" style="opacity:.7;margin-right:4px"></i>Contacto: ${esc(m.contacto_nombre || m.contacto_celular || 'sin nombre')} <span style="opacity:.7">(#${esc(m.contacto_id)})</span></div>` : ''}
+        ${m.prospecto_id ? `<div style="font-size:.75rem;color:var(--muted);margin-top:4px"><i class="fa-solid fa-address-card" style="opacity:.7;margin-right:4px"></i>Prospecto: ${esc(m.prospecto_nombre || m.prospecto_celular || 'sin nombre')} <span style="opacity:.7">(#${esc(m.prospecto_id)})</span></div>` : ''}
         ${m.uuid ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all"><span>uuid:</span> ${esc(m.uuid)}</div>` : ''}
       </div>
       <div style="text-align:right;min-width:200px;display:flex;flex-direction:column;gap:6px;align-items:flex-end">

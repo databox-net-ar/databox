@@ -6,7 +6,7 @@
 //
 // El ABM del panel (cloud/api/datarocketinteracciones.php) es de solo lectura:
 // las interacciones se acumulan automaticamente cada vez que se encola un
-// mensaje. La tabla las lee para reconstruir el historial de contacto.
+// mensaje. La tabla las lee para reconstruir el historial de prospecto.
 //
 // Best-effort: si el INSERT falla no bloquea el encolamiento del mensaje —
 // swallow silencioso, se devuelve null. El mensaje ya quedo en la cola, que
@@ -28,10 +28,10 @@ const DR_INT_CANALES  = ['correo', 'whatsapp', 'telegram', 'sms', 'web',
 
 /**
  * Registra un alta en `datarocket_interacciones`. Devuelve el id insertado o
- * null si se salteo (contacto ausente) o hubo un error interno.
+ * null si se salteo (prospecto ausente) o hubo un error interno.
  *
- * @param ?int    $contactoId  FK a `datarocket_contactos.id`. Si es null/<=0
- *                             se saltea el INSERT (interaccion sin contacto
+ * @param ?int    $prospectoId  FK a `datarocket_prospectos.id`. Si es null/<=0
+ *                             se saltea el INSERT (interaccion sin prospecto
  *                             no aporta nada al historial).
  * @param string  $sentido     Direccion: 'entrante' | 'saliente' | 'interna'.
  *                             Reemplaza al viejo `tipo`, junto con $canal
@@ -50,14 +50,14 @@ const DR_INT_CANALES  = ['correo', 'whatsapp', 'telegram', 'sms', 'web',
  */
 function registrarInteraccionMensaje(
     PDO $pdo,
-    ?int $contactoId,
+    ?int $prospectoId,
     string $sentido,
     ?string $canal,
     ?string $asunto,
     ?string $mensaje,
     ?string $fecha = null
 ): ?int {
-    if ($contactoId === null || $contactoId <= 0) return null;
+    if ($prospectoId === null || $prospectoId <= 0) return null;
 
     // Un sentido fuera del catalogo seria un bug del caller, no un dato del
     // usuario. Se normaliza a 'saliente' en vez de tirar: este helper es
@@ -76,13 +76,13 @@ function registrarInteraccionMensaje(
     try {
         $st = $pdo->prepare("
             INSERT INTO datarocket_interacciones
-                (fecha, contacto_id, sentido, canal, asunto, mensaje)
+                (fecha, prospecto_id, sentido, canal, asunto, mensaje)
             VALUES
-                (:fecha, :contacto_id, :sentido, :canal, :asunto, :mensaje)
+                (:fecha, :prospecto_id, :sentido, :canal, :asunto, :mensaje)
         ");
         $st->execute([
             ':fecha'       => $fecha,
-            ':contacto_id' => $contactoId,
+            ':prospecto_id' => $prospectoId,
             ':sentido'     => $sentido,
             ':canal'       => $canal,
             ':asunto'      => $asunto,

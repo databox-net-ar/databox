@@ -1,25 +1,34 @@
-# `/v4/datarocket/contactos`
+# `/v4/datarocket/prospectos`
 
-> Documentacion online: <https://api.databox.net.ar/v4/datarocket/contactos.md>
+> Documentacion online: <https://api.databox.net.ar/v4/datarocket/prospectos.md>
 
-Microservicio CRUD del **CRM Datarocket** sobre la tabla `datarocket_contactos`
+Microservicio CRUD del **CRM Datarocket** sobre la tabla `datarocket_prospectos`
 (ver [db/schema.sql](../../../db/schema.sql)). Un unico archivo `.php`
-([contactos.php](contactos.php)) que sirve los cinco verbos HTTP del recurso —
+([prospectos.php](prospectos.php)) que sirve los cinco verbos HTTP del recurso —
 sin framework ni router aparte.
+
+> **Renombrado el 2026-08-17.** Este recurso se llamaba `/v4/datarocket/contactos`
+> hasta la migracion `20260817_2700`. La ruta vieja **sigue funcionando** como
+> alias y devuelve exactamente lo mismo, pero esta deprecada.
+>
+> Lo que SI cambio es el contrato: las claves que antes eran `contacto_*` ahora
+> son `prospecto_*`, y el parametro de filtro `contacto_id` es `prospecto_id`.
+> Si tu integracion lee esas claves, hay que actualizarla aunque sigas pegandole
+> a la URL vieja.
 
 Se accede via el vhost `api.databox.net.ar` (puerto interno `8114`, ver
 `docker-compose.yml`). El `.htaccess` de `api/v4/` mapea URLs sin extension al
 archivo `.php` correspondiente, asi que ambas formas son equivalentes:
 
 ```
-GET https://api.databox.net.ar/v4/datarocket/contactos
-GET https://api.databox.net.ar/v4/datarocket/contactos.php
+GET https://api.databox.net.ar/v4/datarocket/prospectos
+GET https://api.databox.net.ar/v4/datarocket/prospectos.php
 ```
 
 Es el punto de entrada **externo** (llamado por otras aplicaciones del grupo
 via HTTP). La UI de administracion interna (panel cloud > Sistemas > Datarocket
-> Contactos) usa su propio endpoint [cloud/api/datarocketcontactos.php](../../../cloud/api/datarocketcontactos.php).
-Ambos caminos escriben en la misma tabla (`datarocket_contactos`) con las
+> Prospectos) usa su propio endpoint [cloud/api/datarocketprospectos.php](../../../cloud/api/datarocketprospectos.php).
+Ambos caminos escriben en la misma tabla (`datarocket_prospectos`) con las
 mismas reglas de sanitizacion, obligatorios y defaults; la diferencia es la
 capa de auth (permisos de sesion vs. Bearer estatico) y que el listado v4
 no publica el bloque `stats` que usa el panel.
@@ -67,15 +76,15 @@ Body-in y body-out son JSON `utf-8` (`Content-Type: application/json`).
 
 ## Endpoints
 
-Base URL: `https://api.databox.net.ar/v4/datarocket/contactos`
+Base URL: `https://api.databox.net.ar/v4/datarocket/prospectos`
 
 | Metodo | Path                            | Uso                                 |
 | ------ | ------------------------------- | ----------------------------------- |
-| GET    | `/v4/datarocket/contactos`      | Listado con filtros (query string). |
-| GET    | `/v4/datarocket/contactos?id=N` | Consulta individual del contacto N. |
-| POST   | `/v4/datarocket/contactos`      | Alta (JSON body).                   |
-| PUT    | `/v4/datarocket/contactos?id=N` | Modificacion del contacto N (JSON). |
-| DELETE | `/v4/datarocket/contactos?id=N` | Baja definitiva del contacto N.     |
+| GET    | `/v4/datarocket/prospectos`      | Listado con filtros (query string). |
+| GET    | `/v4/datarocket/prospectos?id=N` | Consulta individual del prospecto N. |
+| POST   | `/v4/datarocket/prospectos`      | Alta (JSON body).                   |
+| PUT    | `/v4/datarocket/prospectos?id=N` | Modificacion del prospecto N (JSON). |
+| DELETE | `/v4/datarocket/prospectos?id=N` | Baja definitiva del prospecto N.     |
 
 Cualquier otro metodo devuelve `405 Metodo no soportado`.
 
@@ -83,7 +92,7 @@ Cualquier otro metodo devuelve `405 Metodo no soportado`.
 
 ## Modelo de datos
 
-Columnas de `datarocket_contactos` expuestas por la API (mismo shape en listado
+Columnas de `datarocket_prospectos` expuestas por la API (mismo shape en listado
 y consulta individual):
 
 | Columna              | Tipo         | Notas                                                                                                                                                       |
@@ -91,11 +100,11 @@ y consulta individual):
 | `id`                 | int          | PK, auto-increment.                                                                                                                                         |
 | `uuid`               | varchar(255) | Identificador externo. Si no se manda en el alta, se autogenera con `bin2hex(random_bytes(16))` (32 chars hex).                                             |
 | `nombre`             | varchar(255) | **Derivado, no se acepta del cliente.** Se calcula como `persona_nombre` si `tipo='persona'` y como `empresa_nombre` si `tipo='empresa'`. Lo que se mande en este campo se ignora. |
-| `empresa_nombre`     | varchar(255) | **Obligatorio si `tipo='empresa'`** (alimenta a `nombre`). En un contacto persona es opcional y significa dónde trabaja.                                     |
+| `empresa_nombre`     | varchar(255) | **Obligatorio si `tipo='empresa'`** (alimenta a `nombre`). En un prospecto persona es opcional y significa dónde trabaja.                                     |
 | `empresa_rubro`      | varchar(255) |                                                                                                                                                             |
 | `empresa_actividad`  | varchar(255) |                                                                                                                                                             |
 | `empresa_cargo`      | varchar(255) |                                                                                                                                                             |
-| `persona_nombre`     | varchar(255) | **Obligatorio si `tipo='persona'`** (alimenta a `nombre`). En un contacto empresa es opcional y significa quién atiende.                                     |
+| `persona_nombre`     | varchar(255) | **Obligatorio si `tipo='persona'`** (alimenta a `nombre`). En un prospecto empresa es opcional y significa quién atiende.                                     |
 | `persona_genero`     | varchar(1)   | Passthrough (tipicamente `M` / `F` / vacio).                                                                                                                |
 | `persona_nacimiento` | varchar(255) | Fecha de nacimiento en texto libre (no se valida formato).                                                                                                  |
 | `persona_dni`        | varchar(255) |                                                                                                                                                             |
@@ -120,10 +129,10 @@ y consulta individual):
 
 > **Baja de campos (migracion 20260817_1500).** `verificacion`, `estado`,
 > `error`, `completado` y `suscripciones` fueron eliminados de
-> `datarocket_contactos`. Ya no se devuelven en las respuestas, no filtran, no
+> `datarocket_prospectos`. Ya no se devuelven en las respuestas, no filtran, no
 > ordenan y se ignoran si vienen en el body de un POST / PUT. El estado de
 > envio vive ahora en `datarocket_interacciones` y la suscripcion a listas en
-> la puente `datarocket_contactos_listas` (expuesta como `lista_ids` /
+> la puente `datarocket_prospectos_listas` (expuesta como `lista_ids` /
 > `lista_nombres`).
 
 ### Reglas de sanitizacion (POST / PUT)
@@ -138,7 +147,7 @@ y consulta individual):
   - `"+54 9 11 3344-5566"` -> `"5491133445566"`.
   - `"(011) 4333-4444"` -> `"01143334444"`.
   - Si despues del strip queda vacio -> `NULL`. Aplica la misma regla en el
-    ABM cloud interno ([cloud/api/datarocketcontactos.php](../../../cloud/api/datarocketcontactos.php))
+    ABM cloud interno ([cloud/api/datarocketprospectos.php](../../../cloud/api/datarocketprospectos.php))
     para que ambos caminos escriban comparable.
 - Los campos `varchar(N)` se truncan a `N` en silencio si vienen mas largos.
 - El `uuid` no es reutilizable en el alta: si se manda, se persiste tal cual;
@@ -147,7 +156,7 @@ y consulta individual):
 
 ---
 
-## `GET /v4/datarocket/contactos` — Listado
+## `GET /v4/datarocket/prospectos` — Listado
 
 ### Query params
 
@@ -199,12 +208,12 @@ brevedad).
 
 ```bash
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/contactos?q=juan&pais=Argentina&limite=50&order_by=registrado&dir=desc"
+  "https://api.databox.net.ar/v4/datarocket/prospectos?q=juan&pais=Argentina&limite=50&order_by=registrado&dir=desc"
 ```
 
 ---
 
-## `GET /v4/datarocket/contactos?id=N` — Consulta individual
+## `GET /v4/datarocket/prospectos?id=N` — Consulta individual
 
 ### Respuesta (200)
 
@@ -237,7 +246,7 @@ curl -H "Authorization: Bearer $APIKEY" \
     "facebook": null,
     "instagram": null,
     "tiktok": null,
-    "comentarios": "Contacto interesado en el plan enterprise",
+    "comentarios": "Prospecto interesado en el plan enterprise",
     "tags": "vip,enterprise",
     "listas": "clientes,newsletter-2026",
     "registrado": "2026-07-27 14:32:07"
@@ -249,11 +258,11 @@ curl -H "Authorization: Bearer $APIKEY" \
 
 | Codigo | Body `error`             | Cuando                                |
 | ------ | ------------------------ | ------------------------------------- |
-| 404    | `Contacto no encontrado` | El `id` pasado no existe en la tabla. |
+| 404    | `Prospecto no encontrado` | El `id` pasado no existe en la tabla. |
 
 ---
 
-## `POST /v4/datarocket/contactos` — Alta
+## `POST /v4/datarocket/prospectos` — Alta
 
 Content-Type: `application/json; charset=utf-8`.
 
@@ -261,7 +270,7 @@ Content-Type: `application/json; charset=utf-8`.
 
 Cualquier subconjunto de las columnas del modelo (ver tabla arriba). Todos los
 campos son opcionales — es valido mandar un body vacio `{}` y obtener un
-contacto con `uuid` autogenerado y `registrado = NOW()`.
+prospecto con `uuid` autogenerado y `registrado = NOW()`.
 
 Campos con tratamiento especial:
 
@@ -286,7 +295,7 @@ Campos con tratamiento especial:
 Se devuelven `id`, `uuid` y `registrado` porque son los tres campos que el
 caller no siempre conoce a priori (el `id` lo asigna la BD, el `uuid` y el
 `registrado` los puede haber defaulteado el sanitizador). Para releer el
-contacto completo hacer `GET /v4/datarocket/contactos?id=<id>`.
+prospecto completo hacer `GET /v4/datarocket/prospectos?id=<id>`.
 
 ### Errores
 
@@ -294,14 +303,14 @@ contacto completo hacer `GET /v4/datarocket/contactos?id=<id>`.
 | ------ | ----------------------------------------------------------------------------- | --------------------------------------------- |
 | 400    | `Cuerpo no es JSON valido`                                                    | El body no es JSON valido.                    |
 | 400    | `El tipo es obligatorio (persona o empresa).`                                 | Falta `tipo` o no es uno de los dos valores.  |
-| 400    | `El nombre de la persona es obligatorio para un contacto de tipo persona.`    | `tipo='persona'` sin `persona_nombre`.        |
-| 400    | `El nombre de la empresa es obligatorio para un contacto de tipo empresa.`    | `tipo='empresa'` sin `empresa_nombre`.        |
+| 400    | `El nombre de la persona es obligatorio para un prospecto de tipo persona.`    | `tipo='persona'` sin `persona_nombre`.        |
+| 400    | `El nombre de la empresa es obligatorio para un prospecto de tipo empresa.`    | `tipo='empresa'` sin `empresa_nombre`.        |
 | 500    | `<mensaje de la excepcion>`                                                   | Falla inesperada (PDO, etc.).                 |
 
 ### Ejemplo `curl`
 
 ```bash
-curl -X POST https://api.databox.net.ar/v4/datarocket/contactos \
+curl -X POST https://api.databox.net.ar/v4/datarocket/prospectos \
   -H "Authorization: Bearer $APIKEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -319,7 +328,7 @@ curl -X POST https://api.databox.net.ar/v4/datarocket/contactos \
 
 ---
 
-## `PUT /v4/datarocket/contactos?id=N` — Modificacion
+## `PUT /v4/datarocket/prospectos?id=N` — Modificacion
 
 Content-Type: `application/json; charset=utf-8`.
 
@@ -351,15 +360,15 @@ BD; no se puede cambiar via PUT).
 | 400    | `Falta id (int > 0)`                                                          | Query string sin `id` valido.                 |
 | 400    | `Cuerpo no es JSON valido`                                                    | El body no es JSON valido.                    |
 | 400    | `El tipo es obligatorio (persona o empresa).`                                 | Falta `tipo` o no es uno de los dos valores.  |
-| 400    | `El nombre de la persona es obligatorio para un contacto de tipo persona.`    | `tipo='persona'` sin `persona_nombre`.        |
-| 400    | `El nombre de la empresa es obligatorio para un contacto de tipo empresa.`    | `tipo='empresa'` sin `empresa_nombre`.        |
-| 404    | `Contacto no encontrado`                                                      | El `id` no existe.                            |
+| 400    | `El nombre de la persona es obligatorio para un prospecto de tipo persona.`    | `tipo='persona'` sin `persona_nombre`.        |
+| 400    | `El nombre de la empresa es obligatorio para un prospecto de tipo empresa.`    | `tipo='empresa'` sin `empresa_nombre`.        |
+| 404    | `Prospecto no encontrado`                                                      | El `id` no existe.                            |
 | 500    | `<mensaje de la excepcion>`                                                   | Falla inesperada (PDO, etc.).                 |
 
 ### Ejemplo `curl`
 
 ```bash
-curl -X PUT "https://api.databox.net.ar/v4/datarocket/contactos?id=148287" \
+curl -X PUT "https://api.databox.net.ar/v4/datarocket/prospectos?id=148287" \
   -H "Authorization: Bearer $APIKEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -376,13 +385,13 @@ curl -X PUT "https://api.databox.net.ar/v4/datarocket/contactos?id=148287" \
 
 ---
 
-## `DELETE /v4/datarocket/contactos?id=N` — Baja
+## `DELETE /v4/datarocket/prospectos?id=N` — Baja
 
 Elimina la fila **definitivamente** — no hay soft-delete. Las actividades
-asociadas (`datarocket_actividades.contacto_id = N`) quedan huerfanas: la
+asociadas (`datarocket_actividades.prospecto_id = N`) quedan huerfanas: la
 tabla `datarocket_actividades` no tiene FK con `ON DELETE CASCADE` sobre
-`datarocket_contactos`, asi que sus filas siguen existiendo apuntando a un
-`contacto_id` que ya no existe. Si el caller necesita limpiar historial,
+`datarocket_prospectos`, asi que sus filas siguen existiendo apuntando a un
+`prospecto_id` que ya no existe. Si el caller necesita limpiar historial,
 tiene que hacerlo aparte.
 
 ### Respuesta (200)
@@ -399,12 +408,12 @@ tiene que hacerlo aparte.
 | Codigo | Body `error`             | Cuando                        |
 | ------ | ------------------------ | ----------------------------- |
 | 400    | `Falta id (int > 0)`     | Query string sin `id` valido. |
-| 404    | `Contacto no encontrado` | El `id` no existe.            |
+| 404    | `Prospecto no encontrado` | El `id` no existe.            |
 
 ### Ejemplo `curl`
 
 ```bash
-curl -X DELETE "https://api.databox.net.ar/v4/datarocket/contactos?id=148287" \
+curl -X DELETE "https://api.databox.net.ar/v4/datarocket/prospectos?id=148287" \
   -H "Authorization: Bearer $APIKEY"
 ```
 
@@ -412,8 +421,8 @@ curl -X DELETE "https://api.databox.net.ar/v4/datarocket/contactos?id=148287" \
 
 ## Referencias
 
-- Tabla destino: `datarocket_contactos` — schema en [db/schema.sql](../../../db/schema.sql).
-- ABM interno equivalente (usado por el panel cloud): [cloud/api/datarocketcontactos.php](../../../cloud/api/datarocketcontactos.php).
-- Historial de actividades sobre cada contacto: `datarocket_actividades` (schema en [db/schema.sql](../../../db/schema.sql), ABM en [cloud/api/datarocketactividades.php](../../../cloud/api/datarocketactividades.php)).
+- Tabla destino: `datarocket_prospectos` — schema en [db/schema.sql](../../../db/schema.sql).
+- ABM interno equivalente (usado por el panel cloud): [cloud/api/datarocketprospectos.php](../../../cloud/api/datarocketprospectos.php).
+- Historial de actividades sobre cada prospecto: `datarocket_actividades` (schema en [db/schema.sql](../../../db/schema.sql), ABM en [cloud/api/datarocketactividades.php](../../../cloud/api/datarocketactividades.php)).
 - Helper de auth por Bearer: [cloud/api/lib/apikey_auth.php](../../../cloud/api/lib/apikey_auth.php) (el v4 rueda la logica inline para no arrastrar dependencias, pero el shape es identico).
 - Microservicios hermanos del mismo `v4/`: [/v4/aws/mensajes](../aws/mensajes.md), [/v4/evolution/mensajes](../evolution/mensajes.md).

@@ -196,7 +196,7 @@ notificaciones SNS ([/v4/aws/eventos](eventos.md)).
         "canal_id": 3,
         "proyecto_id": 1,
         "plantilla_id": null,
-        "contacto_id": 148286,
+        "prospecto_id": 148286,
         "remite": "no-reply@databox.net.ar",
         "remitente": "Databox",
         "destino": "cliente@ejemplo.com",

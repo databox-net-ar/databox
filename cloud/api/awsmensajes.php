@@ -22,7 +22,7 @@ require_once __DIR__ . '/lib/aws_mensajes.php';   // encolarAwsMensaje() + sanit
 // y consulta individual — el modal Consultar los muestra en la pestana
 // Detalles.
 const AWS_MSG_COLS = "m.id, m.uuid, m.fecha, m.proyecto_id, m.canal_id, m.plantilla_id,
-                      m.contacto_id,
+                      m.prospecto_id,
                       m.remitente, m.remite, m.destinatario, m.destino,
                       m.prioridad, m.asunto, m.cuerpo, m.formato,
                       m.adjunto, m.tags, m.estado, m.error, m.resultado,
@@ -30,13 +30,13 @@ const AWS_MSG_COLS = "m.id, m.uuid, m.fecha, m.proyecto_id, m.canal_id, m.planti
                       p.nombre AS proyecto_nombre,
                       c.nombre AS canal_nombre,
                       t.nombre AS plantilla_nombre,
-                      d.nombre AS contacto_nombre,
-                      d.correo AS contacto_correo";
+                      d.nombre AS prospecto_nombre,
+                      d.correo AS prospecto_correo";
 
 const AWS_MSG_JOINS = "LEFT JOIN proyectos             p ON p.id = m.proyecto_id
                        LEFT JOIN aws_canales           c ON c.id = m.canal_id
                        LEFT JOIN datarocket_plantillas t ON t.id = m.plantilla_id
-                       LEFT JOIN datarocket_contactos  d ON d.id = m.contacto_id";
+                       LEFT JOIN datarocket_prospectos  d ON d.id = m.prospecto_id";
 
 header('Content-Type: application/json; charset=utf-8');
 

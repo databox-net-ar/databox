@@ -1,7 +1,7 @@
 <?php
 // api/proyectos.php
 // Endpoint GET-only para poblar dropdowns de proyectos en distintos ABMs
-// del panel (aws_mensajes, evolution_mensajes, datasale, etc). No es un ABM
+// del panel (aws_mensajes, evolution_mensajes, datarocket, etc). No es un ABM
 // completo — no acepta POST/PUT/DELETE. Solo autenticacion, sin permiso
 // especifico: proyectos es data de referencia visible para cualquier user
 // con sesion valida.

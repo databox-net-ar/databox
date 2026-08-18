@@ -1,20 +1,20 @@
 <?php
 /**
- * api/lib/contactos_normalizar.php
+ * api/lib/prospectos_normalizar.php
  *
- * Normalizacion de los datos de contacto de `datarocket_contactos`:
+ * Normalizacion de los datos de prospecto de `datarocket_prospectos`:
  * telefono / celular / whatsapp a 10 digitos argentinos, correo a minuscula
  * validada, y web a host+path sin esquema.
  *
  * Lo consumen los dos endpoints que escriben la tabla:
- *   - cloud/api/datarocketcontactos.php  (ABM del panel, auth por sesion)
- *   - api/v4/datarocket/contactos.php    (microservicio, auth por apikey)
+ *   - cloud/api/datarocketprospectos.php  (ABM del panel, auth por sesion)
+ *   - api/v4/datarocket/prospectos.php    (microservicio, auth por apikey)
  *
  * Dos migraciones aplican exactamente estas mismas reglas sobre lo que ya
  * estaba cargado, con funciones SQL temporales que espejan una a una las
  * funciones de este archivo:
- *   - 20260816_1700_datarocket_contactos_normalizar_telefonos_correos.sql
- *   - 20260816_1800_datarocket_contactos_normalizar_web.sql
+ *   - 20260816_1700_datarocket_prospectos_normalizar_telefonos_correos.sql
+ *   - 20260816_1800_datarocket_prospectos_normalizar_web.sql
  * Si se toca una regla aca, hay que tocarla alla (o escribir otra migracion).
  *
  * ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@
  * CORREOS
  * ---------------------------------------------------------------------------
  * Siempre minuscula y sin espacios alrededor. Si el campo trae una lista
- * ("ventas@x.com.ar, soporte@x.com.ar" — comun en los contactos scrapeados de
+ * ("ventas@x.com.ar, soporte@x.com.ar" — comun en los prospectos scrapeados de
  * sitios institucionales) se rescata la primera direccion valida. Si no hay
  * ninguna direccion parseable, el resultado es null y el llamador decide si
  * eso es un error de validacion o simplemente un campo vacio.
@@ -80,9 +80,9 @@
  * alguien pueda corregir despues, es ruido de scraping. Va a null.
  *
  * Caso aparte: los correos cargados por error en `web`
- * ("electrorubenrodriguez@gmail.com"). contactoWebComoCorreo() los devuelve
+ * ("electrorubenrodriguez@gmail.com"). prospectoWebComoCorreo() los devuelve
  * normalizados para que el llamador los mueva a `correo` cuando ese campo esta
- * libre; si el contacto ya tiene correo, el valor se descarta igual que
+ * libre; si el prospecto ya tiene correo, el valor se descarta igual que
  * cualquier otro no-URL.
  */
 
@@ -100,20 +100,20 @@ const CONTACTO_AREAS_3 = [
 // especiales 0600 / 0800 / 0810 (que sin el 0 tambien son de 10).
 const CONTACTO_PREFIJOS_VALIDOS = '/^(11|[23]|600|800|810)/';
 
-function contactoSoloDigitos(mixed $v): string {
+function prospectoSoloDigitos(mixed $v): string {
     return preg_replace('/\D+/', '', (string)($v ?? ''));
 }
 
 // Largo del codigo de area de un numero nacional ya sin prefijos.
-function contactoAreaLen(string $d): int {
+function prospectoAreaLen(string $d): int {
     if (str_starts_with($d, '11'))                          return 2;
     if (in_array(substr($d, 0, 3), CONTACTO_AREAS_3, true)) return 3;
     return 4;
 }
 
 // Aplica los pasos 2 a 7 sobre una cadena de digitos. No valida: eso es
-// trabajo de contactoTelefonoEsValido().
-function contactoDespejarPrefijos(string $d): string {
+// trabajo de prospectoTelefonoEsValido().
+function prospectoDespejarPrefijos(string $d): string {
     // 00 internacional
     if (str_starts_with($d, '00')) $d = substr($d, 2);
     // 0 de larga distancia nacional (puede venir junto al 00 ya sacado)
@@ -126,7 +126,7 @@ function contactoDespejarPrefijos(string $d): string {
     if (in_array(strlen($d), [11, 13], true) && str_starts_with($d, '9')) $d = substr($d, 1);
     // 15 entre area y abonado
     if (strlen($d) === 12) {
-        $a = contactoAreaLen($d);
+        $a = prospectoAreaLen($d);
         if (substr($d, $a, 2) !== '15') {
             // El area no matcheo la lista: se prueban los tres largos posibles
             // antes de darse por vencido.
@@ -142,33 +142,33 @@ function contactoDespejarPrefijos(string $d): string {
     return $d;
 }
 
-function contactoTelefonoEsValido(string $d): bool {
+function prospectoTelefonoEsValido(string $d): bool {
     return strlen($d) === 10 && preg_match(CONTACTO_PREFIJOS_VALIDOS, $d) === 1;
 }
 
 // Normaliza telefono / celular / whatsapp. Devuelve los 10 digitos cuando las
 // reglas llegan a un numero nacional valido; si no, los digitos crudos; null
 // si el campo no tiene ningun digito.
-function contactoNormalizarTelefono(mixed $v): ?string {
+function prospectoNormalizarTelefono(mixed $v): ?string {
     $raw = trim((string)($v ?? ''));
     if ($raw === '') return null;
 
-    $entero = contactoDespejarPrefijos(contactoSoloDigitos($raw));
-    if (contactoTelefonoEsValido($entero)) return $entero;
+    $entero = prospectoDespejarPrefijos(prospectoSoloDigitos($raw));
+    if (prospectoTelefonoEsValido($entero)) return $entero;
 
     // El campo puede traer dos numeros separados por espacios ("fijo movil").
     foreach (preg_split('/\s+/', $raw, -1, PREG_SPLIT_NO_EMPTY) as $token) {
-        $cand = contactoDespejarPrefijos(contactoSoloDigitos($token));
-        if (contactoTelefonoEsValido($cand)) return $cand;
+        $cand = prospectoDespejarPrefijos(prospectoSoloDigitos($token));
+        if (prospectoTelefonoEsValido($cand)) return $cand;
     }
 
-    $digitos = contactoSoloDigitos($raw);
+    $digitos = prospectoSoloDigitos($raw);
     return $digitos === '' ? null : substr($digitos, 0, 255);
 }
 
 // Normaliza `correo` a minuscula. Devuelve null si el campo esta vacio o si no
 // contiene ninguna direccion parseable.
-function contactoNormalizarCorreo(mixed $v): ?string {
+function prospectoNormalizarCorreo(mixed $v): ?string {
     $s = strtolower(trim((string)($v ?? '')));
     if ($s === '') return null;
 
@@ -202,7 +202,7 @@ const CONTACTO_WEB_IPV4 = '~^(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?$~';
 
 // Saca el esquema, los blancos y la puntuacion de borde. Deja el valor listo
 // para partirlo en host + resto; no valida nada.
-function contactoWebLimpiar(mixed $v): string {
+function prospectoWebLimpiar(mixed $v): string {
     $s = trim((string)($v ?? ''));
     // Ruido de copy/paste al principio: ": http://...", "- www...".
     $s = preg_replace('~^[\s:;,.\-]+~u', '', $s);
@@ -216,18 +216,18 @@ function contactoWebLimpiar(mixed $v): string {
 }
 
 // Parte el valor limpio en [host, resto] por el primer `/`, `?` o `#`.
-function contactoWebPartir(string $s): array {
+function prospectoWebPartir(string $s): array {
     $i = strcspn($s, '/?#');
     return [substr($s, 0, $i), substr($s, $i)];
 }
 
 // Normaliza `web`. Devuelve host+path sin esquema, o null si el valor no es una
-// URL (incluidos los correos, que resuelve contactoWebComoCorreo()).
-function contactoNormalizarWeb(mixed $v): ?string {
-    $s = contactoWebLimpiar($v);
+// URL (incluidos los correos, que resuelve prospectoWebComoCorreo()).
+function prospectoNormalizarWeb(mixed $v): ?string {
+    $s = prospectoWebLimpiar($v);
     if ($s === '') return null;
 
-    [$host, $resto] = contactoWebPartir($s);
+    [$host, $resto] = prospectoWebPartir($s);
     // Un `@` en el host es un correo mal cargado, no una URL. El `@` del path
     // si es legitimo ("youtube.com/@itscontrolseguridad").
     if ($host === '' || str_contains($host, '@')) return null;
@@ -242,12 +242,12 @@ function contactoNormalizarWeb(mixed $v): ?string {
 // Devuelve el correo que estaba cargado por error en `web`, o null si el valor
 // no es un correo. El `www.` pegado adelante ("www.tecnicatotal@hotmail.com")
 // es un tipeo frecuente y se descarta antes de parsear.
-function contactoWebComoCorreo(mixed $v): ?string {
-    $s = contactoWebLimpiar($v);
+function prospectoWebComoCorreo(mixed $v): ?string {
+    $s = prospectoWebLimpiar($v);
     if ($s === '') return null;
 
-    [$host] = contactoWebPartir($s);
+    [$host] = prospectoWebPartir($s);
     if (!str_contains($host, '@')) return null;
 
-    return contactoNormalizarCorreo(preg_replace('~^www\.~i', '', $s));
+    return prospectoNormalizarCorreo(preg_replace('~^www\.~i', '', $s));
 }

@@ -1,28 +1,28 @@
 <?php
-// api/v4/datarocket/contactos.php
-// Microservicio CRUD del CRM Datarocket sobre la tabla `datarocket_contactos`.
+// api/v4/datarocket/prospectos.php
+// Microservicio CRUD del CRM Datarocket sobre la tabla `datarocket_prospectos`.
 //
-//   GET    /v4/datarocket/contactos           -> listado con filtros (query string)
-//   GET    /v4/datarocket/contactos?id=N      -> registro individual
-//   POST   /v4/datarocket/contactos           (JSON body) -> alta, devuelve {id, uuid, registrado}
-//   PUT    /v4/datarocket/contactos?id=N      (JSON body) -> modificacion, devuelve {id}
-//   DELETE /v4/datarocket/contactos?id=N      -> baja definitiva, devuelve {id}
+//   GET    /v4/datarocket/prospectos           -> listado con filtros (query string)
+//   GET    /v4/datarocket/prospectos?id=N      -> registro individual
+//   POST   /v4/datarocket/prospectos           (JSON body) -> alta, devuelve {id, uuid, registrado}
+//   PUT    /v4/datarocket/prospectos?id=N      (JSON body) -> modificacion, devuelve {id}
+//   DELETE /v4/datarocket/prospectos?id=N      -> baja definitiva, devuelve {id}
 //
 // Auth: Bearer con apikey de la tabla `aplicaciones` (mismo esquema que el resto
 // del stack — ver cloud/api/lib/apikey_auth.php). Cualquier apikey habilitada pasa.
 //
-// Tabla destino: `datarocket_contactos` (schema en db/schema.sql).
+// Tabla destino: `datarocket_prospectos` (schema en db/schema.sql).
 //
 // El ABM interno equivalente (usado por el panel cloud) es
-// cloud/api/datarocketcontactos.php — mismas columnas, mismos filtros, misma
+// cloud/api/datarocketprospectos.php — mismas columnas, mismos filtros, misma
 // forma de sanitizacion; la diferencia es la capa de auth (permisos de sesion
 // vs. Bearer estatico) y que el listado v4 no publica el bloque `stats`.
 //
 // Normalizacion: `telefono` / `celular` / `whatsapp` se guardan como 10
 // digitos argentinos, `correo` en minuscula validada y `web` como host + path
 // sin esquema (`bna.com.ar/sucursales`) — reglas en
-// cloud/api/lib/contactos_normalizar.php. Un telefono que no se pueda llevar a
-// 10 digitos se guarda igual, en digitos crudos (hay contactos del exterior en
+// cloud/api/lib/prospectos_normalizar.php. Un telefono que no se pueda llevar a
+// 10 digitos se guarda igual, en digitos crudos (hay prospectos del exterior en
 // la tabla); un correo del que no se pueda extraer una direccion valida se
 // rechaza con 400; una `web` que no sea una URL va a NULL, salvo que sea un
 // correo y `correo` este vacio (ahi se rescata). Ojo los consumidores: `web`
@@ -32,7 +32,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
-require_once dirname(__DIR__, 3) . '/cloud/api/lib/contactos_normalizar.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/prospectos_normalizar.php';
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -92,7 +92,7 @@ const DR_CT_COLS = "id, uuid, tipo, nombre,
                     telefono, celular, whatsapp, correo,
                     web, facebook, instagram, tiktok, comentarios, registrado";
 
-// Valores validos para `datarocket_contactos.tipo`. Se rechazan alta y
+// Valores validos para `datarocket_prospectos.tipo`. Se rechazan alta y
 // modificacion que no traigan uno de estos valores; las filas historicas
 // quedan en NULL hasta ser editadas.
 const DR_CT_TIPOS_VALIDOS = ['persona', 'empresa'];
@@ -131,8 +131,8 @@ function handleList(PDO $pdo, array $q): void {
     $genero       = trim((string)($q['persona_genero']       ?? ''));
     // Se aceptan tanto `pais_id` (nuevo) como `pais` (legacy) — el valor era y
     // sigue siendo el ID del catalogo.
-    $paisId       = drCtFiltroId($q['pais_id']      ?? $q['pais']      ?? null);
-    $provinciaId  = drCtFiltroId($q['provincia_id'] ?? $q['provincia'] ?? null);
+    $paisId       = drPrFiltroId($q['pais_id']      ?? $q['pais']      ?? null);
+    $provinciaId  = drPrFiltroId($q['provincia_id'] ?? $q['provincia'] ?? null);
     $correo       = trim((string)($q['correo']       ?? ''));
     $celular      = trim((string)($q['celular']      ?? ''));
     $desde        = trim((string)($q['desde']        ?? ''));
@@ -179,7 +179,7 @@ function handleList(PDO $pdo, array $q): void {
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
     $sql = "SELECT " . DR_CT_COLS . "
-              FROM datarocket_contactos
+              FROM datarocket_prospectos
               {$sqlWhere}
               ORDER BY {$orderBy} {$dirSql}
               LIMIT {$limite}";
@@ -187,11 +187,11 @@ function handleList(PDO $pdo, array $q): void {
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
 
-    // Anexa `lista_ids` y `etiqueta_ids` (int[]) a cada contacto — batch
-    // queries contra las puentes `datarocket_contactos_listas` (20260811_1400)
-    // y `datarocket_contactos_etiquetas` (20260811_1600). Sin N+1.
-    drCtAttachListaIds($pdo, $rows);
-    drCtAttachEtiquetaIds($pdo, $rows);
+    // Anexa `lista_ids` y `etiqueta_ids` (int[]) a cada prospecto — batch
+    // queries contra las puentes `datarocket_prospectos_listas` (20260811_1400)
+    // y `datarocket_prospectos_etiquetas` (20260811_1600). Sin N+1.
+    drPrAttachListaIds($pdo, $rows);
+    drPrAttachEtiquetaIds($pdo, $rows);
 
     jsonOk([
         'total' => count($rows),
@@ -200,16 +200,16 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . DR_CT_COLS . " FROM datarocket_contactos WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . DR_CT_COLS . " FROM datarocket_prospectos WHERE id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
-    if (!$row) jsonError('Contacto no encontrado', 404);
+    if (!$row) jsonError('Prospecto no encontrado', 404);
 
     $lists = $pdo->prepare("
         SELECT dl.id, dl.nombre
-          FROM datarocket_contactos_listas dcl
+          FROM datarocket_prospectos_listas dcl
           JOIN datarocket_listas dl ON dl.id = dcl.lista_id
-         WHERE dcl.contacto_id = :id
+         WHERE dcl.prospecto_id = :id
       ORDER BY dl.nombre
     ");
     $lists->execute([':id' => $id]);
@@ -219,9 +219,9 @@ function handleGetOne(PDO $pdo, int $id): void {
 
     $etiqs = $pdo->prepare("
         SELECT de.id, de.nombre
-          FROM datarocket_contactos_etiquetas dce
+          FROM datarocket_prospectos_etiquetas dce
           JOIN datarocket_etiquetas de ON de.id = dce.etiqueta_id
-         WHERE dce.contacto_id = :id
+         WHERE dce.prospecto_id = :id
       ORDER BY de.nombre
     ");
     $etiqs->execute([':id' => $id]);
@@ -234,7 +234,7 @@ function handleGetOne(PDO $pdo, int $id): void {
 
 // Batch: anexa `lista_ids` (int[]) a cada fila con una unica query
 // GROUP_CONCAT contra la puente. Evita N+1. MySQL 8 / MariaDB 10.11 OK.
-function drCtAttachListaIds(PDO $pdo, array &$rows): void {
+function drPrAttachListaIds(PDO $pdo, array &$rows): void {
     if (!$rows) return;
     $ids = array_map(fn($r) => (int)$r['id'], $rows);
     $in  = implode(',', $ids);
@@ -244,15 +244,15 @@ function drCtAttachListaIds(PDO $pdo, array &$rows): void {
     // aparecer de forma natural en un nombre.
     $mapIds = $mapNombres = [];
     foreach ($pdo->query("
-        SELECT dcl.contacto_id,
+        SELECT dcl.prospecto_id,
                GROUP_CONCAT(dcl.lista_id ORDER BY dl.nombre)                       AS lista_ids,
                GROUP_CONCAT(dl.nombre    ORDER BY dl.nombre SEPARATOR '||~||')    AS lista_nombres
-          FROM datarocket_contactos_listas dcl
+          FROM datarocket_prospectos_listas dcl
           JOIN datarocket_listas dl ON dl.id = dcl.lista_id
-         WHERE dcl.contacto_id IN ({$in})
-      GROUP BY dcl.contacto_id
+         WHERE dcl.prospecto_id IN ({$in})
+      GROUP BY dcl.prospecto_id
     ") as $r) {
-        $cid = (int)$r['contacto_id'];
+        $cid = (int)$r['prospecto_id'];
         $mapIds[$cid]     = array_map('intval', explode(',',     (string)$r['lista_ids']));
         $mapNombres[$cid] = explode('||~||', (string)$r['lista_nombres']);
     }
@@ -263,22 +263,22 @@ function drCtAttachListaIds(PDO $pdo, array &$rows): void {
     }
 }
 
-// Idem para `etiqueta_ids` contra `datarocket_contactos_etiquetas`.
-function drCtAttachEtiquetaIds(PDO $pdo, array &$rows): void {
+// Idem para `etiqueta_ids` contra `datarocket_prospectos_etiquetas`.
+function drPrAttachEtiquetaIds(PDO $pdo, array &$rows): void {
     if (!$rows) return;
     $ids = array_map(fn($r) => (int)$r['id'], $rows);
     $in  = implode(',', $ids);
     $mapIds = $mapNombres = [];
     foreach ($pdo->query("
-        SELECT dce.contacto_id,
+        SELECT dce.prospecto_id,
                GROUP_CONCAT(dce.etiqueta_id ORDER BY de.nombre)                       AS etiqueta_ids,
                GROUP_CONCAT(de.nombre       ORDER BY de.nombre SEPARATOR '||~||')    AS etiqueta_nombres
-          FROM datarocket_contactos_etiquetas dce
+          FROM datarocket_prospectos_etiquetas dce
           JOIN datarocket_etiquetas de ON de.id = dce.etiqueta_id
-         WHERE dce.contacto_id IN ({$in})
-      GROUP BY dce.contacto_id
+         WHERE dce.prospecto_id IN ({$in})
+      GROUP BY dce.prospecto_id
     ") as $r) {
-        $cid = (int)$r['contacto_id'];
+        $cid = (int)$r['prospecto_id'];
         $mapIds[$cid]     = array_map('intval', explode(',',     (string)$r['etiqueta_ids']));
         $mapNombres[$cid] = explode('||~||', (string)$r['etiqueta_nombres']);
     }
@@ -293,7 +293,7 @@ function drCtAttachEtiquetaIds(PDO $pdo, array &$rows): void {
 // Alta / Modificacion / Baja
 // ---------------------------------------------------------------------------
 
-function drCtNullableStr(mixed $v, ?int $max = null): ?string {
+function drPrNullableStr(mixed $v, ?int $max = null): ?string {
     if ($v === null) return null;
     $s = trim((string)$v);
     if ($s === '') return null;
@@ -301,14 +301,14 @@ function drCtNullableStr(mixed $v, ?int $max = null): ?string {
     return $s;
 }
 
-function drCtNullableInt(mixed $v): ?int {
+function drPrNullableInt(mixed $v): ?int {
     if ($v === null || $v === '') return null;
     return (int)$v;
 }
 
 // Normaliza un ID de catalogo que llega por query string: vacio / no numerico
 // / <= 0 -> null (equivale a "sin filtro", no a filtrar por 0).
-function drCtFiltroId(mixed $v): ?int {
+function drPrFiltroId(mixed $v): ?int {
     if ($v === null) return null;
     $s = trim((string)$v);
     if ($s === '' || !ctype_digit($s)) return null;
@@ -319,7 +319,7 @@ function drCtFiltroId(mixed $v): ?int {
 // Rechaza con 400 los ids de ubicacion que no existan en su catalogo. Sin esto
 // la violacion de FK sube como excepcion PDO y el cliente recibe un 500 con el
 // mensaje crudo de InnoDB.
-function drCtAssertUbicacion(PDO $pdo, array $p): void {
+function drPrAssertUbicacion(PDO $pdo, array $p): void {
     $checks = [
         ['pais_id',      'paises',      'El país indicado no existe.'],
         ['provincia_id', 'provincias',  'La provincia indicada no existe.'],
@@ -335,38 +335,38 @@ function drCtAssertUbicacion(PDO $pdo, array $p): void {
 
 // Rechaza con 400 un `correo` que venga con algo escrito pero del que no se
 // pueda extraer ninguna direccion valida. Se chequea sobre el payload crudo
-// porque contactoNormalizarCorreo() devuelve null tanto para "campo vacio"
+// porque prospectoNormalizarCorreo() devuelve null tanto para "campo vacio"
 // como para "campo con basura", y solo el segundo es un error. Un cliente que
 // manda basura merece enterarse, no que se la descartemos en silencio.
-// Mismo criterio en el ABM cloud (cloud/api/datarocketcontactos.php).
-function drCtAssertCorreo(array $in): void {
+// Mismo criterio en el ABM cloud (cloud/api/datarocketprospectos.php).
+function drPrAssertCorreo(array $in): void {
     if (!array_key_exists('correo', $in)) return;
     $raw = trim((string)($in['correo'] ?? ''));
     if ($raw === '') return;
-    if (contactoNormalizarCorreo($raw) === null) {
+    if (prospectoNormalizarCorreo($raw) === null) {
         jsonError('El correo no es válido.', 400);
     }
 }
 
 // Invariante de identidad: el campo de nombre que corresponde al `tipo` tiene
-// que venir cargado, porque es el que alimenta a `nombre` (ver drCtDerivarNombre).
-// Un contacto persona sin `persona_nombre` no tiene de donde sacar el nombre
+// que venir cargado, porque es el que alimenta a `nombre` (ver drPrDerivarNombre).
+// Un prospecto persona sin `persona_nombre` no tiene de donde sacar el nombre
 // con el que se lista, se busca y se saluda en una plantilla.
 //
 // Solo se exige el campo del tipo. El del OTRO lado sigue siendo opcional y es
-// legitimo tenerlo cargado: en un contacto persona `empresa_nombre` es donde
-// trabaja, y en un contacto empresa `persona_nombre` es quien atiende.
+// legitimo tenerlo cargado: en un prospecto persona `empresa_nombre` es donde
+// trabaja, y en un prospecto empresa `persona_nombre` es quien atiende.
 //
 // Este endpoint importa lotes, y fue justamente un importador el que dejo 989
 // filas con `tipo='persona'` y `persona_nombre` NULL (ver la migracion
 // 20260817_2100). Rechazar el alta aca es lo que evita que se repita.
-// Mismo criterio en el ABM cloud (cloud/api/datarocketcontactos.php).
-function drCtAssertIdentidad(array $p): void {
+// Mismo criterio en el ABM cloud (cloud/api/datarocketprospectos.php).
+function drPrAssertIdentidad(array $p): void {
     if ($p['tipo'] === 'persona' && (string)($p['persona_nombre'] ?? '') === '') {
-        jsonError('El nombre de la persona es obligatorio para un contacto de tipo persona.', 400);
+        jsonError('El nombre de la persona es obligatorio para un prospecto de tipo persona.', 400);
     }
     if ($p['tipo'] === 'empresa' && (string)($p['empresa_nombre'] ?? '') === '') {
-        jsonError('El nombre de la empresa es obligatorio para un contacto de tipo empresa.', 400);
+        jsonError('El nombre de la empresa es obligatorio para un prospecto de tipo empresa.', 400);
     }
 }
 
@@ -381,18 +381,18 @@ function drCtAssertIdentidad(array $p): void {
 // postear, mandando `empresa_nombre` y `persona_nombre` por separado. Si mandas
 // el compuesto entero en uno de los dos, se guarda entero.
 //
-// Se asume drCtAssertIdentidad() ya corrido: el campo de origen no es vacio.
-function drCtDerivarNombre(array $p): string {
+// Se asume drPrAssertIdentidad() ya corrido: el campo de origen no es vacio.
+function drPrDerivarNombre(array $p): string {
     return $p['tipo'] === 'persona'
         ? (string)$p['persona_nombre']
         : (string)$p['empresa_nombre'];
 }
 
 // Genera un UUID v4 RFC 4122 (36 chars con guiones) alineado con el formato
-// que ya persiste `datarocket_contactos.uuid` (regenerado por la migracion
+// que ya persiste `datarocket_prospectos.uuid` (regenerado por la migracion
 // 20260727_2000). Antes usabamos bin2hex(random_bytes(16)) que producia 32
 // chars hex sin guiones — no era UUID estandar.
-function drCtUuidV4(): string {
+function drPrUuidV4(): string {
     $d = random_bytes(16);
     $d[6] = chr((ord($d[6]) & 0x0f) | 0x40);
     $d[8] = chr((ord($d[8]) & 0x3f) | 0x80);
@@ -401,8 +401,8 @@ function drCtUuidV4(): string {
 
 // Acepta 'YYYY-MM-DDTHH:MM', 'YYYY-MM-DD HH:MM' y 'YYYY-MM-DD HH:MM:SS'.
 // Cualquier otro formato devuelve NULL (que dispara el default en handleCreate).
-function drCtNullableDateTime(mixed $v): ?string {
-    $s = drCtNullableStr($v);
+function drPrNullableDateTime(mixed $v): ?string {
+    $s = drPrNullableStr($v);
     if ($s === null) return null;
     $s = str_replace('T', ' ', $s);
     if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $s)) $s .= ':00';
@@ -410,74 +410,74 @@ function drCtNullableDateTime(mixed $v): ?string {
     return $s;
 }
 
-function drCtSanitize(array $in): array {
+function drPrSanitize(array $in): array {
     $p = [
-        'tipo'               => drCtNullableStr($in['tipo']                ?? null, 20),
-        'nombre'             => drCtNullableStr($in['nombre']              ?? null, 255),
-        'empresa_nombre'     => drCtNullableStr($in['empresa_nombre']      ?? null, 255),
-        'empresa_rubro'      => drCtNullableStr($in['empresa_rubro']       ?? null, 255),
-        'empresa_actividad'  => drCtNullableStr($in['empresa_actividad']   ?? null, 255),
-        'empresa_cargo'      => drCtNullableStr($in['empresa_cargo']       ?? null, 255),
-        'persona_nombre'     => drCtNullableStr($in['persona_nombre']      ?? null, 255),
-        'persona_genero'     => drCtNullableStr($in['persona_genero']      ?? null, 1),
-        'persona_nacimiento' => drCtNullableStr($in['persona_nacimiento']  ?? null, 255),
-        'persona_dni'        => drCtNullableStr($in['persona_dni']         ?? null, 255),
-        'domicilio'          => drCtNullableStr($in['domicilio']           ?? null, 255),
-        'ciudad'             => drCtNullableStr($in['ciudad']              ?? null, 255),
-        'ubicacion'          => drCtNullableStr($in['ubicacion']           ?? null, 255),
+        'tipo'               => drPrNullableStr($in['tipo']                ?? null, 20),
+        'nombre'             => drPrNullableStr($in['nombre']              ?? null, 255),
+        'empresa_nombre'     => drPrNullableStr($in['empresa_nombre']      ?? null, 255),
+        'empresa_rubro'      => drPrNullableStr($in['empresa_rubro']       ?? null, 255),
+        'empresa_actividad'  => drPrNullableStr($in['empresa_actividad']   ?? null, 255),
+        'empresa_cargo'      => drPrNullableStr($in['empresa_cargo']       ?? null, 255),
+        'persona_nombre'     => drPrNullableStr($in['persona_nombre']      ?? null, 255),
+        'persona_genero'     => drPrNullableStr($in['persona_genero']      ?? null, 1),
+        'persona_nacimiento' => drPrNullableStr($in['persona_nacimiento']  ?? null, 255),
+        'persona_dni'        => drPrNullableStr($in['persona_dni']         ?? null, 255),
+        'domicilio'          => drPrNullableStr($in['domicilio']           ?? null, 255),
+        'ciudad'             => drPrNullableStr($in['ciudad']              ?? null, 255),
+        'ubicacion'          => drPrNullableStr($in['ubicacion']           ?? null, 255),
         // FK a los catalogos. Se acepta la clave nueva y la legacy (misma
         // semantica: el ID). Un valor no numerico deja de escribirse como texto
         // y pasa a NULL — con la FK puesta no hay otra opcion valida.
-        'localidad_id' => drCtNullableInt($in['localidad_id']        ?? $in['localidad'] ?? null),
-        'provincia_id' => drCtNullableInt($in['provincia_id']        ?? $in['provincia'] ?? null),
-        'pais_id'      => drCtNullableInt($in['pais_id']             ?? $in['pais']      ?? null),
+        'localidad_id' => drPrNullableInt($in['localidad_id']        ?? $in['localidad'] ?? null),
+        'provincia_id' => drPrNullableInt($in['provincia_id']        ?? $in['provincia'] ?? null),
+        'pais_id'      => drPrNullableInt($in['pais_id']             ?? $in['pais']      ?? null),
         // Telefonos a 10 digitos argentinos y correo a minuscula validada —
-        // reglas en cloud/api/lib/contactos_normalizar.php, compartidas con el
+        // reglas en cloud/api/lib/prospectos_normalizar.php, compartidas con el
         // ABM cloud y con la migracion 20260816_1700.
-        'telefono' => contactoNormalizarTelefono($in['telefono'] ?? null),
-        'celular'  => contactoNormalizarTelefono($in['celular']  ?? null),
-        'whatsapp' => contactoNormalizarTelefono($in['whatsapp'] ?? null),
-        'correo'   => contactoNormalizarCorreo($in['correo']     ?? null),
+        'telefono' => prospectoNormalizarTelefono($in['telefono'] ?? null),
+        'celular'  => prospectoNormalizarTelefono($in['celular']  ?? null),
+        'whatsapp' => prospectoNormalizarTelefono($in['whatsapp'] ?? null),
+        'correo'   => prospectoNormalizarCorreo($in['correo']     ?? null),
         // `web` se guarda como host + path sin esquema; lo que no es una URL
         // va a NULL. Mismas reglas, mismo lib, migracion 20260816_1800.
-        'web'         => contactoNormalizarWeb($in['web']           ?? null),
-        'facebook'    => drCtNullableStr($in['facebook']            ?? null, 255),
-        'instagram'   => drCtNullableStr($in['instagram']           ?? null, 255),
-        'tiktok'      => drCtNullableStr($in['tiktok']              ?? null, 255),
-        'comentarios' => drCtNullableStr($in['comentarios']         ?? null, 500),
-        'registrado'  => drCtNullableDateTime($in['registrado']     ?? null),
+        'web'         => prospectoNormalizarWeb($in['web']           ?? null),
+        'facebook'    => drPrNullableStr($in['facebook']            ?? null, 255),
+        'instagram'   => drPrNullableStr($in['instagram']           ?? null, 255),
+        'tiktok'      => drPrNullableStr($in['tiktok']              ?? null, 255),
+        'comentarios' => drPrNullableStr($in['comentarios']         ?? null, 500),
+        'registrado'  => drPrNullableDateTime($in['registrado']     ?? null),
     ];
     // Un correo cargado por error en `web` se rescata a `correo` cuando ese
-    // campo viene vacio; si el contacto ya trae correo, se descarta con el
+    // campo viene vacio; si el prospecto ya trae correo, se descarta con el
     // resto de los no-URL. Mismo criterio en el ABM cloud.
     if ($p['correo'] === null) {
-        $p['correo'] = contactoWebComoCorreo($in['web'] ?? null);
+        $p['correo'] = prospectoWebComoCorreo($in['web'] ?? null);
     }
     return $p;
 }
 
 function handleCreate(PDO $pdo, array $in): void {
-    drCtAssertCorreo($in);
-    $p = drCtSanitize($in);
+    drPrAssertCorreo($in);
+    $p = drPrSanitize($in);
     // `tipo` obligatorio en alta — cualquier cliente del microservicio v4
     // debe indicar persona o empresa. Ver DR_CT_TIPOS_VALIDOS.
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
-    drCtAssertIdentidad($p);
-    $p['nombre'] = drCtDerivarNombre($p);
-    drCtAssertUbicacion($pdo, $p);
-    $p['uuid'] = drCtNullableStr($in['uuid'] ?? null, 255) ?? drCtUuidV4();
+    drPrAssertIdentidad($p);
+    $p['nombre'] = drPrDerivarNombre($p);
+    drPrAssertUbicacion($pdo, $p);
+    $p['uuid'] = drPrNullableStr($in['uuid'] ?? null, 255) ?? drPrUuidV4();
     if ($p['registrado'] === null) {
         $p['registrado'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
                            ->format('Y-m-d H:i:s');
     }
-    $listaIds    = drCtSanitizeListaIds($in['lista_ids']    ?? null);
-    $etiquetaIds = drCtSanitizeEtiquetaIds($in['etiqueta_ids'] ?? null);
+    $listaIds    = drPrSanitizeListaIds($in['lista_ids']    ?? null);
+    $etiquetaIds = drPrSanitizeEtiquetaIds($in['etiqueta_ids'] ?? null);
 
     $pdo->beginTransaction();
     try {
-        $sql = "INSERT INTO datarocket_contactos
+        $sql = "INSERT INTO datarocket_prospectos
                     (uuid, tipo, nombre,
                      empresa_nombre, empresa_rubro, empresa_actividad, empresa_cargo,
                      persona_nombre, persona_genero, persona_nacimiento, persona_dni,
@@ -522,8 +522,8 @@ function handleCreate(PDO $pdo, array $in): void {
             ':registrado'         => $p['registrado'],
         ]);
         $newId = (int)$pdo->lastInsertId();
-        drCtSyncListas($pdo, $newId, $listaIds);
-        drCtSyncEtiquetas($pdo, $newId, $etiquetaIds);
+        drPrSyncListas($pdo, $newId, $listaIds);
+        drPrSyncEtiquetas($pdo, $newId, $etiquetaIds);
         $pdo->commit();
         jsonOk([
             'id'         => $newId,
@@ -537,32 +537,32 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT id FROM datarocket_contactos WHERE id = :id');
+    $exists = $pdo->prepare('SELECT id FROM datarocket_prospectos WHERE id = :id');
     $exists->execute([':id' => $id]);
-    if (!$exists->fetch()) jsonError('Contacto no encontrado', 404);
+    if (!$exists->fetch()) jsonError('Prospecto no encontrado', 404);
 
-    drCtAssertCorreo($in);
-    $p = drCtSanitize($in);
+    drPrAssertCorreo($in);
+    $p = drPrSanitize($in);
     // `tipo` obligatorio en edicion — mismas reglas que en el ABM cloud.
     if (!in_array($p['tipo'], DR_CT_TIPOS_VALIDOS, true)) {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
-    drCtAssertIdentidad($p);
-    $p['nombre'] = drCtDerivarNombre($p);
-    drCtAssertUbicacion($pdo, $p);
+    drPrAssertIdentidad($p);
+    $p['nombre'] = drPrDerivarNombre($p);
+    drPrAssertUbicacion($pdo, $p);
     // `lista_ids` / `etiqueta_ids` opcionales en PUT: si no vienen, no se
     // toca la puente. Solo cuando el cliente los manda explicitamente (aun
     // `[]` para desasignar de todo) se sincroniza cada una.
     $listaIds    = array_key_exists('lista_ids', $in)
-        ? drCtSanitizeListaIds($in['lista_ids'])
+        ? drPrSanitizeListaIds($in['lista_ids'])
         : null;
     $etiquetaIds = array_key_exists('etiqueta_ids', $in)
-        ? drCtSanitizeEtiquetaIds($in['etiqueta_ids'])
+        ? drPrSanitizeEtiquetaIds($in['etiqueta_ids'])
         : null;
 
     $pdo->beginTransaction();
     try {
-        $sql = "UPDATE datarocket_contactos SET
+        $sql = "UPDATE datarocket_prospectos SET
                     tipo               = :tipo,
                     nombre             = :nombre,
                     empresa_nombre     = :empresa_nombre,
@@ -620,8 +620,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             ':registrado'         => $p['registrado'],
             ':id'                 => $id,
         ]);
-        if ($listaIds    !== null) drCtSyncListas($pdo, $id, $listaIds);
-        if ($etiquetaIds !== null) drCtSyncEtiquetas($pdo, $id, $etiquetaIds);
+        if ($listaIds    !== null) drPrSyncListas($pdo, $id, $listaIds);
+        if ($etiquetaIds !== null) drPrSyncEtiquetas($pdo, $id, $etiquetaIds);
         $pdo->commit();
         jsonOk(['id' => $id]);
     } catch (Throwable $e) {
@@ -631,11 +631,11 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 }
 
 function handleDelete(PDO $pdo, int $id): void {
-    // Las filas de `datarocket_contactos_listas` y `datarocket_contactos_
+    // Las filas de `datarocket_prospectos_listas` y `datarocket_prospectos_
     // etiquetas` se borran solas por el ON DELETE CASCADE de sus FKs.
-    $stmt = $pdo->prepare('DELETE FROM datarocket_contactos WHERE id = :id');
+    $stmt = $pdo->prepare('DELETE FROM datarocket_prospectos WHERE id = :id');
     $stmt->execute([':id' => $id]);
-    if ($stmt->rowCount() === 0) jsonError('Contacto no encontrado', 404);
+    if ($stmt->rowCount() === 0) jsonError('Prospecto no encontrado', 404);
     jsonOk(['id' => $id]);
 }
 
@@ -643,7 +643,7 @@ function handleDelete(PDO $pdo, int $id): void {
 // Sincronizacion de suscripciones a listas (tabla puente)
 // ---------------------------------------------------------------------------
 
-function drCtSanitizeListaIds(mixed $raw): array {
+function drPrSanitizeListaIds(mixed $raw): array {
     if (!is_array($raw)) return [];
     $out = [];
     foreach ($raw as $v) {
@@ -653,22 +653,22 @@ function drCtSanitizeListaIds(mixed $raw): array {
     return array_keys($out);
 }
 
-// Full replace en `datarocket_contactos_listas` para `$contactoId`. Los ids
+// Full replace en `datarocket_prospectos_listas` para `$prospectoId`. Los ids
 // inexistentes en `datarocket_listas` se descartan (defensa en profundidad)
 // antes del INSERT IGNORE para no violar la FK.
-function drCtSyncListas(PDO $pdo, int $contactoId, array $listaIds): void {
-    $del = $pdo->prepare('DELETE FROM datarocket_contactos_listas WHERE contacto_id = :cid');
-    $del->execute([':cid' => $contactoId]);
+function drPrSyncListas(PDO $pdo, int $prospectoId, array $listaIds): void {
+    $del = $pdo->prepare('DELETE FROM datarocket_prospectos_listas WHERE prospecto_id = :cid');
+    $del->execute([':cid' => $prospectoId]);
     if (!$listaIds) return;
     $ph  = implode(',', array_fill(0, count($listaIds), '?'));
     $val = $pdo->prepare("SELECT id FROM datarocket_listas WHERE id IN ({$ph})");
     $val->execute($listaIds);
     $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
     if (!$validIds) return;
-    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_contactos_listas
-                          (contacto_id, lista_id) VALUES (:cid, :lid)');
+    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_prospectos_listas
+                          (prospecto_id, lista_id) VALUES (:cid, :lid)');
     foreach ($validIds as $lid) {
-        $ins->execute([':cid' => $contactoId, ':lid' => $lid]);
+        $ins->execute([':cid' => $prospectoId, ':lid' => $lid]);
     }
 }
 
@@ -676,7 +676,7 @@ function drCtSyncListas(PDO $pdo, int $contactoId, array $listaIds): void {
 // Sincronizacion de etiquetas asignadas (tabla puente)
 // ---------------------------------------------------------------------------
 
-function drCtSanitizeEtiquetaIds(mixed $raw): array {
+function drPrSanitizeEtiquetaIds(mixed $raw): array {
     if (!is_array($raw)) return [];
     $out = [];
     foreach ($raw as $v) {
@@ -686,20 +686,20 @@ function drCtSanitizeEtiquetaIds(mixed $raw): array {
     return array_keys($out);
 }
 
-// Full replace en `datarocket_contactos_etiquetas` para `$contactoId`. Mismo
-// patron que `drCtSyncListas`.
-function drCtSyncEtiquetas(PDO $pdo, int $contactoId, array $etiquetaIds): void {
-    $del = $pdo->prepare('DELETE FROM datarocket_contactos_etiquetas WHERE contacto_id = :cid');
-    $del->execute([':cid' => $contactoId]);
+// Full replace en `datarocket_prospectos_etiquetas` para `$prospectoId`. Mismo
+// patron que `drPrSyncListas`.
+function drPrSyncEtiquetas(PDO $pdo, int $prospectoId, array $etiquetaIds): void {
+    $del = $pdo->prepare('DELETE FROM datarocket_prospectos_etiquetas WHERE prospecto_id = :cid');
+    $del->execute([':cid' => $prospectoId]);
     if (!$etiquetaIds) return;
     $ph  = implode(',', array_fill(0, count($etiquetaIds), '?'));
     $val = $pdo->prepare("SELECT id FROM datarocket_etiquetas WHERE id IN ({$ph})");
     $val->execute($etiquetaIds);
     $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
     if (!$validIds) return;
-    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_contactos_etiquetas
-                          (contacto_id, etiqueta_id) VALUES (:cid, :eid)');
+    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_prospectos_etiquetas
+                          (prospecto_id, etiqueta_id) VALUES (:cid, :eid)');
     foreach ($validIds as $eid) {
-        $ins->execute([':cid' => $contactoId, ':eid' => $eid]);
+        $ins->execute([':cid' => $prospectoId, ':eid' => $eid]);
     }
 }

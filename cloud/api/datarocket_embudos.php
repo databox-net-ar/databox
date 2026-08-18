@@ -5,14 +5,14 @@
 //
 //   GET    api/datarocket_embudos.php[?q=...&activo=1&limite=100&orden=id&dir=desc]
 //                                          -> listado + stats (incluye
-//                                             `prospectos_count` derivado de
-//                                             datarocket_prospectos.embudo_id)
+//                                             `oportunidades_count` derivado de
+//                                             datarocket_oportunidades.embudo_id)
 //   GET    api/datarocket_embudos.php?id=N
 //                                          -> registro individual
 //   POST   api/datarocket_embudos.php      -> alta (JSON body)
 //   PUT    api/datarocket_embudos.php?id=N -> modificacion (JSON body)
 //   DELETE api/datarocket_embudos.php?id=N -> baja (bloqueada si tiene
-//                                             prospectos, la FK RESTRICT
+//                                             oportunidades, la FK RESTRICT
 //                                             ya lo impone a nivel DB)
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -65,7 +65,7 @@ function normalizarFilaEmbudo(array $r): array {
         'nombre'             => (string)($r['nombre'] ?? ''),
         'descripcion'        => $r['descripcion'] !== null ? (string)$r['descripcion'] : null,
         'activo'             => (int)($r['activo'] ?? 0),
-        'prospectos_count'   => isset($r['prospectos_count']) ? (int)$r['prospectos_count'] : null,
+        'oportunidades_count' => isset($r['oportunidades_count']) ? (int)$r['oportunidades_count'] : null,
         'etapas_count'       => isset($r['etapas_count'])     ? (int)$r['etapas_count']     : null,
         'fecha_creacion'     => $r['fecha_creacion']     ?? null,
         'fecha_modificacion' => $r['fecha_modificacion'] ?? null,
@@ -137,18 +137,18 @@ function handleListEmbudos(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    // JOIN a subqueries para contar prospectos y etapas por embudo + LEFT JOIN a
+    // JOIN a subqueries para contar oportunidades y etapas por embudo + LEFT JOIN a
     // proyectos para resolver el nombre. Es cheap aunque no este cacheado (las
-    // tablas son chicas: pocos embudos, decenas de prospectos al principio, y
+    // tablas son chicas: pocos embudos, decenas de oportunidades al principio, y
     // las etapas suelen ser 5-10 por embudo).
     $sql = 'SELECT ' . DREM_COLS . ",
                    p.nombre AS proyecto_nombre,
-                   COALESCE(pc.c, 0) AS prospectos_count,
+                   COALESCE(oc.c, 0) AS oportunidades_count,
                    COALESCE(et.c, 0) AS etapas_count
               FROM datarocket_embudos e
          LEFT JOIN proyectos p ON p.id = e.proyecto_id
-         LEFT JOIN (SELECT embudo_id, COUNT(*) c FROM datarocket_prospectos GROUP BY embudo_id) pc
-                ON pc.embudo_id = e.id
+         LEFT JOIN (SELECT embudo_id, COUNT(*) c FROM datarocket_oportunidades GROUP BY embudo_id) oc
+                ON oc.embudo_id = e.id
          LEFT JOIN (SELECT embudo_id, COUNT(*) c FROM datarocket_etapas GROUP BY embudo_id) et
                 ON et.embudo_id = e.id
              {$sqlWhere}
@@ -169,12 +169,12 @@ function handleListEmbudos(PDO $pdo, array $q): void {
 function handleGetOneEmbudo(PDO $pdo, int $id): void {
     $st = $pdo->prepare('SELECT ' . DREM_COLS . ",
                                 p.nombre AS proyecto_nombre,
-                                COALESCE(pc.c, 0) AS prospectos_count,
+                                COALESCE(oc.c, 0) AS oportunidades_count,
                                 COALESCE(et.c, 0) AS etapas_count
                            FROM datarocket_embudos e
                       LEFT JOIN proyectos p ON p.id = e.proyecto_id
-                      LEFT JOIN (SELECT embudo_id, COUNT(*) c FROM datarocket_prospectos GROUP BY embudo_id) pc
-                             ON pc.embudo_id = e.id
+                      LEFT JOIN (SELECT embudo_id, COUNT(*) c FROM datarocket_oportunidades GROUP BY embudo_id) oc
+                             ON oc.embudo_id = e.id
                       LEFT JOIN (SELECT embudo_id, COUNT(*) c FROM datarocket_etapas GROUP BY embudo_id) et
                              ON et.embudo_id = e.id
                           WHERE e.id = :id
@@ -277,11 +277,11 @@ function handleDeleteEmbudo(PDO $pdo, int $id): void {
 
     // Chequeo explicito de dependencias para devolver un mensaje amigable
     // antes de que la FK RESTRICT tire el error crudo de MySQL.
-    $st = $pdo->prepare('SELECT COUNT(*) FROM datarocket_prospectos WHERE embudo_id = :id');
+    $st = $pdo->prepare('SELECT COUNT(*) FROM datarocket_oportunidades WHERE embudo_id = :id');
     $st->execute([':id' => $id]);
     $count = (int)$st->fetchColumn();
     if ($count > 0) {
-        jsonError("No se puede eliminar el embudo: tiene {$count} prospecto(s) asignados. Reasignalos antes de eliminar.", 409);
+        jsonError("No se puede eliminar el embudo: tiene {$count} oportunidad(es) asignada(s). Reasignalas antes de eliminar.", 409);
     }
 
     // Las etapas del embudo caen en cascada por la FK de datarocket_etapas.embudo_id.

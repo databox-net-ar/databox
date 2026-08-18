@@ -5,15 +5,15 @@
 //
 //   GET    api/datarocket_etapas.php[?q=...&embudo_id=N&tipo=activa&limite=100&orden=orden&dir=asc]
 //                                          -> listado + stats (incluye
-//                                             `prospectos_count` derivado de
-//                                             datarocket_prospectos.etapa_id
+//                                             `oportunidades_count` derivado de
+//                                             datarocket_oportunidades.etapa_id
 //                                             y `embudo_nombre` para render)
 //   GET    api/datarocket_etapas.php?id=N
 //                                          -> registro individual
 //   POST   api/datarocket_etapas.php       -> alta (JSON body)
 //   PUT    api/datarocket_etapas.php?id=N  -> modificacion (JSON body)
 //   DELETE api/datarocket_etapas.php?id=N  -> baja (bloqueada si tiene
-//                                             prospectos, la FK RESTRICT
+//                                             oportunidades, la FK RESTRICT
 //                                             ya lo impone a nivel DB)
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
@@ -69,7 +69,7 @@ function normalizarFilaEtapa(array $r): array {
         'color'              => $r['color'] !== null && $r['color'] !== '' ? (string)$r['color'] : null,
         'tipo'               => (string)($r['tipo'] ?? 'activa'),
         'probabilidad'       => $r['probabilidad'] !== null ? (int)$r['probabilidad'] : null,
-        'prospectos_count'   => isset($r['prospectos_count']) ? (int)$r['prospectos_count'] : null,
+        'oportunidades_count' => isset($r['oportunidades_count']) ? (int)$r['oportunidades_count'] : null,
         'fecha_creacion'     => $r['fecha_creacion']     ?? null,
         'fecha_modificacion' => $r['fecha_modificacion'] ?? null,
     ];
@@ -150,11 +150,11 @@ function handleListEtapas(PDO $pdo, array $q): void {
 
     $sql = 'SELECT ' . DRET_COLS . ",
                    b.nombre AS embudo_nombre,
-                   COALESCE(pc.c, 0) AS prospectos_count
+                   COALESCE(oc.c, 0) AS oportunidades_count
               FROM datarocket_etapas e
          LEFT JOIN datarocket_embudos b ON b.id = e.embudo_id
-         LEFT JOIN (SELECT etapa_id, COUNT(*) c FROM datarocket_prospectos GROUP BY etapa_id) pc
-                ON pc.etapa_id = e.id
+         LEFT JOIN (SELECT etapa_id, COUNT(*) c FROM datarocket_oportunidades GROUP BY etapa_id) oc
+                ON oc.etapa_id = e.id
              {$sqlWhere}
           ORDER BY e.embudo_id ASC, {$orden} {$dir}{$orderExtra}
              LIMIT {$limite}";
@@ -175,11 +175,11 @@ function handleListEtapas(PDO $pdo, array $q): void {
 function handleGetOneEtapa(PDO $pdo, int $id): void {
     $st = $pdo->prepare('SELECT ' . DRET_COLS . ",
                                 b.nombre AS embudo_nombre,
-                                COALESCE(pc.c, 0) AS prospectos_count
+                                COALESCE(oc.c, 0) AS oportunidades_count
                            FROM datarocket_etapas e
                       LEFT JOIN datarocket_embudos b ON b.id = e.embudo_id
-                      LEFT JOIN (SELECT etapa_id, COUNT(*) c FROM datarocket_prospectos GROUP BY etapa_id) pc
-                             ON pc.etapa_id = e.id
+                      LEFT JOIN (SELECT etapa_id, COUNT(*) c FROM datarocket_oportunidades GROUP BY etapa_id) oc
+                             ON oc.etapa_id = e.id
                           WHERE e.id = :id
                           LIMIT 1");
     $st->execute([':id' => $id]);
@@ -301,11 +301,11 @@ function handleDeleteEtapa(PDO $pdo, int $id): void {
     if (!$prev) jsonError('Etapa no encontrada', 404);
 
     // Chequeo explicito antes de la FK RESTRICT.
-    $st = $pdo->prepare('SELECT COUNT(*) FROM datarocket_prospectos WHERE etapa_id = :id');
+    $st = $pdo->prepare('SELECT COUNT(*) FROM datarocket_oportunidades WHERE etapa_id = :id');
     $st->execute([':id' => $id]);
     $count = (int)$st->fetchColumn();
     if ($count > 0) {
-        jsonError("No se puede eliminar la etapa: tiene {$count} prospecto(s) asignados. Movelos a otra etapa antes de eliminar.", 409);
+        jsonError("No se puede eliminar la etapa: tiene {$count} oportunidad(es) asignada(s). Movelas a otra etapa antes de eliminar.", 409);
     }
 
     $sd = $pdo->prepare('DELETE FROM datarocket_etapas WHERE id = :id');

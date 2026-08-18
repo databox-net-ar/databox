@@ -1,6 +1,6 @@
 <?php
 // api/datarocketinteracciones.php
-// ABM (lectura + marcar respondida + baja) de interacciones sobre contactos
+// ABM (lectura + marcar respondida + baja) de interacciones sobre prospectos
 // Datarocket. Lee sobre la tabla `datarocket_interacciones` definida en
 // db/schema.sql. Las altas las hacen las APIs de envio (aws_mensajes /
 // evolution_mensajes) automaticamente, por eso este endpoint NO expone POST.
@@ -37,12 +37,12 @@
 //   la respuesta) y `espera_minutos` (cuanto lleva esperando la que sigue
 //   pendiente). Filtros: `?pendiente=1` y `?respondida=1`.
 //
-// Nota sobre `prospecto_id`:
-//   FK NULL-able a `datarocket_prospectos`. Filtrable por query string
-//   (`?prospecto_id=N`) — lo usa la pestaña "Interacciones" del modal de
-//   Consultar prospecto. El SELECT devuelve ademas `prospecto_producto` para
-//   poder etiquetar el link de vuelta al prospecto (era `prospecto_asunto`
-//   hasta que la migracion 20260817_1700 dropeo `datarocket_prospectos.asunto`).
+// Nota sobre `oportunidad_id`:
+//   FK NULL-able a `datarocket_oportunidades`. Filtrable por query string
+//   (`?oportunidad_id=N`) — lo usa la pestaña "Interacciones" del modal de
+//   Consultar oportunidad. El SELECT devuelve ademas `oportunidad_producto` para
+//   poder etiquetar el link de vuelta a la oportunidad (era `oportunidad_asunto`
+//   hasta que la migracion 20260817_1700 dropeo `datarocket_oportunidades.asunto`).
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
@@ -51,29 +51,29 @@ require_once __DIR__ . '/lib/auth_check.php';
 // tardo la respuesta, o el que lleva esperando si sigue pendiente. Se resuelven
 // en SQL y no en el cliente para que el reloj sea el del servidor (la BD y el
 // panel comparten zona horaria — ver la herramienta Editor de zona horaria).
-const DR_INT_COLS = "i.id, i.fecha, i.contacto_id, i.prospecto_id, i.sentido, i.canal,
+const DR_INT_COLS = "i.id, i.fecha, i.prospecto_id, i.oportunidad_id, i.sentido, i.canal,
                      i.respondida, i.asunto, i.mensaje,
                      CASE WHEN i.respondida IS NOT NULL
                           THEN TIMESTAMPDIFF(MINUTE, i.fecha, i.respondida) END AS respuesta_minutos,
                      CASE WHEN i.sentido = 'entrante' AND i.respondida IS NULL
                           THEN TIMESTAMPDIFF(MINUTE, i.fecha, NOW())        END AS espera_minutos,
-                     c.nombre AS contacto_nombre,
-                     c.correo AS contacto_correo,
-                     p.producto AS prospecto_producto,
-                     p.asignado AS asignado_id,
+                     p.nombre AS prospecto_nombre,
+                     p.correo AS prospecto_correo,
+                     o.producto AS oportunidad_producto,
+                     o.asignado AS asignado_id,
                      u.nombre   AS asignado_nombre";
 
-// JOINs comunes al listado y al GET por id. `datarocket_prospectos` entra para
-// poder mostrar el producto del prospecto relacionado como etiqueta del link en
-// el modal de Consultar (la FK `prospecto_id` es NULL-able, por eso LEFT).
+// JOINs comunes al listado y al GET por id. `datarocket_oportunidades` entra para
+// poder mostrar el producto de la oportunidad relacionada como etiqueta del link en
+// el modal de Consultar (la FK `oportunidad_id` es NULL-able, por eso LEFT).
 //
-// `usuarios` cuelga del prospecto, no de la interaccion: el responsable de un
+// `usuarios` cuelga de la oportunidad, no de la interaccion: el responsable de un
 // evento es quien tiene asignado el negocio. La interaccion no guarda autor
 // propio — la columna `usuario_id` existio pero nunca se escribio y se dropeo
 // en la 20260817_1200.
-const DR_INT_JOINS = "LEFT JOIN datarocket_contactos   c ON c.id = i.contacto_id
-                      LEFT JOIN datarocket_prospectos  p ON p.id = i.prospecto_id
-                      LEFT JOIN usuarios               u ON u.id = p.asignado";
+const DR_INT_JOINS = "LEFT JOIN datarocket_prospectos    p ON p.id = i.prospecto_id
+                      LEFT JOIN datarocket_oportunidades o ON o.id = i.oportunidad_id
+                      LEFT JOIN usuarios                 u ON u.id = o.asignado";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -105,9 +105,9 @@ try {
 // ----------------------------------------------------------------------------
 
 function handleList(PDO $pdo, array $q): void {
-    $codigo    = isset($q['codigo'])       && $q['codigo']       !== '' ? (int)$q['codigo']       : null;
-    $contacto  = isset($q['contacto_id'])  && $q['contacto_id']  !== '' ? (int)$q['contacto_id']  : null;
-    $prospecto = isset($q['prospecto_id']) && $q['prospecto_id'] !== '' ? (int)$q['prospecto_id'] : null;
+    $codigo      = isset($q['codigo'])         && $q['codigo']         !== '' ? (int)$q['codigo']         : null;
+    $prospecto   = isset($q['prospecto_id'])   && $q['prospecto_id']   !== '' ? (int)$q['prospecto_id']   : null;
+    $oportunidad = isset($q['oportunidad_id']) && $q['oportunidad_id'] !== '' ? (int)$q['oportunidad_id'] : null;
     $sentido  = trim((string)($q['sentido'] ?? ''));
     $canal    = trim((string)($q['canal']   ?? ''));
     // Estado de respuesta. Viajan como flags separados y no como un solo
@@ -125,7 +125,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'fecha', 'contacto_id', 'prospecto_id', 'sentido', 'canal',
+    $allowedOrder = ['id', 'fecha', 'prospecto_id', 'oportunidad_id', 'sentido', 'canal',
                      'respondida'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
@@ -134,25 +134,25 @@ function handleList(PDO $pdo, array $q): void {
     $where  = [];
     $params = [];
 
-    if ($codigo    !== null) { $where[] = 'i.id = :codigo';                $params[':codigo']    = $codigo; }
-    if ($contacto  !== null) { $where[] = 'i.contacto_id = :contacto';     $params[':contacto']  = $contacto; }
-    if ($prospecto !== null) { $where[] = 'i.prospecto_id = :prospecto';   $params[':prospecto'] = $prospecto; }
-    if ($sentido   !== '')   { $where[] = 'i.sentido = :sentido';          $params[':sentido']   = $sentido; }
+    if ($codigo      !== null) { $where[] = 'i.id = :codigo';                   $params[':codigo']      = $codigo; }
+    if ($prospecto   !== null) { $where[] = 'i.prospecto_id = :prospecto';      $params[':prospecto']   = $prospecto; }
+    if ($oportunidad !== null) { $where[] = 'i.oportunidad_id = :oportunidad';  $params[':oportunidad'] = $oportunidad; }
+    if ($sentido     !== '')   { $where[] = 'i.sentido = :sentido';             $params[':sentido']     = $sentido; }
     // `_null` como centinela de "sin canal": es la marca de las notas internas,
     // y `?canal=` vacio ya significa "sin filtro". Mismo patron que el `_null`
-    // de `tipo` en el ABM de contactos.
-    if ($canal === '_null')  { $where[] = 'i.canal IS NULL'; }
-    elseif ($canal !== '')   { $where[] = 'i.canal = :canal';              $params[':canal']     = $canal; }
+    // de `tipo` en el ABM de prospectos.
+    if ($canal === '_null')    { $where[] = 'i.canal IS NULL'; }
+    elseif ($canal !== '')     { $where[] = 'i.canal = :canal';                 $params[':canal']       = $canal; }
     // "Pendiente" es solo de las entrantes: una saliente sin `respondida` no
     // esta esperando nada.
-    if ($pendiente)          { $where[] = "i.sentido = 'entrante' AND i.respondida IS NULL"; }
-    if ($respondida)         { $where[] = 'i.respondida IS NOT NULL'; }
-    if ($desde     !== '')   { $where[] = 'i.fecha >= :desde';             $params[':desde']     = $desde . ' 00:00:00'; }
-    if ($hasta     !== '')   { $where[] = 'i.fecha <= :hasta';             $params[':hasta']     = $hasta . ' 23:59:59'; }
+    if ($pendiente)            { $where[] = "i.sentido = 'entrante' AND i.respondida IS NULL"; }
+    if ($respondida)           { $where[] = 'i.respondida IS NOT NULL'; }
+    if ($desde       !== '')   { $where[] = 'i.fecha >= :desde';                $params[':desde']       = $desde . ' 00:00:00'; }
+    if ($hasta       !== '')   { $where[] = 'i.fecha <= :hasta';                $params[':hasta']       = $hasta . ' 23:59:59'; }
 
     if ($search !== '') {
         $where[] = '(i.asunto LIKE :s1 OR i.mensaje LIKE :s2
-                     OR c.nombre LIKE :s3 OR c.correo LIKE :s4)';
+                     OR p.nombre LIKE :s3 OR p.correo LIKE :s4)';
         $like = "%{$search}%";
         $params[':s1'] = $like;
         $params[':s2'] = $like;
@@ -168,7 +168,7 @@ function handleList(PDO $pdo, array $q): void {
     $stats = $pdo->query("
         SELECT
             COUNT(*)                                                 AS total,
-            COUNT(DISTINCT contacto_id)                              AS contactos,
+            COUNT(DISTINCT prospecto_id)                              AS prospectos,
             SUM(CASE WHEN sentido = 'entrante' THEN 1 ELSE 0 END)    AS entrantes,
             SUM(CASE WHEN sentido = 'entrante' AND respondida IS NULL
                      THEN 1 ELSE 0 END)                              AS pendientes,
@@ -194,7 +194,7 @@ function handleList(PDO $pdo, array $q): void {
     jsonOk([
         'stats' => [
             'total'              => (int)($stats['total']      ?? 0),
-            'contactos'          => (int)($stats['contactos']  ?? 0),
+            'prospectos'          => (int)($stats['prospectos']  ?? 0),
             'entrantes'          => (int)($stats['entrantes']  ?? 0),
             'pendientes'         => (int)($stats['pendientes'] ?? 0),
             'respuesta_promedio' => $stats['respuesta_promedio'] !== null
@@ -275,7 +275,7 @@ function handleResponder(PDO $pdo, int $id, array $in): void {
 
 // Acepta 'AAAA-MM-DDTHH:MM' (input datetime-local), 'AAAA-MM-DD HH:MM' y
 // 'AAAA-MM-DD HH:MM:SS'. Cualquier otra cosa -> null. Mismo criterio que
-// nullableDateTime() en el ABM de contactos.
+// nullableDateTime() en el ABM de prospectos.
 function drIntNormalizarFecha(mixed $v): ?string {
     $s = trim((string)$v);
     if ($s === '') return null;

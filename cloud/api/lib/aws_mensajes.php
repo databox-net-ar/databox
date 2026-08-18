@@ -26,7 +26,7 @@ const AWS_MSG_SANITIZERS = [
     'proyecto_id'  => 'int',
     'canal_id'     => 'int',
     'plantilla_id' => 'int',
-    'contacto_id'  => 'int',
+    'prospecto_id'  => 'int',
     'remitente'    => 'str:255',
     'remite'       => 'str:255',
     'destinatario' => 'str:255',
@@ -104,22 +104,22 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
     if ($p['encolado'] === null) $p['encolado'] = $p['fecha'];
     if ($p['estado']   === null) $p['estado']   = 'pendiente';
 
-    // Resolucion de contacto_id a partir del destino: buscamos en
-    // `datarocket_contactos.correo` y, si no existe, damos de alta el contacto
-    // antes de insertar el mensaje. Si el caller ya paso un contacto_id
+    // Resolucion de prospecto_id a partir del destino: buscamos en
+    // `datarocket_prospectos.correo` y, si no existe, damos de alta el prospecto
+    // antes de insertar el mensaje. Si el caller ya paso un prospecto_id
     // explicito lo respetamos (por ejemplo, un futuro flujo que ya lo tenga
     // resuelto no paga el lookup de nuevo).
-    if ($p['contacto_id'] === null) {
-        $p['contacto_id'] = resolverContactoIdAws($pdo, $p['destino'], $p['destinatario']);
+    if ($p['prospecto_id'] === null) {
+        $p['prospecto_id'] = resolverProspectoIdAws($pdo, $p['destino'], $p['destinatario']);
     }
 
     $sql = "
         INSERT INTO aws_mensajes
-            (fecha, proyecto_id, canal_id, plantilla_id, contacto_id, remitente,
+            (fecha, proyecto_id, canal_id, plantilla_id, prospecto_id, remitente,
              remite, destinatario, destino, prioridad, asunto, cuerpo, formato,
              adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
-            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :contacto_id, :remitente,
+            (:fecha, :proyecto_id, :canal_id, :plantilla_id, :prospecto_id, :remitente,
              :remite, :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
@@ -129,7 +129,7 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
         ':proyecto_id'  => $p['proyecto_id'],
         ':canal_id'     => $p['canal_id'],
         ':plantilla_id' => $p['plantilla_id'],
-        ':contacto_id'  => $p['contacto_id'],
+        ':prospecto_id'  => $p['prospecto_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
@@ -149,12 +149,12 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
     ]);
     $id = (int)$pdo->lastInsertId();
 
-    // Registrar la interaccion en el historial del contacto. Best-effort:
+    // Registrar la interaccion en el historial del prospecto. Best-effort:
     // si falla no tira, el mensaje ya quedo en la cola. Ver
     // cloud/api/lib/datarocket_interacciones.php.
     registrarInteraccionMensaje(
         $pdo,
-        $p['contacto_id'],
+        $p['prospecto_id'],
         'saliente',
         'correo',
         $p['asunto'] ?? $p['destino'],
@@ -254,39 +254,39 @@ function aplicarPlantillaAws(PDO $pdo, array $in): array {
 }
 
 /**
- * Resuelve el `contacto_id` de `aws_mensajes` a partir del `destino` del
- * mensaje: si el correo ya existe en `datarocket_contactos.correo` devuelve
+ * Resuelve el `prospecto_id` de `aws_mensajes` a partir del `destino` del
+ * mensaje: si el correo ya existe en `datarocket_prospectos.correo` devuelve
  * su id; si no, lo da de alta primero y devuelve el id recien insertado.
  *
  * Reglas:
  *   - Si `destino` esta vacio devuelve null (mensajes sin destino quedan sin
- *     contacto asociado; la validacion de obligatorios ya los rechaza antes).
+ *     prospecto asociado; la validacion de obligatorios ya los rechaza antes).
  *   - Si `destino` trae varios correos separados por coma (envio masivo a un
- *     grupo), toma el primero — un mensaje solo puede apuntar a un contacto.
- *   - El lookup es case-insensitive porque `datarocket_contactos.correo` usa
+ *     grupo), toma el primero — un mensaje solo puede apuntar a un prospecto.
+ *   - El lookup es case-insensitive porque `datarocket_prospectos.correo` usa
  *     `utf8mb4_general_ci`.
  *   - El alta automatica ya NO deja marca de procedencia: la columna `origen`
- *     se dropeo en la migracion 20260817_2000. Para saber que un contacto
+ *     se dropeo en la migracion 20260817_2000. Para saber que un prospecto
  *     nacio de un envio hay que mirar `datarocket_interacciones`.
- *   - El alta automatica crea el contacto como `tipo='persona'` y completa
+ *   - El alta automatica crea el prospecto como `tipo='persona'` y completa
  *     `persona_nombre` (cayendo al correo si el envio no trajo destinatario),
  *     para cumplir la invariante de identidad documentada en db/schema.sql.
  */
-function resolverContactoIdAws(PDO $pdo, ?string $destino, ?string $destinatario): ?int {
+function resolverProspectoIdAws(PDO $pdo, ?string $destino, ?string $destinatario): ?int {
     if ($destino === null) return null;
     $emails = array_values(array_filter(array_map('trim', explode(',', $destino))));
     if (!$emails) return null;
     $correo = $emails[0];
     if ($correo === '') return null;
 
-    $st = $pdo->prepare("SELECT id FROM datarocket_contactos WHERE correo = :c LIMIT 1");
+    $st = $pdo->prepare("SELECT id FROM datarocket_prospectos WHERE correo = :c LIMIT 1");
     $st->execute([':c' => $correo]);
     $id = $st->fetchColumn();
     if ($id !== false) return (int)$id;
 
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
              ->format('Y-m-d H:i:s');
-    // Invariante de identidad (ver db/schema.sql): un contacto creado al vuelo
+    // Invariante de identidad (ver db/schema.sql): un prospecto creado al vuelo
     // igual necesita `tipo` y el nombre del lado que corresponda, porque es el
     // que alimenta a `nombre`. Un alta automatica desde un envio es siempre un
     // individuo, asi que va como 'persona'.
@@ -294,13 +294,13 @@ function resolverContactoIdAws(PDO $pdo, ?string $destino, ?string $destinatario
     // Si el envio no trajo `destinatario` se cae al correo: es el unico dato
     // identificatorio disponible, y dejar el nombre vacio reintroduce
     // exactamente las filas sin nombre que limpio la migracion 20260817_2100.
-    // Mostrar "juan@example.com" como nombre de un contacto que todavia nadie
-    // completo es preferible a un contacto anonimo que no se puede ni listar.
+    // Mostrar "juan@example.com" como nombre de un prospecto que todavia nadie
+    // completo es preferible a un prospecto anonimo que no se puede ni listar.
     $nombre = trim((string)($destinatario ?? ''));
     if ($nombre === '') $nombre = $correo;
 
     $ins = $pdo->prepare("
-        INSERT INTO datarocket_contactos (uuid, tipo, nombre, persona_nombre, correo, registrado)
+        INSERT INTO datarocket_prospectos (uuid, tipo, nombre, persona_nombre, correo, registrado)
         VALUES (:uuid, 'persona', :nombre, :persona_nombre, :correo, :registrado)
     ");
     $ins->execute([

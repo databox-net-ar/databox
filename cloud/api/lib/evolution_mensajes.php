@@ -28,7 +28,7 @@ const EVO_MSG_SANITIZERS = [
     'proyecto_id'  => 'int',
     'canal_id'     => 'int',
     'plantilla_id' => 'int',
-    'contacto_id'  => 'int',
+    'prospecto_id'  => 'int',
     'remitente'    => 'str:255',
     'remite'       => 'str:255',
     'destinatario' => 'str:255',
@@ -111,23 +111,23 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
         $p['uuid'] = (string)$pdo->query('SELECT UUID()')->fetchColumn();
     }
 
-    // Resolucion de contacto_id a partir del destino (celular): buscamos en
-    // `datarocket_contactos.celular` y, si no existe, damos de alta el contacto
-    // antes de insertar el mensaje. Si el caller ya paso un contacto_id
+    // Resolucion de prospecto_id a partir del destino (celular): buscamos en
+    // `datarocket_prospectos.celular` y, si no existe, damos de alta el prospecto
+    // antes de insertar el mensaje. Si el caller ya paso un prospecto_id
     // explicito lo respetamos. Mirror del comportamiento del canalizador AWS
-    // (cloud/api/lib/aws_mensajes.php::resolverContactoIdAws) — misma logica,
+    // (cloud/api/lib/aws_mensajes.php::resolverProspectoIdAws) — misma logica,
     // otro campo de match.
-    if ($p['contacto_id'] === null) {
-        $p['contacto_id'] = resolverContactoIdEvolution($pdo, $p['destino'], $p['destinatario']);
+    if ($p['prospecto_id'] === null) {
+        $p['prospecto_id'] = resolverProspectoIdEvolution($pdo, $p['destino'], $p['destinatario']);
     }
 
     $sql = "
         INSERT INTO evolution_mensajes
-            (uuid, fecha, proyecto_id, canal_id, plantilla_id, contacto_id, remitente,
+            (uuid, fecha, proyecto_id, canal_id, plantilla_id, prospecto_id, remitente,
              remite, destinatario, destino, prioridad, asunto, cuerpo, formato,
              adjunto, tags, estado, error, encolado, programado, enviado, demora)
         VALUES
-            (:uuid, :fecha, :proyecto_id, :canal_id, :plantilla_id, :contacto_id, :remitente,
+            (:uuid, :fecha, :proyecto_id, :canal_id, :plantilla_id, :prospecto_id, :remitente,
              :remite, :destinatario, :destino, :prioridad, :asunto, :cuerpo, :formato,
              :adjunto, :tags, :estado, :error, :encolado, :programado, :enviado, :demora)
     ";
@@ -138,7 +138,7 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
         ':proyecto_id'  => $p['proyecto_id'],
         ':canal_id'     => $p['canal_id'],
         ':plantilla_id' => $p['plantilla_id'],
-        ':contacto_id'  => $p['contacto_id'],
+        ':prospecto_id'  => $p['prospecto_id'],
         ':remitente'    => $p['remitente'],
         ':remite'       => $p['remite'],
         ':destinatario' => $p['destinatario'],
@@ -158,12 +158,12 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
     ]);
     $id = (int)$pdo->lastInsertId();
 
-    // Registrar la interaccion en el historial del contacto. Best-effort:
+    // Registrar la interaccion en el historial del prospecto. Best-effort:
     // si falla no tira, el mensaje ya quedo en la cola. Ver
     // cloud/api/lib/datarocket_interacciones.php.
     registrarInteraccionMensaje(
         $pdo,
-        $p['contacto_id'],
+        $p['prospecto_id'],
         'saliente',
         'whatsapp',
         // WhatsApp no tiene asunto: `asunto` queda NULL salvo que la plantilla
@@ -289,9 +289,9 @@ function aplicarPlantillaEvoMsg(PDO $pdo, array $in): array {
 }
 
 /**
- * Resuelve el `contacto_id` de `evolution_mensajes` a partir del `destino`
+ * Resuelve el `prospecto_id` de `evolution_mensajes` a partir del `destino`
  * (celular) del mensaje: si el numero ya existe en
- * `datarocket_contactos.celular` devuelve su id; si no, lo da de alta primero
+ * `datarocket_prospectos.celular` devuelve su id; si no, lo da de alta primero
  * y devuelve el id recien insertado.
  *
  * Reglas:
@@ -301,17 +301,17 @@ function aplicarPlantillaEvoMsg(PDO $pdo, array $in): array {
  *     digito 0-9 tanto en el `destino` entrante como en cada `celular`
  *     almacenado, y se comparan los ultimos 10 digitos de ambos. Asi los
  *     mismos digitos con distinto formato (con/sin `+`, prefijo de pais,
- *     guiones, espacios, parentesis) matchean con el contacto ya existente.
- *   - Al dar de alta un contacto nuevo se guarda el `destino` tal como llego
+ *     guiones, espacios, parentesis) matchean con el prospecto ya existente.
+ *   - Al dar de alta un prospecto nuevo se guarda el `destino` tal como llego
  *     (sin normalizar) — la normalizacion contra el prefijo del canal la
  *     resuelve el sender (normalizarDestinoEvolution en
  *     cloud/api/lib/mensajes_enviar.php). Origen = 'evolution_mensajes' para
- *     distinguir en el ABM los contactos que crea el canalizador de los que
+ *     distinguir en el ABM los prospectos que crea el canalizador de los que
  *     carga el operador a mano.
  *
- * Mirror estructural de resolverContactoIdAws() en cloud/api/lib/aws_mensajes.php.
+ * Mirror estructural de resolverProspectoIdAws() en cloud/api/lib/aws_mensajes.php.
  */
-function resolverContactoIdEvolution(PDO $pdo, ?string $destino, ?string $destinatario): ?int {
+function resolverProspectoIdEvolution(PDO $pdo, ?string $destino, ?string $destinatario): ?int {
     if ($destino === null) return null;
     $celular = trim($destino);
     if ($celular === '') return null;
@@ -324,7 +324,7 @@ function resolverContactoIdEvolution(PDO $pdo, ?string $destino, ?string $destin
     $ultimos10 = $digitos !== '' ? substr($digitos, -10) : '';
     if ($ultimos10 !== '') {
         $st = $pdo->prepare(
-            "SELECT id FROM datarocket_contactos
+            "SELECT id FROM datarocket_prospectos
               WHERE RIGHT(REGEXP_REPLACE(celular, '[^0-9]', ''), 10) = :u
               LIMIT 1"
         );
@@ -335,7 +335,7 @@ function resolverContactoIdEvolution(PDO $pdo, ?string $destino, ?string $destin
 
     $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
              ->format('Y-m-d H:i:s');
-    // Invariante de identidad (ver db/schema.sql): un contacto creado al vuelo
+    // Invariante de identidad (ver db/schema.sql): un prospecto creado al vuelo
     // igual necesita `tipo` y el nombre del lado que corresponda, porque es el
     // que alimenta a `nombre`. Un alta automatica desde un envio es siempre un
     // individuo, asi que va como 'persona'.
@@ -343,13 +343,13 @@ function resolverContactoIdEvolution(PDO $pdo, ?string $destino, ?string $destin
     // Si el envio no trajo `destinatario` se cae al celular: es el unico dato
     // identificatorio disponible, y dejar el nombre vacio reintroduce
     // exactamente las filas sin nombre que limpio la migracion 20260817_2100
-    // (las 5 que quedaron sin arreglar son justamente contactos que solo tienen
+    // (las 5 que quedaron sin arreglar son justamente prospectos que solo tienen
     // celular). Mismo criterio en cloud/api/lib/aws_mensajes.php.
     $nombre = trim((string)($destinatario ?? ''));
     if ($nombre === '') $nombre = $celular;
 
     $ins = $pdo->prepare("
-        INSERT INTO datarocket_contactos (uuid, tipo, nombre, persona_nombre, celular, registrado)
+        INSERT INTO datarocket_prospectos (uuid, tipo, nombre, persona_nombre, celular, registrado)
         VALUES (:uuid, 'persona', :nombre, :persona_nombre, :celular, :registrado)
     ");
     $ins->execute([
