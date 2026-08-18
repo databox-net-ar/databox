@@ -25658,16 +25658,29 @@ function drIntFmtMinutos(min) {
 
 // Celda de la columna Respuesta. Tres estados posibles:
 //   - entrante contestada  -> tiempo que tardó, en verde
-//   - entrante pendiente   -> "Pendiente" + hace cuánto, en ámbar
+//   - entrante pendiente   -> "Pendiente", en ámbar
 //   - saliente o nota      -> guion; no esperan respuesta
+//
+// La pendiente dice la PALABRA "Pendiente" y no los minutos que lleva
+// esperando. Antes mostraba el tiempo en los dos casos —"0 min" ámbar contra
+// "0 min" verde— y una consulta recién entrada se leía como contestada al
+// instante: la única diferencia era el color y el ícono. El tiempo de espera no
+// se pierde, va en el tooltip y en la segunda línea de la columna Asignado.
+//
+// El verde sí conserva el número, que ahí es el dato: cuánto se tardó en
+// contestar. Es lo que promedia la tarjeta "Respuesta promedio".
 function drIntRespuestaCelda(a) {
   if (a.respondida) {
-    return `<span class="badge badge-success" title="Respondida el ${esc(fmtFechaLarga(a.respondida))}">`
-         + `<i class="fa-solid fa-check"></i> ${esc(drIntFmtMinutos(a.respuesta_minutos))}</span>`;
+    const demora = drIntFmtMinutos(a.respuesta_minutos);
+    return `<span class="badge badge-success" title="Respondida el ${esc(fmtFechaLarga(a.respondida))} — demoró ${esc(demora)}">`
+         + `<i class="fa-solid fa-check"></i> ${esc(demora)}</span>`;
   }
   if (a.sentido === 'entrante') {
-    return `<span class="badge badge-warn" title="Sin responder desde hace ${esc(drIntFmtMinutos(a.espera_minutos))}">`
-         + `<i class="fa-solid fa-hourglass-half"></i> ${esc(drIntFmtMinutos(a.espera_minutos))}</span>`;
+    // `fmtHace` en vez de los minutos crudos: una consulta de 16 segundos
+    // redondeaba a "0 min", que es justo la lectura que confunde.
+    const espera = fmtHace(a.fecha) || `hace ${drIntFmtMinutos(a.espera_minutos)}`;
+    return `<span class="badge badge-warn" title="Sin responder — ${esc(espera)}">`
+         + `<i class="fa-solid fa-hourglass-half"></i> Pendiente</span>`;
   }
   return '<span style="color:var(--muted)">—</span>';
 }
@@ -25863,7 +25876,7 @@ route('/datarocketinteracciones', async (mount) => {
               <th style="width:70px;text-align:center" title="Sentido y canal">Vía</th>
               <th>Asunto / Mensaje</th>
               <th style="width:170px">Asignado</th>
-              <th style="width:110px;text-align:center">Respuesta</th>
+              <th style="width:130px;text-align:center">Respuesta</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
