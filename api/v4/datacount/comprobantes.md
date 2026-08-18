@@ -145,6 +145,15 @@ La columna `webhook_estado` de `datacount_comprobantes` refleja el estado:
 - **No hay auth** en el POST al webhook — el caller debe usar una URL con
   token/secret en el path o query si necesita autenticar el origen.
 
+## URL
+
+```
+POST https://api.databox.net.ar/v4/datacount/comprobantes
+```
+
+La ruta va **sin extension**: la resuelve el `.htaccess` de `api/`, que cubre
+todo el arbol con un rewrite interno al `.php`.
+
 ## Auth
 
 Bearer con `apikey` de la tabla `aplicaciones` (mismo esquema que el resto

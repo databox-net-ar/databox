@@ -7,7 +7,7 @@
  *   - Endpoint POST cloud/api/telegrammensajes_enviar.php (envio manual
  *     desde el ABM > menu contextual > Enviar ahora)
  *
- * Toda la logica MTProto vive en el microservicio /v4/telegram/mensajes.php.
+ * Toda la logica MTProto vive en el microservicio /v4/telegram/mensajes.
  * Este lib actua como CLIENTE HTTP del microservicio: toma la fila
  * pendiente, aplica el lock optimista, arma el body {canal_slug, destinatario,
  * mensaje}, hace el POST y persiste el resultado.

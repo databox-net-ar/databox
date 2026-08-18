@@ -1,7 +1,7 @@
 <?php
 // api/arca_autorizaciones.php
 // Visor read-only de la tabla `arca_autorizaciones` (log tecnico de los
-// FECAESolicitar que dispara `/v4/arca/autorizar.php`). El microservicio
+// FECAESolicitar que dispara `/v4/arca/autorizar`). El microservicio
 // escribe; este endpoint solo lee.
 //
 //   GET api/arca_autorizaciones.php          -> listado con filtros (query string)

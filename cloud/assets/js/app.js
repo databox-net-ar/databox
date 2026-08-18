@@ -13190,6 +13190,13 @@ const dcPagoFiltros = { ...dcPagoFiltrosDefaults };
 let dcPagoBuscadorTimer   = null;
 let dcPagoFiltrosSnapshot = null;
 
+// Ids de las filas actualmente pintadas en el listado, en el mismo orden en que
+// se ven. Lo llena pintarTablaDcPago() y lo consume el modal de Consulta para
+// los botones Anterior / Siguiente: se salta entre los resultados A LA VISTA,
+// no entre todas las órdenes de pago de la tabla, así que filtros, orden y
+// límite del listado se respetan solos.
+let dcPagoListadoIds = [];
+
 // Catalogos de estados posibles para pagos, leidos de `estados` donde
 // `campo IN ('datacount_pago_tipo', 'datacount_pago_moneda',
 // 'datacount_pago_estado', 'datacount_pago_clasificado')`. Se cachean entre
@@ -13262,14 +13269,17 @@ function dcPagoFmtImporte(v) {
   return Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function dcPagoEstadoBadge(e) {
+// `sufijo` cuelga un dato extra dentro de la misma píldora, separado por " · ".
+// Lo usa la cabecera del modal de Consulta para pegarle la fecha del sello al
+// badge de Contabilizado; el listado llama sin él.
+function dcPagoEstadoBadge(e, sufijo = '') {
   if (e == null || e === '') return `<span class="badge badge-info">—</span>`;
   // Colores heredados del legacy: 2=Contabilizado (success), 1=Pendiente (warn),
   // 0=Descartado (danger). El resto cae en badge-info.
   const colorMap = { '2': 'badge-success', '1': 'badge-warn', '0': 'badge-danger' };
   const cls   = colorMap[String(e)] || 'badge-info';
   const label = dcPagoTraducir('datacount_pago_estado', e) || String(e);
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return `<span class="badge ${cls}">${esc(label)}${sufijo ? ' · ' + esc(sufijo) : ''}</span>`;
 }
 
 function dcPagoFmtPeriodo(v) {
@@ -13594,6 +13604,7 @@ function pintarStatsDcPago(s) {
 
 function pintarTablaDcPago(rows) {
   const tbody = $('#dcPagoTbody');
+  dcPagoListadoIds = rows.map((p) => Number(p.id));
   if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin pagos.</td></tr>`;
     return;
@@ -13609,7 +13620,7 @@ function pintarTablaDcPago(rows) {
       <td>${esc(p.cuit || '—')}</td>
       <td style="text-align:right">${p.valor != null ? '$ ' + dcPagoFmtImporte(p.valor) : '—'}</td>
       <td>${esc(dcPagoTraducir('datacount_pago_moneda', p.moneda) || '—')}</td>
-      <td>${dcPagoEstadoBadge(p.estado)}</td>
+      <td data-col="estado">${dcPagoEstadoBadge(p.estado)}</td>
       <td style="text-align:center">
         <div class="actions" style="justify-content:center">
           <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${p.id}">
@@ -14445,6 +14456,27 @@ let dcPagoAdjuntosCache = [];
 // es una trampa segura.
 async function abrirConsultarDcPago(id, { apilado = false } = {}) {
   dcPagoAdjuntosCache = [];
+
+  // Posición del pago dentro del listado que quedó pintado detrás. Con ella se
+  // arma el grupo Anterior / Siguiente / cambio de estado que va pegado a la
+  // izquierda del footer. En modo `apilado` no se ofrece: ahí atrás no hay un
+  // listado sino un formulario a medio completar, igual que con "Editar".
+  const idx = apilado ? -1 : dcPagoListadoIds.indexOf(Number(id));
+  const navHtml = idx < 0 ? '' : `
+        <div class="dcp-consulta-nav">
+          <button class="btn btn-ghost" data-act="anterior"
+                  ${idx <= 0 ? 'disabled' : ''} title="Registro anterior del listado">
+            <i class="fa-solid fa-chevron-left"></i> Anterior
+          </button>
+          <button class="btn btn-ghost" data-act="siguiente"
+                  ${idx >= dcPagoListadoIds.length - 1 ? 'disabled' : ''} title="Registro siguiente del listado">
+            Siguiente <i class="fa-solid fa-chevron-right"></i>
+          </button>
+          <button class="btn btn-secondary" data-act="estado" disabled>
+            <i class="fa-solid fa-check-double"></i> Cambiar estado
+          </button>
+        </div>`;
+
   const html = `
     <div class="modal dcp-consulta-modal">
       <div class="modal-header">
@@ -14453,6 +14485,7 @@ async function abrirConsultarDcPago(id, { apilado = false } = {}) {
       </div>
       <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
       <div class="modal-footer">
+        ${navHtml}
         <button class="btn btn-ghost"   data-act="close">Cerrar</button>
         ${apilado ? '' : '<button class="btn btn-primary" data-act="editar">✏️ Editar</button>'}
       </div>
@@ -14484,6 +14517,15 @@ async function abrirConsultarDcPago(id, { apilado = false } = {}) {
   root.addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  cerrar();
     if (ev.target.closest('[data-act="editar"]')) { cerrar(); abrirAltaEdicionDcPago(id); }
+    // Salto entre registros del listado. No hace falta chequear los extremos:
+    // los botones de las puntas se pintan `disabled` y no llegan a disparar.
+    if (ev.target.closest('[data-act="anterior"]'))  { dcPagoNavegarConsulta(id, -1); return; }
+    if (ev.target.closest('[data-act="siguiente"]')) { dcPagoNavegarConsulta(id,  1); return; }
+    const btnEstado = ev.target.closest('[data-act="estado"]');
+    if (btnEstado) {
+      dcPagoCambiarEstadoDesdeConsulta(root, id, btnEstado.dataset.estadoDestino);
+      return;
+    }
     // FAB del visor: acciones sobre el adjunto actualmente en preview.
     const fabBtn = ev.target.closest('[data-dcp-adj-consulta-fab]');
     if (fabBtn) {
@@ -14514,8 +14556,80 @@ async function abrirConsultarDcPago(id, { apilado = false } = {}) {
     // Precargamos el primer adjunto en el visor asi cuando el usuario cambia
     // a la pestaña ya lo ve, sin flash vacio.
     if (dcPagoAdjuntosCache.length) dcPagoMostrarAdjunto(0);
+    // El botón de estado nace deshabilitado y recién acá sabe qué ofrecer:
+    // depende del estado que trajo el registro.
+    dcPagoPintarBotonEstado(root, p.estado);
   } catch (e) {
     body().innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// Salta al registro anterior / siguiente DEL LISTADO que quedó detrás (mismos
+// filtros, mismo orden, misma página) reabriendo el modal de Consulta sobre el
+// id vecino. Si el pago actual ya no figura en el listado no hay a dónde saltar.
+function dcPagoNavegarConsulta(idActual, delta) {
+  const i = dcPagoListadoIds.indexOf(Number(idActual));
+  if (i < 0) return;
+  const destino = dcPagoListadoIds[i + delta];
+  if (destino == null) return;
+  abrirConsultarDcPago(destino);
+}
+
+// Píldora de estado del encabezado del modal de Consulta, justo debajo de la
+// emisión. Reusa dcPagoEstadoBadge() para que color y texto sean exactamente
+// los del listado: verde Contabilizado, amarillo Pendiente, rojo Descartado.
+// A Contabilizado se le agrega la fecha del sello — en los otros estados no hay
+// fecha que mostrar. Sin estado cargado no se pinta nada, que es más limpio que
+// un "—" suelto colgando del encabezado.
+function dcPagoSelloEstadoHtml(estado, contabilizado) {
+  const e = String(estado ?? '');
+  if (e === '') return '';
+  return dcPagoEstadoBadge(e, e === '2' && contabilizado ? fmtFechaAnio(contabilizado) : '');
+}
+
+// Repinta esa píldora sin releer el registro. La usa el botón del footer para
+// que el estado cambie en el acto: el timestamp lo devuelve el propio endpoint
+// de cambio de estado, así que no hace falta un GET extra.
+function dcPagoPintarSelloEstado(root, estado, contabilizado) {
+  const box = root.querySelector('[data-dcp-estado]');
+  if (box) box.innerHTML = dcPagoSelloEstadoHtml(estado, contabilizado);
+}
+
+// Pinta el botón de contabilización del footer según el estado actual del pago.
+// El destino es siempre el otro extremo del par Pendiente ('1') / Contabilizado
+// ('2'): sólo un pago Contabilizado ofrece volver a Pendiente, y cualquier otro
+// estado (Pendiente, Descartado o sin cargar) ofrece contabilizar.
+function dcPagoPintarBotonEstado(root, estado) {
+  const btn = root.querySelector('[data-act="estado"]');
+  if (!btn) return;
+  const destino = String(estado ?? '') === '2' ? '1' : '2';
+  btn.dataset.estadoDestino = destino;
+  btn.disabled  = false;
+  btn.innerHTML = destino === '2'
+    ? '<i class="fa-solid fa-check-double"></i> Marcar como contabilizado'
+    : '<i class="fa-solid fa-rotate-left"></i> Marcar como pendiente';
+}
+
+// Alterna el estado del pago contra `PUT ?action=estado`, que además estampa o
+// limpia el timestamp de `contabilizado`. Sin confirmación a propósito: el
+// botón existe justamente para que contabilizar sea un click, y es reversible
+// con el mismo botón.
+async function dcPagoCambiarEstadoDesdeConsulta(root, id, destino) {
+  const btn = root.querySelector('[data-act="estado"]');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiSend(`api/datacount_pagos.php?id=${id}&action=estado`, 'PUT', { estado: destino });
+    toast(`Orden de pago #${id} marcada como ${destino === '2' ? 'contabilizada' : 'pendiente'}.`);
+    // El listado de atrás se refresca celda por celda en lugar de recargarse:
+    // un cargarDcPago() con el filtro de estado puesto haría desaparecer la fila
+    // recién cambiada y dejaría a Anterior/Siguiente navegando sobre otra lista.
+    const celda = document.querySelector(`#dcPagoTbody tr[data-id="${id}"] [data-col="estado"]`);
+    if (celda) celda.innerHTML = dcPagoEstadoBadge(destino);
+    dcPagoPintarBotonEstado(root, destino);
+    dcPagoPintarSelloEstado(root, destino, r?.contabilizado);
+  } catch (e) {
+    toast(e.message, { error: true });
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -14551,6 +14665,7 @@ function renderConsultaDcPago(p) {
         <div style="font-size:.85rem;line-height:1.6">
           <div><span style="color:var(--muted)">Emisión:</span> ${esc(p.emision || '—')}</div>
         </div>
+        <div data-dcp-estado style="margin-top:8px">${dcPagoSelloEstadoHtml(p.estado, p.contabilizado)}</div>
       </div>
     </div>
 
@@ -26585,6 +26700,24 @@ async function recalcularDre() {
 // distintos.
 const DREM_API = 'api/datarocket_embudos.php';
 
+// Mirror JS de dremSlugify() (cloud/api/datarocket_embudos.php).
+// Normaliza a kebab-case sin acentos, para autocompletar el input `slug`
+// mientras el operador tipea el nombre.
+function dremSlugify(s) {
+  if (!s) return '';
+  const pares = { 'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+                  'à':'a','è':'e','ì':'i','ò':'o','ù':'u',
+                  'ä':'a','ë':'e','ï':'i','ö':'o','ü':'u',
+                  'Á':'a','É':'e','Í':'i','Ó':'o','Ú':'u',
+                  'ñ':'n','Ñ':'n','ç':'c','Ç':'c' };
+  let out = String(s).trim();
+  out = out.replace(/[áéíóúàèìòùäëïöüÁÉÍÓÚñÑçÇ]/g, (c) => pares[c] || c);
+  out = out.toLowerCase();
+  out = out.replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, '');
+  return out.slice(0, 40);
+}
+
 let dremItems           = [];
 let dremProyectosLookup = [];
 let dremBusqueda        = '';
@@ -26647,7 +26780,7 @@ route('/datarocket_embudos', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="dremSearch"
-                   placeholder="🔍 Buscar nombre o descripción…">
+                   placeholder="🔍 Buscar slug, nombre o descripción…">
             <button class="search-clear" id="dremSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="dremFiltrosBtn" title="Filtros">
@@ -26669,6 +26802,7 @@ route('/datarocket_embudos', async (mount) => {
             <tr>
               ${thOrdenable('id',          'Código',   'width:80px')}
               ${thOrdenable('proyecto_id', 'Proyecto', 'width:150px')}
+              ${thOrdenable('slug',        'Slug',     'width:160px')}
               ${thOrdenable('nombre',      'Nombre')}
               <th>Descripción</th>
               <th style="width:90px;text-align:right">Etapas</th>
@@ -26678,7 +26812,7 @@ route('/datarocket_embudos', async (mount) => {
             </tr>
           </thead>
           <tbody id="dremTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -26735,6 +26869,7 @@ route('/datarocket_embudos', async (mount) => {
               <select id="fDremOrden" onchange="onFiltroDrem('orden', this.value)">
                 <option value="id">Código</option>
                 <option value="proyecto_id">Proyecto</option>
+                <option value="slug">Slug</option>
                 <option value="nombre">Nombre</option>
                 <option value="activo">Activo</option>
                 <option value="fecha_creacion">Alta</option>
@@ -26829,7 +26964,7 @@ route('/datarocket_embudos', async (mount) => {
 async function cargarDrem() {
   const tbody = $('#dremTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (dremBusqueda)               qs.set('q', dremBusqueda);
@@ -26845,7 +26980,7 @@ async function cargarDrem() {
     pintarStatsDrem(data.stats || {});
     renderDrem();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -26859,7 +26994,7 @@ function renderDrem() {
   if (!tbody) return;
   actualizarSortIndicadores($('#dremThead'), { order_by: dremFiltroOrden, dir: dremFiltroDir });
   if (!dremItems.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin embudos registrados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin embudos registrados.</td></tr>`;
     return;
   }
 
@@ -26870,7 +27005,7 @@ function renderDrem() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -26882,6 +27017,7 @@ function renderDrem() {
       <tr data-id="${e.id}" class="row-clickable">
         <td><code style="font-size:.82rem">${e.id}</code></td>
         <td style="font-size:.9rem">${esc(e.proyecto_nombre || (e.proyecto_id ? `#${e.proyecto_id}` : '—'))}</td>
+        <td><code style="font-size:.78rem;color:var(--muted)">${esc(e.slug || '—')}</code></td>
         <td style="font-weight:600">${esc(e.nombre)}</td>
         <td style="color:var(--muted);font-size:.88rem">${esc(e.descripcion || '—')}</td>
         <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.etapas_count || 0)}</td>
@@ -27340,6 +27476,17 @@ function abrirAltaEdicionDrem(id) {
             <select id="dremProyectoId">${opProy}</select>
           </div>
           <div class="form-group">
+            <label for="dremSlug">
+              Slug *
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — identificador estable del embudo (kebab-case, se autocompleta desde el nombre)
+              </span>
+            </label>
+            <input type="text" id="dremSlug" placeholder="captacion-general" maxlength="40"
+                   style="font-family:monospace" autocomplete="off"
+                   pattern="^[a-z0-9]+(-[a-z0-9]+)*$">
+          </div>
+          <div class="form-group">
             <label for="dremNombre">Nombre *</label>
             <input type="text" id="dremNombre" placeholder="Ej.: Captación general, Reactor Empresas"
                    maxlength="80" autocomplete="off">
@@ -27370,6 +27517,7 @@ function abrirAltaEdicionDrem(id) {
 
   if (editando && e) {
     $('#dremProyectoId').value  = e.proyecto_id || '';
+    $('#dremSlug').value        = e.slug        || '';
     $('#dremNombre').value      = e.nombre      || '';
     $('#dremDescripcion').value = e.descripcion || '';
     $('#dremActivo').checked    = Number(e.activo) === 1;
@@ -27377,6 +27525,17 @@ function abrirAltaEdicionDrem(id) {
     // Si hay un filtro de proyecto activo, arrancamos el alta con ese proyecto.
     $('#dremProyectoId').value = dremFiltroProyecto;
   }
+
+  // Auto-derivar slug desde nombre mientras el operador no lo edite a mano.
+  // Si el slug ya tenia valor (edicion) o el operador lo escribio explicito,
+  // no lo pisamos.
+  const slugInp   = $('#dremSlug');
+  const nombreInp = $('#dremNombre');
+  let slugManual  = editando && e && (e.slug || '') !== '';
+  slugInp.addEventListener('input', () => { slugManual = true; });
+  nombreInp.addEventListener('input', () => {
+    if (!slugManual) slugInp.value = dremSlugify(nombreInp.value);
+  });
 
   setTimeout(() => $('#dremProyectoId')?.focus(), 50);
 
@@ -27391,15 +27550,24 @@ async function guardarDrem() {
   const nombre      = $('#dremNombre').value.trim();
   const descripcion = $('#dremDescripcion').value.trim();
   const activo      = $('#dremActivo').checked ? 1 : 0;
+  // Si el operador nunca tocó el slug y el nombre venía prellenado (edición sin
+  // cambios de nombre), el input ya trae el valor bueno; el fallback de derivarlo
+  // acá cubre el alta en la que se tipeó el nombre por pegado sin evento `input`.
+  const slug        = ($('#dremSlug').value.trim() || dremSlugify(nombre)).toLowerCase();
 
   if (!proyecto_id) { toast('Seleccioná un proyecto', { error: true }); return; }
   if (!nombre)      { toast('El nombre es obligatorio', { error: true }); return; }
+  if (!slug)        { toast('El slug es obligatorio', { error: true }); return; }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+    toast('El slug solo admite minúsculas, dígitos y guiones (kebab-case)', { error: true });
+    return;
+  }
 
   // color y orden se sacaron del modal porque conceptualmente pertenecen a las
   // etapas (definen el color y posicion de cada columna del kanban), no al
   // embudo mismo. Las columnas siguen en la DB por ahora, se completan con
   // sus defaults (color=NULL, orden=0) desde el backend cuando no se envian.
-  const body = { proyecto_id, nombre, descripcion, activo };
+  const body = { proyecto_id, slug, nombre, descripcion, activo };
 
   try {
     if (dremEditandoId) {
@@ -27475,6 +27643,7 @@ function abrirConsultaDrem(id) {
             ${card('Proyecto',   esc(e.proyecto_nombre || (e.proyecto_id ? `#${e.proyecto_id}` : '—')), 'full')}
             ${card('Código',     `<code>${e.id}</code>`)}
             ${card('Estado',     activoBadge)}
+            ${card('Slug',       `<code>${esc(e.slug || '—')}</code>`, 'full')}
             ${card('Nombre',     esc(e.nombre), 'full')}
             ${card('Etapas',     `<span style="font-family:monospace">${fmtNum(e.etapas_count || 0)}</span>`)}
             ${card('Oportunidades', `<span style="font-family:monospace">${fmtNum(e.oportunidades_count || 0)}</span>`)}

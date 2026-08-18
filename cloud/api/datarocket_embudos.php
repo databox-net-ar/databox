@@ -24,8 +24,8 @@ require_once __DIR__ . '/lib/sucesos.php';
 requireAuth();
 header('Content-Type: application/json; charset=utf-8');
 
-const DREM_COLS    = 'e.id, e.proyecto_id, e.nombre, e.descripcion, e.activo, e.fecha_creacion, e.fecha_modificacion';
-const DREM_ORDENES = ['id', 'proyecto_id', 'nombre', 'activo', 'fecha_creacion', 'fecha_modificacion'];
+const DREM_COLS    = 'e.id, e.proyecto_id, e.slug, e.nombre, e.descripcion, e.activo, e.fecha_creacion, e.fecha_modificacion';
+const DREM_ORDENES = ['id', 'proyecto_id', 'slug', 'nombre', 'activo', 'fecha_creacion', 'fecha_modificacion'];
 
 try {
     $pdo    = db();
@@ -62,6 +62,7 @@ function normalizarFilaEmbudo(array $r): array {
         'id'                 => (int)($r['id'] ?? 0),
         'proyecto_id'        => isset($r['proyecto_id']) ? (int)$r['proyecto_id'] : null,
         'proyecto_nombre'    => $r['proyecto_nombre'] ?? null,
+        'slug'               => (string)($r['slug'] ?? ''),
         'nombre'             => (string)($r['nombre'] ?? ''),
         'descripcion'        => $r['descripcion'] !== null ? (string)$r['descripcion'] : null,
         'activo'             => (int)($r['activo'] ?? 0),
@@ -72,8 +73,30 @@ function normalizarFilaEmbudo(array $r): array {
     ];
 }
 
+// Normaliza un string a un slug kebab-case: [a-z0-9-]+, sin acentos, sin
+// caracteres raros, sin guiones al borde, colapsando corridas de separadores.
+// Se usa como fallback cuando el operador no llena el campo `slug` a mano.
+// Espejo JS en app.js (`dremSlugify`) y en la migracion 20260818_1400.
+function dremSlugify(string $s): string {
+    $s = trim($s);
+    if ($s === '') return '';
+    $pares = [
+        'á'=>'a','é'=>'e','í'=>'i','ó'=>'o','ú'=>'u',
+        'à'=>'a','è'=>'e','ì'=>'i','ò'=>'o','ù'=>'u',
+        'ä'=>'a','ë'=>'e','ï'=>'i','ö'=>'o','ü'=>'u',
+        'Á'=>'a','É'=>'e','Í'=>'i','Ó'=>'o','Ú'=>'u',
+        'ñ'=>'n','Ñ'=>'n','ç'=>'c','Ç'=>'c',
+    ];
+    $s = strtr($s, $pares);
+    $s = mb_strtolower($s);
+    $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+    $s = trim($s, '-');
+    return substr($s, 0, 40);
+}
+
 function sanitizePayloadEmbudo(array $in, bool $esAlta): array {
     $proyectoId  = isset($in['proyecto_id']) ? (int)$in['proyecto_id'] : 0;
+    $slug        = strtolower(trim((string)($in['slug'] ?? '')));
     $nombre      = trim((string)($in['nombre']      ?? ''));
     $descripcion = trim((string)($in['descripcion'] ?? ''));
     $activo      = isset($in['activo']) ? (int)!!$in['activo'] : 1;
@@ -84,6 +107,20 @@ function sanitizePayloadEmbudo(array $in, bool $esAlta): array {
     if ($esAlta && $nombre === '') {
         jsonError('El nombre es obligatorio.', 400);
     }
+    if ($esAlta) {
+        // Slug en alta: si vino vacio, derivarlo del nombre.
+        if ($slug === '') $slug = dremSlugify($nombre);
+        if ($slug === '') jsonError('No se pudo derivar un slug a partir del nombre. Cargalo manualmente.', 400);
+    } elseif (array_key_exists('slug', $in) && $slug === '') {
+        // En update, si vino explicito pero vacio, error (no se puede "borrar").
+        jsonError('El slug no puede quedar vacio.', 400);
+    }
+    if ($slug !== '' && !preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $slug)) {
+        jsonError('El slug solo admite minusculas, digitos y guiones (kebab-case).', 400);
+    }
+    if ($slug !== '' && strlen($slug) > 40) {
+        jsonError('El slug no puede superar los 40 caracteres.', 400);
+    }
     if ($nombre !== '' && mb_strlen($nombre) > 80) {
         jsonError('El nombre no puede superar los 80 caracteres.', 400);
     }
@@ -93,6 +130,7 @@ function sanitizePayloadEmbudo(array $in, bool $esAlta): array {
 
     return [
         'proyecto_id' => $proyectoId,
+        'slug'        => $slug,
         'nombre'      => $nombre,
         'descripcion' => $descripcion === '' ? null : $descripcion,
         'activo'      => $activo,
@@ -122,7 +160,8 @@ function handleListEmbudos(PDO $pdo, array $q): void {
     $params = [];
 
     if ($search !== '') {
-        $where[] = '(e.nombre LIKE :s_nom OR e.descripcion LIKE :s_desc)';
+        $where[] = '(e.slug LIKE :s_slug OR e.nombre LIKE :s_nom OR e.descripcion LIKE :s_desc)';
+        $params[':s_slug'] = "%{$search}%";
         $params[':s_nom']  = "%{$search}%";
         $params[':s_desc'] = "%{$search}%";
     }
@@ -196,12 +235,18 @@ function handleCreateEmbudo(PDO $pdo, array $body): void {
     $st->execute([':p' => $p['proyecto_id'], ':n' => $p['nombre']]);
     if ($st->fetch()) jsonError('Ya existe un embudo con ese nombre en el proyecto seleccionado.', 409);
 
+    // Mismo criterio para UNIQUE (proyecto_id, slug).
+    $st = $pdo->prepare('SELECT id FROM datarocket_embudos WHERE proyecto_id = :p AND slug = :s LIMIT 1');
+    $st->execute([':p' => $p['proyecto_id'], ':s' => $p['slug']]);
+    if ($st->fetch()) jsonError('Ya existe un embudo con ese slug en el proyecto seleccionado.', 409);
+
     $st = $pdo->prepare(
-        'INSERT INTO datarocket_embudos (proyecto_id, nombre, descripcion, activo)
-         VALUES (:proyecto_id, :nombre, :descripcion, :activo)'
+        'INSERT INTO datarocket_embudos (proyecto_id, slug, nombre, descripcion, activo)
+         VALUES (:proyecto_id, :slug, :nombre, :descripcion, :activo)'
     );
     $st->execute([
         ':proyecto_id' => $p['proyecto_id'],
+        ':slug'        => $p['slug'],
         ':nombre'      => $p['nombre'],
         ':descripcion' => $p['descripcion'],
         ':activo'      => $p['activo'],
@@ -209,13 +254,13 @@ function handleCreateEmbudo(PDO $pdo, array $body): void {
 
     $id = (int)$pdo->lastInsertId();
     registrarSuceso($pdo, 'datarocket_embudos', 'info',
-        "Alta embudo #{$id} \u{2014} \"{$p['nombre']}\" (proyecto #{$p['proyecto_id']})");
+        "Alta embudo #{$id} \u{2014} \"{$p['nombre']}\" ({$p['slug']}, proyecto #{$p['proyecto_id']})");
 
     handleGetOneEmbudo($pdo, $id);
 }
 
 function handleUpdateEmbudo(PDO $pdo, int $id, array $body): void {
-    $st = $pdo->prepare('SELECT id, proyecto_id, nombre FROM datarocket_embudos WHERE id = :id LIMIT 1');
+    $st = $pdo->prepare('SELECT id, proyecto_id, slug, nombre FROM datarocket_embudos WHERE id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $prev = $st->fetch();
     if (!$prev) jsonError('Embudo no encontrado', 404);
@@ -237,12 +282,24 @@ function handleUpdateEmbudo(PDO $pdo, int $id, array $body): void {
         if ($st->fetch()) jsonError('Ya existe otro embudo con ese nombre en el proyecto seleccionado.', 409);
     }
 
+    // Idem para UNIQUE (proyecto_id, slug).
+    $slugFinal = array_key_exists('slug', $body) && $p['slug'] !== '' ? $p['slug'] : (string)$prev['slug'];
+    if ($proyFinal !== (int)$prev['proyecto_id'] || $slugFinal !== (string)$prev['slug']) {
+        $st = $pdo->prepare('SELECT id FROM datarocket_embudos WHERE proyecto_id = :p AND slug = :s AND id <> :id LIMIT 1');
+        $st->execute([':p' => $proyFinal, ':s' => $slugFinal, ':id' => $id]);
+        if ($st->fetch()) jsonError('Ya existe otro embudo con ese slug en el proyecto seleccionado.', 409);
+    }
+
     $sets   = [];
     $params = [':id' => $id];
 
     if (array_key_exists('proyecto_id', $body)) {
         $sets[] = 'proyecto_id = :proyecto_id';
         $params[':proyecto_id'] = $p['proyecto_id'];
+    }
+    if (array_key_exists('slug', $body) && $p['slug'] !== '') {
+        $sets[] = 'slug = :slug';
+        $params[':slug'] = $p['slug'];
     }
     if (array_key_exists('nombre', $body) && $p['nombre'] !== '') {
         $sets[] = 'nombre = :nombre';

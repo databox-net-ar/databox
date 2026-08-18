@@ -835,6 +835,10 @@ tbody tr.row-clickable { cursor: pointer; }
 .dcp-consulta-modal .modal-tabpanel[data-tab="general"]  { flex: 1; min-height: 0;
                                                            overflow-y: auto; padding-right: 4px; }
 .dcp-consulta-modal .modal-tabpanel[data-tab="adjuntos"] { flex: 1; min-height: 0; }
+/* Footer: el grupo Anterior / Siguiente / contabilizar queda pegado a la
+   izquierda (`margin-right: auto`), y Cerrar / Editar siguen a la derecha por
+   el `justify-content: flex-end` que ya trae .modal-footer. */
+.dcp-consulta-nav { display: flex; gap: 10px; margin-right: auto; }
 
 .dcp-adj-selector { display: flex; gap: 6px; flex-wrap: wrap; }
 .dcp-adj-selector .filter-chip { max-width: 260px; overflow: hidden;

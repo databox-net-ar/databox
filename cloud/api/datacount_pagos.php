@@ -6,11 +6,12 @@
 // empresa, proyecto, periodo, monto, moneda y estado de contabilizacion.
 // Los adjuntos viven en `datacount_pagos_adjuntos` (metadata) + un binario
 // separado servido por DCPAGO_MEDIA_URL.
-//   GET    api/datacount_pagos.php          -> listado con filtros (query string)
-//   GET    api/datacount_pagos.php?id=N     -> registro individual
-//   POST   api/datacount_pagos.php          -> alta (JSON body)
-//   PUT    api/datacount_pagos.php?id=N     -> modificacion (JSON body)
-//   DELETE api/datacount_pagos.php?id=N     -> baja
+//   GET    api/datacount_pagos.php                    -> listado con filtros (query string)
+//   GET    api/datacount_pagos.php?id=N               -> registro individual
+//   POST   api/datacount_pagos.php                    -> alta (JSON body)
+//   PUT    api/datacount_pagos.php?id=N               -> modificacion (JSON body)
+//   PUT    api/datacount_pagos.php?id=N&action=estado -> solo contabilizacion (JSON body)
+//   DELETE api/datacount_pagos.php?id=N               -> baja
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
@@ -40,6 +41,13 @@ const DCPAGO_S3_PREFIX = 'datacount/pagos/';
 // ver comentario equivalente en datacount_analiticas.php).
 const DCPAGO_MONEDA_DOLAR = 'D';
 
+// Estados de contabilizacion segun el catalogo `estados` (campo =
+// 'datacount_pago_estado'): '1' Pendiente, '2' Contabilizado. Son los dos
+// unicos valores que acepta `PUT ?action=estado` — el resto del catalogo
+// (ej. '0' Descartado) sigue cargandose por el modal de Edicion.
+const DCPAGO_ESTADO_PENDIENTE     = '1';
+const DCPAGO_ESTADO_CONTABILIZADO = '2';
+
 header('Content-Type: application/json; charset=utf-8');
 
 try {
@@ -47,6 +55,7 @@ try {
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    $action = trim((string)($_GET['action'] ?? ''));
 
     if ($method === 'GET' && $id > 0) {
         handleGetOneDcPago($pdo, $id);
@@ -54,6 +63,9 @@ try {
         handleListDcPago($pdo, $_GET);
     } elseif ($method === 'POST') {
         handleCreateDcPago($pdo, readJsonBody());
+    } elseif ($method === 'PUT' && $action === 'estado') {
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleCambiarEstadoDcPago($pdo, $id, readJsonBody());
     } elseif ($method === 'PUT') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleUpdateDcPago($pdo, $id, readJsonBody());
@@ -436,6 +448,12 @@ function dcpValorizar(PDO $pdo, array $p): array {
 
 function handleCreateDcPago(PDO $pdo, array $in): void {
     $p = dcpValorizar($pdo, dcpSanitizePayload($in));
+    // Toda orden de pago nace Pendiente. El default vive aca y no en el modal
+    // porque el alta entra por dos caminos (carga manual y alta desde adjunto +
+    // extraccion con IA) y ninguno de los dos manda `estado`: el form solo tiene
+    // un hidden que arrastra el valor existente al editar. Sin esto la fila
+    // quedaba con estado NULL, fuera de los filtros y sin badge en el listado.
+    if ($p['estado'] === null) $p['estado'] = DCPAGO_ESTADO_PENDIENTE;
     dcpVerificarDuplicado($pdo, $p['cuit'], $p['numero']);
     $p['uuid']       = substr(bin2hex(random_bytes(8)), 0, 10);
     $p['registrado'] = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
@@ -550,19 +568,64 @@ function handleUpdateDcPago(PDO $pdo, int $id, array $in): void {
     jsonOk(['id' => $id]);
 }
 
-// Baja de una orden de pago. Antes de tocar la fila se limpian sus adjuntos:
-// primero los binarios en S3 y despues las filas de `datacount_pagos_adjuntos`.
+// Cambio de estado "rapido" entre Pendiente y Contabilizado. Lo usa el boton
+// del modal de Consulta del listado, que alterna entre los dos valores sin
+// abrir el formulario de Edicion — de ahi que este handler NO toque ningun otro
+// campo (ni siquiera revalorice: monto, moneda y emision no cambian).
 //
-// El orden importa. Si se borrara el pago primero y algo fallara despues, los
-// adjuntos quedarian huerfanos: filas apuntando a un `pago` inexistente y, peor,
-// objetos en S3 que ya nadie referencia y que nadie va a encontrar para
-// borrar. La tabla no tiene FK con ON DELETE CASCADE, asi que la limpieza es
-// responsabilidad de este endpoint.
+// `contabilizado` es el sello de CUANDO se contabilizo el pago, asi que viaja
+// pegado al estado: se estampa al pasar a Contabilizado y se limpia al volver a
+// Pendiente. Dejar la fecha vieja en un pago que volvio a Pendiente seria un
+// dato mintiendo, y el legacy la usa como marca de "esto ya esta asentado".
+function handleCambiarEstadoDcPago(PDO $pdo, int $id, array $in): void {
+    $nuevo = isset($in['estado']) ? trim((string)$in['estado']) : '';
+    if (!in_array($nuevo, [DCPAGO_ESTADO_PENDIENTE, DCPAGO_ESTADO_CONTABILIZADO], true)) {
+        jsonError("Estado destino invalido: se espera '"
+            . DCPAGO_ESTADO_PENDIENTE . "' (pendiente) o '"
+            . DCPAGO_ESTADO_CONTABILIZADO . "' (contabilizado)", 400);
+    }
+
+    $exists = $pdo->prepare('SELECT id FROM datacount_pagos WHERE id = :id');
+    $exists->execute([':id' => $id]);
+    if (!$exists->fetch()) jsonError('Pago no encontrado', 404);
+
+    $contabilizado = $nuevo === DCPAGO_ESTADO_CONTABILIZADO
+        ? (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+            ->format('Y-m-d H:i:s')
+        : null;
+
+    $stmt = $pdo->prepare("
+        UPDATE datacount_pagos
+           SET estado = :estado, contabilizado = :contabilizado
+         WHERE id = :id
+    ");
+    $stmt->execute([
+        ':estado'        => $nuevo,
+        ':contabilizado' => $contabilizado,
+        ':id'            => $id,
+    ]);
+
+    jsonOk([
+        'id'            => $id,
+        'estado'        => $nuevo,
+        'contabilizado' => $contabilizado,
+    ]);
+}
+
+// Baja de una orden de pago, en tres pasos y en este orden:
+//   1. se borran del bucket TODOS los binarios de sus adjuntos;
+//   2. recien ahi se borran las filas de `datacount_pagos_adjuntos`;
+//   3. y por ultimo la fila de `datacount_pagos`.
 //
-// Un fallo de S3 no aborta la baja (mismo criterio que
-// datacount_pagos_adjuntos.php:handleDeleteDcPagoAdjunto): preferimos un objeto
-// hueco en el bucket antes que dejar el pago a medio borrar. Los que fallan se
-// devuelven en la respuesta y quedan en el error_log para poder rastrearlos.
+// El paso 1 es una PRECONDICION, no un "mejor esfuerzo": si aunque sea un objeto
+// no logra salir del bucket se aborta la baja entera y la base queda intacta.
+// La fila de adjuntos es el unico registro de que ese objeto existe — su columna
+// `archivo` es la que arma la key S3 — asi que borrarla con el binario todavia
+// arriba deja basura que ya nadie puede encontrar ni nombrar para limpiar. Con
+// el abort, en cambio, el pago sigue completo y el operador puede reintentar.
+//
+// La tabla no tiene FK con ON DELETE CASCADE, asi que toda esta limpieza es
+// responsabilidad del endpoint.
 function handleDeleteDcPago(PDO $pdo, int $id): void {
     $existe = $pdo->prepare('SELECT id FROM datacount_pagos WHERE id = :id');
     $existe->execute([':id' => $id]);
@@ -574,12 +637,25 @@ function handleDeleteDcPago(PDO $pdo, int $id): void {
     $stmt->execute([':pago' => $id]);
     $adjuntos = $stmt->fetchAll();
 
+    // ---- Paso 1: vaciar el bucket ----
     $borrados = 0;
     $fallidos = [];
     foreach ($adjuntos as $a) {
-        if (empty($a['archivo'])) { $borrados++; continue; }
+        // Fila sin binario (alta a medio camino): no hay nada que borrar en S3.
+        if (empty($a['archivo'])) continue;
         try {
-            s3_delete_object(DCPAGO_S3_PREFIX . $a['archivo']);
+            $res    = s3_delete_object(DCPAGO_S3_PREFIX . $a['archivo']);
+            $status = (int)($res['status'] ?? 0);
+            // s3_request() solo tira excepcion si falla el transporte: un 403
+            // AccessDenied o un 5xx vuelven como respuesta normal. Sin este
+            // chequeo un error de permisos contaba como borrado y el objeto se
+            // quedaba en el bucket para siempre.
+            // El DELETE de S3 es idempotente: 204 tanto si borro el objeto como
+            // si la key no existia. Los dos casos son "ya no esta en el bucket",
+            // que es la condicion que nos importa.
+            if ($status !== 204 && $status !== 200) {
+                throw new RuntimeException('S3 respondio HTTP ' . $status);
+            }
             $borrados++;
         } catch (Throwable $e) {
             $fallidos[] = (string)$a['archivo'];
@@ -588,8 +664,17 @@ function handleDeleteDcPago(PDO $pdo, int $id): void {
         }
     }
 
-    // Las filas de adjuntos se borran siempre, hayan fallado o no sus binarios:
-    // el pago se va, y dejarlas apuntando a un pago inexistente es peor.
+    if ($fallidos) {
+        jsonError(
+            'No se pudieron borrar del bucket ' . count($fallidos) . ' de '
+            . count($adjuntos) . ' adjunto(s), asi que la orden de pago #' . $id
+            . ' no se elimino. Reintenta en unos minutos.',
+            502,
+            ['adjuntos_fallidos' => $fallidos]
+        );
+    }
+
+    // ---- Pasos 2 y 3: ya no hay binarios, se puede borrar la metadata ----
     $delAdj = $pdo->prepare('DELETE FROM datacount_pagos_adjuntos WHERE pago = :pago');
     $delAdj->execute([':pago' => $id]);
 
@@ -598,9 +683,8 @@ function handleDeleteDcPago(PDO $pdo, int $id): void {
     if ($del->rowCount() === 0) jsonError('Pago no encontrado', 404);
 
     jsonOk([
-        'id'                 => $id,
-        'adjuntos'           => count($adjuntos),
-        'adjuntos_borrados'  => $borrados,
-        'adjuntos_fallidos'  => $fallidos,
+        'id'                => $id,
+        'adjuntos'          => count($adjuntos),
+        'adjuntos_borrados' => $borrados,
     ]);
 }

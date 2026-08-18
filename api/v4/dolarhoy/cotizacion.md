@@ -28,8 +28,9 @@ Base URL: `https://api.databox.net.ar/v4/dolarhoy/cotizacion`
 | GET    | `/v4/dolarhoy/cotizacion`                        | Última cotización cargada.                |
 | GET    | `/v4/dolarhoy/cotizacion?fecha=YYYY-MM-DD`       | Cotización de esa fecha específica.       |
 
-Cualquier otro método devuelve `405 Metodo no soportado`. La ruta sin
-extensión se resuelve via `.htaccess` del padre `api/v4/` (rewrite a `.php`).
+Cualquier otro método devuelve `405 Metodo no soportado`. La ruta va **sin
+extensión**: la resuelve el `.htaccess` de `api/`, que cubre todo el árbol con
+un rewrite interno al `.php`.
 
 ---
 

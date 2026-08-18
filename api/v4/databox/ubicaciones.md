@@ -17,13 +17,12 @@ mantiene por fuera de la API. Cualquier metodo que no sea `GET` devuelve `405`.
 Vive en `databox/` y no en `datarocket/` a proposito: la geografia no es del
 CRM, la puede querer cualquier otro microservicio de `v4/`.
 
-Se accede via el vhost `api.databox.net.ar` (puerto interno `8114`). El
-`.htaccess` de `api/v4/` mapea URLs sin extension, asi que ambas formas son
-equivalentes:
+Se accede via el vhost `api.databox.net.ar` (puerto interno `8114`). La URL va
+**sin extension** — el `.htaccess` de `api/` la resuelve contra el `.php`
+correspondiente para todo el arbol:
 
 ```
 GET https://api.databox.net.ar/v4/databox/ubicaciones
-GET https://api.databox.net.ar/v4/databox/ubicaciones.php
 ```
 
 ---

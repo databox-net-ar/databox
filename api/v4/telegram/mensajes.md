@@ -62,8 +62,9 @@ Base URL: `https://api.databox.net.ar/v4/telegram/mensajes`
 |--------|-------------------------|----------------------------------|
 | POST   | `/v4/telegram/mensajes` | Enviar un mensaje por un canal.  |
 
-Cualquier otro método devuelve `405 Metodo no soportado`. La ruta sin
-extensión se resuelve vía `.htaccess` del padre `api/v4/` (rewrite a `.php`).
+Cualquier otro método devuelve `405 Metodo no soportado`. La ruta va **sin
+extensión**: la resuelve el `.htaccess` de `api/`, que cubre todo el árbol con
+un rewrite interno al `.php`.
 
 ---
 

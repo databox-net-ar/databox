@@ -15,10 +15,21 @@ Las operaciones que motivan el microservicio:
 | Listar los prospectos                      | `GET /v4/datarocket/prospectos`                       |
 | Saber si un prospecto ya existe            | `GET /v4/datarocket/prospectos?verificar=1`           |
 | Corregirle un campo suelto                 | `PATCH /v4/datarocket/prospectos?id=N`                |
+| Etiquetarlo                                | `etiqueta_ids` + [/v4/datarocket/etiquetas](etiquetas.md) |
+| **Registrar una consulta que entra por la web** | `POST` con `embudo` + `asunto` + `mensaje`       |
+
+**Un `POST` con `embudo`, `asunto` y `mensaje` crea tres registros: el
+prospecto, la oportunidad en ese embudo y la interaccion con el mensaje.** Es el
+alta de un formulario web, y es una sola llamada transaccional. Sin esas tres
+claves el alta crea unicamente el prospecto, como siempre. Ver
+[Registrar una consulta](#registrar-una-consulta-embudo-asunto-y-mensaje).
 
 **Un prospecto no se puede dar de alta si su `correo` o su `celular` ya estan
 registrados.** El `POST` corta con `409`; `?verificar=1` permite preguntarlo
-antes. Ver [Unicidad de correo y celular](#unicidad-de-correo-y-celular).
+antes. Ver [Unicidad de correo y celular](#unicidad-de-correo-y-celular). La
+excepcion es el alta con consulta: ahi el prospecto que ya existe **se
+reutiliza** en vez de rechazarse — el cliente que vuelve a escribir no es un
+error.
 
 **Para seleccionar el pais, la provincia y la localidad se usa
 [/v4/databox/ubicaciones](../databox/ubicaciones.md).** Este endpoint recibe
@@ -27,18 +38,33 @@ texto) y rechaza con `400` los que no existan; `ubicaciones` es el que traduce
 un nombre a esos ids, con la misma apikey. Ver
 [Seleccionar pais, provincia y localidad](#seleccionar-pais-provincia-y-localidad).
 
+**Las etiquetas tampoco se mandan como texto: `etiqueta_ids` son ids del
+catalogo [/v4/datarocket/etiquetas](etiquetas.md).** Ese endpoint —misma
+apikey— traduce el nombre a un id (`GET ?nombre=expo`) y, si la etiqueta todavia
+no existe, **la crea al vuelo** (`POST ?resolver=1`), asi que un importador que
+trae etiquetas nuevas no se frena. Ver
+[Seleccionar las etiquetas](#seleccionar-las-etiquetas).
+
+**El `embudo` se manda por nombre o por slug, no por id.** Se resuelve contra el
+catalogo [/v4/datarocket/embudos](embudos.md) —`Causam Clientes` y
+`causam-clientes` caen en la misma fila— y de el salen el `proyecto_id` y la
+etapa de entrada de la oportunidad. La columna `embudo_id` no existe en
+`datarocket_prospectos`: vive en `datarocket_oportunidades`. Ver
+[El embudo no es una columna del prospecto](#el-embudo-no-es-una-columna-del-prospecto).
+
 > **Renombrado el 2026-08-17.** Este recurso se llamaba `/v4/datarocket/contactos`
-> hasta la migracion `20260817_2700`. Las claves que antes eran `contacto_*`
-> ahora son `prospecto_*`. Si tu integracion lee esas claves, hay que
-> actualizarla.
+> hasta la migracion `20260817_2700`. Esa ruta **ya no responde** (`404`): el
+> concepto "contacto" dejo de existir en Datarocket, no quedo alias de
+> compatibilidad. Ademas las claves que antes eran `contacto_*` ahora son
+> `prospecto_*`, asi que una integracion vieja tiene que actualizar las dos
+> cosas: la URL y la lectura del JSON.
 
 Se accede via el vhost `api.databox.net.ar` (puerto interno `8114`, ver
-`docker-compose.yml`). El `.htaccess` de `api/v4/` mapea URLs sin extension al
-archivo `.php` correspondiente, asi que ambas formas son equivalentes:
+`docker-compose.yml`). La URL va **sin extension** — el `.htaccess` de `api/` la
+resuelve contra el `.php` correspondiente para todo el arbol:
 
 ```
 GET https://api.databox.net.ar/v4/datarocket/prospectos
-GET https://api.databox.net.ar/v4/datarocket/prospectos.php
 ```
 
 Es el punto de entrada **externo** (llamado por otras aplicaciones del grupo
@@ -254,6 +280,408 @@ columnas de VARCHAR a FK.
 
 ---
 
+## Seleccionar las etiquetas
+
+Las etiquetas de un prospecto **no se mandan como texto**. `etiqueta_ids` es un
+`int[]` con ids de `datarocket_etiquetas`, y el catalogo se consulta —o se
+amplia— desde **[/v4/datarocket/etiquetas](etiquetas.md)**, con la misma apikey.
+Ese endpoint es el unico camino desde afuera: el ABM del panel tiene su propio
+lookup pero autentica por sesion, no por Bearer.
+
+### A) Ver que hay disponible (combo, pantalla de seleccion)
+
+```bash
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/etiquetas"
+# -> {"ok":true,"data":{"total":29,"items":[{"id":13,"nombre":"barrio_privado",...},...]}}
+```
+
+Viene ordenado alfabeticamente y con `limite` default de 100 — el catalogo tiene
+29 filas, asi que entra entero en una llamada.
+
+### B) Ya tenes el nombre y solo queres el id
+
+```bash
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?nombre=EXPO"
+# -> {"ok":true,"data":{"id":5,"nombre":"expo",...}}
+```
+
+`404` si no existe — **no la crea**. Es la opcion para cuando el catalogo lo
+curan personas y una etiqueta desconocida es un error de datos que alguien tiene
+que mirar.
+
+La comparacion es **insensible a mayusculas y acentos** (`EXPO`, `expo`, `expó`
+son la misma etiqueta), asi que no hace falta normalizar el texto del CSV antes
+de consultar.
+
+### C) "Dame el id, y si no existe creala"
+
+```bash
+curl -X POST "https://api.databox.net.ar/v4/datarocket/etiquetas?resolver=1" \
+  -H "Authorization: Bearer $APIKEY" \
+  -H "Content-Type: application/json" \
+  -d '{"nombre":"expo 2027","descripcion":"Feria de Buenos Aires"}'
+# -> 201 {"ok":true,"data":{"id":40,"nombre":"expo 2027",...,"creada":true}}
+# -> 200 {"ok":true,"data":{"id":40,"nombre":"expo 2027",...,"creada":false}}  (si ya estaba)
+```
+
+Nunca da `409`: `data.creada` distingue si la acaba de crear (`201`) o si ya
+existia (`200`). Es idempotente — llamarlo N veces con el mismo nombre deja una
+sola fila. Es la opcion para un importador que trae etiquetas nuevas junto con
+los prospectos y no quiere frenarse.
+
+Tambien existe el `POST` sin `?resolver=1`, que corta con `409` si el nombre ya
+esta cargado (el body del error trae la fila que choco en la clave `etiqueta`,
+con su `id`).
+
+### Un id inexistente en `etiqueta_ids` se descarta en silencio
+
+A diferencia de `pais_id` / `provincia_id` / `localidad_id` —que cortan con
+`400`—, los ids de `etiqueta_ids` que no existan en el catalogo **se filtran
+antes del INSERT y el alta responde `201` igual**, con esa etiqueta simplemente
+sin aplicar. Los duplicados dentro del array tambien se colapsan. Por eso
+conviene resolver el id contra `/v4/datarocket/etiquetas` en vez de inventarlo:
+no hay error que avise.
+
+Para confirmar que quedo aplicada, releer con
+`GET /v4/datarocket/prospectos?id=N` y mirar `etiqueta_ids` /
+`etiqueta_nombres`.
+
+### Mandar nombres en vez de ids no funciona
+
+`etiqueta_nombres` es **solo de lectura**: se devuelve en el `GET`, pero si viene
+en el body de un `POST` / `PUT` / `PATCH` se ignora en silencio, como cualquier
+clave desconocida. No hay alias por nombre — primero se resuelve el id, despues
+se postea.
+
+### `etiqueta_ids` es reemplazo total, no "agregar"
+
+En `PUT` y `PATCH` la puente se reemplaza por completo con lo que traiga el
+array: mandar `[5]` a un prospecto que ya tenia otras dos etiquetas lo deja con
+una sola, y `[]` lo deja sin ninguna. Para **sumar** una etiqueta hay que leer
+primero el prospecto y postear la union (`GET ?id=N` -> `etiqueta_ids: [12,18]`
+-> `PATCH {"etiqueta_ids":[12,18,5]}`).
+
+Si la clave **no viene** en el body de un `PUT` o un `PATCH`, la puente no se
+toca. Lo mismo vale para `lista_ids`, con el catalogo `datarocket_listas`.
+
+### Flujo completo
+
+```bash
+# 1) Nombre -> id, creando la etiqueta si es nueva.
+ET=$(curl -s -X POST "https://api.databox.net.ar/v4/datarocket/etiquetas?resolver=1" \
+       -H "Authorization: Bearer $APIKEY" -H "Content-Type: application/json" \
+       -d '{"nombre":"expo"}')
+# -> {"ok":true,"data":{"id":5,"nombre":"expo",...,"creada":false}}
+
+# 2) Aplicarla en el alta del prospecto…
+curl -X POST "https://api.databox.net.ar/v4/datarocket/prospectos" \
+  -H "Authorization: Bearer $APIKEY" -H "Content-Type: application/json" \
+  -d '{"tipo":"persona","persona_nombre":"Juan Perez","etiqueta_ids":[5]}'
+
+# 3) …o sobre un prospecto que ya existe.
+curl -X PATCH "https://api.databox.net.ar/v4/datarocket/prospectos?id=149309" \
+  -H "Authorization: Bearer $APIKEY" -H "Content-Type: application/json" \
+  -d '{"etiqueta_ids":[5]}'
+# -> {"ok":true,"data":{"id":149309,"campos":["etiqueta_ids"]}}
+```
+
+### Modificar y borrar el catalogo no se puede desde afuera
+
+`/v4/datarocket/etiquetas` solo consulta y da de alta: no tiene `PUT`, `PATCH`
+ni `DELETE`. Renombrar una etiqueta le cambia el significado a todos los
+prospectos que la tienen puesta, y borrarla se lleva las asignaciones por el
+`ON DELETE CASCADE` de la puente. Esas operaciones viven unicamente en el ABM
+del panel cloud. Ver
+[Por que no se puede modificar ni borrar](etiquetas.md#por-que-no-se-puede-modificar-ni-borrar).
+
+---
+
+## Registrar una consulta: embudo, asunto y mensaje
+
+Un formulario web no genera "un prospecto": genera una **consulta**. Quien la
+manda es el prospecto, lo que pregunta es la interaccion, y el trabajo que eso
+abre es la oportunidad. Los tres registros nacen del mismo evento, asi que
+nacen del mismo `POST`:
+
+```
+POST /v4/datarocket/prospectos
+  { …datos del prospecto…, "embudo": …, "asunto": …, "mensaje": … }
+
+  -> datarocket_prospectos      (quien escribio)
+  -> datarocket_oportunidades   (el trabajo que se abre, en el embudo indicado)
+  -> datarocket_interacciones   (el mensaje concreto, colgado de esa oportunidad)
+```
+
+Todo bajo una sola transaccion: **o entran los tres o no entra ninguno**. No
+queda un prospecto cargado cuya oportunidad fallo.
+
+### Los tres campos van juntos
+
+| Body trae…                          | Resultado                                      |
+| ----------------------------------- | ---------------------------------------------- |
+| `embudo` + `asunto` + `mensaje`     | Prospecto + oportunidad + interaccion.          |
+| Ninguno de los tres                 | **Solo el prospecto** — el alta de siempre.     |
+| Alguno pero no los tres             | `400`, diciendo cual falta.                     |
+
+No hay descarte en silencio. Un `mensaje` sin `embudo` no tendria kanban donde
+colgarse, y un `embudo` sin mensaje abriria una oportunidad vacia: ninguna de
+las dos es lo que el cliente quiso, asi que se le avisa en vez de adivinar.
+
+```json
+{"ok":false,"error":"Para registrar la consulta hacen falta `embudo`, `asunto` y `mensaje`: falta `asunto`. Sin las tres claves el alta crea solo el prospecto."}
+```
+
+### Que aporta el embudo
+
+Es el unico dato de ruteo que manda el cliente. De el salen los otros tres, que
+**no se aceptan del body**:
+
+| Campo de la oportunidad | De donde sale                                                        |
+| ----------------------- | -------------------------------------------------------------------- |
+| `embudo_id`             | El embudo que resolvio `embudo`.                                     |
+| `proyecto_id`           | El `proyecto_id` **de ese embudo**.                                  |
+| `etapa_id`              | La **primera etapa** del embudo (la de menor `orden`).               |
+
+Aceptar el proyecto por separado permitiria una oportunidad cuyo proyecto no es
+el del embudo en el que vive; y elegir la etapa desde afuera obligaria al
+integrador a conocer el kanban. La entrada del pipeline es siempre la primera
+etapa — `UNIQUE(embudo_id, orden)` hace que "primera" sea deterministico.
+
+`sentido` queda en `E` (entrante) y la interaccion en `entrante`: la consulta la
+inicia el prospecto, no nosotros.
+
+### Alcanza con el nombre del embudo
+
+`embudo` acepta el slug ya armado **o** el nombre tal como se ve en el panel. Se
+le aplica la misma transformacion con la que se deriva el slug al dar de alta
+(acentos plegados, minusculas, todo lo que no sea `[a-z0-9]` a guion, corte a
+40), asi que los tres caen en la misma fila:
+
+```json
+{"embudo": "causam-clientes"}
+{"embudo": "Causam Clientes"}
+{"embudo": " CAUSAM_CLIENTES "}
+```
+
+Tambien se acepta `embudo_id` con el id directo, para el cliente que ya lo
+resolvio contra [/v4/datarocket/embudos](embudos.md) y lo tiene cacheado.
+
+### `canal` y `origen` son opcionales
+
+Los defaults estan puestos para el caso que motiva todo esto — el formulario
+web — pero el mismo alta sirve para una consulta que entra por otro lado:
+
+| Clave    | Default | Valores                                                                       |
+| -------- | ------- | ----------------------------------------------------------------------------- |
+| `canal`  | `web`   | `correo`, `whatsapp`, `telegram`, `sms`, `web`, `telefono`, `presencial`      |
+| `origen` | `Web`   | `Web`, `Correo`, `Facebook`, `Instagram`, `Linkedin`, `Google`, `Youtube`, `Tiktok`, `Referido`, `Lading` |
+
+Salen del catalogo `estados` (`datarocket_interaccion_canal` y
+`datarocket_oportunidad_origen`), asi que la lista de arriba es la de hoy y
+puede crecer desde el panel. La comparacion es **insensible a mayusculas** y se
+guarda la variante canonica del catalogo (`"instagram"` entra como `Instagram`,
+`"WhatsApp"` como `whatsapp`) — una mayuscula de mas no tiene por que costar un
+`400`. Un valor que no este en el catalogo si corta con `400`, con la lista de
+validos en el mensaje.
+
+### Si el prospecto ya existe, se reutiliza
+
+Aca el `409` por correo o celular duplicado **no aplica**. Con bloque de
+consulta el `POST` ya no significa "dar de alta un prospecto" sino "registrar
+una consulta", y que quien la manda ya este en la base es lo normal: es un
+cliente que vuelve. Se reutiliza su fila, la oportunidad se le cuelga ahi y la
+respuesta trae `prospecto.creado: false` con `200` en vez de `201`.
+
+**No se le pisa nada de lo que ya tenia cargado.** Los datos de un formulario
+suelen ser mas pobres que los de la ficha (un alta previa con domicilio y cargo,
+una consulta nueva con solo el nombre y el correo), asi que el body se usa para
+identificar al prospecto, no para actualizarlo. Si hay que corregirle un campo,
+eso es un [`PATCH`](#patch-v4datarocketprospectosidn--modificacion-parcial).
+
+`lista_ids` y `etiqueta_ids` son la excepcion: **se suman** a las que ya tenia
+—son informacion nueva ("ademas vino por la expo")— en vez de reemplazarlas como
+hacen el `PUT` y el `PATCH`.
+
+> **Sin bloque de consulta el `409` sigue vivo.** Un `POST` que solo trae datos
+> del prospecto sigue siendo un alta a secas, y ahi el duplicado sigue siendo el
+> error que el `409` previene. Ver
+> [Unicidad de correo y celular](#unicidad-de-correo-y-celular).
+
+Hay un caso que si corta con `409`: cuando el **correo matchea contra un
+prospecto y el celular contra otro**. No hay forma de elegir a cual pertenece la
+consulta sin adivinar, y adivinar mal la manda al legajo equivocado.
+
+### Si ya hay una oportunidad abierta, se reutiliza
+
+Antes de crear la oportunidad se busca una **abierta del mismo prospecto en el
+mismo embudo**. Si existe, la consulta se cuelga de esa y la respuesta trae
+`oportunidad.creada: false`. Es lo que evita que tres consultas del mismo
+cliente dejen tres tarjetas duplicadas en el kanban.
+
+- **Abierta** = etapa de `tipo='activa'`, o sin etapa asignada (un dato
+  incompleto no es un cierre).
+- **Cerrada** = etapa `ganada` o `perdida`. Ahi se abre una oportunidad
+  **nueva**: el cliente al que ya le vendimos y vuelve a escribir es una venta
+  nueva, no la vieja reabierta.
+- Al reutilizar **no se mueve la etapa**: si alguien ya la avanzo a "Propuesta",
+  una consulta nueva no tiene por que devolverla al principio del pipeline. Solo
+  se toca `actualizado`, que es lo que ordena el kanban.
+- La **interaccion siempre se crea**. El mensaje concreto nunca se pisa ni se
+  colapsa: el historial de la oportunidad se lee de ahi.
+
+### La respuesta
+
+`201` si se creo el prospecto, `200` si se reutilizo uno existente.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "id": 149311,
+    "uuid": "14268d59-db2f-42a5-86da-0e5b9b709fb6",
+    "registrado": "2026-08-18 12:20:51",
+    "prospecto":  { "id": 149311, "uuid": "…", "registrado": "…", "creado": true },
+    "oportunidad": {
+      "id": 4958, "creada": true,
+      "embudo_id": 4, "embudo_slug": "causam-clientes", "proyecto_id": 109,
+      "etapa_id": 10, "etapa_nombre": "Nuevo"
+    },
+    "interaccion": { "id": 1090, "creada": true, "sentido": "entrante", "canal": "web" }
+  }
+}
+```
+
+`id` / `uuid` / `registrado` siguen en la raiz: son el contrato que ya consumen
+los clientes del alta simple, y un formulario que empieza a mandar el bloque de
+consulta no deberia tener que mover de donde los lee. `prospecto.id` es el
+mismo valor.
+
+Los bloques `oportunidad` e `interaccion` **no aparecen** en un alta sin
+consulta — una clave ausente y una clave en `null` significan cosas distintas.
+
+Los dos `creado` / `creada` son lo que distingue los cuatro escenarios sin tener
+que releer nada:
+
+| `prospecto.creado` | `oportunidad.creada` | Que paso                                    |
+| ------------------ | -------------------- | ------------------------------------------- |
+| `true`             | `true`               | Cliente nuevo, consulta nueva.              |
+| `false`            | `true`               | Cliente conocido, consulta sobre algo nuevo.|
+| `false`            | `false`              | Cliente conocido insistiendo sobre lo mismo.|
+| `true`             | `false`              | No puede pasar (un prospecto recien creado no tiene oportunidades). |
+
+### Errores
+
+| Codigo | Cuando                                                                              |
+| ------ | ----------------------------------------------------------------------------------- |
+| 400    | El bloque vino incompleto (falta `embudo`, `asunto` o `mensaje`).                   |
+| 400    | El embudo no existe. **No se crea al vuelo** — ver abajo.                            |
+| 400    | `canal` u `origen` fuera del catalogo (el mensaje lista los validos).               |
+| 409    | El embudo existe pero **no tiene etapas cargadas**: no hay donde ubicar la oportunidad. |
+| 409    | El slug del embudo existe en mas de un proyecto (mandar tambien `proyecto_id`).      |
+| 409    | El `correo` y el `celular` pertenecen a prospectos **distintos**.                    |
+
+Mas los del alta simple (`tipo` obligatorio, identidad, correo invalido, FK de
+ubicacion).
+
+Un embudo que no existe es `400` y no se crea solo. No hay un `?resolver=1` como
+el de [etiquetas](etiquetas.md), y es a proposito: una etiqueta nueva es
+inofensiva, un embudo vacio es un pipeline roto. Crearlo implica ademas cargarle
+las etapas y elegirle el proyecto — curaduria, no integracion. Se hace en el
+panel (Sistemas > Datarocket > Embudos). Ver
+[Por que es de solo lectura](embudos.md#por-que-es-de-solo-lectura).
+
+### Ejemplo: el formulario web completo
+
+```bash
+curl -X POST https://api.databox.net.ar/v4/datarocket/prospectos \
+  -H "Authorization: Bearer $APIKEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tipo":           "persona",
+    "persona_nombre": "Marta Web",
+    "correo":         "marta@example.com",
+    "celular":        "+54 9 11 4444-7788",
+    "embudo":         "Causam Clientes",
+    "asunto":         "Consulta por estudio de suelos",
+    "mensaje":        "Hola, necesito presupuesto para un estudio de suelos en Quilmes."
+  }'
+```
+
+Eso es todo lo que el formulario tiene que saber: los datos de quien escribe, el
+embudo donde cae y el mensaje. El `proyecto_id`, la `etapa_id`, los `sentido` y
+las fechas los pone el endpoint.
+
+### Consultar el catalogo de embudos aparte
+
+Para poblar un combo, para validar la configuracion en el arranque de la
+integracion o para resolver el `embudo_id` una sola vez y cachearlo, esta
+**[/v4/datarocket/embudos](embudos.md)** — misma apikey, solo lectura:
+
+```bash
+# Todos los embudos, alfabetico por slug.
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/embudos"
+# -> {"ok":true,"data":{"total":7,"items":[{"id":4,"slug":"causam-clientes",...},...]}}
+
+# Uno solo, con sus etapas.
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/embudos?slug=causam-clientes&con_etapas=1"
+```
+
+El `id` es estable dentro de una base, asi que se puede cachear — lo que **no**
+vale es hardcodearlo: el `id` de `causam-clientes` en dev no tiene por que ser el
+mismo que en produccion. Lo que se guarda en la configuracion es el slug (o
+directamente el nombre, que este endpoint tambien acepta).
+
+### El slug es unico por proyecto, no global
+
+El `UNIQUE` de `datarocket_embudos` es (`proyecto_id`, `slug`): dos proyectos
+distintos pueden tener cada uno su `captacion-general`. Si el `embudo` que se
+manda matchea en mas de uno, el alta corta con `409` y la lista de candidatos en
+vez de elegir "el primero" —que le abriria la oportunidad en el proyecto
+equivocado sin que nadie se entere—, y se desambigua agregando `proyecto_id` al
+body:
+
+```json
+{ "embudo": "captacion-general", "proyecto_id": 109, "asunto": "…", "mensaje": "…" }
+```
+
+Al 2026-08-18 no hay ningun slug repetido en la base, o sea que en la practica el
+`409` no aparece; alcanza con que alguien cree el mismo slug en un segundo
+proyecto desde el panel para que empiece a aparecer.
+
+### El embudo no es una columna del prospecto
+
+`datarocket_prospectos` **no tiene `embudo_id` ni `etapa_id`** — el `embudo` del
+body es un dato de ruteo del alta, no un campo que se guarde en la ficha. Esas
+dos columnas viven en `datarocket_oportunidades`.
+
+La division es a proposito: el prospecto es *quien* es (la persona o la empresa,
+con su correo y su celular unicos), el embudo es *en que estamos trabajando con
+el*. El mismo prospecto puede tener a la vez una oportunidad en
+`causam-clientes` y otra en `causam-estudios`, cada una en su etapa, asi que "el
+embudo del prospecto" no seria un dato unico.
+
+Por eso `embudo` no aparece en el [modelo de datos](#modelo-de-datos), no se
+devuelve en el `GET` y no se puede filtrar por el en el listado. Y por eso
+tampoco lo aceptan el `PUT` ni el `PATCH`: mover una oportunidad de embudo es
+una operacion sobre la oportunidad, y vive en el ABM del panel.
+
+| Dato                        | Vive en                     | Se resuelve con                    |
+| --------------------------- | --------------------------- | ---------------------------------- |
+| `pais_id` / `provincia_id` / `localidad_id` | `datarocket_prospectos` | [/v4/databox/ubicaciones](../databox/ubicaciones.md) |
+| `etiqueta_ids`              | puente del prospecto        | [/v4/datarocket/etiquetas](etiquetas.md) |
+| `embudo_id` / `etapa_id`    | `datarocket_oportunidades`  | [/v4/datarocket/embudos](embudos.md) |
+
+> **El ABM de oportunidades todavia no esta expuesto en `v4`.** Este alta las
+> crea, pero para listarlas, moverlas de etapa o cerrarlas hay que ir al panel
+> cloud ([cloud/api/datarocket_oportunidades.php](../../../cloud/api/datarocket_oportunidades.php)):
+> `api/v4/datarocket/oportunidades.php` esta vacio al 2026-08-18.
+
+---
+
 ## Modelo de datos
 
 Columnas de `datarocket_prospectos` expuestas por la API (mismo shape en
@@ -300,12 +728,23 @@ Ademas, el listado y la consulta individual anexan las relaciones N:M:
 | ------------------ | ---------- | ------------------------------------------------------------------------------ |
 | `lista_ids`        | int[]      | Suscripciones en `datarocket_prospectos_listas`.                               |
 | `lista_nombres`    | string[]   | Mismos indices que `lista_ids`, para pintar sin un fetch extra del catalogo.   |
-| `etiqueta_ids`     | int[]      | Etiquetas en `datarocket_prospectos_etiquetas`.                                |
-| `etiqueta_nombres` | string[]   | Mismos indices que `etiqueta_ids`.                                             |
+| `etiqueta_ids`     | int[]      | Etiquetas en `datarocket_prospectos_etiquetas`. Ids del catalogo — se obtienen de [/v4/datarocket/etiquetas](etiquetas.md). |
+| `etiqueta_nombres` | string[]   | Mismos indices que `etiqueta_ids`. **Solo lectura**: en el body se ignora.      |
 
 En `POST` se aceptan `lista_ids` y `etiqueta_ids` como int[]. En `PUT` y en
 `PATCH` son opcionales: si no vienen no se toca la puente; si vienen (aun `[]`)
 se reemplazan por completo.
+
+> **¿De donde saco los `etiqueta_ids`?** De
+> [/v4/datarocket/etiquetas](etiquetas.md), que ademas **crea la etiqueta si no
+> existe** con `POST ?resolver=1` — ver
+> [Seleccionar las etiquetas](#seleccionar-las-etiquetas).
+
+> **No hay `embudo_id` ni `etapa_id` en esta tabla** — son columnas de
+> `datarocket_oportunidades`. El `embudo` que acepta el `POST` es un dato de
+> ruteo del alta, no un campo de la ficha: no se devuelve en el `GET` ni filtra
+> el listado. Ver
+> [El embudo no es una columna del prospecto](#el-embudo-no-es-una-columna-del-prospecto).
 
 > **Baja de campos.** `verificacion`, `estado`, `error`, `completado`,
 > `suscripciones` (migracion `20260817_1500`), `tags` y `listas` ya no existen
@@ -522,12 +961,36 @@ resueltos.
 
 Content-Type: `application/json; charset=utf-8`.
 
+El alta tiene **dos modos**, y los distingue el body:
+
+| Modo                 | El body trae…                    | Crea                                              |
+| -------------------- | -------------------------------- | ------------------------------------------------- |
+| Alta simple          | Solo datos del prospecto         | El prospecto.                                     |
+| Alta con **consulta**| Ademas `embudo` + `asunto` + `mensaje` | Prospecto + oportunidad + interaccion.      |
+
+El segundo es el del formulario web y esta documentado entero en
+[Registrar una consulta](#registrar-una-consulta-embudo-asunto-y-mensaje) —
+incluido que ahi el prospecto duplicado **se reutiliza** en vez de dar `409`.
+Lo que sigue vale para los dos.
+
 ### Body
 
 Cualquier subconjunto de las columnas del modelo. **Obligatorios:**
 
 - `tipo`: `persona` o `empresa`.
 - `persona_nombre` si `tipo='persona'`, `empresa_nombre` si `tipo='empresa'`.
+
+Claves del bloque de consulta (las tres juntas o ninguna):
+
+| Clave         | Tipo   | Notas                                                                                  |
+| ------------- | ------ | -------------------------------------------------------------------------------------- |
+| `embudo`      | string | Nombre o slug. Se slugifica antes de buscar. Inexistente -> `400`.                      |
+| `asunto`      | string | Va a la oportunidad **y** a la interaccion. Se trunca a 500.                             |
+| `mensaje`     | string | Texto de la interaccion (`mediumtext`).                                                  |
+| `embudo_id`   | int    | Alternativa a `embudo` si ya se resolvio el id.                                          |
+| `proyecto_id` | int    | **Solo** para desambiguar un slug repetido en dos proyectos. El proyecto de la oportunidad sale del embudo. |
+| `canal`       | string | Canal de la interaccion. Default `web`.                                                  |
+| `origen`      | string | Origen de la oportunidad. Default `Web`.                                                 |
 
 Campos con tratamiento especial:
 
@@ -540,6 +1003,11 @@ Campos con tratamiento especial:
   [/v4/databox/ubicaciones](../databox/ubicaciones.md) — ver
   [Seleccionar pais, provincia y localidad](#seleccionar-pais-provincia-y-localidad).
   Un id inexistente corta con `400`. Son opcionales.
+- **`etiqueta_ids`**: son **ids del catalogo, no nombres**. Se obtienen de
+  [/v4/datarocket/etiquetas](etiquetas.md), que tambien **crea la etiqueta si no
+  existe** (`POST ?resolver=1`) — ver
+  [Seleccionar las etiquetas](#seleccionar-las-etiquetas). A diferencia de las
+  ubicaciones, un id inexistente **no** corta con `400`: se descarta en silencio.
 
 > Si venis de un importador con el formato compuesto `EMPRESA - Persona` en un
 > solo campo: **partilo antes de postear**, mandando `empresa_nombre` y
@@ -563,6 +1031,10 @@ Se devuelven `id`, `uuid` y `registrado` porque son los tres campos que el
 caller no siempre conoce a priori. Para releer el prospecto completo hacer
 `GET /v4/datarocket/prospectos?id=<id>`.
 
+Con bloque de consulta la respuesta suma `prospecto`, `oportunidad` e
+`interaccion`, y puede ser `200` (prospecto reutilizado) en vez de `201` — ver
+[La respuesta](#la-respuesta).
+
 ### Errores
 
 | Codigo | Body `error`                                                               | Cuando                                        |
@@ -577,6 +1049,11 @@ caller no siempre conoce a priori. Para releer el prospecto completo hacer
 | **409**| `Ya existe un prospecto con ese celular.`                                  | El `celular` normalizado ya esta cargado.     |
 | **409**| `Ya existe un prospecto con ese correo y ese celular.`                     | Chocan los dos.                               |
 | 500    | `<mensaje de la excepcion>`                                                | Falla inesperada (PDO, etc.).                 |
+
+Los tres `409` de duplicado **no se aplican al alta con consulta**: ahi el
+prospecto existente se reutiliza. Los errores propios de ese modo (bloque
+incompleto, embudo inexistente, embudo sin etapas, canal u origen invalidos)
+estan en [Registrar una consulta](#registrar-una-consulta-embudo-asunto-y-mensaje).
 
 El cuerpo del `409` trae ademas `coincidencias`, con el mismo shape que
 `?verificar=1`, para poder ofrecer *"ya lo tenes cargado, ¿queres verlo?"* en
@@ -617,6 +1094,14 @@ curl -X POST https://api.databox.net.ar/v4/datarocket/prospectos \
 ```
 
 ### Flujo recomendado para un formulario externo
+
+**Si el formulario es una consulta** (tiene un campo "mensaje" y cae en un
+pipeline), no hay flujo: es un solo `POST` con `embudo` + `asunto` + `mensaje`.
+El duplicado no hace falta preguntarlo porque no es un error — el prospecto se
+reutiliza. Ver
+[Registrar una consulta](#registrar-una-consulta-embudo-asunto-y-mensaje).
+
+**Si es un alta a secas** (un formulario de suscripcion, un importador):
 
 ```
 1. GET  ?verificar=1&correo=…&celular=…   -> mostrar "ya estas registrado" si existe:true
@@ -810,6 +1295,11 @@ caller necesita limpiar historial, tiene que hacerlo aparte.
 - ABM interno equivalente (panel cloud): [cloud/api/datarocketprospectos.php](../../../cloud/api/datarocketprospectos.php).
 - Normalizacion compartida: [cloud/api/lib/prospectos_normalizar.php](../../../cloud/api/lib/prospectos_normalizar.php).
 - Catalogo geografico para resolver `pais_id` / `provincia_id` / `localidad_id`: [/v4/databox/ubicaciones](../databox/ubicaciones.md).
+- Catalogo de etiquetas para resolver (o crear) los `etiqueta_ids`: [/v4/datarocket/etiquetas](etiquetas.md).
+- Catalogo de embudos, para resolver el `embudo` del alta con consulta o para poblar un combo: [/v4/datarocket/embudos](embudos.md).
+- Tablas que escribe el alta con consulta: `datarocket_oportunidades` y `datarocket_interacciones` — schema en [db/schema.sql](../../../db/schema.sql); las etapas salen de `datarocket_etapas` (migracion `20260812_0300`).
+- ABM de oportunidades del panel (mover de etapa, cerrar, listar): [cloud/api/datarocket_oportunidades.php](../../../cloud/api/datarocket_oportunidades.php).
+- Catalogos de `canal` y `origen`: tabla `estados`, campos `datarocket_interaccion_canal` y `datarocket_oportunidad_origen` (panel > Herramientas > Editor de estados).
 - Indices de la busqueda de duplicados: migracion `20260818_1300_datarocket_prospectos_indices_correo_celular.sql`.
 - Helper de auth por Bearer: [cloud/api/lib/apikey_auth.php](../../../cloud/api/lib/apikey_auth.php) (el v4 rueda la logica inline para no arrastrar dependencias, pero el shape es identico).
 - Microservicios hermanos del mismo `v4/`: [/v4/evolution/mensajes](../evolution/mensajes.md), [/v4/datacount/comprobantes](../datacount/comprobantes.md).

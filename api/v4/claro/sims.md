@@ -32,6 +32,9 @@ En el futuro se agregarán más verbos sobre el mismo endpoint (GET por
 `id`/`icc`, DELETE, PATCH parcial). Cualquier otro método hoy devuelve
 `405 Metodo no soportado`.
 
+La ruta va **sin extensión**: la resuelve el `.htaccess` de `api/`, que cubre
+todo el árbol con un rewrite interno al `.php`.
+
 ---
 
 ## Autenticación

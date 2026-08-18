@@ -8,12 +8,11 @@ Microservicio de ingesta y consulta de estado de mensajes **AWS SES**
 recurso — sin framework ni router aparte.
 
 Se accede via el vhost `api.databox.net.ar` (puerto interno `8114`, ver
-`docker-compose.yml`). El `.htaccess` local mapea URLs sin extension al
-archivo `.php` correspondiente, asi que ambas formas son equivalentes:
+`docker-compose.yml`). La URL va **sin extension** — el `.htaccess` de `api/` la
+resuelve contra el `.php` correspondiente para todo el arbol:
 
 ```
 POST https://api.databox.net.ar/v4/aws/mensajes
-POST https://api.databox.net.ar/v4/aws/mensajes.php
 ```
 
 ## Autenticacion

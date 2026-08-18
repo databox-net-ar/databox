@@ -6,6 +6,9 @@
 //   GET    /v4/datarocket/prospectos?id=N         -> registro individual
 //   GET    /v4/datarocket/prospectos?verificar=1  -> chequeo de existencia previa
 //   POST   /v4/datarocket/prospectos              (JSON body) -> alta, devuelve {id, uuid, registrado}
+//                                                 con `embudo` + `asunto` + `mensaje` en el body
+//                                                 crea ademas la oportunidad y la interaccion
+//                                                 (ver "ALTA COMPUESTA" mas abajo)
 //   PUT    /v4/datarocket/prospectos?id=N         (JSON body) -> reemplazo total, devuelve {id}
 //   PATCH  /v4/datarocket/prospectos?id=N         (JSON body) -> modificacion parcial, devuelve {id, campos}
 //   DELETE /v4/datarocket/prospectos?id=N         -> baja definitiva, devuelve {id}
@@ -186,6 +189,20 @@ const DR_CT_PATCH_ALIAS = [
     'provincia' => 'provincia_id',
     'pais'      => 'pais_id',
 ];
+
+// Defaults del bloque de consulta (ver "Alta compuesta" mas abajo). Pensados
+// para el caso que lo motiva — el formulario web — pero parametrizables desde el
+// body: el mismo alta sirve para una consulta que entra por WhatsApp.
+const DR_CT_CANAL_DEFAULT  = 'web';   // datarocket_interacciones.canal
+const DR_CT_ORIGEN_DEFAULT = 'Web';   // datarocket_oportunidades.origen
+
+// `datarocket_oportunidades.sentido` es varchar(1) con catalogo E/S en `estados`
+// (datarocket_oportunidad_sentido); `datarocket_interacciones.sentido` es
+// varchar(10) con catalogo entrante/saliente/interna. Son dos vocabularios
+// distintos para la misma idea — venian asi de antes de este endpoint y no se
+// unifican aca.
+const DR_CT_OPO_SENTIDO_ENTRANTE = 'E';
+const DR_CT_INT_SENTIDO_ENTRANTE = 'entrante';
 
 try {
     requireApp();
@@ -692,7 +709,432 @@ function drPrSanitize(array $in): array {
     return $p;
 }
 
+// ---------------------------------------------------------------------------
+// Alta compuesta: prospecto + oportunidad + interaccion
+// ---------------------------------------------------------------------------
+// Un formulario web no genera "un prospecto": genera una CONSULTA. Quien la
+// manda es el prospecto, lo que pregunta es la interaccion, y el trabajo que
+// eso abre es la oportunidad. Los tres registros nacen del mismo evento, asi
+// que nacen del mismo POST — partirlo en tres llamadas obligaria al cliente a
+// orquestar ids y a manejar el estado intermedio de un alta a medias (prospecto
+// cargado, oportunidad no).
+//
+// El bloque es ATOMICO EN EL BODY: `embudo` + `asunto` + `mensaje` van los tres
+// o no va ninguno.
+//
+//   los tres  -> prospecto + oportunidad + interaccion
+//   ninguno   -> solo el prospecto (comportamiento historico del endpoint)
+//   algunos   -> 400
+//
+// Un `mensaje` sin `embudo` no tendria kanban donde colgarse; un `embudo` sin
+// mensaje abriria una oportunidad vacia. Ninguna de las dos es lo que el cliente
+// quiso, y descartar en silencio la clave sobrante seria peor: el cliente se
+// quedaria esperando una oportunidad que nunca se creo.
+//
+// El embudo aporta los tres datos que el consumidor externo no tiene por que
+// conocer: `embudo_id`, `proyecto_id` (el del embudo — no se acepta del cliente)
+// y `etapa_id` (la PRIMERA etapa del embudo por `orden`, que es la entrada del
+// pipeline). Ver api/v4/datarocket/embudos.php.
+
+// Espejo de embSlugify() de api/v4/datarocket/embudos.php y de dremSlugify() del
+// ABM cloud. Que la busqueda use la MISMA transformacion que el alta es lo que
+// permite mandar `causam-clientes` o `Causam Clientes` y caer en la misma fila.
+// Si cambia una, cambian las tres.
+function drPrSlugify(mixed $raw): string {
+    $s = trim((string)$raw);
+    if ($s === '') return '';
+    $pares = [
+        'á'=>'a','é'=>'e','í'=>'i','ó'=>'o','ú'=>'u',
+        'à'=>'a','è'=>'e','ì'=>'i','ò'=>'o','ù'=>'u',
+        'ä'=>'a','ë'=>'e','ï'=>'i','ö'=>'o','ü'=>'u',
+        'Á'=>'a','É'=>'e','Í'=>'i','Ó'=>'o','Ú'=>'u',
+        'ñ'=>'n','Ñ'=>'n','ç'=>'c','Ç'=>'c',
+    ];
+    $s = strtr($s, $pares);
+    $s = mb_strtolower($s, 'UTF-8');
+    // Marcas combinantes del texto en forma NFD (macOS / iOS): sin esto la
+    // tilde suelta caeria en el [^a-z0-9] y quedaria un guion en el medio de la
+    // palabra. El contenedor no trae `intl`, asi que la normalizacion es esta.
+    $s = preg_replace('/[\x{0300}-\x{036F}]+/u', '', $s) ?? $s;
+    $s = preg_replace('/[^a-z0-9]+/', '-', $s) ?? $s;
+    return substr(trim($s, '-'), 0, 40);
+}
+
+// Valida un valor contra el catalogo `estados` y devuelve la variante CANONICA
+// (la que esta cargada en la tabla). Resuelve case-insensitive a proposito:
+// `datarocket_oportunidad_origen` tiene los valores capitalizados ('Web') y un
+// cliente que mande "web" no deberia comerse un 400 por una mayuscula.
+//
+// Si el catalogo esta vacio se acepta lo que vino: un `estados` sin seed no
+// tiene por que frenar un alta.
+function drPrValorDeCatalogo(PDO $pdo, string $campo, string $valor): ?string {
+    $st = $pdo->prepare('SELECT valor FROM estados WHERE campo = :c ORDER BY orden, id');
+    $st->execute([':c' => $campo]);
+    $validos = array_column($st->fetchAll(), 'valor');
+    if (!$validos) return $valor;
+    foreach ($validos as $v) {
+        if (strcasecmp((string)$v, $valor) === 0) return (string)$v;
+    }
+    return null;
+}
+
+// Lista de valores del catalogo, para el mensaje del 400 — un "canal invalido"
+// sin decir cuales son los validos obliga a ir a leer la doc.
+function drPrCatalogo(PDO $pdo, string $campo): array {
+    $st = $pdo->prepare('SELECT valor FROM estados WHERE campo = :c ORDER BY orden, id');
+    $st->execute([':c' => $campo]);
+    return array_map('strval', array_column($st->fetchAll(), 'valor'));
+}
+
+// Resuelve el bloque de consulta del body. Devuelve null si no vino ninguna de
+// las tres claves (alta simple), y corta con 4xx si vino incompleto o si el
+// embudo no resuelve.
+//
+// Corre ANTES de abrir la transaccion: un embudo inexistente tiene que salir por
+// 400 sin haber escrito un prospecto que despues quedaria sin su oportunidad.
+function drPrResolverConsulta(PDO $pdo, array $in): ?array {
+    $embudoRaw = trim((string)($in['embudo'] ?? ''));
+    $embudoId  = drPrNullableInt($in['embudo_id'] ?? null);
+    $asunto    = drPrNullableStr($in['asunto']  ?? null, 500);
+    $mensaje   = drPrNullableStr($in['mensaje'] ?? null, 65535);
+
+    $tieneEmbudo = $embudoRaw !== '' || ($embudoId !== null && $embudoId > 0);
+    if (!$tieneEmbudo && $asunto === null && $mensaje === null) return null;
+
+    // Bloque incompleto. El mensaje dice exactamente que falta, porque el error
+    // tipico es mandar `mensaje` sin `asunto` (o el embudo sin ninguno de los
+    // dos) y desde afuera no se ve por que no se creo la oportunidad.
+    $faltan = [];
+    if (!$tieneEmbudo)        $faltan[] = '`embudo`';
+    if ($asunto  === null)    $faltan[] = '`asunto`';
+    if ($mensaje === null)    $faltan[] = '`mensaje`';
+    if ($faltan) {
+        jsonError(
+            'Para registrar la consulta hacen falta `embudo`, `asunto` y `mensaje`: falta ' .
+            implode(' y ', $faltan) . '. Sin las tres claves el alta crea solo el prospecto.',
+            400
+        );
+    }
+
+    $proyectoId = drPrNullableInt($in['proyecto_id'] ?? null);
+    $embudo     = drPrBuscarEmbudo($pdo, $embudoRaw, $embudoId, $proyectoId);
+
+    // La etapa de entrada es la de menor `orden` — el recorrido real del
+    // pipeline, no un detalle de presentacion. `UNIQUE(embudo_id, orden)` hace
+    // que el desempate sea deterministico.
+    $st = $pdo->prepare('SELECT id, nombre FROM datarocket_etapas
+                          WHERE embudo_id = :e ORDER BY orden ASC, id ASC LIMIT 1');
+    $st->execute([':e' => (int)$embudo['id']]);
+    $etapa = $st->fetch();
+    if (!$etapa) {
+        // Un embudo sin etapas es un pipeline a medio configurar: no hay columna
+        // del kanban donde dejar la oportunidad. Se frena antes de escribir en
+        // vez de crear una oportunidad con `etapa_id` NULL que nadie ve.
+        jsonError(
+            'El embudo `' . $embudo['slug'] . '` no tiene etapas cargadas, asi que no hay '
+            . 'donde ubicar la oportunidad. Cargalas desde el panel (Sistemas > Datarocket > Etapas).',
+            409
+        );
+    }
+
+    // Canal de la interaccion y origen de la oportunidad. Defaults pensados para
+    // el caso que motiva esto — el formulario web — pero parametrizables: el
+    // mismo alta sirve para una consulta que entra por WhatsApp.
+    $canalRaw  = trim((string)($in['canal']  ?? '')) ?: DR_CT_CANAL_DEFAULT;
+    $origenRaw = trim((string)($in['origen'] ?? '')) ?: DR_CT_ORIGEN_DEFAULT;
+
+    $canal = drPrValorDeCatalogo($pdo, 'datarocket_interaccion_canal', $canalRaw);
+    if ($canal === null) {
+        jsonError('El canal `' . $canalRaw . '` no existe. Valores validos: '
+                  . implode(', ', drPrCatalogo($pdo, 'datarocket_interaccion_canal')) . '.', 400);
+    }
+    $origen = drPrValorDeCatalogo($pdo, 'datarocket_oportunidad_origen', $origenRaw);
+    if ($origen === null) {
+        jsonError('El origen `' . $origenRaw . '` no existe. Valores validos: '
+                  . implode(', ', drPrCatalogo($pdo, 'datarocket_oportunidad_origen')) . '.', 400);
+    }
+
+    return [
+        'embudo_id'      => (int)$embudo['id'],
+        'embudo_slug'    => (string)$embudo['slug'],
+        'embudo_nombre'  => (string)$embudo['nombre'],
+        'proyecto_id'    => $embudo['proyecto_id'] !== null ? (int)$embudo['proyecto_id'] : null,
+        'etapa_id'       => (int)$etapa['id'],
+        'etapa_nombre'   => (string)$etapa['nombre'],
+        // `datarocket_oportunidades.asunto` es varchar(1000) y el de la
+        // interaccion varchar(500); drPrNullableStr ya trunco al mas chico, que
+        // es el que manda porque es el mismo texto en los dos lados.
+        'asunto'         => $asunto,
+        'mensaje'        => $mensaje,
+        'canal'          => $canal,
+        'origen'         => $origen,
+    ];
+}
+
+// Busca el embudo por id o por slug. El slug se slugifica primero (ver
+// drPrSlugify), asi que se acepta tanto `causam-clientes` como `Causam Clientes`.
+//
+// Mismo criterio de ambiguedad que /v4/datarocket/embudos: el UNIQUE de la tabla
+// es (proyecto_id, slug), no slug a secas, asi que un slug puede matchear en dos
+// proyectos. Devolver "el primero" le daria al cliente el embudo de otro
+// proyecto sin que se entere; se contesta 409 con los candidatos y se desambigua
+// con `proyecto_id` en el body.
+function drPrBuscarEmbudo(PDO $pdo, string $raw, ?int $id, ?int $proyectoId): array {
+    if ($id !== null && $id > 0) {
+        $st = $pdo->prepare('SELECT id, proyecto_id, slug, nombre FROM datarocket_embudos WHERE id = :i');
+        $st->execute([':i' => $id]);
+        $row = $st->fetch();
+        if (!$row) jsonError('El embudo con id ' . $id . ' no existe.', 400);
+        return $row;
+    }
+
+    $slug = drPrSlugify($raw);
+    if ($slug === '') {
+        jsonError('El `embudo` indicado no tiene ningun caracter aprovechable para armar un slug.', 400);
+    }
+
+    $sql    = 'SELECT id, proyecto_id, slug, nombre FROM datarocket_embudos WHERE slug = :s';
+    $params = [':s' => $slug];
+    if ($proyectoId !== null && $proyectoId > 0) {
+        $sql .= ' AND proyecto_id = :p';
+        $params[':p'] = $proyectoId;
+    }
+    $sql .= ' ORDER BY proyecto_id ASC, id ASC';
+    $st = $pdo->prepare($sql);
+    $st->execute($params);
+    $rows = $st->fetchAll();
+
+    if (!$rows) {
+        // No hay `?resolver=1` como en etiquetas: una etiqueta nueva es
+        // inofensiva, un embudo vacio es un pipeline roto. El embudo se crea en
+        // el panel, deliberadamente. Ver embudos.md.
+        jsonError(
+            'El embudo `' . $slug . '` no existe. Los embudos se consultan en '
+            . '/v4/datarocket/embudos y se crean desde el panel cloud.',
+            400,
+            ['consulta' => ['embudo' => $slug]]
+        );
+    }
+    if (count($rows) > 1) {
+        jsonError(
+            'El embudo `' . $slug . '` existe en mas de un proyecto. Agrega `proyecto_id` para desambiguar.',
+            409,
+            ['consulta' => ['embudo' => $slug], 'embudos' => array_map(fn($r) => [
+                'id'          => (int)$r['id'],
+                'proyecto_id' => $r['proyecto_id'] !== null ? (int)$r['proyecto_id'] : null,
+                'slug'        => (string)$r['slug'],
+                'nombre'      => (string)$r['nombre'],
+            ], $rows)]
+        );
+    }
+    return $rows[0];
+}
+
+// Busca una oportunidad ABIERTA del prospecto en ese embudo. "Abierta" es estar
+// en una etapa `tipo='activa'` — `ganada` y `perdida` son terminales — o no
+// tener etapa asignada, que es un dato incompleto, no un cierre.
+//
+// Existe para que N consultas del mismo cliente no inflen el kanban con N
+// tarjetas: la segunda consulta se cuelga de la oportunidad que ya esta en curso
+// (la mas reciente si hubiera varias, que es en la que alguien esta trabajando).
+function drPrOportunidadAbierta(PDO $pdo, int $prospectoId, int $embudoId): ?int {
+    $st = $pdo->prepare("
+        SELECT o.id
+          FROM datarocket_oportunidades o
+          LEFT JOIN datarocket_etapas e ON e.id = o.etapa_id
+         WHERE o.prospecto_id = :p
+           AND o.embudo_id    = :e
+           AND (o.etapa_id IS NULL OR e.tipo = 'activa')
+      ORDER BY o.id DESC
+         LIMIT 1
+    ");
+    $st->execute([':p' => $prospectoId, ':e' => $embudoId]);
+    $row = $st->fetch();
+    return $row ? (int)$row['id'] : null;
+}
+
+// Decide si el alta de una consulta puede reutilizar un prospecto ya cargado.
+// Devuelve su id, o null si no hay duplicado.
+//
+// Corta con 409 en un solo caso: cuando el correo matchea contra un prospecto y
+// el celular contra OTRO. Ahi no hay forma de elegir a cual colgarle la
+// oportunidad sin adivinar, y adivinar mal significa mandarle la consulta al
+// legajo equivocado. El body del error trae las coincidencias para que el
+// cliente (o una persona) resuelva cual es.
+function drPrProspectoAReutilizar(PDO $pdo, array $p): ?int {
+    $coincidencias = drPrBuscarDuplicados($pdo, $p['correo'], $p['celular']);
+    if (!$coincidencias) return null;
+
+    $ids = array_unique(array_map(fn($c) => (int)$c['prospecto']['id'], $coincidencias));
+    if (count($ids) > 1) {
+        jsonError(
+            'El correo y el celular pertenecen a prospectos distintos, asi que no se puede '
+            . 'determinar a cual corresponde la consulta. Resolvelo indicando datos de uno solo.',
+            409,
+            ['coincidencias' => $coincidencias]
+        );
+    }
+    return (int)reset($ids);
+}
+
+// Crea la oportunidad y la interaccion del bloque de consulta y responde. No
+// vuelve: jsonOk() hace exit.
+//
+// `$creado` distingue los dos caminos que llegan aca — prospecto recien
+// insertado vs. prospecto reutilizado — y define tres cosas: el status (201 vs.
+// 200), de donde salen `uuid` / `registrado`, y si las listas y etiquetas del
+// body ya se aplicaron o hay que sumarlas ahora.
+function drPrAltaConsulta(
+    PDO $pdo, int $prospectoId, array $p, array $c,
+    array $listaIds, array $etiquetaIds, bool $creado
+): void {
+    $ahora = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+             ->format('Y-m-d H:i:s');
+
+    $uuid       = $p['uuid']       ?? null;
+    $registrado = $p['registrado'] ?? null;
+
+    if (!$creado) {
+        // Sobre un prospecto que ya existia NO se pisa nada de lo cargado: los
+        // datos del formulario pueden ser mas pobres que los que ya tiene (un
+        // alta previa con domicilio y cargo, una consulta nueva con solo el
+        // nombre y el correo). Se lee su identidad para responderla y listo.
+        $st = $pdo->prepare('SELECT uuid, registrado FROM datarocket_prospectos WHERE id = :i');
+        $st->execute([':i' => $prospectoId]);
+        $row        = $st->fetch() ?: [];
+        $uuid       = $row['uuid']       ?? null;
+        $registrado = $row['registrado'] ?? null;
+
+        // Las listas y etiquetas si se SUMAN — es informacion nueva sobre el
+        // prospecto ("ademas vino por la expo"), y aca no se puede usar el
+        // reemplazo total de drPrSyncEtiquetas() sin borrarle las que ya tenia.
+        drPrAgregarListas($pdo, $prospectoId, $listaIds);
+        drPrAgregarEtiquetas($pdo, $prospectoId, $etiquetaIds);
+    }
+
+    // Oportunidad: se reutiliza la que ya este abierta en ese embudo para no
+    // llenar el kanban de tarjetas duplicadas del mismo cliente.
+    $oportunidadId = drPrOportunidadAbierta($pdo, $prospectoId, $c['embudo_id']);
+    $oportunidadCreada = $oportunidadId === null;
+
+    if ($oportunidadCreada) {
+        $st = $pdo->prepare("
+            INSERT INTO datarocket_oportunidades
+                (prospecto_id, ingreso, proyecto_id, sentido, origen,
+                 embudo_id, etapa_id, etapa_ingreso, actualizado, asunto)
+            VALUES
+                (:prospecto_id, :ingreso, :proyecto_id, :sentido, :origen,
+                 :embudo_id, :etapa_id, :etapa_ingreso, :actualizado, :asunto)
+        ");
+        $st->execute([
+            ':prospecto_id'  => $prospectoId,
+            ':ingreso'       => $ahora,
+            // El proyecto sale del EMBUDO, no del cliente: son el mismo dato y
+            // aceptarlo por separado permitiria una oportunidad cuyo proyecto no
+            // es el del embudo en el que vive.
+            ':proyecto_id'   => $c['proyecto_id'],
+            ':sentido'       => DR_CT_OPO_SENTIDO_ENTRANTE,
+            ':origen'        => $c['origen'],
+            ':embudo_id'     => $c['embudo_id'],
+            ':etapa_id'      => $c['etapa_id'],
+            ':etapa_ingreso' => $ahora,
+            ':actualizado'   => $ahora,
+            ':asunto'        => $c['asunto'],
+        ]);
+        $oportunidadId = (int)$pdo->lastInsertId();
+    } else {
+        // No se toca la etapa: si alguien ya la movio a "Propuesta", una consulta
+        // nueva no tiene por que devolverla al principio del pipeline. Solo se
+        // marca que hubo movimiento, que es lo que ordena el kanban.
+        $pdo->prepare('UPDATE datarocket_oportunidades SET actualizado = :a WHERE id = :i')
+            ->execute([':a' => $ahora, ':i' => $oportunidadId]);
+    }
+
+    // Interaccion: siempre se crea una nueva. Es el mensaje concreto que mando
+    // el prospecto y el historial de la oportunidad se lee de aca.
+    $st = $pdo->prepare("
+        INSERT INTO datarocket_interacciones
+            (fecha, prospecto_id, oportunidad_id, sentido, canal, asunto, mensaje)
+        VALUES
+            (:fecha, :prospecto_id, :oportunidad_id, :sentido, :canal, :asunto, :mensaje)
+    ");
+    $st->execute([
+        ':fecha'          => $ahora,
+        ':prospecto_id'   => $prospectoId,
+        ':oportunidad_id' => $oportunidadId,
+        ':sentido'        => DR_CT_INT_SENTIDO_ENTRANTE,
+        ':canal'          => $c['canal'],
+        ':asunto'         => $c['asunto'],
+        ':mensaje'        => $c['mensaje'],
+    ]);
+    $interaccionId = (int)$pdo->lastInsertId();
+
+    $pdo->commit();
+
+    // `id` / `uuid` / `registrado` se mantienen en la raiz: son el contrato que
+    // ya consumen los clientes del alta simple, y un formulario que empieza a
+    // mandar el bloque de consulta no deberia tener que mover donde los lee.
+    jsonOk([
+        'id'         => $prospectoId,
+        'uuid'       => $uuid,
+        'registrado' => $registrado,
+        'prospecto'  => [
+            'id'         => $prospectoId,
+            'uuid'       => $uuid,
+            'registrado' => $registrado,
+            'creado'     => $creado,
+        ],
+        'oportunidad' => [
+            'id'          => $oportunidadId,
+            'creada'      => $oportunidadCreada,
+            'embudo_id'   => $c['embudo_id'],
+            'embudo_slug' => $c['embudo_slug'],
+            'proyecto_id' => $c['proyecto_id'],
+            'etapa_id'    => $c['etapa_id'],
+            'etapa_nombre'=> $c['etapa_nombre'],
+        ],
+        'interaccion' => [
+            'id'      => $interaccionId,
+            'creada'  => true,
+            'sentido' => DR_CT_INT_SENTIDO_ENTRANTE,
+            'canal'   => $c['canal'],
+        ],
+    ], $creado ? 201 : 200);
+}
+
+// Suma listas / etiquetas sin borrar las que el prospecto ya tenia — la variante
+// no destructiva de drPrSyncListas() / drPrSyncEtiquetas(), para el camino en
+// que la consulta cae sobre un prospecto preexistente.
+function drPrAgregarListas(PDO $pdo, int $prospectoId, array $listaIds): void {
+    if (!$listaIds) return;
+    $ph  = implode(',', array_fill(0, count($listaIds), '?'));
+    $val = $pdo->prepare("SELECT id FROM datarocket_listas WHERE id IN ({$ph})");
+    $val->execute($listaIds);
+    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_prospectos_listas
+                          (prospecto_id, lista_id) VALUES (:cid, :lid)');
+    foreach (array_column($val->fetchAll(), 'id') as $lid) {
+        $ins->execute([':cid' => $prospectoId, ':lid' => (int)$lid]);
+    }
+}
+
+function drPrAgregarEtiquetas(PDO $pdo, int $prospectoId, array $etiquetaIds): void {
+    if (!$etiquetaIds) return;
+    $ph  = implode(',', array_fill(0, count($etiquetaIds), '?'));
+    $val = $pdo->prepare("SELECT id FROM datarocket_etiquetas WHERE id IN ({$ph})");
+    $val->execute($etiquetaIds);
+    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_prospectos_etiquetas
+                          (prospecto_id, etiqueta_id) VALUES (:cid, :eid)');
+    foreach (array_column($val->fetchAll(), 'id') as $eid) {
+        $ins->execute([':cid' => $prospectoId, ':eid' => (int)$eid]);
+    }
+}
+
 function handleCreate(PDO $pdo, array $in): void {
+    // El bloque de consulta se resuelve ANTES de tocar la base: si el embudo no
+    // existe, si vino incompleto o si el embudo no tiene etapas, el error sale
+    // sin haber escrito un prospecto que quedaria sin su oportunidad.
+    $consulta = drPrResolverConsulta($pdo, $in);
+
     drPrAssertCorreo($in);
     $p = drPrSanitize($in);
     // `tipo` obligatorio en alta — cualquier cliente del microservicio v4
@@ -716,6 +1158,17 @@ function handleCreate(PDO $pdo, array $in): void {
         // Unicidad de correo / celular. Va DENTRO de la transaccion y lo mas
         // pegado posible al INSERT para achicar la ventana de carrera (ver el
         // encabezado: sin UNIQUE en la tabla, la ventana no se cierra del todo).
+        //
+        // Con bloque de consulta la colision NO es un error: el POST ya no
+        // significa "dar de alta un prospecto" sino "registrar una consulta", y
+        // que quien la manda ya este en la base es lo normal — es un cliente que
+        // vuelve. Se reutiliza su fila y la oportunidad se le cuelga ahi. Sin
+        // bloque de consulta el POST sigue siendo un alta a secas y el duplicado
+        // sigue siendo el error que el 409 previene.
+        $reusaId = $consulta !== null ? drPrProspectoAReutilizar($pdo, $p) : null;
+        if ($reusaId !== null) {
+            drPrAltaConsulta($pdo, $reusaId, $p, $consulta, $listaIds, $etiquetaIds, false);
+        }
         drPrAssertUnico($pdo, $p);
 
         $sql = "INSERT INTO datarocket_prospectos
@@ -765,6 +1218,15 @@ function handleCreate(PDO $pdo, array $in): void {
         $newId = (int)$pdo->lastInsertId();
         drPrSyncListas($pdo, $newId, $listaIds);
         drPrSyncEtiquetas($pdo, $newId, $etiquetaIds);
+
+        // Con bloque de consulta el alta sigue con la oportunidad y la
+        // interaccion, y responde adentro (jsonOk hace exit) — todo bajo la
+        // misma transaccion, asi que o entran los tres registros o no entra
+        // ninguno.
+        if ($consulta !== null) {
+            drPrAltaConsulta($pdo, $newId, $p, $consulta, $listaIds, $etiquetaIds, true);
+        }
+
         $pdo->commit();
         jsonOk([
             'id'         => $newId,
