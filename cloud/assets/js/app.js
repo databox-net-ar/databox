@@ -11575,8 +11575,13 @@ route('/datacount_comprobantes', async (mount) => {
         </div>
       </div>
 
+      <!-- Las dos primeras tarjetas resumen lo que hay en pantalla, no el
+           recurso entero: cuántas filas devolvió la búsqueda (con filtros y
+           límite aplicados) y la suma de la columna Total de esas mismas filas.
+           Se recalculan en pintarStatsDcComp() con cada carga del listado. La
+           tercera (Motor) es un indicador global y sí viene de la API. -->
       <div class="stats-bar" id="dcCompStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Resultados</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Importe total</span><span class="stat-value orange">—</span></div>
         <div class="stat-card dash-link" title="Ir a Arca &gt; Autorizaciones"
              onclick="location.hash='#/arcaautorizaciones'">
@@ -11985,18 +11990,30 @@ async function cargarDcComp() {
       apiGet('api/datacount_comprobantes.php?' + qs.toString()),
       dcCompCargarCatalogoEstados().catch(() => null),
     ]);
-    pintarStatsDcComp(data.stats);
-    pintarTablaDcComp(data.items || []);
+    const items = data.items || [];
+    pintarStatsDcComp(items, data.stats || {});
+    pintarTablaDcComp(items);
   } catch (e) {
+    // Las dos primeras tarjetas se blanquean: si el listado no cargó, dejar los
+    // números de la búsqueda anterior al lado de un error haría creer que siguen
+    // vigentes. La tercera (Motor) queda como está — no depende del listado.
+    $$('#dcCompStats .stat-card .stat-value').slice(0, 2)
+      .forEach((c) => { c.textContent = '—'; });
     tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
-function pintarStatsDcComp(s) {
+// Las dos primeras tarjetas son un resumen de la página que se está viendo: la
+// cantidad de filas del listado y la suma de su columna Total. Se calculan acá
+// sobre las mismas filas que se pintan —no las trae la API— así lo que dicen
+// coincide siempre con lo que se ve, incluso cuando el LIMIT recorta el
+// resultado. `total` puede venir en NULL: esos suman 0.
+function pintarStatsDcComp(rows, s) {
   const cards = $$('#dcCompStats .stat-card .stat-value');
   if (cards.length < 3) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = '$ ' + dcCompFmtImporte(s.importe_total);
+  const importe = rows.reduce((acc, c) => acc + (Number(c.total) || 0), 0);
+  cards[0].textContent = fmtNum(rows.length);
+  cards[1].textContent = '$ ' + dcCompFmtImporte(importe);
   // Motor booleano: '1' = habilitado (Iniciado, blanco); otro = detenido (rojo).
   // Mismo criterio que pintarStatsArcAut. Semantica en
   // cloud/jobs/datacount_comprobantes_autorizar.php.

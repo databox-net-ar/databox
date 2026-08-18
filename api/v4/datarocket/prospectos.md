@@ -530,6 +530,10 @@ cliente dejen tres tarjetas duplicadas en el kanban.
   se toca `actualizado`, que es lo que ordena el kanban.
 - La **interaccion siempre se crea**. El mensaje concreto nunca se pisa ni se
   colapsa: el historial de la oportunidad se lee de ahi.
+- La interaccion **nace pendiente**: el alta no escribe `respondida`, porque una
+  consulta que acaba de entrar no la contesto nadie. Se sella unicamente a mano
+  desde el panel (Datarocket > Interacciones > Marcar respondida), que es lo que
+  alimenta la metrica de demora de respuesta.
 
 ### La respuesta
 

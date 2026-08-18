@@ -40,6 +40,19 @@
 --  * Solo `etapa_ingreso >= fecha`: una respuesta anterior a la consulta daria
 --    demora negativa. Hoy no hay ninguna en ninguno de los dos entornos, pero
 --    la guarda queda por si prod cambia entre esta medicion y el apply.
+--  * Solo `fecha < '2026-08-17'`: TECHO AGREGADO EL 2026-08-18. Esto es un
+--    backfill historico, no una regla del sistema — una interaccion nueva NACE
+--    PENDIENTE y solo se sella a mano desde el ABM
+--    (?action=responder). Sin el techo la unica guarda temporal era
+--    `respondida IS NULL`, con lo cual esta migracion corriendo en un entorno
+--    nuevo (o reaplicada a mano desde el Migrador) sellaria tambien las
+--    consultas recien entradas por el formulario: el alta compuesta de
+--    api/v4/datarocket/prospectos.php crea la oportunidad con
+--    `etapa_ingreso = NOW()`, asi que el JOIN las matchea y quedarian
+--    "respondidas" con demora 0 sin que nadie las haya contestado.
+--    El techo es no-op sobre lo ya aplicado: al momento de agregarlo habia 0
+--    interacciones selladas con `fecha >= '2026-08-17'` tanto en dev como en
+--    prod (la migracion se aplico el 2026-08-17 01:55 en los dos entornos).
 --
 -- Para volver atras, si la metrica no sirve:
 --   UPDATE datarocket_interacciones SET respondida = NULL WHERE sentido = 'entrante';
@@ -50,5 +63,6 @@ UPDATE `datarocket_interacciones` `i`
    SET `i`.`respondida` = `p`.`etapa_ingreso`
  WHERE `i`.`sentido` = 'entrante'
    AND `i`.`respondida` IS NULL
+   AND `i`.`fecha` < '2026-08-17'
    AND `p`.`etapa_ingreso` IS NOT NULL
    AND `p`.`etapa_ingreso` >= `i`.`fecha`;

@@ -1052,6 +1052,14 @@ function drPrAltaConsulta(
 
     // Interaccion: siempre se crea una nueva. Es el mensaje concreto que mando
     // el prospecto y el historial de la oportunidad se lee de aca.
+    //
+    // `respondida` NO va en el INSERT a proposito: una consulta que acaba de
+    // entrar esta PENDIENTE por definicion — nadie la contesto todavia. La
+    // columna se sella unicamente a mano desde el ABM del panel
+    // (cloud/api/datarocketinteracciones.php, PUT ?action=responder), que es lo
+    // que alimenta la metrica de demora de respuesta. Si algun dia se agrega
+    // aca, el tablero de pendientes deja de servir: todo entraria ya contestado
+    // con demora 0. Mismo criterio en el alta del ABM.
     $st = $pdo->prepare("
         INSERT INTO datarocket_interacciones
             (fecha, prospecto_id, oportunidad_id, sentido, canal, asunto, mensaje)

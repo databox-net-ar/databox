@@ -200,13 +200,11 @@ function handleList(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    // Stats globales (ignoran filtros — son indicadores del recurso).
-    $stats = $pdo->query("
-        SELECT
-            COUNT(*)          AS total,
-            COALESCE(SUM(total), 0) AS importe_total
-        FROM datacount_comprobantes
-    ")->fetch();
+    // Las dos primeras tarjetas de arriba del listado (cantidad de resultados y
+    // suma de la columna Total) las calcula el front sobre `items`, para que
+    // reflejen exactamente lo que se ve en pantalla —filtros y LIMIT incluidos—.
+    // Por eso `stats` ya solo transporta el estado del motor, que no sale del
+    // listado.
 
     // Estado del motor de autorizacion automatica (mismo flag que consume el
     // visor de Arca > Autorizaciones y el cron cloud/jobs/datacount_comprobantes_autorizar.php).
@@ -231,9 +229,7 @@ function handleList(PDO $pdo, array $q): void {
 
     jsonOk([
         'stats' => [
-            'total'         => (int)($stats['total']         ?? 0),
-            'importe_total' => (float)($stats['importe_total'] ?? 0),
-            'motor'         => (string)($motor ?? '1'),
+            'motor' => (string)($motor ?? '1'),
         ],
         'items' => $rows,
     ]);
