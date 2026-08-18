@@ -17,6 +17,12 @@
  *   - 20260816_1800_datarocket_prospectos_normalizar_web.sql
  * Si se toca una regla aca, hay que tocarla alla (o escribir otra migracion).
  *
+ * DESALINEADO A PROPOSITO desde el 2026-08-18: las dos reglas que se agregaron
+ * ese dia (sacar los espacios internos del correo, bajar a minuscula el path de
+ * `web`) valen solo para lo que ENTRA. No se escribio backfill — el de `web`
+ * habria roto las 569 filas historicas con mayusculas legitimas en el path. Las
+ * filas viejas quedan como estaban; se re-normalizan al editarlas.
+ *
  * ---------------------------------------------------------------------------
  * TELEFONOS
  * ---------------------------------------------------------------------------
@@ -47,11 +53,45 @@
  * ---------------------------------------------------------------------------
  * CORREOS
  * ---------------------------------------------------------------------------
- * Siempre minuscula y sin espacios alrededor. Si el campo trae una lista
- * ("ventas@x.com.ar, soporte@x.com.ar" — comun en los prospectos scrapeados de
- * sitios institucionales) se rescata la primera direccion valida. Si no hay
- * ninguna direccion parseable, el resultado es null y el llamador decide si
- * eso es un error de validacion o simplemente un campo vacio.
+ * Siempre minuscula. Si el campo trae una lista ("ventas@x.com.ar,
+ * soporte@x.com.ar" — comun en los prospectos scrapeados de sitios
+ * institucionales) se rescata la primera direccion valida. Si no hay ninguna
+ * direccion parseable, el resultado es null y el llamador decide si eso es un
+ * error de validacion o simplemente un campo vacio.
+ *
+ * LO QUE VIENE CORREGIBLE SE CORRIGE, NO SE RECHAZA (decision del 2026-08-18).
+ * La correccion es DETERMINISTA: solo lo que no obliga a adivinar cual era la
+ * direccion. Sobre los 259 valores rotos distintos que hay en la tabla legacy
+ * `datarocketcontactos`, esto recupera 122 y rechaza 137.
+ *
+ * Se corrige:
+ *   - acentos y diacriticos      "german@" <- "germán@"  (ver el mapa abajo)
+ *   - `@` escrito con palabras   "informes(a)windnet.com.ar", "[at]", "(arroba)"
+ *   - envoltorios                "mailto:", "<juan@x.com>", comillas
+ *   - puntuacion espuria         "gmail;.com", "gmail..com", "juan.@x.com"
+ *   - espacios tipeados          "juan @gmail.com", "gmail. com", "hmail .com"
+ *
+ * NO se corrige, porque seria inventar una direccion que nadie tiene:
+ *   - falta el TLD               "admin@crediguia"
+ *   - falta el `@`               "adanncortez1974gmail.com"
+ *   - typo del proveedor         "Andres.yudica@hotmailcom"
+ *   - mojibake irreparable       "gonzßlez@intersistemas.com.ar"
+ * Todo eso da null -> 400 en los dos endpoints.
+ *
+ * DOS TRAMPAS que costaron corrupcion silenciosa y estan cubiertas con test:
+ *
+ * 1. Los espacios NO se sacan todos de una. Se sacan (a) los pegados a `@` o a
+ *    `.`, que rompen la estructura de la direccion, y (b) el resto SOLO si
+ *    quedaba uno solo y hay un solo `@`. Sacarlos todos siempre pegaria la
+ *    prosa que rodea la direccion ("Facundo Tomas Lima 2644130910
+ *    facundolima39@icloud.com") y las listas separadas por espacio
+ *    ("juan@x.com maria@x.com" -> "juan@x.commaria").
+ *
+ * 2. El regex de rescate puede CORTAR una direccion por el medio en vez de
+ *    aislarla, y lo que devuelve es una direccion valida pero de otra persona.
+ *    "germán@m3kargentina.com.ar" se guardaba como "n@m3kargentina.com.ar".
+ *    Por eso prospectoCorreoExtraer() exige que lo que quede pegado antes del
+ *    match sea un separador; si no, rechaza.
  *
  * ---------------------------------------------------------------------------
  * WEB
@@ -70,8 +110,16 @@
  *      ("www. pampasat.com", "www . jriseguridad.com.ar"), nunca separadores
  *   4. se saca la puntuacion del final (`/`, `.`, `,`), que es lo que deja el
  *      copiado desde el navegador — cubre las ~7.200 filas terminadas en `/`
- *   5. se baja a minuscula SOLO el host. El path es case sensitive y bajarlo
- *      rompe los acortadores (`bit.ly/3SSePnt` no es `bit.ly/3ssepnt`).
+ *   5. se baja a minuscula el valor ENTERO, host y path
+ *
+ * El paso 5 tiene un costo conocido y aceptado (decision del 2026-08-18): el
+ * path es case sensitive, asi que lo que se guarda puede no resolver. Rompe los
+ * vanity de Facebook (`facebook.com/MENDOSUR`), los ids de acortador
+ * (`w.app/InternewNetworks`, `bit.ly/3SSePnt`) y los tokens de query de
+ * Instagram (`?igshid=ZDc4ODBmNjlmNQ==`). Se prioriza tener el campo uniforme
+ * para comparar y deduplicar. En dev al 2026-08-18 hay 569 filas ya cargadas
+ * con mayusculas en el path; ninguna migracion las toca, asi que las viejas
+ * conservan su capitalizacion y solo lo que entra de ahora en mas se baja.
  *
  * El `www.` se respeta tal cual venga: no se agrega ni se saca.
  *
@@ -166,12 +214,60 @@ function prospectoNormalizarTelefono(mixed $v): ?string {
     return $digitos === '' ? null : substr($digitos, 0, 255);
 }
 
-// Normaliza `correo` a minuscula. Devuelve null si el campo esta vacio o si no
-// contiene ninguna direccion parseable.
-function prospectoNormalizarCorreo(mixed $v): ?string {
-    $s = strtolower(trim((string)($v ?? '')));
-    if ($s === '') return null;
+// Acentos y diacriticos -> ASCII. En un correo NUNCA son parte de la direccion
+// real: son el nombre de la persona tipeado como se escribe
+// ("german@", "analia_muniz@", "ricardo.trivino@"). El mapa es explicito y no
+// iconv('ASCII//TRANSLIT') a proposito: ese depende del locale del server y
+// segun el sistema devuelve "'n" o "?" en vez de "n", que es justo el tipo de
+// diferencia que no se puede tener entre dev y prod.
+//
+// Se aplica tambien al dominio. Un dominio IDN real con eñe existe, pero en
+// esta tabla lo que hay son cargas a mano ("saenzpeña.gob.ar" cuando el dominio
+// registrado es saenzpena.gob.ar), asi que transliterar acierta mucho mas
+// seguido de lo que falla. Ojo que `web` hace lo contrario y los conserva: ahi
+// si hay dominios con eñe legitimos del padron.
+const CONTACTO_CORREO_ACENTOS = [
+    'á'=>'a', 'à'=>'a', 'ä'=>'a', 'â'=>'a', 'ã'=>'a', 'å'=>'a',
+    'é'=>'e', 'è'=>'e', 'ë'=>'e', 'ê'=>'e',
+    'í'=>'i', 'ì'=>'i', 'ï'=>'i', 'î'=>'i',
+    'ó'=>'o', 'ò'=>'o', 'ö'=>'o', 'ô'=>'o', 'õ'=>'o', 'ø'=>'o',
+    'ú'=>'u', 'ù'=>'u', 'ü'=>'u', 'û'=>'u',
+    'ñ'=>'n', 'ç'=>'c', 'ý'=>'y', 'ÿ'=>'y',
+];
 
+// Reparaciones DETERMINISTAS sobre un valor ya recortado y en minuscula: las
+// que no requieren adivinar cual era la direccion. Todo lo que si haria falta
+// inventar (reponer un TLD ausente, corregir "hotmailcom", decidir donde iba un
+// `@` que no vino) queda expresamente afuera y termina en null -> 400.
+function prospectoCorreoRepararTipeos(string $s): string {
+    // Envoltorios con que llega un correo copiado de un cliente de mail o
+    // scrapeado de un HTML: "mailto:", "<juan@x.com>", comillas.
+    $s = preg_replace('~^mailto:\s*~u', '', $s);
+    $s = trim($s, " \t\n\r\0\x0B<>\"'");
+
+    // `@` escrito con palabras, tipico de los sitios que ofuscan la direccion
+    // para los bots: "informes(a)windnet.com.ar", "comercial[a]urbana.com.ar".
+    $s = preg_replace('~\s*[(\[{]\s*(?:a|at|arroba)\s*[)\]}]\s*~u', '@', $s);
+
+    $s = strtr($s, CONTACTO_CORREO_ACENTOS);
+
+    // Puntuacion espuria pegada al separador: "gmail;.com", "gmail..com",
+    // "juan.@x.com", "juan@.gmail.com".
+    $s = preg_replace('~[;,]+\.~u', '.', $s);
+    $s = preg_replace('~\.{2,}~u', '.', $s);
+    return str_replace(['.@', '@.'], '@', $s);
+}
+
+// Lo que puede aparecer legitimamente pegado ANTES de una direccion cuando el
+// campo trae una lista o una etiqueta ("correo: juan@x.com", "a@x.com, b@x.com").
+// Cualquier otra cosa adelante significa que el rescate corto por el medio.
+const CONTACTO_CORREO_SEPARADORES = " \t\n\r\0\x0B,;/|<>()[]{}:\"'";
+
+// Extrae una direccion de un valor YA recortado, en minuscula y reparado.
+// Devuelve null si no hay ninguna parseable. Separada de
+// prospectoNormalizarCorreo() para poder correr las mismas dos reglas dos
+// veces: con los espacios internos y sin ellos (ver alla el porque del orden).
+function prospectoCorreoExtraer(string $s): ?string {
     // Una direccion sola y bien formada es el caso normal: se valida con el
     // filtro de PHP y se pide ademas un TLD alfabetico (filter_var acepta
     // `a@b`, que en esta tabla nunca es un correo real).
@@ -183,10 +279,56 @@ function prospectoNormalizarCorreo(mixed $v): ?string {
     // Listas separadas por coma o barra, direcciones con basura pegada
     // ("info@estudiocontax.com."): se rescata la primera que matchee.
     $m = [];
-    if (preg_match('/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/', $s, $m) === 1) {
-        return substr($m[0], 0, 255);
+    if (preg_match('/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/', $s, $m, PREG_OFFSET_CAPTURE) === 1) {
+        [$dir, $off] = $m[0];
+        // Guarda contra el rescate que CORTA en vez de aislar. Si lo que quedo
+        // pegado justo antes del match no es un separador, el regex partio una
+        // direccion por el medio y lo que devuelve es una direccion que no
+        // existe. Pasa con:
+        //   - mojibake que el mapa de acentos no cubre: "gonzßlez@x.com.ar"
+        //     devolvia "lez@x.com.ar"
+        //   - dobles `@`: "moreser@30@gmail.com" devolvia "30@gmail.com"
+        // Eso no es corregir, es inventar: se rechaza y sale por el 400.
+        if ($off > 0 && strpos(CONTACTO_CORREO_SEPARADORES, $s[$off - 1]) === false) {
+            return null;
+        }
+        return substr($dir, 0, 255);
     }
     return null;
+}
+
+// Normaliza `correo` a minuscula. Devuelve null si el campo esta vacio o si no
+// contiene ninguna direccion parseable.
+function prospectoNormalizarCorreo(mixed $v): ?string {
+    // mb_strtolower, no strtolower: el de PHP trabaja byte a byte y deja las
+    // mayusculas acentuadas intactas ("ANALÍA@X.COM" -> "analÍa@x.com"), con lo
+    // cual el mapa de acentos —que es solo minusculas— no las agarraria.
+    $s = mb_strtolower(trim((string)($v ?? '')), 'UTF-8');
+    if ($s === '') return null;
+
+    $s = prospectoCorreoRepararTipeos($s);
+    if ($s === '') return null;
+
+    // Espacios, en dos pasos. NO se sacan todos de una: el campo muchas veces
+    // trae la direccion rodeada de prosa o una lista, y pegar todo da un
+    // engendro peor que no normalizar.
+    //
+    // (1) Los pegados a `@` o a `.` rompen la estructura de la direccion, asi
+    //     que son siempre tipeos: "juan @gmail.com", "gmail. com", "hmail .com",
+    //     "hotmail.com. ar".
+    $s = preg_replace('~\s*([@.])\s*~u', '$1', $s);
+
+    // (2) Si despues de eso queda UN solo espacio y UN solo `@`, tambien es un
+    //     tipeo y se pega: "g.luengo 78@gmail.com" -> "g.luengo78@gmail.com".
+    //     Con dos o mas espacios el campo trae otra cosa alrededor de la
+    //     direccion ("Facundo Tomas Lima 2644130910 facundolima39@icloud.com")
+    //     o es una lista ("juan@x.com maria@x.com"): ahi NO se pega nada y se
+    //     deja que el rescate aisle la primera direccion.
+    if (substr_count($s, ' ') === 1 && substr_count($s, '@') === 1) {
+        $s = str_replace(' ', '', $s);
+    }
+
+    return prospectoCorreoExtraer($s);
 }
 
 // Host valido: una o mas etiquetas terminadas en punto, un TLD alfabetico y un
@@ -236,7 +378,13 @@ function prospectoNormalizarWeb(mixed $v): ?string {
     if (preg_match(CONTACTO_WEB_HOST, $host) !== 1
         && preg_match(CONTACTO_WEB_IPV4, $host) !== 1) return null;
 
-    return mb_substr($host . $resto, 0, 255, 'UTF-8');
+    // Minuscula TODO el valor, path y query incluidos. Ojo que el path SI es
+    // case sensitive: esto rompe los vanity de Facebook
+    // ("facebook.com/MENDOSUR"), los ids de acortador ("w.app/InternewNetworks")
+    // y los tokens de Instagram ("?igshid=ZDc4ODBmNjlmNQ=="). Es una decision
+    // explicita del 2026-08-18 — el campo se quiere uniforme para comparar y
+    // deduplicar, y se acepta el costo en esos links.
+    return mb_strtolower(mb_substr($host . $resto, 0, 255, 'UTF-8'), 'UTF-8');
 }
 
 // Devuelve el correo que estaba cargado por error en `web`, o null si el valor

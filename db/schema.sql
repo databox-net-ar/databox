@@ -1596,6 +1596,17 @@ CREATE TABLE `datarocket_prospectos`  (
   INDEX `idx_dr_prospectos_localidad`(`localidad_id`) USING BTREE,
   INDEX `idx_dr_prospectos_provincia`(`provincia_id`) USING BTREE,
   INDEX `idx_dr_prospectos_pais`(`pais_id`) USING BTREE,
+  -- Busqueda de duplicados en el alta. `api/v4/datarocket/prospectos.php`
+  -- rechaza con 409 el prospecto cuyo `correo` o `celular` ya este cargado, y
+  -- expone el mismo chequeo en `GET ?verificar=1`; sin estos indices cada alta
+  -- es un full scan. Migracion 20260818_1300.
+  --
+  -- NO son UNIQUE a proposito: al 2026-08-18 hay 2.876 correos y 2.031
+  -- celulares repetidos en los datos historicos, y ~9.600 filas con `correo=''`
+  -- (la cadena vacia si colisiona bajo UNIQUE, a diferencia de NULL). La
+  -- unicidad la sostiene la capa PHP hasta que se depuren esos duplicados.
+  INDEX `idx_dr_prospectos_correo`(`correo`) USING BTREE,
+  INDEX `idx_dr_prospectos_celular`(`celular`) USING BTREE,
   CONSTRAINT `fk_dr_prospectos_localidad` FOREIGN KEY (`localidad_id`) REFERENCES `localidades` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT `fk_dr_prospectos_provincia` FOREIGN KEY (`provincia_id`) REFERENCES `provincias` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT `fk_dr_prospectos_pais` FOREIGN KEY (`pais_id`) REFERENCES `paises` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
