@@ -57,6 +57,13 @@
 //   Consultar oportunidad. El SELECT devuelve ademas `oportunidad_producto` para
 //   poder etiquetar el link de vuelta a la oportunidad (era `oportunidad_asunto`
 //   hasta que la migracion 20260817_1700 dropeo `datarocket_oportunidades.asunto`).
+//
+// Nota sobre `embudo_id`:
+//   La interaccion NO guarda embudo propio: se filtra por el de la oportunidad
+//   relacionada (`o.embudo_id`, via el LEFT JOIN de DR_INT_JOINS). Por eso
+//   `?embudo_id=N` deja afuera las interacciones sueltas del prospecto — las que
+//   tienen `oportunidad_id` NULL no pertenecen a ningun embudo. Lo usa la
+//   pestaña "Interacciones" del modal de Consultar embudo.
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
@@ -131,6 +138,7 @@ function handleList(PDO $pdo, array $q): void {
     $codigo      = isset($q['codigo'])         && $q['codigo']         !== '' ? (int)$q['codigo']         : null;
     $prospecto   = isset($q['prospecto_id'])   && $q['prospecto_id']   !== '' ? (int)$q['prospecto_id']   : null;
     $oportunidad = isset($q['oportunidad_id']) && $q['oportunidad_id'] !== '' ? (int)$q['oportunidad_id'] : null;
+    $embudo      = isset($q['embudo_id'])      && $q['embudo_id']      !== '' ? (int)$q['embudo_id']      : null;
     $sentido  = trim((string)($q['sentido'] ?? ''));
     $canal    = trim((string)($q['canal']   ?? ''));
     // Estado de respuesta. Viajan como flags separados y no como un solo
@@ -160,6 +168,10 @@ function handleList(PDO $pdo, array $q): void {
     if ($codigo      !== null) { $where[] = 'i.id = :codigo';                   $params[':codigo']      = $codigo; }
     if ($prospecto   !== null) { $where[] = 'i.prospecto_id = :prospecto';      $params[':prospecto']   = $prospecto; }
     if ($oportunidad !== null) { $where[] = 'i.oportunidad_id = :oportunidad';  $params[':oportunidad'] = $oportunidad; }
+    // Filtro por embudo: cuelga de la oportunidad, no de la interaccion. El
+    // `o.embudo_id` ya deja afuera las que no tienen oportunidad (NULL nunca
+    // matchea), asi que no hace falta un IS NOT NULL extra.
+    if ($embudo      !== null) { $where[] = 'o.embudo_id = :embudo';            $params[':embudo']      = $embudo; }
     if ($sentido     !== '')   { $where[] = 'i.sentido = :sentido';             $params[':sentido']     = $sentido; }
     // `_null` como centinela de "sin canal": es la marca de las notas internas,
     // y `?canal=` vacio ya significa "sin filtro". Mismo patron que el `_null`

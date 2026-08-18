@@ -24830,6 +24830,23 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
       </div>`;
   };
 
+  // Fila tipo `linkCard` para la ubicacion cruda: el valor es un par lat,lng
+  // (o, en registros viejos, una direccion suelta) y se muestra como texto
+  // plano enlazado a Google Maps en pestaña nueva. Sin <code>: el recuadro
+  // oscuro competia visualmente con el resto de la pestaña.
+  const mapCard = (label, value) => {
+    const empty = value == null || String(value).trim() === '';
+    const q     = empty ? '' : String(value).trim();
+    const inner = empty
+      ? 'Sin dato'
+      : `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">${esc(q)}</a>`;
+    return `
+      <div class="data-row full">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
+      </div>`;
+  };
+
   // Fila tipo `card` que renderiza un array de nombres como pills. Se arma
   // como una unica linea (sin newlines dentro del `.data-value`) porque esa
   // clase tiene `white-space: pre-wrap` global — cualquier salto de linea en
@@ -24893,7 +24910,7 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
         ${card('Nombre',     c.persona_nombre)}
         ${card('Género',     DR_CT_GENERO_MAP[c.persona_genero] || c.persona_genero)}
         ${card('Nacimiento', c.persona_nacimiento)}
-        ${card('DNI',        c.persona_dni, false, true)}
+        ${card('DNI',        c.persona_dni)}
       </dl>
     </div>
 
@@ -24905,13 +24922,13 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
          cambio la etiqueta visible. Sin backticks en este comentario: esta
          dentro de un template literal y lo cortarian.
          Web/Facebook/Instagram/TikTok van con linkCard (abren en pestaña
-         nueva); el resto con card monoespaciada. -->
+         nueva); el resto con card de texto plano. -->
     <div class="modal-tabpanel" data-panel="prospecto" hidden>
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
-        ${card('Correo',   c.correo,   false, true)}
-        ${card('Celular',  c.celular,  false, true)}
-        ${card('Teléfono', c.telefono, false, true)}
-        ${card('WhatsApp', c.whatsapp, false, true)}
+        ${card('Correo',   c.correo)}
+        ${card('Celular',  c.celular)}
+        ${card('Teléfono', c.telefono)}
+        ${card('WhatsApp', c.whatsapp)}
         ${linkCard('Facebook',  c.facebook)}
         ${linkCard('Instagram', c.instagram)}
         ${linkCard('TikTok',    c.tiktok)}
@@ -24921,7 +24938,7 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
 
     <!-- Ubicacion en tres filas: domicilio + ciudad al 50/50, despues el trio
          geografico (localidad / provincia / pais) en tercios, y la ubicacion
-         cruda (lat,lng) sola a lo ancho. -->
+         cruda (lat,lng) sola a lo ancho, enlazada a Google Maps. -->
     <div class="modal-tabpanel" data-panel="ubicacion" hidden>
       <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
         ${card('Domicilio', c.domicilio)}
@@ -24935,7 +24952,7 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
       </dl>
 
       <dl class="data-list" style="grid-template-columns:1fr">
-        ${card('Ubicación', c.ubicacion, true, true)}
+        ${mapCard('Ubicación', c.ubicacion)}
       </dl>
     </div>
 
@@ -25710,8 +25727,9 @@ function drIntAsignadoCelda(a) {
 // las dos pestañas se vean igual y sigan las mismas columnas que el listado
 // principal (menos Prospecto y Acciones, redundantes dentro de una ficha).
 
-// Trae las interacciones de un recurso. `filtro` es 'prospecto_id' o
-// 'oportunidad_id'. Nunca lanza: si el usuario no tiene el permiso de consulta
+// Trae las interacciones de un recurso. `filtro` es 'prospecto_id',
+// 'oportunidad_id' o 'embudo_id' (este ultimo resuelve por la oportunidad
+// relacionada). Nunca lanza: si el usuario no tiene el permiso de consulta
 // —o el endpoint falla— devolvemos [] y la pestaña muestra el vacío, en vez de
 // romper el modal entero de prospecto/oportunidad por una pestaña secundaria.
 async function drIntCargarDeRecurso(filtro, id) {
@@ -27490,13 +27508,28 @@ let dremEtapasCache   = [];     // ultimo listado cargado
 let dremEtapaEditandoId = null; // id de la etapa que se esta editando inline
 let dremEtapasReadOnly  = false; // true en modo Consulta (oculta botones)
 
+// Estado de las pestañas Oportunidades / Interacciones del modal de Consulta.
+// Son read-only y potencialmente largas, asi que cargan una sola vez por modal
+// (a diferencia de Etapas, que se re-pide en cada entrada porque se edita).
+let dremOportunidadesCache = [];
+let dremInteraccionesCache = [];
+let dremPanelesCargados    = { oportunidades: false, interacciones: false };
+
+function dremResetPanelesConsulta() {
+  dremOportunidadesCache = [];
+  dremInteraccionesCache = [];
+  dremPanelesCargados    = { oportunidades: false, interacciones: false };
+}
+
 function dremEtapaTipoBadge(t) {
   const def = DREM_ETAPA_TIPOS.find((x) => x.val === t) || DREM_ETAPA_TIPOS[0];
   return `<span class="badge ${def.cls}">${esc(def.label)}</span>`;
 }
 
-// Cambia entre tabs "General" y "Etapas". Registrado en `window` para poder
-// usarse desde el onclick inline de los botones (mismo patron que awsMsgCambiarTab).
+// Cambia entre los tabs del modal del embudo ("General" / "Etapas" en Edicion,
+// mas "Oportunidades" / "Interacciones" en Consulta). Registrado en `window`
+// para poder usarse desde el onclick inline de los botones (mismo patron que
+// awsMsgCambiarTab).
 function dremCambiarTab(tab) {
   document.querySelectorAll('#modalRoot .modal-tab[data-drem-tab]').forEach((b) => {
     b.classList.toggle('active', b.dataset.dremTab === tab);
@@ -27504,9 +27537,16 @@ function dremCambiarTab(tab) {
   document.querySelectorAll('#modalRoot .modal-tabpanel[data-drem-tab]').forEach((p) => {
     p.hidden = p.dataset.dremTab !== tab;
   });
-  // Lazy load al entrar a Etapas (evita el GET si nunca se abre la pestaña).
-  if (tab === 'etapas' && dremEtapaEmbudoId) {
+  if (!dremEtapaEmbudoId) return;
+  // Lazy load al entrar a cada pestaña (evita el GET si nunca se abre).
+  // Etapas se re-pide siempre porque se edita desde el mismo modal; las otras
+  // dos son read-only y se cachean por modal (`dremPanelesCargados`).
+  if (tab === 'etapas') {
     dremCargarEtapas(dremEtapaEmbudoId);
+  } else if (tab === 'oportunidades' && !dremPanelesCargados.oportunidades) {
+    dremCargarOportunidadesEmbudo(dremEtapaEmbudoId);
+  } else if (tab === 'interacciones' && !dremPanelesCargados.interacciones) {
+    dremCargarInteraccionesEmbudo(dremEtapaEmbudoId);
   }
 }
 window.dremCambiarTab = dremCambiarTab;
@@ -27588,6 +27628,174 @@ function dremEtapasPanelHtml(readOnly) {
       </div>
     </div>
   `;
+}
+
+// ---- Paneles Oportunidades / Interacciones (solo modal de Consulta) -------
+// Las dos pestañas son la vista "hacia abajo" del embudo: que negocios lo
+// estan recorriendo y que se converso en ellos. Read-only: para tocar una
+// oportunidad o una interaccion se salta a su propia ficha con un click en la
+// fila (mismo patron que las pestañas embebidas del modal de Prospecto).
+//
+// El tope de filas es el mismo que usan esas pestañas (200). No hay paginado
+// dentro del modal: si el embudo tiene mas, el pie del panel avisa y manda al
+// listado completo, que si tiene filtros.
+const DREM_PANEL_LIMITE = 200;
+
+// Repinta el contador de una pestaña cuando el dato llega despues del render
+// (los dos paneles cargan lazy, asi que el badge nace vacio).
+function dremActualizarBadgeTab(tab, n) {
+  const slot = document.querySelector(`#modalRoot [data-drem-badge="${tab}"]`);
+  if (slot) slot.innerHTML = drIntTabBadge(n);
+}
+
+// Pie del panel: aclara el corte cuando el listado llego al tope.
+function dremPanelPieHtml(cant, singular) {
+  if (cant < DREM_PANEL_LIMITE) return '';
+  return `<div style="font-size:.78rem;color:var(--muted);margin-top:8px;text-align:right">
+    Se muestran ${DREM_PANEL_LIMITE} ${esc(singular)} (las más recientes). Usá el listado del módulo para ver el resto.
+  </div>`;
+}
+
+// Pill de etapa para las filas de Oportunidades. El color sale de
+// `dremEtapasCache` — las etapas del embudo se cargan junto con las
+// oportunidades justamente para esto (el API de oportunidades devuelve
+// `etapa_nombre` y `etapa_tipo`, pero no el color).
+function dremEtapaPillOportunidad(o) {
+  if (!o.etapa_id) return `<span style="color:var(--muted)">—</span>`;
+  const e      = dremEtapasCache.find((x) => Number(x.id) === Number(o.etapa_id));
+  const color  = (e && e.color) || '#3b82f6';
+  const nombre = o.etapa_nombre || (e ? e.nombre : `#${o.etapa_id}`);
+  return `<span style="display:inline-flex;align-items:center;gap:6px;font-size:.85rem">
+    <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${esc(color)};border:1px solid var(--border)"></span>
+    ${esc(nombre)}
+  </span>`;
+}
+
+function dremOportunidadesPanelHtml() {
+  return `
+    <div class="modal-tabpanel" data-drem-tab="oportunidades" hidden>
+      <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
+        Oportunidades que hoy están en este embudo, de la más reciente a la más vieja.
+        Click en una fila para abrir su ficha.
+      </div>
+      <div id="dremOportunidadesWrap">
+        <div style="text-align:center;padding:16px"><div class="spin"></div></div>
+      </div>
+    </div>
+  `;
+}
+
+function dremInteraccionesPanelHtml() {
+  return `
+    <div class="modal-tabpanel" data-drem-tab="interacciones" hidden>
+      <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
+        Interacciones registradas sobre las oportunidades de este embudo, de la más
+        reciente a la más vieja. Click en una fila para abrir su ficha.
+      </div>
+      <div id="dremInteraccionesWrap">
+        <div style="text-align:center;padding:16px"><div class="spin"></div></div>
+      </div>
+    </div>
+  `;
+}
+
+// Tabla de oportunidades del embudo. Columnas elegidas para no repetir el
+// embudo (es el modal en el que estamos): quien, que, en que etapa y por
+// cuanto. La fila lleva `drem-oportunidad-fila` y la despacha el handler
+// delegado de abrirConsultaDrem().
+function dremRenderOportunidadesEmbudo() {
+  const wrap = document.getElementById('dremOportunidadesWrap');
+  if (!wrap) return;
+  if (!dremOportunidadesCache.length) {
+    wrap.innerHTML = `<div class="table-empty">Este embudo no tiene oportunidades.</div>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <div class="table-card" style="margin:0">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:80px">Código</th>
+            <th style="width:150px">Ingreso</th>
+            <th>Prospecto</th>
+            <th>Producto</th>
+            <th style="width:140px">Etapa</th>
+            <th style="width:120px;text-align:right">Monto</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${dremOportunidadesCache.map((o) => `
+            <tr class="drem-oportunidad-fila row-clickable" data-oportunidad-id="${o.id}"
+                title="Ver oportunidad #${esc(o.id)}">
+              <td class="td-id">#${esc(o.id)}</td>
+              <td style="white-space:nowrap">${esc(fmtFechaAnio(o.ingreso) || '—')}</td>
+              <td>${o.prospecto_nombre
+                     ? esc(o.prospecto_nombre)
+                     : '<span style="color:var(--muted)">Sin prospecto</span>'}</td>
+              <td>${esc(o.producto || '—')}</td>
+              <td>${dremEtapaPillOportunidad(o)}</td>
+              <td style="text-align:right;white-space:nowrap">${o.monto != null
+                     ? esc(opFmtMonto(o.monto, o.moneda))
+                     : '<span style="color:var(--muted)">—</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${dremPanelPieHtml(dremOportunidadesCache.length, 'oportunidades')}
+  `;
+}
+
+async function dremCargarOportunidadesEmbudo(embudoId) {
+  const wrap = document.getElementById('dremOportunidadesWrap');
+  if (!wrap) return;
+  if (!hasPermission('datarocket.oportunidades.consultar')) {
+    dremPanelesCargados.oportunidades = true;
+    wrap.innerHTML = `<div class="table-empty">No tenés permiso para consultar oportunidades.</div>`;
+    return;
+  }
+  wrap.innerHTML = `<div style="text-align:center;padding:16px"><div class="spin"></div></div>`;
+  try {
+    // Las etapas van en el mismo viaje: son las que le ponen color al pill de
+    // la columna Etapa. Si el usuario ya pasó por la pestaña Etapas están en
+    // cache y nos ahorramos el GET.
+    const [data] = await Promise.all([
+      apiGet(`${OP_API}?embudo_id=${embudoId}&limite=${DREM_PANEL_LIMITE}&order_by=ingreso&dir=desc`),
+      dremEtapasCache.length ? Promise.resolve() : dremCargarEtapas(embudoId),
+    ]);
+    dremOportunidadesCache = data.items || [];
+    dremPanelesCargados.oportunidades = true;
+    dremRenderOportunidadesEmbudo();
+    // El badge ya nació con `oportunidades_count`, que es el total real del
+    // embudo. Solo lo repintamos si el GET no llegó al tope — ahí el largo del
+    // array también es el total y sirve de refresco.
+    if (dremOportunidadesCache.length < DREM_PANEL_LIMITE) {
+      dremActualizarBadgeTab('oportunidades', dremOportunidadesCache.length);
+    }
+  } catch (e) {
+    wrap.innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// Las interacciones del embudo son las de sus oportunidades: el filtro
+// `embudo_id` del API cuelga de `datarocket_oportunidades.embudo_id` (ver la
+// nota en cloud/api/datarocketinteracciones.php). Se reusa el render embebido
+// de la pestaña Interacciones de prospecto / oportunidad.
+async function dremCargarInteraccionesEmbudo(embudoId) {
+  const wrap = document.getElementById('dremInteraccionesWrap');
+  if (!wrap) return;
+  wrap.innerHTML = `<div style="text-align:center;padding:16px"><div class="spin"></div></div>`;
+  // drIntCargarDeRecurso() nunca lanza: sin permiso o con el endpoint caído
+  // devuelve [] y la pestaña muestra el vacío.
+  dremInteraccionesCache = await drIntCargarDeRecurso('embudo_id', embudoId);
+  dremPanelesCargados.interacciones = true;
+  const total = dremInteraccionesCache.length;
+  wrap.innerHTML = drIntTablaEmbebida(dremInteraccionesCache, 'Este embudo no tiene interacciones registradas.')
+                 + dremPanelPieHtml(total, 'interacciones');
+  // A diferencia de Oportunidades no hay contador precalculado en el listado de
+  // embudos, asi que el badge sale del GET: cuando toca el tope se marca con
+  // "+" para no dar 200 como si fuera el total.
+  dremActualizarBadgeTab('interacciones', total >= DREM_PANEL_LIMITE ? `${total}+` : total);
 }
 
 // Enlaza los event delegates del panel Etapas al #modalRoot. Idempotente:
@@ -27944,6 +28152,7 @@ function abrirConsultaDrem(id) {
   // ir al modal de Edicion via el boton "Editar" del footer. Mantiene la
   // convencion "Consulta = read-only" del abm_design skill.
   dremEtapasReadOnly = true;
+  dremResetPanelesConsulta();
   dremEnsureEtapasHandlers();
 
   const card = (label, valor, ancho) => `
@@ -27960,8 +28169,11 @@ function abrirConsultaDrem(id) {
     : `<span class="badge badge-danger">Inactivo</span>`;
 
   // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — mismo motivo.
+  // 820px (contra los 720 del modal de Edicion) porque Consulta hospeda las
+  // tablas de Oportunidades e Interacciones: es el mismo ancho que el modal de
+  // Consultar oportunidad, que embebe la misma clase de listado.
   openModal(`
-    <div class="modal" style="max-width:720px;overflow-x:hidden">
+    <div class="modal" style="max-width:820px;overflow-x:hidden">
       <div class="modal-header">
         <div class="modal-title">
           🪣 <span class="modal-subtitle">${esc(e.nombre)}</span>
@@ -27981,6 +28193,20 @@ function abrirConsultaDrem(id) {
                   data-drem-tab="etapas" onclick="dremCambiarTab('etapas')">
             <i class="fa-solid fa-list-ol"></i> Etapas
           </button>
+          <!-- Oportunidades e Interacciones son la vista "hacia abajo" del
+               embudo y solo existen en Consulta: en Edicion la pestaña Etapas
+               ya es lo unico editable que cuelga del embudo. El badge de
+               Oportunidades arranca con el contador que ya trae el listado y
+               se repinta con lo que devuelve el GET; el de Interacciones nace
+               vacio porque no hay contador precalculado. -->
+          <button type="button" class="modal-tab" role="tab"
+                  data-drem-tab="oportunidades" onclick="dremCambiarTab('oportunidades')">
+            <i class="fa-solid fa-bullseye"></i> Oportunidades<span data-drem-badge="oportunidades">${drIntTabBadge(Number(e.oportunidades_count) || 0)}</span>
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-drem-tab="interacciones" onclick="dremCambiarTab('interacciones')">
+            <i class="fa-solid fa-comments"></i> Interacciones<span data-drem-badge="interacciones"></span>
+          </button>
         </div>
 
         <div class="modal-tabpanel" data-drem-tab="general">
@@ -27999,6 +28225,8 @@ function abrirConsultaDrem(id) {
         </div>
 
         ${dremEtapasPanelHtml(true)}
+        ${dremOportunidadesPanelHtml()}
+        ${dremInteraccionesPanelHtml()}
       </div>
 
       <div class="modal-footer">
@@ -28008,7 +28236,21 @@ function abrirConsultaDrem(id) {
     </div>
   `);
 
-  $('#modalRoot').addEventListener('click', (ev) => {
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    // Fila de oportunidad → ficha de la oportunidad. `abrirConsultaOp` es async
+    // (hace fetch por id si no está en opItems), así que esperamos; openModal()
+    // reemplaza este modal, pero cerramos antes para no dejarlo visible si el
+    // fetch tarda. Mismo salto que hace el modal de Prospecto.
+    const filaOp = ev.target.closest('#modalRoot .drem-oportunidad-fila[data-oportunidad-id]');
+    if (filaOp) {
+      const oid = Number(filaOp.dataset.oportunidadId);
+      closeModal();
+      dremEtapaEmbudoId = null;
+      await abrirConsultaOp(oid);
+      return;
+    }
+    // Fila de interacción → ficha de la interacción.
+    if (drIntFilaEmbebidaClick(ev)) { dremEtapaEmbudoId = null; return; }
     if (ev.target.closest('[data-act="close"]'))  { closeModal(); dremEtapaEmbudoId = null; cargarDrem(); }
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrem(id); }
   });
