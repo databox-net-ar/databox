@@ -4,7 +4,8 @@
 // `datacount_empresas` definida en db/schema.sql — cada fila representa
 // una empresa para la cual Datacount lleva la contabilidad, con datos
 // identificatorios y fiscales (nombre, razón social, domicilio,
-// condición ante AFIP, CUIT, IIBB e inicio de actividades).
+// condición ante AFIP, CUIT, IIBB e inicio de actividades) y el control
+// de últimas presentaciones ante ARCA (IVA y Ganancias).
 //
 //   GET    api/datacount_empresas.php[?q=...&condicion=...&limite=100&orden=id&dir=desc]
 //                                       -> listado + stats por condición
@@ -36,7 +37,7 @@ const DCE_CONDICIONES = [
 const DCE_ORDENES = ['id', 'nombre', 'slug', 'razon', 'cuit', 'inicio'];
 // Columnas con alias `e.` porque el listado y el detalle hacen LEFT JOIN con
 // `arca_certificados` para traer el nombre del certificado asociado.
-const DCE_COLS    = 'e.id, e.nombre, e.slug, e.razon, e.domicilio, e.condicion, e.cuit, e.iibb, e.inicio, e.certificado_id, e.created_at, e.updated_at, c.nombre AS certificado_nombre';
+const DCE_COLS    = 'e.id, e.nombre, e.slug, e.razon, e.domicilio, e.condicion, e.cuit, e.iibb, e.inicio, e.certificado_id, e.presentado_iva, e.presentado_ganancias, e.created_at, e.updated_at, c.nombre AS certificado_nombre';
 const DCE_FROM    = 'datacount_empresas e LEFT JOIN arca_certificados c ON c.id = e.certificado_id';
 
 try {
@@ -97,6 +98,11 @@ function normalizarFila(array $r): array {
         'inicio'             => $r['inicio'] !== null ? (string)$r['inicio'] : null,
         'certificado_id'     => $r['certificado_id'] !== null ? (int)$r['certificado_id'] : null,
         'certificado_nombre' => $r['certificado_nombre'] !== null ? (string)$r['certificado_nombre'] : null,
+        // Periodos MES/AÑO: se emiten como la fecha completa 'AAAA-MM-01'
+        // (mismo criterio que `inicio`); el front recorta a 'AAAA-MM' para
+        // el <input type="month"> y lo muestra como MM/AAAA.
+        'presentado_iva'       => $r['presentado_iva']       !== null ? (string)$r['presentado_iva']       : null,
+        'presentado_ganancias' => $r['presentado_ganancias'] !== null ? (string)$r['presentado_ganancias'] : null,
         'created_at'         => $r['created_at'] ?? null,
         'updated_at'         => $r['updated_at'] ?? null,
     ];
@@ -122,6 +128,24 @@ function dceSlugify(string $s): string {
     return substr($s, 0, 40);
 }
 
+// Normaliza un periodo MES/AÑO a la fecha DATE que guarda la tabla, con el
+// dia SIEMPRE fijo en 01 (ver comentario de `datacount_empresas` en
+// db/schema.sql). Acepta 'AAAA-MM' — lo que emite el <input type="month">
+// del modal — y tambien 'AAAA-MM-DD', por si el valor llega de vuelta tal
+// como lo devuelve el GET o desde otro consumidor de la API.
+// Devuelve null para el string vacio ("nunca se presento").
+function dcePeriodo(string $s, string $label): ?string {
+    if ($s === '') return null;
+    if (!preg_match('/^(\d{4})-(\d{2})(?:-\d{2})?$/', $s, $m)) {
+        jsonError("{$label} debe estar en formato AAAA-MM.", 400);
+    }
+    $mes = (int)$m[2];
+    if ($mes < 1 || $mes > 12) {
+        jsonError("{$label}: el mes debe estar entre 01 y 12.", 400);
+    }
+    return "{$m[1]}-{$m[2]}-01";
+}
+
 function sanitizePayload(array $in, bool $esAlta): array {
     $nombre    = trim((string)($in['nombre']    ?? ''));
     $slug      = trim((string)($in['slug']      ?? ''));
@@ -131,6 +155,8 @@ function sanitizePayload(array $in, bool $esAlta): array {
     $cuit      = trim((string)($in['cuit']      ?? ''));
     $iibb      = trim((string)($in['iibb']      ?? ''));
     $inicio    = trim((string)($in['inicio']    ?? ''));
+    $presIva   = trim((string)($in['presentado_iva']       ?? ''));
+    $presGan   = trim((string)($in['presentado_ganancias'] ?? ''));
 
     if ($esAlta) {
         if ($nombre === '')    jsonError('El nombre es obligatorio.', 400);
@@ -199,6 +225,8 @@ function sanitizePayload(array $in, bool $esAlta): array {
         'iibb'           => $iibb === '' ? null : $iibb,
         'inicio'         => $inicio === '' ? null : $inicio,
         'certificado_id' => $certificadoId,
+        'presentado_iva'       => dcePeriodo($presIva, 'La última presentación de IVA'),
+        'presentado_ganancias' => dcePeriodo($presGan, 'La última presentación de Ganancias'),
     ];
 }
 
@@ -263,9 +291,11 @@ function handleCreate(PDO $pdo, array $body): void {
     try {
         $st = $pdo->prepare(
             'INSERT INTO datacount_empresas
-                (nombre, slug, razon, domicilio, condicion, cuit, iibb, inicio, certificado_id)
+                (nombre, slug, razon, domicilio, condicion, cuit, iibb, inicio, certificado_id,
+                 presentado_iva, presentado_ganancias)
              VALUES
-                (:nombre, :slug, :razon, :domicilio, :condicion, :cuit, :iibb, :inicio, :certificado_id)'
+                (:nombre, :slug, :razon, :domicilio, :condicion, :cuit, :iibb, :inicio, :certificado_id,
+                 :presentado_iva, :presentado_ganancias)'
         );
         $st->execute([
             ':nombre'         => $p['nombre'],
@@ -277,6 +307,8 @@ function handleCreate(PDO $pdo, array $body): void {
             ':iibb'           => $p['iibb'],
             ':inicio'         => $p['inicio'],
             ':certificado_id' => $p['certificado_id'],
+            ':presentado_iva'       => $p['presentado_iva'],
+            ':presentado_ganancias' => $p['presentado_ganancias'],
         ]);
     } catch (PDOException $e) {
         if ($e->getCode() === '23000') {
@@ -344,6 +376,14 @@ function handleUpdate(PDO $pdo, int $id, array $body): void {
     if (array_key_exists('certificado_id', $body)) {
         $sets[] = 'certificado_id = :certificado_id';
         $params[':certificado_id'] = $p['certificado_id'];
+    }
+    if (array_key_exists('presentado_iva', $body)) {
+        $sets[] = 'presentado_iva = :presentado_iva';
+        $params[':presentado_iva'] = $p['presentado_iva'];
+    }
+    if (array_key_exists('presentado_ganancias', $body)) {
+        $sets[] = 'presentado_ganancias = :presentado_ganancias';
+        $params[':presentado_ganancias'] = $p['presentado_ganancias'];
     }
 
     if (empty($sets)) jsonError('No hay campos para actualizar.', 400);

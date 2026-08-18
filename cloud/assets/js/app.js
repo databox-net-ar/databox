@@ -13183,6 +13183,9 @@ async function cambiarEstadoDcComp(id, nuevo) {
 
 const dcPagoFiltrosDefaults = {
   q: '', codigo: '', empresa: '', proyecto: '',
+  // `periodo` es un mes calendario (YYYY-MM, el valor de un <input type="month">);
+  // `emi_desde`/`emi_hasta` son el rango de fecha de emisión (YYYY-MM-DD c/u).
+  periodo: '', emi_desde: '', emi_hasta: '',
   tipo: '', moneda: '', razon: '', cuit: '', estado: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -13196,6 +13199,12 @@ let dcPagoFiltrosSnapshot = null;
 // no entre todas las órdenes de pago de la tabla, así que filtros, orden y
 // límite del listado se respetan solos.
 let dcPagoListadoIds = [];
+
+// Las mismas filas pero indexadas por id, para poder leer los datos de un pago
+// sin volver a pedirlo. Lo usa el modal de corrección de período, que necesita
+// `empresa_presentado_iva` — un dato que sólo viaja en el LISTADO, no en el
+// GET individual.
+let dcPagoListadoFilas = new Map();
 
 // Catalogos de estados posibles para pagos, leidos de `estados` donde
 // `campo IN ('datacount_pago_tipo', 'datacount_pago_moneda',
@@ -13289,6 +13298,113 @@ function dcPagoFmtPeriodo(v) {
   return s.length >= 7 ? s.slice(0, 7) : s;
 }
 
+// Aviso sobre el período de imputación de la orden de pago. Hay dos motivos
+// posibles, y cada uno tiene su propio triángulo:
+//
+//   1. PERÍODO YA PRESENTADO — el período cae en el último mes de IVA que la
+//      empresa presentó ante ARCA (`datacount_empresas.presentado_iva`) o en
+//      uno anterior. Esa declaración ya está cerrada, así que un comprobante
+//      nuevo tiene que imputarse al mes siguiente como mínimo.
+//      Círculo ROJO pleno con el "!" en blanco (.icon-alert-solid).
+//   2. SE PUEDE RETROCEDER — el pago está imputado MÁS ADELANTE de lo que
+//      corresponde y todavía hay margen para retrasarlo. Triángulo ÁMBAR.
+//
+// El motivo 2 se apoya en el PERÍODO OBJETIVO (dcPagoPeriodoObjetivo): el mes
+// al que el pago debería ir, que es el de su emisión salvo que ese mes ya esté
+// cerrado por el IVA presentado — ahí es el primer mes abierto. El aviso se
+// enciende sólo cuando el período asignado quedó POR ENCIMA del objetivo, o
+// sea cuando de verdad se puede retroceder:
+//
+//   · período 2026-08, emisión 2026-01, IVA hasta 2026-06 -> objetivo 2026-07,
+//     y 2026-08 > 2026-07, así que AVISA: no se llega a 2026-01, pero se puede
+//     retrasar hasta 2026-07.
+//   · período 2026-07 con ese mismo IVA -> objetivo 2026-07: ya está en el mes
+//     más atrás posible, no hay nada que corregir y NO avisa.
+//
+// Que la condición sea `>` y no `!==` es deliberado: si el período quedó ANTES
+// del objetivo la corrección sería adelantarlo, no retrasarlo, y ese no es el
+// caso que este aviso vigila.
+//
+// Si se dan los dos gana el rojo: el período cerrado es un impedimento duro,
+// mientras que poder retroceder es una sospecha de tipeo.
+//
+// Ambos motivos se marcan sólo mientras el pago está Pendiente: una vez
+// Contabilizado el asiento ya se hizo con ese período, así que la alerta
+// dejaría de ser accionable y sería sólo ruido.
+//
+// Las comparaciones son mes contra mes (YYYY-MM, comparables como texto por
+// ser ISO con cero a la izquierda). `presentado_iva` es un período con el día
+// fijo en 01 y `periodo` también, pero el recorte a 7 los deja alineados aunque
+// alguna fila vieja traiga otro día. Si falta el dato del lado que sea no se
+// marca nada: ahí no hay discrepancia, hay un campo sin cargar.
+// Mes siguiente a un 'YYYY-MM' (con salto de año).
+function dcPagoMesSiguiente(mes) {
+  const s = String(mes ?? '').slice(0, 7);
+  if (s.length !== 7) return '';
+  let anio = Number(s.slice(0, 4));
+  let m    = Number(s.slice(5, 7)) + 1;
+  if (m > 12) { m = 1; anio++; }
+  return `${String(anio).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+}
+
+// Período al que DEBERÍA estar imputado el pago: el mes de su emisión, salvo
+// que ese mes ya esté cerrado por el IVA presentado — ahí, el primer mes
+// abierto (presentado_iva + 1), que es lo más atrás que se puede llegar.
+// O sea: max(mes de emisión, primer mes abierto).
+//
+// Sin `presentado_iva` cargado no hay piso y el objetivo es el mes de emisión;
+// sin emisión, el objetivo es directamente el piso. Devuelve '' si no hay
+// ninguno de los dos, y ahí no se puede opinar nada del período.
+function dcPagoPeriodoObjetivo(presentadoIva, emision) {
+  const iva = String(presentadoIva ?? '').slice(0, 7);
+  const emi = String(emision ?? '').slice(0, 7);
+  const piso = iva.length === 7 ? dcPagoMesSiguiente(iva) : '';
+  if (emi.length !== 7) return piso;
+  return (piso && emi < piso) ? piso : emi;
+}
+
+// Núcleo de la regla, sin nada de presentación: dado un período y los dos
+// datos contra los que se compara, devuelve 'presentado' | 'emision' | ''.
+// Vive separado porque lo usan DOS lugares —el ícono del listado y el modal de
+// corrección, que adelanta si el mes elegido sigue observado— y si la regla
+// estuviera duplicada podrían terminar diciendo cosas distintas.
+function dcPagoMotivoPeriodo(periodo, presentadoIva, emision) {
+  const per = String(periodo ?? '').slice(0, 7);
+  if (per.length !== 7) return '';
+  const iva = String(presentadoIva ?? '').slice(0, 7);
+
+  if (iva.length === 7 && per <= iva) return 'presentado';
+
+  const objetivo = dcPagoPeriodoObjetivo(presentadoIva, emision);
+  if (objetivo && per > objetivo) return 'emision';
+
+  return '';
+}
+
+const DCPAGO_MOTIVO_TEXTO = {
+  presentado: 'Corresponde a un período ya presentado',
+  emision:    'No coincide el período con la fecha de emisión',
+};
+
+function dcPagoAvisoPeriodo(p) {
+  if (String(p?.estado ?? '') !== '1') return '';
+  const motivo = dcPagoMotivoPeriodo(p?.periodo, p?.empresa_presentado_iva, p?.emision);
+  if (!motivo) return '';
+
+  // El ícono es clickeable: abre el modal de corrección del período. El
+  // data-act lo intercepta el listener del tbody ANTES del click de fila (que
+  // abre Consultar), de ahí que lleve su propio data-id.
+  const titulo = `${DCPAGO_MOTIVO_TEXTO[motivo]} — clic para corregir el período`;
+  const attrs  = `data-act="periodo" data-id="${esc(p.id)}" role="button" tabindex="0"`
+               + ` title="${esc(titulo)}"`;
+
+  // El círculo rojo pleno con el "!" blanco lo arma .icon-alert-solid pintando
+  // un disco blanco detrás del calado del glifo (style.css §11b).
+  return motivo === 'presentado'
+    ? ` <span class="icon-alert-solid" style="cursor:pointer" ${attrs}><i class="fa-solid fa-circle-exclamation"></i></span>`
+    : ` <span style="color:var(--warn);cursor:pointer" ${attrs}><i class="fa-solid fa-triangle-exclamation"></i></span>`;
+}
+
 route('/datacount_pagos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
@@ -13306,9 +13422,13 @@ route('/datacount_pagos', async (mount) => {
         </div>
       </div>
 
+      <!-- Las dos tarjetas resumen lo que hay en pantalla, no el recurso entero:
+           cuántas filas devolvió la búsqueda (con filtros y límite aplicados) y
+           la suma de la columna Valor de esas mismas filas. Se recalculan en
+           pintarStatsDcPago() con cada carga del listado. -->
       <div class="stats-bar" id="dcPagoStats">
-        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value">—</span></div>
-        <div class="stat-card"><span class="stat-label">Importe total</span><span class="stat-value orange">—</span></div>
+        <div class="stat-card"><span class="stat-label">Resultados</span><span class="stat-value">—</span></div>
+        <div class="stat-card"><span class="stat-label">Valor total</span><span class="stat-value orange">—</span></div>
       </div>
 
       <div class="toolbar">
@@ -13401,6 +13521,21 @@ route('/datacount_pagos', async (mount) => {
             <div class="form-group">
               <label>Proyecto (ID)</label>
               <input type="number" id="fDcPagoProyecto" min="1" oninput="onFiltroDcPago('proyecto', this.value)">
+            </div>
+          </div>
+          <!-- Período (mes calendario) + rango de fecha de emisión -->
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Período (YYYY-MM)</label>
+              <input type="month" id="fDcPagoPeriodo" onchange="onFiltroDcPago('periodo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Emisión desde</label>
+              <input type="date" id="fDcPagoEmiDesde" onchange="onFiltroDcPago('emi_desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Emisión hasta</label>
+              <input type="date" id="fDcPagoEmiHasta" onchange="onFiltroDcPago('emi_hasta', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -13516,7 +13651,8 @@ route('/datacount_pagos', async (mount) => {
     if (b.dataset.action === 'eliminar')  eliminarDcPago(data.id);
   });
 
-  // Clic en fila → consultar; clic en hamburguesa → menú
+  // Clic en fila → consultar; clic en hamburguesa → menú; clic en el ícono de
+  // aviso de la columna Período → modal para corregir el período.
   $('#dcPagoTbody').addEventListener('click', (ev) => {
     const ham = ev.target.closest('[data-act="menu"]');
     if (ham) {
@@ -13524,6 +13660,14 @@ route('/datacount_pagos', async (mount) => {
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
       abrirCtxMenu($('#dcPagoCtxMenu'), r.right - 190, r.bottom + 4, { id });
+      return;
+    }
+    // Antes que el click de fila: si no cortáramos acá, el mismo click abriría
+    // además el modal de Consulta que hay detrás.
+    const avi = ev.target.closest('[data-act="periodo"]');
+    if (avi) {
+      ev.stopPropagation();
+      abrirCambiarPeriodoDcPago(Number(avi.dataset.id));
       return;
     }
     const tr = ev.target.closest('tr[data-id]');
@@ -13588,23 +13732,34 @@ async function cargarDcPago() {
       apiGet('api/datacount_pagos.php?' + qs.toString()),
       dcPagoCargarCatalogosEstados().catch(() => null),
     ]);
-    pintarStatsDcPago(data.stats);
-    pintarTablaDcPago(data.items || []);
+    const items = data.items || [];
+    pintarStatsDcPago(items);
+    pintarTablaDcPago(items);
   } catch (e) {
+    // Las tarjetas se blanquean: si el listado no cargó, dejar los números de
+    // la búsqueda anterior al lado de un error haría creer que siguen vigentes.
+    $$('#dcPagoStats .stat-card .stat-value').forEach((c) => { c.textContent = '—'; });
     tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
-function pintarStatsDcPago(s) {
+// Las tarjetas son un resumen de la página que se está viendo: la cantidad de
+// filas del listado y la suma de su columna Valor. Se calculan acá sobre las
+// mismas filas que se pintan —no las trae la API— así lo que dicen coincide
+// siempre con lo que se ve, incluso cuando el LIMIT recorta el resultado.
+// `valor` puede venir en NULL (pagos sin valorizar): esos suman 0.
+function pintarStatsDcPago(rows) {
   const cards = $$('#dcPagoStats .stat-card .stat-value');
   if (cards.length < 2) return;
-  cards[0].textContent = fmtNum(s.total);
-  cards[1].textContent = '$ ' + dcPagoFmtImporte(s.importe_total);
+  const total = rows.reduce((acc, p) => acc + (Number(p.valor) || 0), 0);
+  cards[0].textContent = fmtNum(rows.length);
+  cards[1].textContent = '$ ' + dcPagoFmtImporte(total);
 }
 
 function pintarTablaDcPago(rows) {
   const tbody = $('#dcPagoTbody');
-  dcPagoListadoIds = rows.map((p) => Number(p.id));
+  dcPagoListadoIds   = rows.map((p) => Number(p.id));
+  dcPagoListadoFilas = new Map(rows.map((p) => [Number(p.id), p]));
   if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin pagos.</td></tr>`;
     return;
@@ -13612,7 +13767,7 @@ function pintarTablaDcPago(rows) {
   tbody.innerHTML = rows.map((p) => `
     <tr data-id="${p.id}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
-      <td>${esc(dcPagoFmtPeriodo(p.periodo))}</td>
+      <td style="white-space:nowrap">${esc(dcPagoFmtPeriodo(p.periodo))}${dcPagoAvisoPeriodo(p)}</td>
       <td>${esc(dcPagoTraducir('datacount_pago_tipo', p.tipo) || '—')}</td>
       <td>${esc(p.emision || '—')}</td>
       <td style="font-family:monospace">${esc(p.numero || '—')}</td>
@@ -13632,9 +13787,138 @@ function pintarTablaDcPago(rows) {
   `).join('');
 }
 
+// ---- Modal: corregir el período ----
+// Vía rápida colgada del ícono de aviso de la columna Período: deja arreglar el
+// mes mal imputado sin abrir el formulario de Edición completo. Guarda contra
+// `PUT ?action=periodo`, que sólo toca esa columna.
+//
+// Los datos salen de `dcPagoListadoFilas` (la fila ya cargada) y no de un GET
+// nuevo, porque `empresa_presentado_iva` viaja únicamente en el listado.
+
+function dcPagoFmtMes(v) {
+  const s = String(v ?? '').slice(0, 7);
+  if (s.length !== 7) return '—';
+  return `${s.slice(5, 7)}/${s.slice(0, 4)}`;
+}
+
+// Refresca el cartel que adelanta si el mes tipeado sigue observado. Usa la
+// MISMA regla que el ícono del listado (dcPagoMotivoPeriodo), así que lo que
+// dice acá es exactamente lo que se va a ver en la tabla al guardar.
+function dcPagoPeriodoRevisar(fila) {
+  const caja = $('#dcPagPerAviso');
+  if (!caja) return;
+  const mes = $('#dcPagPerNuevo')?.value || '';
+  if (!mes) {
+    caja.innerHTML = `<span class="badge badge-muted">Elegí un período</span>`;
+    return;
+  }
+  const motivo = dcPagoMotivoPeriodo(mes, fila.empresa_presentado_iva, fila.emision);
+  if (!motivo) {
+    caja.innerHTML = `<span class="badge badge-success">Sin observaciones</span>`;
+    return;
+  }
+  const cls = motivo === 'presentado' ? 'badge-danger' : 'badge-warn';
+  caja.innerHTML = `<span class="badge ${cls}">${esc(DCPAGO_MOTIVO_TEXTO[motivo])}</span>`;
+}
+
+function abrirCambiarPeriodoDcPago(id) {
+  const p = dcPagoListadoFilas.get(Number(id));
+  if (!p) return;
+
+  // Guarda de UI. No alcanza por sí sola —el backend revalida lo mismo— pero
+  // evita abrir un modal que iba a fallar al guardar.
+  if (String(p.estado ?? '') !== '1') {
+    toast('Sólo se puede corregir el período de una orden de pago pendiente.', { error: true });
+    return;
+  }
+
+  const actual  = String(p.periodo ?? '').slice(0, 7);
+  const iva     = String(p.empresa_presentado_iva ?? '').slice(0, 7);
+  const motivo  = dcPagoMotivoPeriodo(p.periodo, p.empresa_presentado_iva, p.emision);
+
+  // El selector arranca en el período objetivo — el mismo que usa la regla, no
+  // uno calculado aparte. Es importante que sea el objetivo y no el mes de la
+  // emisión a secas: para una factura vieja, el mes de emisión ya está cerrado
+  // y proponerlo sería sugerir un período que se marca en rojo apenas se
+  // guarda. Es sólo el valor inicial: el operador puede poner cualquier otro.
+  const sugerido = dcPagoPeriodoObjetivo(p.empresa_presentado_iva, p.emision) || actual;
+
+  openModal(`
+    <div class="modal" style="max-width:520px">
+      <div class="modal-header">
+        <div class="modal-title">
+          Corregir período <span class="modal-subtitle">#${esc(p.id)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body" style="gap:14px">
+        <div class="data-list">
+          <div class="data-row full">
+            <span class="data-label">Motivo</span>
+            <span class="data-value">${esc(DCPAGO_MOTIVO_TEXTO[motivo] || 'Revisión manual del período')}</span>
+          </div>
+          <div class="data-row">
+            <span class="data-label">Período actual</span>
+            <span class="data-value">${esc(dcPagoFmtMes(actual))}</span>
+          </div>
+          <div class="data-row">
+            <span class="data-label">Emisión</span>
+            <span class="data-value">${esc(p.emision || '—')}</span>
+          </div>
+          <div class="data-row">
+            <span class="data-label">Último IVA presentado</span>
+            <span class="data-value${iva ? '' : ' muted'}">${iva ? esc(dcPagoFmtMes(iva)) : 'Sin presentar'}</span>
+          </div>
+          <div class="data-row">
+            <span class="data-label">Razón social</span>
+            <span class="data-value">${esc(p.razon || '—')}</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Nuevo período (YYYY-MM)</label>
+          <input type="month" id="dcPagPerNuevo" value="${esc(sugerido || actual)}">
+        </div>
+        <div id="dcPagPerAviso"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  dcPagoPeriodoRevisar(p);
+  $('#dcPagPerNuevo')?.addEventListener('input', () => dcPagoPeriodoRevisar(p));
+
+  $('#modalRoot').addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-act]');
+    if (!a) return;
+    if (a.dataset.act === 'close')   closeModal();
+    if (a.dataset.act === 'guardar') await guardarPeriodoDcPago(p.id, a);
+  });
+}
+
+async function guardarPeriodoDcPago(id, btn) {
+  const mes = $('#dcPagPerNuevo')?.value || '';
+  if (!mes) { toast('Elegí un período.', { error: true }); return; }
+
+  btn.disabled = true;
+  try {
+    await apiSend(`api/datacount_pagos.php?id=${id}&action=periodo`, 'PUT', { periodo: mes });
+    toast(`Período de la orden de pago #${id} actualizado a ${dcPagoFmtMes(mes)}.`);
+    closeModal();
+    cargarDcPago();
+  } catch (e) {
+    btn.disabled = false;
+    toast(e.message, { error: true });
+  }
+}
+
 // ---- Modal de Filtros ----
 function onFiltroDcPago(key, value) {
-  if (key === 'razon' || key === 'cuit' || key === 'tipo' || key === 'moneda' || key === 'estado') {
+  const strKeys = ['razon', 'cuit', 'tipo', 'moneda', 'estado',
+                   'periodo', 'emi_desde', 'emi_hasta'];
+  if (strKeys.includes(key)) {
     dcPagoFiltros[key] = String(value).trim();
   } else if (key === 'codigo' || key === 'empresa' || key === 'proyecto') {
     const v = String(value).trim();
@@ -13668,6 +13952,9 @@ function sincronizarControlesFiltrosDcPago() {
   const f = dcPagoFiltros;
   $('#fDcPagoCodigo').value   = f.codigo;
   $('#fDcPagoProyecto').value = f.proyecto;
+  $('#fDcPagoPeriodo').value  = f.periodo;
+  $('#fDcPagoEmiDesde').value = f.emi_desde;
+  $('#fDcPagoEmiHasta').value = f.emi_hasta;
   $('#fDcPagoRazon').value    = f.razon;
   $('#fDcPagoCuit').value     = f.cuit;
   $('#fDcPagoLimite').value   = f.limite;
@@ -16083,9 +16370,10 @@ async function dceGetCertificados() {
   return dceCertificadosCache;
 }
 
-// Conmuta pestañas del modal Alta/Edición de empresas (General / Detalles).
+// Conmuta pestañas de los modales de empresas (General / ARCA / Detalles).
+const DCE_TABS = ['general', 'arca', 'detalles'];
 function dceCambiarTab(tab) {
-  if (tab !== 'general' && tab !== 'detalles') return;
+  if (!DCE_TABS.includes(tab)) return;
   document.querySelectorAll('#modalRoot .modal-tab[data-dce-tab]').forEach((b) => {
     b.classList.toggle('active', b.dataset.dceTab === tab);
   });
@@ -16107,6 +16395,20 @@ function dceFmtFecha(iso) {
   const p = String(iso).slice(0, 10).split('-');
   if (p.length !== 3) return iso;
   return `${p[2]}/${p[1]}/${p[0]}`;
+}
+
+// `presentado_iva` / `presentado_ganancias` son períodos MES/AÑO: la API los
+// emite como 'AAAA-MM-01' y acá se muestran como MM/AAAA.
+function dceFmtPeriodo(iso) {
+  if (!iso) return '—';
+  const p = String(iso).slice(0, 7).split('-');
+  if (p.length !== 2) return iso;
+  return `${p[1]}/${p[0]}`;
+}
+
+// Valor para el <input type="month">, que espera 'AAAA-MM'.
+function dcePeriodoInput(iso) {
+  return iso ? String(iso).slice(0, 7) : '';
 }
 
 function dceCondicionLabel(v) { return DCE_CONDICION_MAP[v]?.label || v || '—'; }
@@ -16496,8 +16798,10 @@ function dceActualizarBadgeFiltros() {
 }
 
 // ---- Modal Alta / Edición ----
-// El modal tiene dos pestañas:
+// El modal tiene tres pestañas:
 //   * General   — todos los campos identificatorios/fiscales de la empresa.
+//   * ARCA      — control de últimas presentaciones (IVA / Ganancias). Son
+//                 períodos MES/AÑO: se editan con <input type="month">.
 //   * Detalles  — vínculos con otros catálogos (por ahora, el certificado
 //                 fiscal de Arca a usar para facturar como esta empresa).
 async function abrirAltaEdicionDce(id) {
@@ -16521,6 +16825,10 @@ async function abrirAltaEdicionDce(id) {
           <button type="button" class="modal-tab active" role="tab"
                   data-dce-tab="general" onclick="dceCambiarTab('general')">
             <i class="fa-solid fa-circle-info"></i> General
+          </button>
+          <button type="button" class="modal-tab" role="tab"
+                  data-dce-tab="arca" onclick="dceCambiarTab('arca')">
+            <i class="fa-solid fa-file-invoice-dollar"></i> ARCA
           </button>
           <button type="button" class="modal-tab" role="tab"
                   data-dce-tab="detalles" onclick="dceCambiarTab('detalles')">
@@ -16577,6 +16885,23 @@ async function abrirAltaEdicionDce(id) {
           </div>
         </div>
 
+        <div class="modal-tabpanel" data-dce-tab="arca" role="tabpanel" hidden>
+          <div style="font-size:.82rem;color:var(--muted);line-height:1.45;margin-bottom:14px">
+            Último período presentado ante ARCA para cada impuesto. Se carga por
+            mes y año; dejalo vacío si todavía no se presentó.
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dcePresentadoIva">Presentado IVA</label>
+              <input type="month" id="dcePresentadoIva">
+            </div>
+            <div class="form-group">
+              <label for="dcePresentadoGanancias">Presentado Ganancias</label>
+              <input type="month" id="dcePresentadoGanancias">
+            </div>
+          </div>
+        </div>
+
         <div class="modal-tabpanel" data-dce-tab="detalles" role="tabpanel" hidden>
           <div class="form-group">
             <label for="dceCertificado">
@@ -16605,6 +16930,8 @@ async function abrirAltaEdicionDce(id) {
     $('#dceCuit').value      = e.cuit      || '';
     $('#dceIibb').value      = e.iibb      || '';
     $('#dceInicio').value    = e.inicio    ? String(e.inicio).slice(0, 10) : '';
+    $('#dcePresentadoIva').value       = dcePeriodoInput(e.presentado_iva);
+    $('#dcePresentadoGanancias').value = dcePeriodoInput(e.presentado_ganancias);
   } else {
     $('#dceCondicion').value = 'responsable_inscripto';
   }
@@ -16654,6 +16981,9 @@ async function guardarDce() {
   const iibb           = $('#dceIibb').value.trim();
   const inicio         = $('#dceInicio').value || '';
   const certificado_id = $('#dceCertificado')?.value || null;
+  // <input type="month"> devuelve 'AAAA-MM'; el back lo normaliza a 'AAAA-MM-01'.
+  const presentado_iva       = $('#dcePresentadoIva').value       || '';
+  const presentado_ganancias = $('#dcePresentadoGanancias').value || '';
 
   if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
   if (!razon)  { toast('La razón social es obligatoria', { error: true }); return; }
@@ -16663,7 +16993,10 @@ async function guardarDce() {
     return;
   }
 
-  const body = { nombre, slug, razon, domicilio, condicion, cuit, iibb, inicio, certificado_id };
+  const body = {
+    nombre, slug, razon, domicilio, condicion, cuit, iibb, inicio, certificado_id,
+    presentado_iva, presentado_ganancias,
+  };
 
   try {
     if (dceEditandoId) {
@@ -16684,6 +17017,7 @@ async function guardarDce() {
 // ---- Modal Consulta ----
 // Misma estructura de pestañas que el modal Alta/Edición:
 //   * General   — datos identificatorios/fiscales.
+//   * ARCA      — últimas presentaciones de IVA y Ganancias (MM/AAAA).
 //   * Detalles  — vínculos con otros catálogos (certificado de Arca).
 // Reutiliza `dceCambiarTab()` porque el selector `#modalRoot .modal-tab[data-dce-tab]`
 // funciona igual para cualquiera de los dos modales.
@@ -16715,6 +17049,10 @@ function abrirConsultaDce(id) {
             <i class="fa-solid fa-circle-info"></i> General
           </button>
           <button type="button" class="modal-tab" role="tab"
+                  data-dce-tab="arca" onclick="dceCambiarTab('arca')">
+            <i class="fa-solid fa-file-invoice-dollar"></i> ARCA
+          </button>
+          <button type="button" class="modal-tab" role="tab"
                   data-dce-tab="detalles" onclick="dceCambiarTab('detalles')">
             <i class="fa-solid fa-sliders"></i> Detalles
           </button>
@@ -16732,6 +17070,13 @@ function abrirConsultaDce(id) {
             ${card('IIBB',              `<span style="font-family:monospace">${esc(e.iibb || '—')}</span>`)}
             ${card('Inicio actividades', esc(dceFmtFecha(e.inicio)))}
             ${card('Alta',               esc(fmtFecha(e.created_at)))}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dce-tab="arca" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Presentado IVA',       esc(dceFmtPeriodo(e.presentado_iva)))}
+            ${card('Presentado Ganancias', esc(dceFmtPeriodo(e.presentado_ganancias)))}
           </div>
         </div>
 

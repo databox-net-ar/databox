@@ -156,6 +156,36 @@ tbody tr:hover { background: var(--row-hover); }
 .badge-warn    { background: rgba(245,158,11,.18); color: #fcd34d; }
 .badge-muted   { background: rgba(107,114,128,.22); color: #9ca3af; }
 
+/* 11b. Ícono de alerta "grave": círculo rojo pleno con el signo de admiración
+   en blanco. Va envuelto en un <span>, no aplicado al <i>:
+
+     <span class="icon-alert-solid"><i class="fa-solid fa-circle-exclamation"></i></span>
+
+   El glifo de FontAwesome trae el "!" CALADO (transparente), así que sobre el
+   fondo oscuro del panel se ve negro y no blanco. El ::before pinta un disco
+   blanco DETRÁS del glifo, que sólo asoma por el calado. Por eso el <i> queda
+   intacto: FA ya usa su propio ::before para inyectar el glifo.
+
+   El disco es concéntrico con el círculo del ícono a propósito: al compartir
+   el centro, el margen queda parejo en los cuatro lados y tapa de una sola vez
+   el trazo y el punto del "!". Un rectángulo alto y angosto (lo natural para
+   un "!") es mucho más sensible: cubre el trazo pero deja el punto negro.
+
+   Medidas en `em` para que acompañen cualquier font-size. Calibradas contra el
+   dibujo de fa-circle-exclamation: por debajo de .60em el punto del "!" queda
+   sin tapar, y a partir de ~.85em el disco asoma fuera del círculo rojo.
+   .70em cae cómodo entre los dos límites.
+
+   El `z-index: 0` del contenedor no es decorativo: crea un stacking context
+   propio para que el ::before con z-index negativo quede DENTRO del span. Sin
+   él el disco se va detrás del fondo de la fila y desaparece. */
+.icon-alert-solid         { position: relative; display: inline-block;
+                            z-index: 0; color: var(--danger); }
+.icon-alert-solid::before { content: ''; position: absolute; z-index: -1;
+                            left: 50%; top: 50%; transform: translate(-50%, -50%);
+                            width: .70em; height: .70em;
+                            border-radius: 50%; background: #fff; }
+
 /* 12. Stat cards */
 .stats-bar  { display: flex; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
 .stat-card  { background: var(--surface); border: 1px solid var(--border);

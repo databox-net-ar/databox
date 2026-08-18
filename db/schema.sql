@@ -648,6 +648,13 @@ CREATE TABLE `datacount_empleados`  (
 -- (razón social, CUIT, condición ante AFIP, IIBB, domicilio e inicio
 -- de actividades). La `razon` es UNIQUE — no se admiten dos empresas
 -- con la misma razón social.
+--
+-- `presentado_iva` y `presentado_ganancias` registran el último período
+-- MES/AÑO presentado ante ARCA para cada impuesto. Son períodos, no
+-- fechas calendarias: se guardan como `date` con el día SIEMPRE fijo en
+-- `01` (julio 2026 → `2026-07-01`) y se muestran como MM/AAAA. La
+-- normalización del día la hace `dcePeriodo()` en
+-- cloud/api/datacount_empresas.php. NULL = nunca presentado.
 DROP TABLE IF EXISTS `datacount_empresas`;
 CREATE TABLE `datacount_empresas`  (
   `id`             int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -660,6 +667,8 @@ CREATE TABLE `datacount_empresas`  (
   `iibb`           varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `inicio`         date NULL DEFAULT NULL,
   `certificado_id` int(11) NULL DEFAULT NULL,
+  `presentado_iva` date NULL DEFAULT NULL,
+  `presentado_ganancias` date NULL DEFAULT NULL,
   `created_at`     timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`     timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,

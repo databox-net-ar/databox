@@ -11,6 +11,7 @@
 //   POST   api/datacount_pagos.php                    -> alta (JSON body)
 //   PUT    api/datacount_pagos.php?id=N               -> modificacion (JSON body)
 //   PUT    api/datacount_pagos.php?id=N&action=estado -> solo contabilizacion (JSON body)
+//   PUT    api/datacount_pagos.php?id=N&action=periodo -> solo periodo (JSON body)
 //   DELETE api/datacount_pagos.php?id=N               -> baja
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
@@ -22,11 +23,13 @@ require_once __DIR__ . '/lib/datacount_comprobante.php';
 // Columnas SELECT comunes. `medio___` esta deprecated (ver comentario en el
 // schema: "desde 831 hacia atras era id de medio"), pero se mantiene disponible
 // para no perder informacion historica cuando se consulta un registro viejo.
-const DCP_COLS = "id, uuid, empresa, proyecto, periodo, tipo, emision, cancelacion,
-                  razon, cuit, numero, moneda, monto, cotizacion, valor,
-                  medio___ AS medio_legacy, billetera, descripcion,
-                  comprobante, transaccion, contabilizado, registrador, registrado,
-                  remuneracion, clasificado, estado";
+// Van calificadas con `p.` porque el listado JOINea `datacount_empresas`, que
+// comparte los nombres `id`, `razon` y `cuit` con `datacount_pagos`.
+const DCP_COLS = "p.id, p.uuid, p.empresa, p.proyecto, p.periodo, p.tipo, p.emision, p.cancelacion,
+                  p.razon, p.cuit, p.numero, p.moneda, p.monto, p.cotizacion, p.valor,
+                  p.medio___ AS medio_legacy, p.billetera, p.descripcion,
+                  p.comprobante, p.transaccion, p.contabilizado, p.registrador, p.registrado,
+                  p.remuneracion, p.clasificado, p.estado";
 
 // Prefijo S3 donde viven los binarios de los adjuntos (mismo layout que usaba
 // el admin legacy `mcDatacountPago::$url`). La URL publica de cada adjunto se
@@ -66,6 +69,9 @@ try {
     } elseif ($method === 'PUT' && $action === 'estado') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleCambiarEstadoDcPago($pdo, $id, readJsonBody());
+    } elseif ($method === 'PUT' && $action === 'periodo') {
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleCambiarPeriodoDcPago($pdo, $id, readJsonBody());
     } elseif ($method === 'PUT') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleUpdateDcPago($pdo, $id, readJsonBody());
@@ -94,6 +100,16 @@ function handleListDcPago(PDO $pdo, array $q): void {
     $estado   = trim((string)($q['estado']  ?? ''));
     $search   = trim((string)($q['q']       ?? ''));
 
+    // `periodo` llega como mes calendario (YYYY-MM, el formato que emite el
+    // <input type="month"> del modal de filtros) y en la tabla es un DATE, asi
+    // que se resuelve como rango [primer dia del mes, primer dia del siguiente).
+    // Fechas invalidas se ignoran en lugar de romper el listado.
+    $perRango = dcpRangoMes($q['periodo'] ?? null);
+    // Rango de fecha de emision. Cada extremo es opcional: se puede filtrar
+    // solo desde, solo hasta, o los dos.
+    $emiDesde = dcpNullableDate($q['emi_desde'] ?? null);
+    $emiHasta = dcpNullableDate($q['emi_hasta'] ?? null);
+
     $orderBy = $q['order_by'] ?? 'id';
     $dir     = strtolower((string)($q['dir'] ?? 'desc'));
     $limite  = isset($q['limite']) ? (int)$q['limite'] : 100;
@@ -108,17 +124,27 @@ function handleListDcPago(PDO $pdo, array $q): void {
     $where  = [];
     $params = [];
 
-    if ($codigo   !== null) { $where[] = 'id = :codigo';           $params[':codigo']   = $codigo; }
-    if ($empresa  !== null) { $where[] = 'empresa = :empresa';     $params[':empresa']  = $empresa; }
-    if ($proyecto !== null) { $where[] = 'proyecto = :proyecto';   $params[':proyecto'] = $proyecto; }
-    if ($tipo     !== '')   { $where[] = 'tipo = :tipo';           $params[':tipo']     = $tipo; }
-    if ($moneda   !== '')   { $where[] = 'moneda = :moneda';       $params[':moneda']   = $moneda; }
-    if ($razon    !== '')   { $where[] = 'razon LIKE :razon';      $params[':razon']    = "%{$razon}%"; }
-    if ($cuit     !== '')   { $where[] = 'cuit LIKE :cuit';        $params[':cuit']     = "%{$cuit}%"; }
-    if ($estado   !== '')   { $where[] = 'estado = :estado';       $params[':estado']   = $estado; }
+    if ($codigo   !== null) { $where[] = 'p.id = :codigo';         $params[':codigo']   = $codigo; }
+    if ($empresa  !== null) { $where[] = 'p.empresa = :empresa';   $params[':empresa']  = $empresa; }
+    if ($proyecto !== null) { $where[] = 'p.proyecto = :proyecto'; $params[':proyecto'] = $proyecto; }
+    if ($tipo     !== '')   { $where[] = 'p.tipo = :tipo';         $params[':tipo']     = $tipo; }
+    if ($moneda   !== '')   { $where[] = 'p.moneda = :moneda';     $params[':moneda']   = $moneda; }
+    if ($razon    !== '')   { $where[] = 'p.razon LIKE :razon';    $params[':razon']    = "%{$razon}%"; }
+    if ($cuit     !== '')   { $where[] = 'p.cuit LIKE :cuit';      $params[':cuit']     = "%{$cuit}%"; }
+    if ($estado   !== '')   { $where[] = 'p.estado = :estado';     $params[':estado']   = $estado; }
+
+    // Mes cerrado por rango en vez de DATE_FORMAT(periodo,'%Y-%m') = ... para
+    // que la comparacion siga siendo sobre la columna desnuda (sargable).
+    if ($perRango !== null) {
+        $where[] = 'p.periodo >= :per_ini AND p.periodo < :per_fin';
+        $params[':per_ini'] = $perRango[0];
+        $params[':per_fin'] = $perRango[1];
+    }
+    if ($emiDesde !== null) { $where[] = 'p.emision >= :emi_desde'; $params[':emi_desde'] = $emiDesde; }
+    if ($emiHasta !== null) { $where[] = 'p.emision <= :emi_hasta'; $params[':emi_hasta'] = $emiHasta; }
 
     if ($search !== '') {
-        $where[] = '(razon LIKE :s1 OR cuit LIKE :s2 OR numero LIKE :s3 OR descripcion LIKE :s4)';
+        $where[] = '(p.razon LIKE :s1 OR p.cuit LIKE :s2 OR p.numero LIKE :s3 OR p.descripcion LIKE :s4)';
         $like = "%{$search}%";
         $params[':s1'] = $like;
         $params[':s2'] = $like;
@@ -128,19 +154,25 @@ function handleListDcPago(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    // Stats globales (ignoran filtros — son indicadores del recurso).
-    $stats = $pdo->query("
-        SELECT
-            COUNT(*)                AS total,
-            COALESCE(SUM(valor), 0) AS importe_total
-        FROM datacount_pagos
-    ")->fetch();
+    // Las tarjetas de arriba del listado (cantidad de resultados y suma de la
+    // columna Valor) las calcula el front sobre `items`, para que reflejen
+    // exactamente lo que se ve en pantalla —filtros y LIMIT incluidos—. Por eso
+    // este endpoint ya no devuelve un bloque `stats` global.
 
+    // `empresa_presentado_iva` es el ultimo periodo de IVA presentado ante ARCA
+    // por la empresa del pago (`datacount_empresas.presentado_iva`, un periodo
+    // MES/ANIO guardado como date con dia 01; NULL = nunca presentado). Viaja
+    // por fila y no una sola vez por empresa porque el listado no garantiza una
+    // unica empresa: el filtro del toolbar puede venir vacio. Con el LEFT JOIN
+    // un pago sin empresa —o con una empresa borrada— sigue apareciendo, con el
+    // campo en NULL.
     $sql = "
-        SELECT " . DCP_COLS . "
-        FROM datacount_pagos
+        SELECT " . DCP_COLS . ",
+               e.presentado_iva AS empresa_presentado_iva
+        FROM datacount_pagos p
+        LEFT JOIN datacount_empresas e ON e.id = p.empresa
         {$sqlWhere}
-        ORDER BY {$orderBy} {$dirSql}
+        ORDER BY p.{$orderBy} {$dirSql}
         LIMIT {$limite}
     ";
     $stmt = $pdo->prepare($sql);
@@ -148,10 +180,6 @@ function handleListDcPago(PDO $pdo, array $q): void {
     $rows = $stmt->fetchAll();
 
     jsonOk([
-        'stats' => [
-            'total'         => (int)($stats['total']         ?? 0),
-            'importe_total' => (float)($stats['importe_total'] ?? 0),
-        ],
         'items' => $rows,
     ]);
 }
@@ -235,6 +263,25 @@ function dcpNullableDate(mixed $v): ?string {
     if ($s === null) return null;
     if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $s, $m)) return $m[1];
     return null;
+}
+
+// Traduce un mes calendario a los dos extremos de su rango de fechas:
+// devuelve [primer dia del mes, primer dia del mes siguiente], pensado para un
+// `>= inicio AND < fin` (fin EXCLUSIVO, por eso no es LAST_DAY). Acepta tanto
+// "YYYY-MM" (lo que manda el <input type="month"> del filtro) como un
+// "YYYY-MM-DD" completo, del que solo mira el mes. Devuelve null si no hay
+// valor o si el mes no existe — el filtro simplemente no se aplica.
+function dcpRangoMes(mixed $v): ?array {
+    $s = dcpNullableStr($v);
+    if ($s === null || !preg_match('/^(\d{4})-(\d{2})/', $s, $m)) return null;
+    $anio = (int)$m[1];
+    $mes  = (int)$m[2];
+    if ($mes < 1 || $mes > 12) return null;
+    $ini = sprintf('%04d-%02d-01', $anio, $mes);
+    $fin = $mes === 12
+        ? sprintf('%04d-01-01', $anio + 1)
+        : sprintf('%04d-%02d-01', $anio, $mes + 1);
+    return [$ini, $fin];
 }
 
 function dcpNullableDateTime(mixed $v): ?string {
@@ -610,6 +657,55 @@ function handleCambiarEstadoDcPago(PDO $pdo, int $id, array $in): void {
         'estado'        => $nuevo,
         'contabilizado' => $contabilizado,
     ]);
+}
+
+// Cambio "rapido" del periodo de imputacion. Lo usa el icono de alerta de la
+// columna Periodo del listado, que abre un modal con el selector de mes en
+// lugar de mandar al operador al formulario de Edicion completo — de ahi que
+// este handler NO toque ningun otro campo.
+//
+// Es un PUT parcial a proposito: el PUT completo reescribe TODAS las columnas
+// con lo que venga en el body, asi que mandarle solo `periodo` blanquearia el
+// resto del pago.
+//
+// `cotizacion` y `valor` NO se recalculan, y no es un olvido: la valorizacion
+// depende de monto, moneda y emision (ver dcpValorizar), y ninguno de los tres
+// cambia por mover el periodo. El periodo es imputacion contable, no un
+// insumo del importe.
+//
+// Solo se permite sobre pagos PENDIENTES, la misma condicion con la que el
+// listado enciende el icono. Sobre un pago ya Contabilizado el asiento se hizo
+// con el periodo viejo, asi que moverlo por la via rapida desalinearia la
+// contabilidad sin dejar rastro; para ese caso queda el formulario de Edicion,
+// que es un cambio deliberado y completo.
+function handleCambiarPeriodoDcPago(PDO $pdo, int $id, array $in): void {
+    // Se acepta tanto "YYYY-MM" (lo que emite el <input type="month"> del
+    // modal) como una fecha completa. dcpRangoMes() ya resuelve las dos formas
+    // y su primer extremo ES el dia 01 del mes, que es justo como el schema
+    // guarda los periodos.
+    $rango = dcpRangoMes($in['periodo'] ?? null);
+    if ($rango === null) {
+        jsonError('Periodo invalido: se espera un mes con formato YYYY-MM', 400);
+    }
+    $periodo = $rango[0];
+
+    $stmt = $pdo->prepare('SELECT estado FROM datacount_pagos WHERE id = :id');
+    $stmt->execute([':id' => $id]);
+    $row = $stmt->fetch();
+    if (!$row) jsonError('Pago no encontrado', 404);
+
+    if ((string)($row['estado'] ?? '') !== DCPAGO_ESTADO_PENDIENTE) {
+        jsonError(
+            'Solo se puede corregir el periodo de una orden de pago pendiente. '
+            . 'Para modificar un pago ya contabilizado use el formulario de Edicion.',
+            409
+        );
+    }
+
+    $upd = $pdo->prepare('UPDATE datacount_pagos SET periodo = :periodo WHERE id = :id');
+    $upd->execute([':periodo' => $periodo, ':id' => $id]);
+
+    jsonOk(['id' => $id, 'periodo' => $periodo]);
 }
 
 // Baja de una orden de pago, en tres pasos y en este orden:
