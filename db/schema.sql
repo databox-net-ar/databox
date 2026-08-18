@@ -1833,10 +1833,22 @@ CREATE TABLE `datarocket_plantillas`  (
 -- (activa/ganada/perdida) y `.probabilidad` dan el valor del embudo y el
 -- pipeline ponderado. `moneda` es ISO-4217 y NUNCA se suman monedas distintas.
 --
--- Los combos sentido / origen / estado / producto / moneda salen del catalogo
--- `estados` con prefijo `datarocket_oportunidad_`. Los cuatro primeros vivian
--- bajo `datasale_prospecto_` mientras el catalogo era compartido con el ABM
--- legacy; pasaron al prefijo propio al eliminarse Datasale (20260817_2600).
+-- Los combos sentido / origen / producto / moneda salen del catalogo `estados`
+-- con prefijo `datarocket_oportunidad_`. Los tres primeros vivian bajo
+-- `datasale_prospecto_` mientras el catalogo era compartido con el ABM legacy;
+-- pasaron al prefijo propio al eliminarse Datasale (20260817_2600).
+--
+-- `estado` (tinyint legacy: 1 Esperando / 2 Atendido / 3 Despachado) se dropeo
+-- en la 20260817_2900. Era el antecesor de `etapa_id` — la 20260812_0400 creo
+-- las etapas derivandolas de el — y quedo 100% redundante: se reconstruye desde
+-- `datarocket_etapas.tipo` + `atendido` + las interacciones entrantes sin
+-- responder.
+--
+-- `asunto` es el unico bloque de texto libre de la oportunidad. Se llamo
+-- `comentarios` entre las migraciones 20260817_1600 (que fusiono el `asunto`
+-- original adentro, como primera linea) y la 20260817_2800 (que le devolvio el
+-- nombre). Su contenido sigue siendo asunto + notas en una sola columna; el
+-- historial estructurado vive en `datarocket_interacciones`.
 DROP TABLE IF EXISTS `datarocket_oportunidades`;
 CREATE TABLE `datarocket_oportunidades`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -1850,7 +1862,6 @@ CREATE TABLE `datarocket_oportunidades`  (
   `moneda` varchar(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT 'ARS',
   `cierre_esperado` date NULL DEFAULT NULL,
   `calificacion` int(11) NULL DEFAULT NULL,
-  `estado` tinyint(4) NULL DEFAULT NULL,
   `embudo_id` int(11) NULL DEFAULT NULL,
   `etapa_id` int(11) NULL DEFAULT NULL,
   `etapa_ingreso` datetime(0) NULL DEFAULT NULL,
@@ -1858,7 +1869,7 @@ CREATE TABLE `datarocket_oportunidades`  (
   `atendido` int(11) NULL DEFAULT NULL,
   `actualizado` datetime(0) NULL DEFAULT NULL,
   `aplazado` datetime(0) NULL DEFAULT NULL,
-  `comentarios` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `asunto` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_dr_oportunidades_embudo`(`embudo_id`) USING BTREE,
   INDEX `idx_dr_oportunidades_etapa`(`etapa_id`) USING BTREE,

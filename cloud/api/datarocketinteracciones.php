@@ -1,13 +1,27 @@
 <?php
 // api/datarocketinteracciones.php
-// ABM (lectura + marcar respondida + baja) de interacciones sobre prospectos
-// Datarocket. Lee sobre la tabla `datarocket_interacciones` definida en
-// db/schema.sql. Las altas las hacen las APIs de envio (aws_mensajes /
-// evolution_mensajes) automaticamente, por eso este endpoint NO expone POST.
+// ABM de interacciones sobre prospectos Datarocket. Lee y escribe sobre la
+// tabla `datarocket_interacciones` definida en db/schema.sql.
+//
+// Las altas AUTOMATICAS las siguen haciendo las APIs de envio (aws_mensajes /
+// evolution_mensajes) escribiendo directo en la tabla. El POST de aca es para
+// las MANUALES — la nota de un llamado, una reunion, una consulta que entro por
+// un canal sin canalizador — y se usa desde "Registrar interaccion" del menu
+// contextual de Oportunidades.
+//
 //   GET    api/datarocketinteracciones.php          -> listado con filtros (query string)
 //   GET    api/datarocketinteracciones.php?id=N     -> registro individual
-//   PUT    api/datarocketinteracciones.php?id=N     -> marca/desmarca respondida
+//   POST   api/datarocketinteracciones.php          -> alta manual (JSON body)
+//   PUT    api/datarocketinteracciones.php?id=N     -> modificacion (JSON body)
+//   PUT    api/datarocketinteracciones.php?id=N&action=responder
+//                                                   -> marca/desmarca respondida
 //   DELETE api/datarocketinteracciones.php?id=N     -> baja
+//
+// `prospecto_id` y `oportunidad_id` se fijan en el alta y NO se pueden cambiar
+// despues: el PUT los ignora aunque vengan en el payload. Una interaccion es un
+// hecho sobre una persona y un negocio concretos; si se cargo sobre el
+// equivocado se borra y se registra de nuevo. Misma regla que
+// `datarocket_oportunidades.prospecto_id`.
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 //
 // Nota sobre `asunto` + `mensaje`:
@@ -82,14 +96,23 @@ try {
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    $action = (string)($_GET['action'] ?? '');
 
     if ($method === 'GET' && $id > 0) {
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
         handleList($pdo, $_GET);
-    } elseif ($method === 'PUT') {
+    } elseif ($method === 'POST') {
+        handleCreate($pdo, readJsonBody());
+    } elseif ($method === 'PUT' && $action === 'responder') {
+        // Marcado de respondida. Vive en su propia accion desde que el PUT
+        // plano pasa a editar el contenido: son dos operaciones con reglas
+        // distintas (esta solo aplica a entrantes y valida contra la fecha).
         if ($id <= 0) jsonError('Falta id', 400);
         handleResponder($pdo, $id, readJsonBody());
+    } elseif ($method === 'PUT') {
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleUpdate($pdo, $id, readJsonBody());
     } elseif ($method === 'DELETE') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleDelete($pdo, $id);
@@ -220,16 +243,167 @@ function handleGetOne(PDO $pdo, int $id): void {
 }
 
 // ----------------------------------------------------------------------------
+// Alta manual / Modificacion
+// ----------------------------------------------------------------------------
+
+// Valores validos de `sentido` y `canal`. Se leen del catalogo `estados` (una
+// sola consulta, cacheada por request) en vez de hardcodearlos, para que sumar
+// un canal sea agregar una fila y no tocar este archivo. Si el catalogo
+// estuviera vacio se devuelve lista vacia y la validacion rechaza todo — es
+// preferible a aceptar cualquier string en una columna que despues alimenta
+// filtros y estadisticas.
+function drIntOpcionesCatalogo(PDO $pdo, string $campo): array {
+    static $cache = [];
+    if (isset($cache[$campo])) return $cache[$campo];
+    $stmt = $pdo->prepare('SELECT valor FROM estados WHERE campo = :campo');
+    $stmt->execute([':campo' => 'datarocket_interaccion_' . $campo]);
+    $cache[$campo] = array_map(static fn($r) => (string)$r['valor'], $stmt->fetchAll());
+    return $cache[$campo];
+}
+
+function drIntNullableStr(mixed $v, ?int $max = null): ?string {
+    if ($v === null) return null;
+    $s = trim((string)$v);
+    if ($s === '') return null;
+    if ($max !== null) $s = mb_substr($s, 0, $max);
+    return $s;
+}
+
+// Normaliza y valida los campos de contenido que comparten alta y modificacion.
+// `prospecto_id` / `oportunidad_id` NO salen de aca: son del alta y despues
+// inmutables.
+function drIntSanitizeContenido(PDO $pdo, array $in): array {
+    $fecha = drIntNormalizarFecha($in['fecha'] ?? '');
+    if ($fecha === null) {
+        jsonError('La fecha no es válida (se espera AAAA-MM-DD HH:MM).', 400);
+    }
+
+    $sentido = drIntNullableStr($in['sentido'] ?? null, 10);
+    if ($sentido === null) jsonError('El sentido es obligatorio.', 400);
+    if (!in_array($sentido, drIntOpcionesCatalogo($pdo, 'sentido'), true)) {
+        jsonError('El sentido indicado no es válido.', 400);
+    }
+
+    // `canal` es NULL-able a proposito: las notas internas no salieron por
+    // ningun lado. Si viene, tiene que estar en el catalogo.
+    $canal = drIntNullableStr($in['canal'] ?? null, 20);
+    if ($canal !== null && !in_array($canal, drIntOpcionesCatalogo($pdo, 'canal'), true)) {
+        jsonError('El canal indicado no es válido.', 400);
+    }
+
+    return [
+        'fecha'   => $fecha,
+        'sentido' => $sentido,
+        'canal'   => $canal,
+        'asunto'  => drIntNullableStr($in['asunto']  ?? null, 500),
+        'mensaje' => drIntNullableStr($in['mensaje'] ?? null),
+    ];
+}
+
+// POST api/datarocketinteracciones.php
+//   body {fecha, prospecto_id, oportunidad_id, sentido, canal, asunto, mensaje}
+//
+// `respondida` no se acepta en el alta: una interaccion nace pendiente (si es
+// entrante) y se sella despues con ?action=responder.
+function handleCreate(PDO $pdo, array $in): void {
+    $p = drIntSanitizeContenido($pdo, $in);
+
+    $prospectoId   = isset($in['prospecto_id'])   && $in['prospecto_id']   !== '' ? (int)$in['prospecto_id']   : null;
+    $oportunidadId = isset($in['oportunidad_id']) && $in['oportunidad_id'] !== '' ? (int)$in['oportunidad_id'] : null;
+
+    // Invariante de la tabla (documentada en db/schema.sql): al menos uno de los
+    // dos. No hay CHECK constraint en este schema, asi que se valida aca.
+    if (!$prospectoId && !$oportunidadId) {
+        jsonError('La interacción tiene que colgar de un prospecto o de una oportunidad.', 400);
+    }
+
+    // La FK de oportunidad existe y abortaria el INSERT con un error crudo de
+    // MySQL; se chequea antes para devolver un mensaje entendible. `prospecto_id`
+    // todavia no lleva FK (ver el comentario de la tabla en db/schema.sql), asi
+    // que su chequeo es la unica barrera contra un huerfano nuevo.
+    if ($oportunidadId) {
+        $st = $pdo->prepare('SELECT prospecto_id FROM datarocket_oportunidades WHERE id = :id');
+        $st->execute([':id' => $oportunidadId]);
+        $opo = $st->fetch();
+        if (!$opo) jsonError('La oportunidad indicada no existe.', 400);
+        // Si no vino prospecto, se hereda el de la oportunidad: son la misma
+        // persona y deja la fila consultable desde la ficha del prospecto.
+        if (!$prospectoId && !empty($opo['prospecto_id'])) {
+            $prospectoId = (int)$opo['prospecto_id'];
+        }
+    }
+    if ($prospectoId) {
+        $st = $pdo->prepare('SELECT id FROM datarocket_prospectos WHERE id = :id');
+        $st->execute([':id' => $prospectoId]);
+        if (!$st->fetch()) jsonError('El prospecto indicado no existe.', 400);
+    }
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO datarocket_interacciones
+            (fecha, prospecto_id, oportunidad_id, sentido, canal, asunto, mensaje)
+         VALUES
+            (:fecha, :prospecto_id, :oportunidad_id, :sentido, :canal, :asunto, :mensaje)'
+    );
+    $stmt->execute([
+        ':fecha'          => $p['fecha'],
+        ':prospecto_id'   => $prospectoId,
+        ':oportunidad_id' => $oportunidadId,
+        ':sentido'        => $p['sentido'],
+        ':canal'          => $p['canal'],
+        ':asunto'         => $p['asunto'],
+        ':mensaje'        => $p['mensaje'],
+    ]);
+    jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
+}
+
+// PUT api/datarocketinteracciones.php?id=N
+//   body {fecha, sentido, canal, asunto, mensaje}
+//
+// NO toca `prospecto_id` / `oportunidad_id` (fijos desde el alta) ni
+// `respondida` (tiene su propia accion, con reglas propias).
+function handleUpdate(PDO $pdo, int $id, array $in): void {
+    $st = $pdo->prepare('SELECT id, sentido, respondida FROM datarocket_interacciones WHERE id = :id');
+    $st->execute([':id' => $id]);
+    $prev = $st->fetch();
+    if (!$prev) jsonError('Interaccion no encontrada', 404);
+
+    $p = drIntSanitizeContenido($pdo, $in);
+
+    // Coherencia con `respondida`: solo las entrantes pueden tenerla sellada,
+    // asi que sacarle "entrante" a una que ya fue respondida dejaria un dato
+    // imposible. Se frena en vez de limpiar `respondida` en silencio.
+    if ($prev['respondida'] !== null && $p['sentido'] !== 'entrante') {
+        jsonError('Esta interacción ya figura respondida: solo las entrantes pueden estarlo. Volvela a pendiente antes de cambiarle el sentido.', 409);
+    }
+
+    $stmt = $pdo->prepare(
+        'UPDATE datarocket_interacciones SET
+            fecha   = :fecha,
+            sentido = :sentido,
+            canal   = :canal,
+            asunto  = :asunto,
+            mensaje = :mensaje
+          WHERE id = :id'
+    );
+    $stmt->execute([
+        ':fecha'   => $p['fecha'],
+        ':sentido' => $p['sentido'],
+        ':canal'   => $p['canal'],
+        ':asunto'  => $p['asunto'],
+        ':mensaje' => $p['mensaje'],
+        ':id'      => $id,
+    ]);
+    jsonOk(['id' => $id]);
+}
+
+// ----------------------------------------------------------------------------
 // Marcar / desmarcar respondida
 // ----------------------------------------------------------------------------
 
-// PUT api/datarocketinteracciones.php?id=N
+// PUT api/datarocketinteracciones.php?id=N&action=responder
 //   body {"respondida": true}                    -> sella con la hora actual
 //   body {"respondida": "2026-08-17 09:30:00"}   -> sella con esa hora
 //   body {"respondida": false|null}              -> vuelve a pendiente
-//
-// Es lo unico editable de la tabla: el resto de las columnas las escriben los
-// canalizadores y no tiene sentido corregirlas a mano.
 function handleResponder(PDO $pdo, int $id, array $in): void {
     $st = $pdo->prepare('SELECT sentido, fecha FROM datarocket_interacciones WHERE id = :id');
     $st->execute([':id' => $id]);

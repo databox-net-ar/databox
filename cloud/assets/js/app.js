@@ -23824,6 +23824,17 @@ route('/datarocketprospectos', async (mount) => {
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
+      <!-- "Registrar oportunidad" va agrupado con Consultar (las dos llevan a
+           otra pantalla) y separado de Editar/Eliminar, que operan sobre este
+           registro.
+           Lo gobierna el permiso de alta del modulo DESTINO: es el mismo que
+           exige el POST del endpoint (requirePermCrud mapea POST -> agregar),
+           asi que el atajo se ve exactamente cuando la operacion que dispara
+           esta autorizada. -->
+      ${hasPermission('datarocket.oportunidades.agregar') ? `
+      <button type="button" data-action="registrar_oportunidad" role="menuitem">
+        <i class="fa-solid fa-bullseye"></i><span>Registrar oportunidad</span>
+      </button>` : ''}
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
@@ -23980,6 +23991,7 @@ route('/datarocketprospectos', async (mount) => {
     if (!data) return;
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar') abrirConsultarDrPr(data.id);
+    if (b.dataset.action === 'registrar_oportunidad') registrarOportunidadDesdeProspecto(data.id);
     if (b.dataset.action === 'editar')    abrirAltaEdicionDrPr(data.id);
     if (b.dataset.action === 'eliminar')  eliminarDrPr(data.id);
   });
@@ -24389,7 +24401,7 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
     <div class="modal-tabs">
       <button type="button" class="modal-tab${esEmpresa ? ' active' : ''}" data-tab="empresa">Empresa</button>
       <button type="button" class="modal-tab${esEmpresa ? '' : ' active'}" data-tab="persona">Persona</button>
-      <button type="button" class="modal-tab"        data-tab="prospecto">Prospecto</button>
+      <button type="button" class="modal-tab"        data-tab="prospecto">Contacto</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
       <button type="button" class="modal-tab"        data-tab="oportunidades">Oportunidades${oportunidades.length ? ` <span style="font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb, var(--primary) 25%, transparent);color:var(--primary);margin-left:4px">${oportunidades.length}</span>` : ''}</button>
@@ -24399,7 +24411,7 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
     <!-- La vieja pestaña "Identidad" se partio en dos, una por cada valor de
          tipo. Cada pestaña muestra EXACTAMENTE las columnas de su prefijo:
          Empresa las empresa_* y Persona las persona_*. Ninguna cruza al otro
-         grupo — la web se mudo a la pestaña Prospecto. En particular
+         grupo — la web se mudo a la pestaña Contacto. En particular
          persona_nombre vive en la pestaña Persona, no en Empresa. La columna
          nombre no esta en ninguna de las dos: es el nombre del prospecto como
          registro (valga persona o empresa) y ya se muestra en el encabezado
@@ -24425,10 +24437,13 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
       </dl>
     </div>
 
-    <!-- Todos los canales de prospecto en una sola pestaña: los cuatro directos
-         (correo, celular, telefono, whatsapp), las tres redes que antes vivian
-         en una pestaña "Redes" aparte, y la web al final — antes estaba en la
-         pestaña Empresa, pero es un canal mas del prospecto.
+    <!-- Pestaña "Contacto": todos los canales del prospecto en un solo lugar —
+         los cuatro directos (correo, celular, telefono, whatsapp), las tres
+         redes que antes vivian en una pestaña "Redes" aparte, y la web al final
+         (antes estaba en la pestaña Empresa, pero es un canal mas).
+         El identificador interno del data-tab sigue siendo "prospecto": solo
+         cambio la etiqueta visible. Sin backticks en este comentario: esta
+         dentro de un template literal y lo cortarian.
          Web/Facebook/Instagram/TikTok van con linkCard (abren en pestaña
          nueva); el resto con card monoespaciada. -->
     <div class="modal-tabpanel" data-panel="prospecto" hidden>
@@ -24486,7 +24501,7 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
                    <th style="width:80px">Código</th>
                    <th style="width:150px">Ingreso</th>
                    <th>Producto</th>
-                   <th>Comentarios</th>
+                   <th>Asunto</th>
                  </tr>
                </thead>
                <tbody>
@@ -24496,7 +24511,7 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
                      <td>${esc(fmtFechaAnio(p.ingreso) || '—')}</td>
                      <td>${esc(p.producto || '—')}</td>
                      <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                         title="${esc(p.comentarios || '')}">${esc(String(p.comentarios || '').split('\n')[0] || '—')}</td>
+                         title="${esc(p.asunto || '')}">${esc(String(p.asunto || '').split('\n')[0] || '—')}</td>
                    </tr>
                  `).join('')}
                </tbody>
@@ -24734,8 +24749,11 @@ function formDrPrHtml(c, paises) {
   };
   // Pestañas espejan la distribucion del modal de consulta (renderConsultaDrPr)
   // para que consultar y editar tengan el mismo mapa mental: empresa · persona ·
-  // prospecto (canales directos + web y redes) · ubicacion · comentarios y
-  // clasificacion. La unica diferencia es la pestaña "General" al principio,
+  // contacto (canales directos + web y redes) · ubicacion · comentarios y
+  // clasificacion. Ojo: la etiqueta visible de esa tercera pestaña es
+  // "Contacto" pero su data-tab / data-panel siguen diciendo "prospecto", en
+  // los dos modales.
+  // La unica diferencia es la pestaña "General" al principio,
   // que no existe en el consultar: aloja los dos campos que son del registro y
   // no de una de las dos identidades — el selector de `tipo` (obligatorio) y el
   // `nombre` del prospecto, que en el consultar se muestran en el encabezado del
@@ -24747,7 +24765,7 @@ function formDrPrHtml(c, paises) {
       <button type="button" class="modal-tab active" data-tab="general">General</button>
       <button type="button" class="modal-tab"        data-tab="empresa">Empresa</button>
       <button type="button" class="modal-tab"        data-tab="persona">Persona</button>
-      <button type="button" class="modal-tab"        data-tab="prospecto">Prospecto</button>
+      <button type="button" class="modal-tab"        data-tab="prospecto">Contacto</button>
       <button type="button" class="modal-tab"        data-tab="ubicacion">Ubicación</button>
       <button type="button" class="modal-tab"        data-tab="comentarios">Clasificación</button>
     </div>
@@ -25075,13 +25093,19 @@ async function eliminarDrPr(id) {
   }
 }
 
-// ------------------------- Vista: Datarocket > Interacciones (read-only ABM) -------------------------
-// Historial de interacciones sobre cada prospecto Datarocket. Las altas
-// las escriben las APIs de envio (aws_mensajes / evolution_mensajes) — el
-// panel es solo lectura: no hay "+ Nueva" ni "Editar". Solo Consultar y
-// Eliminar. `mensaje_id` + `origen` forman una asociacion polimorfica al
-// mensaje que origino la interaccion (origen ∈ {'aws_mensajes',
-// 'evolution_mensajes'}).
+// ------------------------- Vista: Datarocket > Interacciones (ABM) -------------------------
+// Historial de interacciones sobre cada prospecto Datarocket.
+//
+// Las altas AUTOMATICAS las escriben las APIs de envio (aws_mensajes /
+// evolution_mensajes) directo en la tabla. Las MANUALES — la nota de un
+// llamado, una reunion — se cargan desde "Registrar interacción" del menu
+// contextual de Oportunidades, que abre el alta con la oportunidad y su
+// prospecto ya vinculados (ver abrirAltaEdicionDrInt). Por eso este listado no
+// tiene boton "+ Nueva": una interaccion siempre cuelga de algo.
+//
+// El menu de fila ofrece Consultar / Marcar respondida / Editar / Eliminar.
+// Editar cambia el contenido (fecha, sentido, canal, asunto, mensaje) pero
+// nunca el prospecto ni la oportunidad, que son fijos desde el alta.
 const drIntFiltrosDefaults = {
   q: '', codigo: '', prospecto_id: '', sentido: '', canal: '', respuesta: '',
   desde: '', hasta: '',
@@ -25090,6 +25114,12 @@ const drIntFiltrosDefaults = {
 const drIntFiltros = { ...drIntFiltrosDefaults };
 let drIntBuscadorTimer   = null;
 let drIntFiltrosSnapshot = null;
+// Oportunidad + prospecto a vincular en el alta que abre la ruta al montarse.
+// La setea registrarInteraccionDesdeOportunidad() antes de navegar. Se declara
+// aca (y no al lado de esa funcion) para que quede definida antes del route():
+// si la pagina entra directo a esta ruta, el callback corre sin depender de
+// cuanto del archivo se evaluo.
+let drIntPreseleccion = null;
 
 // `sentido` y `canal` reemplazaron al viejo `tipo`, que mezclaba los dos ejes
 // en un solo slug (migración 20260817_1000). Los valores son los del catálogo
@@ -25363,6 +25393,10 @@ route('/datarocketinteracciones', async (mount) => {
         <i class="fa-solid fa-rotate-left"></i><span>Volver a pendiente</span>
       </button>
       <div class="ctx-menu-sep"></div>
+      ${hasPermission('datarocket.interacciones.editar') ? `
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>` : ''}
       <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
         <i class="fa-solid fa-trash"></i><span>Eliminar</span>
       </button>
@@ -25497,6 +25531,7 @@ route('/datarocketinteracciones', async (mount) => {
     if (b.dataset.action === 'consultar')  abrirConsultarDrInt(data.id);
     if (b.dataset.action === 'responder')  marcarRespondidaDrInt(data.id, true);
     if (b.dataset.action === 'despender')  marcarRespondidaDrInt(data.id, false);
+    if (b.dataset.action === 'editar')     abrirEditarDrInt(data.id);
     if (b.dataset.action === 'eliminar')   eliminarDrInt(data.id);
   });
 
@@ -25522,6 +25557,15 @@ route('/datarocketinteracciones', async (mount) => {
 
   refrescarBadgeFiltrosDrInt();
   await cargarDrInt();
+
+  // Llegada desde "Registrar interacción" del ABM de Oportunidades: abrimos el
+  // alta con esa oportunidad y su prospecto ya vinculados. La preseleccion se
+  // consume ANTES de abrir el modal para que un F5 o un volver a la ruta no lo
+  // reabra solo.
+  if (drIntPreseleccion) {
+    abrirAltaEdicionDrInt(null);
+    drIntPreseleccion = null;
+  }
 }, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Interacciones');
 
 // Abre el menú contextual de una fila mostrando sólo las acciones que aplican:
@@ -25541,7 +25585,10 @@ function abrirCtxMenuDrInt(tr, x, y) {
 // pone la hora del servidor cuando se manda `true`.
 async function marcarRespondidaDrInt(id, respondida) {
   try {
-    await apiSend(`api/datarocketinteracciones.php?id=${id}`, 'PUT', { respondida });
+    // `action=responder` distingue este PUT del que edita el contenido de la
+    // interaccion (abrirAltaEdicionDrInt): son dos operaciones con reglas
+    // distintas y el backend las rutea por separado.
+    await apiSend(`api/datarocketinteracciones.php?id=${id}&action=responder`, 'PUT', { respondida });
     toast(respondida ? 'Interacción marcada como respondida.' : 'Interacción vuelta a pendiente.');
     cargarDrInt();
   } catch (e) {
@@ -25700,6 +25747,210 @@ window.limpiarFiltrosDrInt     = limpiarFiltrosDrInt;
 window.cerrarModalFiltrosDrInt = cerrarModalFiltrosDrInt;
 
 // ---- Modal Consultar (sin botón Editar; las interacciones no se editan) ----
+
+// ---------------------------------------------------------------------------
+// Alta / Edicion de interaccion
+// ---------------------------------------------------------------------------
+// El alta manual existe para lo que ningun canalizador escribe: la nota de un
+// llamado, una reunion, una consulta que entro por un canal sin integracion.
+// Las automaticas las siguen insertando aws_mensajes / evolution_mensajes.
+//
+// Prospecto y oportunidad son FIJOS en los dos modos — se muestran como
+// cabecera de solo lectura, nunca como control. En el alta llegan de
+// "Registrar interaccion" del menu contextual de Oportunidades; en la edicion,
+// del registro. El backend tambien los ignora en el PUT, asi que front y back
+// dicen lo mismo.
+//
+// `respondida` no se toca desde aca: tiene su propia accion en el menu
+// contextual, que valida que la interaccion sea entrante.
+
+// `drIntPreseleccion` (declarada arriba, con el resto del estado del modulo)
+// lleva { oportunidadId, prospectoId, oportunidad, prospecto } y la ruta la
+// consume una sola vez. Mismo mecanismo que `opProspectoPreseleccionado` en
+// Oportunidades — el router no parsea query string.
+//
+// Salta del ABM de Oportunidades al de Interacciones y abre el alta con la
+// oportunidad y su prospecto ya vinculados. Los datos salen de `opItems` (la
+// fila ya esta en memoria), asi que no hace falta ir al backend.
+function registrarInteraccionDesdeOportunidad(oportunidadId) {
+  const o = opItems.find((x) => Number(x.id) === Number(oportunidadId));
+  if (!o) return;
+  drIntPreseleccion = {
+    oportunidadId: Number(o.id),
+    prospectoId:   o.prospecto_id ? Number(o.prospecto_id) : null,
+    // Etiqueta para la cabecera del modal: el producto es lo que identifica a
+    // la oportunidad en el resto del panel (el asunto se dropeo en la
+    // migracion 20260817_1700).
+    oportunidad:   o.producto || `#${o.id}`,
+    prospecto:     o.prospecto_nombre || (o.prospecto_id ? `#${o.prospecto_id}` : null),
+  };
+  location.hash = '#/datarocketinteracciones';
+}
+window.registrarInteraccionDesdeOportunidad = registrarInteraccionDesdeOportunidad;
+
+// Opciones de un combo a partir de los mapas de render del modulo
+// (DR_INT_SENTIDO_MAP / DR_INT_CANAL_MAP). Se usan esos y no un lookup al
+// backend porque son las mismas claves del catalogo `estados` y el modulo ya
+// depende de ellos para pintar el listado. El backend igual valida contra
+// `estados`, asi que un mapa desactualizado se rechaza en el guardado en vez
+// de escribir basura.
+function drIntOpcionesSelect(mapa, seleccionado) {
+  return Object.entries(mapa)
+    .map(([valor, def]) => `<option value="${esc(valor)}"${String(seleccionado || '') === valor ? ' selected' : ''}>${esc(def.label)}</option>`)
+    .join('');
+}
+
+// `a` = interaccion existente (edicion) o null (alta). En alta usa
+// drIntPreseleccion para la cabecera.
+function abrirAltaEdicionDrInt(a) {
+  const editando = !!a;
+  const ctx = editando
+    ? {
+        oportunidadId: a.oportunidad_id ? Number(a.oportunidad_id) : null,
+        prospectoId:   a.prospecto_id   ? Number(a.prospecto_id)   : null,
+        oportunidad:   a.oportunidad_producto || (a.oportunidad_id ? `#${a.oportunidad_id}` : null),
+        prospecto:     a.prospecto_nombre     || (a.prospecto_id   ? `#${a.prospecto_id}`   : null),
+      }
+    : drIntPreseleccion;
+
+  if (!ctx || (!ctx.oportunidadId && !ctx.prospectoId)) {
+    toast('Para registrar una interacción, entrá desde Oportunidades > menú de la fila > "Registrar interacción".', { error: true });
+    return;
+  }
+
+  // Fecha por defecto = ahora. Se arma a mano y no con toISOString(), que pasa
+  // a UTC y en Argentina (UTC-3) mostraria tres horas de mas.
+  const ahora = new Date();
+  const dd = (n) => String(n).padStart(2, '0');
+  const ahoraDT = `${ahora.getFullYear()}-${dd(ahora.getMonth() + 1)}-${dd(ahora.getDate())}`
+                + `T${dd(ahora.getHours())}:${dd(ahora.getMinutes())}`;
+  const fechaValor = editando && a.fecha
+    ? String(a.fecha).replace(' ', 'T').slice(0, 16)
+    : ahoraDT;
+
+  const dato = (label, valor) => `
+    <div>
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:2px">${esc(label)}</div>
+      <div style="font-size:.92rem;color:${valor ? 'var(--text)' : 'var(--muted)'}">${valor ? esc(valor) : '—'}</div>
+    </div>`;
+
+  openModal(`
+    <div class="modal" style="width:80vw;max-width:800px;overflow-x:hidden">
+      <div class="modal-header">
+        <div class="modal-title">${editando ? `Editar interacción <span class="modal-subtitle">#${a.id}</span>` : 'Nueva interacción'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Cabecera fija: a quien y a que negocio pertenece la interaccion.
+             Son datos, no controles — no se eligen ni se cambian desde este
+             modal, ni al crear ni al editar. -->
+        <div style="display:flex;gap:24px;flex-wrap:wrap;padding:14px;margin-bottom:16px;
+                    background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px">
+          ${dato('Prospecto',   ctx.prospecto)}
+          ${dato('Oportunidad', ctx.oportunidad)}
+        </div>
+
+        <div class="form-row form-row-3">
+          <div class="form-group">
+            <label>Fecha <span style="color:var(--danger)">*</span></label>
+            <input type="datetime-local" id="drIntFecha" value="${esc(fechaValor)}">
+          </div>
+          <div class="form-group">
+            <label>Sentido <span style="color:var(--danger)">*</span></label>
+            <select id="drIntSentido">${drIntOpcionesSelect(DR_INT_SENTIDO_MAP, editando ? a.sentido : 'entrante')}</select>
+          </div>
+          <div class="form-group">
+            <label>Canal</label>
+            <!-- Vacio es un valor legitimo: las notas internas no salieron por
+                 ningun canal. La columna es NULL-able. -->
+            <select id="drIntCanal">
+              <option value="">— (Ninguno) —</option>
+              ${drIntOpcionesSelect(DR_INT_CANAL_MAP, editando ? a.canal : '')}
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Asunto (max 500)</label>
+          <input type="text" id="drIntAsunto" maxlength="500"
+                 placeholder="Etiqueta corta que se ve en el listado"
+                 value="${editando ? esc(a.asunto || '') : ''}">
+        </div>
+
+        <div class="form-group">
+          <label>Mensaje</label>
+          <textarea id="drIntMensaje" rows="8" placeholder="Qué se dijo">${editando ? esc(a.mensaje || '') : ''}</textarea>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  setTimeout(() => document.getElementById('drIntAsunto')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDrInt(editando ? Number(a.id) : null, ctx);
+  });
+}
+
+async function guardarDrInt(id, ctx) {
+  const nullIfEmpty = (v) => (v === null || v === undefined || String(v).trim() === '') ? null : String(v).trim();
+
+  const fecha = $('#drIntFecha').value;
+  if (!fecha) {
+    toast('La fecha es obligatoria.', { error: true });
+    $('#drIntFecha').focus();
+    return;
+  }
+
+  const body = {
+    fecha:   fecha,
+    sentido: $('#drIntSentido').value,
+    canal:   nullIfEmpty($('#drIntCanal').value),
+    asunto:  nullIfEmpty($('#drIntAsunto').value),
+    mensaje: nullIfEmpty($('#drIntMensaje').value),
+  };
+
+  // prospecto_id / oportunidad_id solo viajan en el alta: el PUT los ignora
+  // (son fijos desde que la interaccion existe).
+  if (!id) {
+    body.prospecto_id   = ctx.prospectoId;
+    body.oportunidad_id = ctx.oportunidadId;
+  }
+
+  try {
+    if (id) {
+      await apiSend(`api/datarocketinteracciones.php?id=${id}`, 'PUT', body);
+      toast('Interacción actualizada');
+    } else {
+      await apiSend('api/datarocketinteracciones.php', 'POST', body);
+      toast('Interacción registrada');
+    }
+    closeModal();
+    cargarDrInt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// Trae la interaccion completa antes de abrir el editor: el listado no incluye
+// `mensaje` entero en todos los casos y el modal necesita el registro tal cual
+// esta guardado.
+async function abrirEditarDrInt(id) {
+  try {
+    const a = await apiGet(`api/datarocketinteracciones.php?id=${id}`);
+    abrirAltaEdicionDrInt(a);
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 async function abrirConsultarDrInt(id) {
   openModal(`
     <div class="modal" style="width:80vw;max-width:800px">
@@ -25774,15 +26025,10 @@ function renderConsultaDrInt(a) {
       ${card('Fecha',       fmtFechaLarga(a.fecha))}
       ${cardHtml('Prospecto',  prospectoHtml)}
       ${cardHtml('Oportunidad', oportunidadHtml)}
-      ${card('Correo',      a.prospecto_correo)}
       ${card('Sentido',     sentidoTxt)}
       ${card('Canal',       canalTxt)}
       ${card('Respondida',  a.respondida ? fmtFechaLarga(a.respondida)
                                          : (a.sentido === 'entrante' ? 'Pendiente' : '—'))}
-      ${card('Tiempo de respuesta', a.respondida
-               ? drIntFmtMinutos(a.respuesta_minutos)
-               : (a.sentido === 'entrante'
-                    ? 'Esperando hace ' + drIntFmtMinutos(a.espera_minutos) : '—'))}
       ${card('Asunto',  a.asunto,  true)}
       ${card('Mensaje', a.mensaje, true)}
     </dl>
@@ -27285,13 +27531,18 @@ const OP_API = 'api/datarocket_oportunidades.php';
 let opItems           = [];
 let opLookups         = null;        // { proyectos, usuarios, paises, embudos, etapas, opciones }
 let opBusqueda        = '';
+// Prospecto a vincular en el alta que abre la ruta al montarse. Lo setea
+// registrarOportunidadDesdeProspecto() antes de navegar. Se declara aca (y no
+// al lado de esa funcion) para que quede definido antes del route(): si la
+// pagina entra directo a esta ruta, el callback corre sin depender de cuanto
+// del archivo se evaluo.
+let opProspectoPreseleccionado = null;
 let opFiltroCodigo    = '';
 let opFiltroEmbudo    = '';
 let opFiltroEtapa     = '';
 let opFiltroProyecto  = '';
 let opFiltroAsignado  = '';
 let opFiltroAtendido  = '';
-let opFiltroEstado    = '';
 let opFiltroSentido   = '';
 let opFiltroOrigen    = '';
 let opFiltroDesde     = '';
@@ -27303,22 +27554,11 @@ let opEditandoId      = null;
 let opBuscadorTimer   = null;
 let opFiltrosSnapshot = null;
 
-// Mapeo legacy de `estado` tinyint de la oportunidad (mismo del ABM legacy
-// /oportunidades). Se mantiene mientras se conviva con la columna. La nueva
-// dimension viva del embudo va por `etapa_id`, no por este campo.
-const OP_ESTADO_LEGACY = {
-  1: { label: 'Esperando',  cls: 'badge-warn' },
-  2: { label: 'Atendido',   cls: 'badge-info' },
-  3: { label: 'Despachado', cls: 'badge-success' },
-};
-
-function opEstadoLegacyBadge(v) {
-  if (v === null || v === undefined || v === '') return `<span class="badge badge-info">—</span>`;
-  const def = OP_ESTADO_LEGACY[Number(v)];
-  return def
-    ? `<span class="badge ${def.cls}">${esc(def.label)}</span>`
-    : `<span class="badge badge-info">${esc(String(v))}</span>`;
-}
+// El `estado` tinyint legacy (1 Esperando / 2 Atendido / 3 Despachado) y su
+// badge se fueron con la migracion 20260817_2900: era el antecesor de
+// `etapa_id` y no aportaba informacion propia. La dimension viva del embudo es
+// `etapa_id`; "hay algo pendiente de responder" se lee de las interacciones
+// entrantes sin `respondida`.
 
 function opEtapaPill(e) {
   if (!e.etapa_id) return `<span style="color:var(--muted)">—</span>`;
@@ -27428,9 +27668,11 @@ route('/datarocket_oportunidades', async (mount) => {
             <i class="fa-solid fa-rotate"></i>
           </button>
         </div>
-        <div class="toolbar-right">
-          <button class="btn btn-primary" id="opNuevoBtn">+ Nueva oportunidad</button>
-        </div>
+        <!-- Sin boton "+ Nueva oportunidad": una oportunidad siempre nace de un
+             prospecto, asi que el unico punto de alta es
+             Prospectos > menu contextual > "Registrar oportunidad". Desde ahi
+             el prospecto llega resuelto y queda fijo — el modal nunca deja
+             elegirlo ni cambiarlo. -->
       </div>
 
       <div class="table-card">
@@ -27442,13 +27684,12 @@ route('/datarocket_oportunidades', async (mount) => {
               ${thOrdenable('proyecto_id',   'Proyecto', 'width:130px')}
               ${thOrdenable('embudo_id',     'Embudo / Etapa', 'width:180px')}
               ${thOrdenable('prospecto_nombre', 'Nombre / Organización')}
-              ${thOrdenable('estado',        'Estado',   'width:110px;text-align:center')}
               <th style="width:130px">Asignado</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="opTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -27458,6 +27699,14 @@ route('/datarocket_oportunidades', async (mount) => {
       <button type="button" data-action="consultar" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Consultar</span>
       </button>
+      <!-- Salta al ABM de Interacciones y abre el alta con esta oportunidad y
+           su prospecto ya vinculados. Mismo criterio que "Registrar oportunidad"
+           del menu de Prospectos: lo gobierna el permiso de alta del modulo
+           destino, que es el mismo que exige el POST del endpoint. -->
+      ${hasPermission('datarocket.interacciones.agregar') ? `
+      <button type="button" data-action="registrar_interaccion" role="menuitem">
+        <i class="fa-solid fa-comments"></i><span>Registrar interacción</span>
+      </button>` : ''}
       <button type="button" data-action="cambiar_etapa" role="menuitem">
         <i class="fa-solid fa-arrows-left-right"></i><span>Cambiar etapa</span>
       </button>
@@ -27515,15 +27764,6 @@ route('/datarocket_oportunidades', async (mount) => {
               <select id="fOpAtendido" onchange="onFiltroOp('atendido', this.value)">${opUsr}</select>
             </div>
           </div>
-          <div class="form-group">
-            <label>Estado (legacy)</label>
-            <div id="fOpEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap">
-              <button type="button" class="filter-chip" data-val=""  onclick="onFiltroOp('estado', '')">Todos</button>
-              <button type="button" class="filter-chip" data-val="1" onclick="onFiltroOp('estado', '1')">Esperando</button>
-              <button type="button" class="filter-chip" data-val="2" onclick="onFiltroOp('estado', '2')">Atendidos</button>
-              <button type="button" class="filter-chip" data-val="3" onclick="onFiltroOp('estado', '3')">Despachados</button>
-            </div>
-          </div>
           <div class="form-row">
             <div class="form-group">
               <label>Desde</label>
@@ -27549,7 +27789,6 @@ route('/datarocket_oportunidades', async (mount) => {
                 <option value="proyecto_id">Proyecto</option>
                 <option value="embudo_id">Embudo</option>
                 <option value="etapa_id">Etapa</option>
-                <option value="estado">Estado</option>
                 <option value="asignado">Asignado</option>
                 <option value="actualizado">Actualizado</option>
                 <option value="prospecto_nombre">Prospecto</option>
@@ -27591,7 +27830,6 @@ route('/datarocket_oportunidades', async (mount) => {
 
   $('#opFiltrosBtn').addEventListener('click', abrirModalFiltrosOp);
   $('#opRefrescarBtn').addEventListener('click', cargarOp);
-  $('#opNuevoBtn').addEventListener('click', () => abrirAltaEdicionOp(null));
 
   $('#opThead').addEventListener('click', (ev) => {
     const th = ev.target.closest('th[data-sort]');
@@ -27614,6 +27852,7 @@ route('/datarocket_oportunidades', async (mount) => {
     if (!data) return;
     cerrarCtxMenu();
     if (b.dataset.action === 'consultar')     abrirConsultaOp(data.id);
+    if (b.dataset.action === 'registrar_interaccion') registrarInteraccionDesdeOportunidad(data.id);
     if (b.dataset.action === 'cambiar_etapa') abrirMenuCambiarEtapaOp(data.id);
     if (b.dataset.action === 'editar')        abrirAltaEdicionOp(data.id);
     if (b.dataset.action === 'eliminar')      eliminarOp(data.id);
@@ -27650,12 +27889,21 @@ route('/datarocket_oportunidades', async (mount) => {
 
   opActualizarBadgeFiltros();
   await cargarOp();
+
+  // Llegada desde "Registrar oportunidad" del ABM de Prospectos: abrimos el
+  // alta con ese prospecto ya vinculado. Se consume la variable ANTES de abrir
+  // el modal para que un F5 o un volver a la ruta no lo reabra solo.
+  if (opProspectoPreseleccionado) {
+    const prospectoId = opProspectoPreseleccionado;
+    opProspectoPreseleccionado = null;
+    abrirAltaEdicionOp(null, prospectoId);
+  }
 }, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Oportunidades');
 
 async function cargarOp() {
   const tbody = $('#opTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (opBusqueda)                 qs.set('q', opBusqueda);
@@ -27665,7 +27913,6 @@ async function cargarOp() {
   if (opFiltroEtapa)              qs.set('etapa_id',    opFiltroEtapa);
   if (opFiltroAsignado)           qs.set('asignado',    opFiltroAsignado);
   if (opFiltroAtendido)           qs.set('atendido',    opFiltroAtendido);
-  if (opFiltroEstado !== '')      qs.set('estado',      opFiltroEstado);
   if (opFiltroSentido)            qs.set('sentido',     opFiltroSentido);
   if (opFiltroOrigen)             qs.set('origen',      opFiltroOrigen);
   if (opFiltroDesde)              qs.set('desde',       opFiltroDesde);
@@ -27682,7 +27929,7 @@ async function cargarOp() {
     pintarForecastOp(data.forecast || []);
     renderOp();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -27704,9 +27951,8 @@ function opFmtMonto(monto, moneda) {
 // El listado NO tiene columna "Monto": el importe sigue visible en la barra de
 // valor del embudo (pintarForecastOp, arriba de la tabla) y en el tab
 // Seguimiento de los modales de Consultar/Editar, que es donde se trabaja el
-// numero. El API lo sigue devolviendo en cada fila (`monto`, `moneda`,
-// `monto_ponderado`), asi que reponer la columna es solo cuestion de agregar el
-// th + td.
+// numero. El API lo sigue devolviendo en cada fila (`monto`, `moneda`), asi que
+// reponer la columna es solo cuestion de agregar el th + td.
 
 // Tarjetas de valor del embudo. El API devuelve una fila por moneda (nunca suma
 // monedas distintas), asi que se pinta un bloque por moneda dentro de cada
@@ -27753,7 +27999,7 @@ function renderOp() {
   if (!tbody) return;
   actualizarSortIndicadores($('#opThead'), { order_by: opFiltroOrden, dir: opFiltroDir });
   if (!opItems.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin oportunidades registradas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin oportunidades registradas.</td></tr>`;
     return;
   }
 
@@ -27767,8 +28013,8 @@ function renderOp() {
       : `<div style="font-weight:600">${esc(nombre)}</div>`;
     // Celda "Embudo / Etapa": el embudo arriba en el color de texto normal y la
     // etapa debajo atenuada y mas chica, mismo patron que "Nombre / Organizacion".
-    // La etapa va como texto plano (sin la pill de color de opEtapaPill, que se
-    // sigue usando en los modales) para no competir con el badge de Estado.
+    // La etapa va como texto plano; la pill de color de opEtapaPill se sigue
+    // usando en los modales.
     const embudoEtapa = `<div>${esc(p.embudo_nombre || '—')}</div>`
       + `<div style="color:var(--muted);font-size:.78rem">${esc(p.etapa_nombre || (p.etapa_id ? `#${p.etapa_id}` : '—'))}</div>`;
     return `
@@ -27778,7 +28024,6 @@ function renderOp() {
         <td style="font-size:.85rem">${esc(p.proyecto_nombre || (p.proyecto_id ? `#${p.proyecto_id}` : '—'))}</td>
         <td style="font-size:.85rem;line-height:1.35">${embudoEtapa}</td>
         <td>${nomOrg}</td>
-        <td style="text-align:center">${opEstadoLegacyBadge(p.estado)}</td>
         <td style="font-size:.85rem">${esc(p.asignado_nombre || '—')}</td>
         <td style="text-align:center">
           <div class="actions" style="justify-content:center">
@@ -27799,7 +28044,7 @@ function abrirModalFiltrosOp() {
     codigo: opFiltroCodigo, proyecto: opFiltroProyecto,
     embudo: opFiltroEmbudo, etapa: opFiltroEtapa,
     asignado: opFiltroAsignado, atendido: opFiltroAtendido,
-    estado: opFiltroEstado, sentido: opFiltroSentido, origen: opFiltroOrigen,
+    sentido: opFiltroSentido, origen: opFiltroOrigen,
     desde: opFiltroDesde, hasta: opFiltroHasta,
     limite: opFiltroLimite, orden: opFiltroOrden, dir: opFiltroDir,
   };
@@ -27813,7 +28058,6 @@ function abrirModalFiltrosOp() {
   $('#fOpLimite').value    = opFiltroLimite || 100;
   $('#fOpOrden').value     = opFiltroOrden  || 'id';
   $('#fOpDir').value       = opFiltroDir    || 'desc';
-  opReflejarChipsEstado();
   opReflejarEtapasFiltro();
   document.getElementById('filtrosOpBackdrop').classList.add('open');
 }
@@ -27830,7 +28074,6 @@ function cancelarFiltrosOp() {
     opFiltroEtapa    = opFiltrosSnapshot.etapa;
     opFiltroAsignado = opFiltrosSnapshot.asignado;
     opFiltroAtendido = opFiltrosSnapshot.atendido;
-    opFiltroEstado   = opFiltrosSnapshot.estado;
     opFiltroSentido  = opFiltrosSnapshot.sentido;
     opFiltroOrigen   = opFiltrosSnapshot.origen;
     opFiltroDesde    = opFiltrosSnapshot.desde;
@@ -27851,7 +28094,6 @@ function limpiarFiltrosOp() {
   opFiltroEtapa    = '';
   opFiltroAsignado = '';
   opFiltroAtendido = '';
-  opFiltroEstado   = '';
   opFiltroSentido  = '';
   opFiltroOrigen   = '';
   opFiltroDesde    = '';
@@ -27869,7 +28111,6 @@ function limpiarFiltrosOp() {
   $('#fOpLimite').value   = 100;
   $('#fOpOrden').value    = 'id';
   $('#fOpDir').value      = 'desc';
-  opReflejarChipsEstado();
   opReflejarEtapasFiltro();
   opActualizarBadgeFiltros();
   cargarOp();
@@ -27882,7 +28123,6 @@ function onFiltroOp(campo, valor) {
   if (campo === 'etapa')    opFiltroEtapa    = (valor || '').trim();
   if (campo === 'asignado') opFiltroAsignado = (valor || '').trim();
   if (campo === 'atendido') opFiltroAtendido = (valor || '').trim();
-  if (campo === 'estado')   { opFiltroEstado = valor === '' ? '' : String(valor); opReflejarChipsEstado(); }
   if (campo === 'sentido')  opFiltroSentido  = (valor || '').trim();
   if (campo === 'origen')   opFiltroOrigen   = (valor || '').trim();
   if (campo === 'desde')    opFiltroDesde    = (valor || '').trim();
@@ -27892,14 +28132,6 @@ function onFiltroOp(campo, valor) {
   if (campo === 'dir')      opFiltroDir      = valor || 'desc';
   opActualizarBadgeFiltros();
   cargarOp();
-}
-
-function opReflejarChipsEstado() {
-  const cont = document.getElementById('fOpEstadoChips');
-  if (!cont) return;
-  cont.querySelectorAll('.filter-chip').forEach((el) => {
-    el.classList.toggle('active', String(el.dataset.val || '') === String(opFiltroEstado || ''));
-  });
 }
 
 // Repuebla el select de etapas del filtro en funcion del embudo elegido.
@@ -27923,7 +28155,6 @@ function opActualizarBadgeFiltros() {
   if (opFiltroEtapa)                  n++;
   if (opFiltroAsignado)               n++;
   if (opFiltroAtendido)               n++;
-  if (opFiltroEstado !== '')          n++;
   if (opFiltroSentido)                n++;
   if (opFiltroOrigen)                 n++;
   if (opFiltroDesde)                  n++;
@@ -28111,144 +28342,98 @@ function verFichaProspectoOp(prospectoId) {
 }
 window.verFichaProspectoOp = verFichaProspectoOp;
 
-// Selector de prospecto para el modal Nueva oportunidad. Renderiza:
-//   - Input de busqueda con typeahead (300ms debounce) que llama a
-//     api/datarocketprospectos.php?q=<query>&limite=20
-//   - Resultados en una lista desplegable — click elige el prospecto
-//   - Card con los datos del prospecto elegido (o placeholder si vacio)
-//   - Boton "Abrir ABM de Prospectos" para crear uno nuevo desde ahi
+// Camino inverso a verFichaProspectoOp(): del ABM de Prospectos al de
+// Oportunidades, abriendo el alta con el prospecto ya vinculado ("Registrar
+// oportunidad" del menu contextual de una fila de prospectos).
 //
-// El id elegido queda en el hidden `#opNuevoProspectoId` que guardarOp() lee.
-function opRenderNuevoProspectoSelector() {
+// Se navega en vez de abrir el modal in situ a proposito: el alta necesita
+// `opLookups` cargado y, sobre todo, al guardar el usuario tiene que caer en el
+// listado donde acaba de aparecer la oportunidad. Abrirlo encima del ABM de
+// Prospectos dejaria el alta hecha sin ninguna confirmacion visible.
+//
+// El id viaja por `opProspectoPreseleccionado` (declarada arriba, con el resto
+// del estado del modulo) y no por el hash porque el router no parsea query
+// string. La ruta la consume una sola vez (la pone en null antes de abrir el
+// modal) para que un refresh o un volver atras no reabra el alta.
+function registrarOportunidadDesdeProspecto(prospectoId) {
+  if (!prospectoId) return;
+  opProspectoPreseleccionado = Number(prospectoId);
+  location.hash = '#/datarocket_oportunidades';
+}
+window.registrarOportunidadDesdeProspecto = registrarOportunidadDesdeProspecto;
+
+// Bloque del prospecto vinculado, arriba del tab General del modal de ALTA.
+//
+// Es de solo lectura: el prospecto no se elige ni se cambia desde el modal de
+// oportunidad, ni al crear ni al editar. Llega resuelto desde
+// "Registrar oportunidad" del ABM de Prospectos y queda fijo — si el vendedor
+// se equivocó de persona, la oportunidad se descarta y se crea de nuevo desde
+// el prospecto correcto (misma regla que ya aplicaba el backend en el PUT).
+// Hasta esta version aca vivia un buscador con typeahead que permitia elegirlo;
+// se elimino junto con el boton "+ Nueva oportunidad" del listado.
+//
+// El id se escribe de entrada en el hidden `#opNuevoProspectoId` (que
+// guardarOp() lee) y NO depende del fetch: si la consulta de display falla, el
+// alta se puede guardar igual.
+function opRenderProspectoFijo(prospectoId) {
   const body = document.getElementById('opTabProspectoBody');
   if (!body) return;
+  const pid = Number(prospectoId) || 0;
+
   body.innerHTML = `
-    <input type="hidden" id="opNuevoProspectoId" value="">
-
-    <div style="font-size:.85rem;color:var(--muted);margin-bottom:8px">
-      <i class="fa-solid fa-circle-info" style="opacity:.7"></i>&nbsp;
-      La oportunidad necesita un prospecto vinculado. Buscá uno existente por
-      nombre, correo o celular. Si no existe, creá el prospecto desde el ABM
-      de <b>Prospectos</b> y volvé acá.
-    </div>
-
-    <div style="position:relative">
-      <input type="search" id="opNuevoProspectoSearch" class="search-input"
-             placeholder="🔍 Buscar prospecto por nombre, correo o celular…"
-             autocomplete="off" style="width:100%">
-      <div id="opNuevoProspectoResults"
-           style="position:absolute;top:100%;left:0;right:0;background:var(--surface);
-                  border:1px solid var(--border);border-radius:8px;margin-top:4px;
-                  max-height:280px;overflow-y:auto;z-index:5;display:none;box-shadow:var(--shadow-lg)"></div>
-    </div>
-
-    <div id="opNuevoProspectoElegido" style="margin-top:14px"></div>
-
-    <div style="display:flex;justify-content:flex-end;margin-top:10px">
-      <button type="button" class="btn btn-ghost" onclick="window.open('#/datarocketprospectos', '_blank')">
-        <i class="fa-solid fa-arrow-up-right-from-square"></i>&nbsp; Abrir ABM de Prospectos
-      </button>
+    <input type="hidden" id="opNuevoProspectoId" value="${pid}">
+    <div id="opProspectoFijoCard"
+         style="padding:14px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;color:var(--muted);font-size:.88rem">
+      Cargando prospecto #${pid}…
     </div>
   `;
 
-  const inp     = document.getElementById('opNuevoProspectoSearch');
-  const results = document.getElementById('opNuevoProspectoResults');
-  const hidden  = document.getElementById('opNuevoProspectoId');
-  const chosen  = document.getElementById('opNuevoProspectoElegido');
-  let debounce  = null;
-
-  const renderPlaceholder = () => {
-    chosen.innerHTML = `
-      <div style="padding:14px;text-align:center;color:var(--muted);background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;font-size:.88rem">
-        Ningún prospecto seleccionado todavía.
-      </div>`;
-  };
-  renderPlaceholder();
-
-  const renderChosen = (c) => {
-    hidden.value = String(c.id);
-    chosen.innerHTML = `
-      <div style="padding:14px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
-          <div>
-            <div style="font-weight:600;font-size:1rem;margin-bottom:4px">${esc(c.nombre || '(sin nombre)')}</div>
-            <div style="color:var(--muted);font-size:.85rem">
-              <code style="font-size:.75rem">#${c.id}</code>
-              ${c.empresa ? ' · ' + esc(c.empresa) : ''}
-              ${c.correo ? ' · ' + esc(c.correo) : ''}
-              ${c.celular ? ' · ' + esc(c.celular) : ''}
-            </div>
-          </div>
-          <button type="button" class="btn-icon-sm" title="Quitar" onclick="opQuitarProspectoElegido()">
-            <i class="fa-solid fa-xmark"></i>
-          </button>
+  apiGet(`api/datarocketprospectos.php?id=${pid}`)
+    .then((c) => {
+      const card = document.getElementById('opProspectoFijoCard');
+      if (!card) return;   // modal cerrado mientras volvia el fetch
+      const meta = [
+        c.empresa_nombre ? esc(c.empresa_nombre) : '',
+        c.correo         ? esc(c.correo)         : '',
+        c.celular        ? esc(c.celular)        : '',
+      ].filter(Boolean).join(' · ');
+      // Solo la identidad: sin boton "Abrir ficha" y sin la leyenda de que el
+      // prospecto queda fijo. Que no haya ningun control para cambiarlo ya lo
+      // comunica; el cartel era ruido en un modal que se completa de arriba
+      // hacia abajo.
+      card.innerHTML = `
+        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Prospecto</div>
+        <div style="font-weight:600;font-size:1rem;color:var(--text)">${esc(c.nombre || '(sin nombre)')}</div>
+        <div style="color:var(--muted);font-size:.85rem;margin-top:2px">
+          <code style="font-size:.75rem">#${pid}</code>${meta ? ' · ' + meta : ''}
         </div>
-      </div>`;
-  };
-
-  window.opQuitarProspectoElegido = () => {
-    hidden.value = '';
-    inp.value = '';
-    results.style.display = 'none';
-    renderPlaceholder();
-  };
-
-  inp.addEventListener('input', () => {
-    clearTimeout(debounce);
-    const q = inp.value.trim();
-    if (q.length < 2) { results.style.display = 'none'; return; }
-    debounce = setTimeout(async () => {
-      try {
-        const data = await apiGet(`api/datarocketprospectos.php?q=${encodeURIComponent(q)}&limite=20`);
-        const items = data.items || [];
-        if (!items.length) {
-          results.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:.85rem;text-align:center">Sin resultados</div>`;
-        } else {
-          results.innerHTML = items.map((c) => `
-            <button type="button" data-prospecto-id="${c.id}"
-                    style="display:block;width:100%;text-align:left;padding:10px 12px;background:none;border:none;border-bottom:1px solid var(--border);cursor:pointer;color:var(--text)"
-                    onmouseover="this.style.background='var(--row-hover)'"
-                    onmouseout="this.style.background='none'">
-              <div style="font-weight:600;font-size:.9rem">${esc(c.nombre || '(sin nombre)')}</div>
-              <div style="color:var(--muted);font-size:.78rem;margin-top:2px">
-                <code style="font-size:.72rem">#${c.id}</code>
-                ${c.empresa ? ' · ' + esc(c.empresa) : ''}
-                ${c.correo ? ' · ' + esc(c.correo) : ''}
-                ${c.celular ? ' · ' + esc(c.celular) : ''}
-              </div>
-            </button>
-          `).join('');
-        }
-        results.style.display = '';
-      } catch (e) {
-        results.innerHTML = `<div style="padding:12px;color:var(--danger,#ef4444);font-size:.85rem">Error: ${esc(e.message)}</div>`;
-        results.style.display = '';
+      `;
+      // El titulo del modal diria "Nueva oportunidad" a secas y no habria forma
+      // de saber sobre quien es.
+      const titulo = document.querySelector('#modalRoot .modal-title');
+      if (titulo && c.nombre) titulo.textContent = `Nueva oportunidad — ${c.nombre}`;
+    })
+    .catch((e) => {
+      const card = document.getElementById('opProspectoFijoCard');
+      if (card) {
+        card.innerHTML = `<span style="color:var(--danger,#ef4444)">No se pudieron cargar los datos del prospecto #${pid}: ${esc(e.message)}</span>`;
       }
-    }, 300);
-  });
-
-  // Click en un resultado -> elegir prospecto y cerrar el dropdown.
-  results.addEventListener('click', async (ev) => {
-    const b = ev.target.closest('[data-prospecto-id]');
-    if (!b) return;
-    const id = Number(b.dataset.prospectoId);
-    try {
-      const data = await apiGet(`api/datarocketprospectos.php?id=${id}`);
-      renderChosen(data);
-      inp.value = data.nombre || '';
-      results.style.display = 'none';
-    } catch (e) {
-      toast('Error al cargar prospecto: ' + e.message, { error: true });
-    }
-  });
-
-  // Cerrar dropdown al clickear afuera.
-  document.addEventListener('click', (ev) => {
-    if (!body.contains(ev.target)) results.style.display = 'none';
-  }, { once: false });
+    });
 }
 
-function abrirAltaEdicionOp(id) {
+// `prospectoPreseleccionadoId` es OBLIGATORIO en el alta: una oportunidad
+// siempre nace de un prospecto y el modal no ofrece forma de elegirlo. El unico
+// llamador que lo pasa es la ruta al montarse, con el id que dejo
+// registrarOportunidadDesdeProspecto(). En Edicion se ignora — el prospecto ya
+// esta vinculado y el backend rechaza re-vincularlo.
+function abrirAltaEdicionOp(id, prospectoPreseleccionadoId = null) {
+  // Alta sin prospecto: no hay pantalla posible (el POST lo rechazaria) y no
+  // deberia poder llegar aca desde la UI. Se avisa y se corta antes de abrir un
+  // modal que no se puede guardar.
+  if (!id && !prospectoPreseleccionadoId) {
+    toast('Para registrar una oportunidad, entrá desde Prospectos > menú de la fila > "Registrar oportunidad".', { error: true });
+    return;
+  }
   opEditandoId = id;
   const editando = !!id;
   const p = editando ? opItems.find((x) => x.id === id) : null;
@@ -28275,6 +28460,21 @@ function abrirAltaEdicionOp(id) {
       </div>
 
       <div class="modal-body">
+        <!-- Cabecera del prospecto vinculado: va ARRIBA de las pestañas, no
+             dentro de General, porque identifica al registro entero y tiene
+             que verse igual desde cualquier pestaña. Mismo patron que el
+             encabezado del modal Consultar de Prospectos.
+             Es de solo lectura en los dos modos: opRenderProspectoFijo() en
+             alta y opProspectoLinkedPanel() en edicion. El prospecto no se
+             elige ni se cambia desde aca — llega resuelto del ABM de
+             Prospectos. -->
+        <!-- 16px y no 12: .modal-tabs trae margin-top:-4px (esta pensada para
+             ir pegada al tope del modal-body), asi que la separacion real
+             contra la barra de pestañas es 16-4. -->
+        <div id="opTabProspectoBody" style="margin-bottom:16px">
+          <div style="text-align:center;padding:40px;color:var(--muted)"><div class="spin"></div></div>
+        </div>
+
         <!-- .modal-tabs va DENTRO de .modal-body (mismo patron que awsMsg y
              Prospecto Datarocket). Afuera queda pegado al borde del modal. -->
         <div class="modal-tabs" role="tablist">
@@ -28284,21 +28484,16 @@ function abrirAltaEdicionOp(id) {
           <button type="button" class="modal-tab" role="tab" data-op-tab="seguimiento" onclick="opCambiarTab('seguimiento')">
             <i class="fa-solid fa-arrow-trend-up"></i> Seguimiento
           </button>
-          <button type="button" class="modal-tab" role="tab" data-op-tab="prospecto"    onclick="opCambiarTab('prospecto')">
-            <i class="fa-solid fa-address-book"></i> Prospecto
-          </button>
-          <button type="button" class="modal-tab" role="tab" data-op-tab="notas"       onclick="opCambiarTab('notas')">
-            <i class="fa-solid fa-note-sticky"></i> Notas
-          </button>
         </div>
 
         <!-- ============================================================ -->
-        <!-- TAB: General — ingreso, proyecto, producto, sentido, origen, -->
-        <!-- tipo. Datos del mensaje/lead inicial que dio origen          -->
-        <!-- a la oportunidad. Los datos de identidad del humano (nombre,     -->
-        <!-- correo, celular, empresa, ubicacion) NO viven mas aca — se   -->
-        <!-- muestran en el tab Prospecto derivados del prospecto vinculado -->
-        <!-- via datarocket_prospectos.                                    -->
+        <!-- TAB: General — mismo contenido y mismo orden que el General   -->
+        <!-- del modal Consultar (abrirConsultaOp), salteando los campos   -->
+        <!-- que ahi son de solo lectura: Codigo (esta en el titulo de     -->
+        <!-- este modal), Actualizado (lo pisa el backend en cada          -->
+        <!-- guardado) y Prospecto (subio a la cabecera, arriba de las     -->
+        <!-- pestañas). Queda: ingreso · proyecto · producto · sentido ·   -->
+        <!-- origen · asunto.                                             -->
         <!-- ============================================================ -->
         <div class="modal-tabpanel" data-op-tab="general">
           <div class="form-row form-row-3">
@@ -28325,13 +28520,20 @@ function abrirAltaEdicionOp(id) {
               <select id="opOrigen"><option value="">—</option>${opOpcionesCombo('origen')}</select>
             </div>
           </div>
+          <!-- Asunto ultimo y a lo ancho, igual que en el Consultar: es el
+               unico texto libre de la oportunidad y es multilinea. Tenia
+               pestana "Notas" propia hasta que se unifico con el Consultar. -->
+          <div class="form-group">
+            <label>Asunto (max 1000)</label>
+            <textarea id="opAsunto" rows="6" maxlength="1000"></textarea>
+          </div>
         </div>
 
         <!-- ============================================================ -->
         <!-- TAB: Seguimiento — monto, cierre esperado, embudo, etapa,    -->
-        <!-- ingreso a la etapa, estado (legacy), calificacion, aplazado, -->
-        <!-- asignado, atendido. Donde vive la oportunidad en el pipeline,  -->
-        <!-- cuanto vale y quien lo trabaja.                              -->
+        <!-- ingreso a la etapa, calificacion, aplazado, asignado,        -->
+        <!-- atendido. Donde vive la oportunidad en el pipeline, cuanto   -->
+        <!-- vale y quien la trabaja.                                     -->
         <!-- ============================================================ -->
         <div class="modal-tabpanel" data-op-tab="seguimiento" hidden>
           <div class="form-row form-row-3">
@@ -28364,11 +28566,7 @@ function abrirAltaEdicionOp(id) {
               <input type="datetime-local" id="opEtapaIngreso">
             </div>
           </div>
-          <div class="form-row form-row-3">
-            <div class="form-group">
-              <label>Estado (legacy)</label>
-              <select id="opEstado"><option value="">—</option>${opOpcionesCombo('estado')}</select>
-            </div>
+          <div class="form-row">
             <div class="form-group">
               <label>Calificación</label>
               <input type="number" id="opCalificacion" min="0" step="1">
@@ -28387,30 +28585,6 @@ function abrirAltaEdicionOp(id) {
               <label>Atendido por</label>
               <select id="opAtendido">${opUsr}</select>
             </div>
-          </div>
-        </div>
-
-        <!-- ============================================================ -->
-        <!-- TAB: Prospecto — placeholder inicial. Se rellena con              -->
-        <!-- opProspectoLinkedPanel(p) para oportunidades existentes, o con un   -->
-        <!-- selector de prospecto para altas nuevas (via opRenderProspectoTab).-->
-        <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-op-tab="prospecto" hidden id="opTabProspectoBody">
-          <div style="text-align:center;padding:40px;color:var(--muted)"><div class="spin"></div></div>
-        </div>
-
-        <!-- ============================================================ -->
-        <!-- TAB: Notas — comentarios (max 1000). Unico bloque de notas   -->
-        <!-- libres de la oportunidad: el asunto se fusiono adentro y el log  -->
-        <!-- de acciones se dropeo (migraciones 20260817_1600 y 1700).    -->
-        <!-- El historial estructurado vive en Interacciones. Sin         -->
-        <!-- backticks en este comentario: esta dentro de un template     -->
-        <!-- literal y lo cortarian.                                      -->
-        <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-op-tab="notas" hidden>
-          <div class="form-group">
-            <label>Comentarios (max 1000)</label>
-            <textarea id="opComentarios" rows="10" maxlength="1000"></textarea>
           </div>
         </div>
 
@@ -28458,45 +28632,79 @@ function abrirAltaEdicionOp(id) {
     $('#opEmbudoId').value    = p.embudo_id    || '';
     repintarEtapas(p.embudo_id || '', p.etapa_id || '');
     setDT('#opEtapaIngreso',  p.etapa_ingreso);
-    $('#opEstado').value      = (p.estado === null || p.estado === undefined) ? '' : String(p.estado);
     $('#opCalificacion').value = (p.calificacion === null || p.calificacion === undefined) ? '' : p.calificacion;
     setDT('#opAplazado',      p.aplazado);
     $('#opAsignado').value    = p.asignado     || '';
     $('#opAtendido').value    = p.atendido     || '';
-    $('#opComentarios').value = p.comentarios  || '';
-    // Tab Prospecto en modo Edicion: read-only + boton "Abrir ficha".
-    // Al editar no se puede re-vincular la oportunidad a otro prospecto (regla
-    // del backend + de producto: si el vendedor detecta el error debe borrar
-    // y crear de nuevo). El prospecto es inmutable desde este modal.
+    $('#opAsunto').value      = p.asunto       || '';
+    // Bloque del prospecto en modo Edicion (arriba del tab General): read-only
+    // + boton "Abrir ficha". Al editar no se puede re-vincular la oportunidad a
+    // otro prospecto (regla del backend + de producto: si el vendedor detecta
+    // el error debe borrar y crear de nuevo). Es inmutable desde este modal.
     $('#opTabProspectoBody').innerHTML = opProspectoLinkedPanel(p);
   } else {
-    // Nuevo: si hay filtro de embudo activo, arrancamos ahi.
-    if (opFiltroEmbudo) {
-      $('#opEmbudoId').value = opFiltroEmbudo;
-      repintarEtapas(opFiltroEmbudo, '');
-    } else {
-      // Si hay embudo activo por default (el primero activo), seleccionarlo.
-      const def = opLookups.embudos.find((e) => e.activo === 1);
-      if (def) {
-        $('#opEmbudoId').value = def.id;
-        repintarEtapas(def.id, '');
-      }
-    }
-    // Tab Prospecto en modo Alta: selector de prospecto obligatorio con
-    // typeahead. Ver opRenderNuevoProspectoSelector() para el markup y la
-    // logica. El backend rechaza el POST sin prospecto_id.
-    opRenderNuevoProspectoSelector();
+    // Ingreso = ahora. El backend ya lo resuelve con NOW() si el campo viene
+    // vacio, pero dejarlo en blanco obligaba al vendedor a tipear la fecha de
+    // hoy para verla, o a guardar a ciegas. Queda editable por si esta
+    // cargando una consulta que entro antes.
+    //
+    // Se arma a mano y NO con toISOString(), que pasa a UTC y en Argentina
+    // (UTC-3) mostraria tres horas de mas. getHours()/getMinutes() dan la hora
+    // local del navegador, que es la misma zona que usa el backend al sellar
+    // `actualizado` (America/Argentina/Buenos_Aires).
+    const ahora = new Date();
+    const dosDigitos = (n) => String(n).padStart(2, '0');
+    const soloFecha = (d) => `${d.getFullYear()}-${dosDigitos(d.getMonth() + 1)}-${dosDigitos(d.getDate())}`;
+    const ahoraDT   = `${soloFecha(ahora)}T${dosDigitos(ahora.getHours())}:${dosDigitos(ahora.getMinutes())}`;
+    $('#opIngreso').value = ahoraDT;
+
+    // Ingreso a la etapa = ahora, el mismo instante que `ingreso`: la
+    // oportunidad nace y entra a su primera etapa a la vez, y de ahi en mas el
+    // contador de tiempo-en-etapa arranca en cero. El backend hace lo mismo
+    // cuando el alta trae etapa y el campo vacio; precargarlo lo deja a la
+    // vista y editable.
+    $('#opEtapaIngreso').value = ahoraDT;
+
+    // Cierre esperado = hoy + 15 dias. Es el horizonte por defecto del embudo:
+    // arranca con una fecha razonable en vez de vacia, para que la oportunidad
+    // entre al forecast desde el minuto cero. Editable, obviamente.
+    //
+    // setDate() con un valor fuera de rango normaliza solo (31/12 + 15 pasa a
+    // enero del año siguiente), asi que no hay que tocar mes ni año a mano.
+    // Se clona `ahora` porque setDate muta el Date sobre el que corre y el
+    // campo Ingreso ya lo uso.
+    const cierre = new Date(ahora);
+    cierre.setDate(cierre.getDate() + 15);
+    $('#opCierreEsperado').value = soloFecha(cierre);
+
+    // Sentido = Entrante. Es el caso normal: la oportunidad nace de alguien que
+    // nos escribio (915 de las 1348 historicas son entrantes). 'E' sale del
+    // catalogo `estados`, campo `datarocket_oportunidad_sentido` (E = Entrante,
+    // S = Saliente). Si esa fila llegara a faltar, el select se queda en "—"
+    // solo: asignar un value inexistente deja el <select> vacio, no rompe.
+    $('#opSentido').value = 'E';
+
+    // Sin embudo por defecto: el alta arranca en "— (Ninguno) —" y elegirlo es
+    // decision explicita del vendedor. Antes se preseleccionaba el embudo del
+    // filtro activo o, si no habia, el primer embudo activo — las dos cosas
+    // metian la oportunidad en un pipeline que nadie eligio. Ademas el alta ya
+    // no se abre desde este listado sino desde el ABM de Prospectos, asi que
+    // `opFiltroEmbudo` era un contexto que el usuario ni siquiera tenia a la
+    // vista.
+    //
+    // repintarEtapas('') deja el select de etapas vacio y deshabilitado hasta
+    // que se elija un embudo (el handler de #opEmbudoId lo repuebla).
+    repintarEtapas('', '');
+    // Bloque del prospecto en modo Alta: read-only, igual que en Edicion. El
+    // id siempre viene de "Registrar oportunidad" del ABM de Prospectos — ver
+    // la guarda al inicio de esta funcion.
+    opRenderProspectoFijo(prospectoPreseleccionadoId);
   }
 
-  // Foco inicial: en Alta arrancamos en el tab Prospecto y focus al buscador
-  // (elegir prospecto es el primer paso obligatorio). En Edicion, foco al
-  // primer control visible del tab General (proyecto).
-  if (editando) {
-    setTimeout(() => $('#opProyectoId')?.focus(), 50);
-  } else {
-    opCambiarTab('prospecto');
-    setTimeout(() => document.getElementById('opNuevoProspectoSearch')?.focus(), 50);
-  }
+  // Foco inicial: el primer control editable, que es Proyecto. Vale igual para
+  // alta y edicion — ya no hay buscador de prospecto al que ir primero, ni
+  // pestanas entre las que saltar (todo vive en el tab General).
+  setTimeout(() => $('#opProyectoId')?.focus(), 50);
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))   closeModal();
@@ -28530,24 +28738,25 @@ async function guardarOp() {
     moneda:          $('#opMoneda').value || 'ARS',
     cierre_esperado: nullIfEmpty($('#opCierreEsperado').value),
     calificacion:  nullIfEmpty($('#opCalificacion').value),
-    estado:        nullIfEmpty($('#opEstado').value),
     embudo_id:     nullIfEmpty($('#opEmbudoId').value),
     etapa_id:      nullIfEmpty($('#opEtapaId').value),
     etapa_ingreso: dtIfSet('#opEtapaIngreso'),
     asignado:      nullIfEmpty($('#opAsignado').value),
     atendido:      nullIfEmpty($('#opAtendido').value),
     aplazado:      dtIfSet('#opAplazado'),
-    comentarios:   nullIfEmpty($('#opComentarios').value.trim()),
+    asunto:        nullIfEmpty($('#opAsunto').value.trim()),
   };
 
   // prospecto_id solo se envia en alta (el backend rechaza el POST sin el).
-  // En edicion NO se puede re-vincular — el backend lo ignora aunque venga
-  // en el payload.
+  // En edicion NO se puede re-vincular — el backend lo ignora aunque venga en
+  // el payload. El hidden lo escribe opRenderProspectoFijo() con el id que
+  // llego del ABM de Prospectos; el usuario no tiene forma de cambiarlo. El
+  // chequeo queda igual como red de seguridad: sin id, el POST fallaria con un
+  // 400 del backend y este mensaje es mas claro.
   if (!opEditandoId) {
     const prospectoId = Number($('#opNuevoProspectoId')?.value || 0);
     if (!prospectoId) {
-      toast('Seleccioná un prospecto (pestaña Prospecto) antes de guardar', { error: true });
-      opCambiarTab('prospecto');
+      toast('Esta oportunidad no tiene prospecto vinculado. Volvé a entrar desde Prospectos > "Registrar oportunidad".', { error: true });
       return;
     }
     body.prospecto_id = prospectoId;
@@ -28618,8 +28827,13 @@ async function abrirConsultaOp(id) {
     : '<span style="color:var(--muted)">Sin prospecto vinculado</span>';
 
   // overflow-x:hidden ver comentario en abrirAltaEdicionDrem — misma razon.
-  // Las 5 pestañas siguen la misma agrupacion que el modal de Edicion para que
-  // el usuario encuentre los campos en el mismo lugar en ambos modos.
+  // Consulta tiene 3 pestañas (General / Seguimiento / Interacciones) contra
+  // las 4 de Edicion. Las dos que no estan aca se sacaron a proposito:
+  //   * "Prospecto": duplicaba la ficha del prospecto. Se llega igual por el
+  //     link del card "Prospecto" del tab General. En Edicion sigue viva
+  //     porque ahi es el selector obligatorio del alta, no un panel read-only.
+  //   * "Notas": tenia un solo campo (`asunto`), que ahora cierra el tab
+  //     General a 100% de ancho.
   openModal(`
     <div class="modal" style="max-width:820px;overflow-x:hidden">
       <div class="modal-header">
@@ -28639,27 +28853,32 @@ async function abrirConsultaOp(id) {
           <button type="button" class="modal-tab" role="tab" data-op-tab="seguimiento" onclick="opCambiarTab('seguimiento')">
             <i class="fa-solid fa-arrow-trend-up"></i> Seguimiento
           </button>
-          <button type="button" class="modal-tab" role="tab" data-op-tab="prospecto"    onclick="opCambiarTab('prospecto')">
-            <i class="fa-solid fa-address-book"></i> Prospecto
-          </button>
-          <button type="button" class="modal-tab" role="tab" data-op-tab="notas"       onclick="opCambiarTab('notas')">
-            <i class="fa-solid fa-note-sticky"></i> Notas
-          </button>
           <button type="button" class="modal-tab" role="tab" data-op-tab="interacciones" onclick="opCambiarTab('interacciones')">
             <i class="fa-solid fa-comments"></i> Interacciones${drIntTabBadge(interacciones.length)}
           </button>
         </div>
 
+        <!-- ============================================================ -->
+        <!-- TAB: General — el contenedor es flex-wrap y cada card pide   -->
+        <!-- 50%, asi que las filas se arman de a pares en el orden en    -->
+        <!-- que se escriben. Para mover un campo de fila hay que mover   -->
+        <!-- la linea, no hay grid con posiciones fijas.                  -->
+        <!-- "Asunto" vivia en su propia pestana Notas hasta que se       -->
+        <!-- elimino: es el unico texto libre de la oportunidad y una     -->
+        <!-- pestana entera para un campo no se justificaba. Va ultimo y  -->
+        <!-- a 100% porque es multilinea (preText respeta los saltos).    -->
+        <!-- ============================================================ -->
         <div class="modal-tabpanel" data-op-tab="general">
           <div style="display:flex;flex-wrap:wrap;gap:12px">
-            ${card('Prospecto',     prospectoHtml, 'full')}
             ${card('Código',       `<code>${p.id}</code>`)}
+            ${card('Prospecto',     prospectoHtml)}
             ${card('Ingreso',      val(fmtFecha(p.ingreso)))}
+            ${card('Actualizado',  val(fmtFecha(p.actualizado)))}
             ${card('Proyecto',     val(p.proyecto_nombre))}
             ${card('Producto',     val(p.producto))}
             ${card('Sentido',      val(p.sentido_texto || p.sentido))}
             ${card('Origen',       val(p.origen_texto  || p.origen))}
-            ${card('Actualizado',  val(fmtFecha(p.actualizado)))}
+            ${card('Asunto',        preText(p.asunto), 'full')}
           </div>
         </div>
 
@@ -28671,32 +28890,11 @@ async function abrirConsultaOp(id) {
             ${card('Cierre esperado', val(p.cierre_esperado ? fmtFechaSola(p.cierre_esperado) : null))}
             ${card('Embudo',        val(p.embudo_nombre))}
             ${card('Etapa',         opEtapaPill(p))}
-            ${card('Probabilidad',  p.etapa_probabilidad != null
-                                      ? `${p.etapa_probabilidad}%`
-                                      : '<span style="color:var(--muted)">—</span>')}
-            ${card('Monto ponderado', p.monto_ponderado != null
-                                      ? esc(opFmtMonto(p.monto_ponderado, p.moneda))
-                                      : '<span style="color:var(--muted)">—</span>')}
             ${card('Ingreso a la etapa', val(fmtFecha(p.etapa_ingreso)))}
-            ${card('Estado (legacy)', opEstadoLegacyBadge(p.estado))}
             ${card('Calificación',  val(p.calificacion))}
             ${card('Aplazado',      val(fmtFecha(p.aplazado)))}
             ${card('Asignado',      val(p.asignado_nombre))}
             ${card('Atendido por',  val(p.atendido_nombre))}
-          </div>
-        </div>
-
-        <!-- ============================================================ -->
-        <!-- TAB: Prospecto — read-only, viene 100% de datarocket_prospectos-->
-        <!-- via JOIN. Para modificar hay que abrir la ficha del prospecto.-->
-        <!-- ============================================================ -->
-        <div class="modal-tabpanel" data-op-tab="prospecto" hidden>
-          ${opProspectoLinkedPanel(p)}
-        </div>
-
-        <div class="modal-tabpanel" data-op-tab="notas" hidden>
-          <div style="display:flex;flex-wrap:wrap;gap:12px">
-            ${card('Comentarios',   preText(p.comentarios), 'full')}
           </div>
         </div>
 

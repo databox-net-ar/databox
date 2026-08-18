@@ -11,8 +11,7 @@
 //                                                        etapas, proyectos,
 //                                                        usuarios, paises, y
 //                                                        opciones de combos
-//                                                        sentido/origen/estado/
-//                                                        producto)
+//                                                        sentido/origen/moneda)
 //   POST   api/datarocket_oportunidades.php               -> alta (JSON body)
 //   POST   api/datarocket_oportunidades.php?id=N&action=cambiar_etapa
 //                                                     -> movimiento entre
@@ -38,31 +37,41 @@ require_once __DIR__ . '/lib/auth_check.php';
 // de verdad es `datarocket_prospectos` via `prospecto_id`, y el frontend consume
 // los `prospecto_*` derivados del JOIN (ver drOpoEnrichRows).
 //
-// `asunto` y `acciones` tampoco existen mas (migracion 20260817_1700): el
-// asunto se fusiono como primera linea de `comentarios` (20260817_1600) y el
-// log libre de `acciones` quedo reemplazado por `datarocket_interacciones`.
+// `acciones` tampoco existe mas (migracion 20260817_1700): su log libre quedo
+// reemplazado por `datarocket_interacciones`.
+//
+// `asunto` es el unico bloque de texto libre que queda. Se llamo `comentarios`
+// entre la 20260817_1600 (que fusiono el `asunto` original adentro, como
+// primera linea) y la 20260817_2800 (que le devolvio el nombre): el contenido
+// sigue siendo asunto + notas en una sola columna.
 //
 // `tipo` se dropeo en la 20260817_1800: guardaba valores legacy (U/I/O/M) que
 // ningun catalogo `estados` decodificaba, asi que el panel siempre mostro "—".
+//
+// `estado` (tinyint: 1 Esperando / 2 Atendido / 3 Despachado) se dropeo en la
+// 20260817_2900. Era el antecesor de `etapa_id` — la 20260812_0400 creo las
+// etapas derivandolas de el — y no aportaba una sola fila de informacion
+// propia: 3 <=> etapa 'ganada', 2 <=> etapa activa con `atendido` cargado,
+// 1 <=> etapa activa sin `atendido` y con interacciones entrantes sin responder.
 const DR_OPO_COLS = "id, prospecto_id, ingreso, proyecto_id, sentido, origen, producto,
-                     monto, moneda, cierre_esperado, calificacion, estado,
+                     monto, moneda, cierre_esperado, calificacion,
                      embudo_id, etapa_id, etapa_ingreso, asignado, atendido,
-                     actualizado, aplazado, comentarios";
+                     actualizado, aplazado, asunto";
 
 // Misma lista calificada con el alias `o`. El listado joinea con
 // `datarocket_prospectos` (buscador + orden por identidad) y ahi `id`, `correo`
 // y varias mas son ambiguas sin prefijo.
 const DR_OPO_COLS_O = "o.id, o.prospecto_id, o.ingreso, o.proyecto_id, o.sentido, o.origen,
                        o.producto, o.monto, o.moneda, o.cierre_esperado,
-                       o.calificacion, o.estado, o.embudo_id, o.etapa_id, o.etapa_ingreso,
-                       o.asignado, o.atendido, o.actualizado, o.aplazado, o.comentarios";
+                       o.calificacion, o.embudo_id, o.etapa_id, o.etapa_ingreso,
+                       o.asignado, o.atendido, o.actualizado, o.aplazado, o.asunto";
 
-// Combos resueltos contra el catalogo `estados`. Los cinco comparten prefijo
-// desde la migracion 20260817_2600: hasta ahi sentido / origen / estado /
-// producto vivian bajo `datasale_prospecto_` porque el catalogo era compartido
-// con el ABM legacy de Datasale, y solo `moneda` (que el legacy no manejaba)
-// usaba el propio. Eliminado Datasale, el catalogo entero es de Datarocket.
-const DR_OPO_COMBO_CAMPOS = ['sentido', 'origen', 'estado', 'producto', 'moneda'];
+// Combos resueltos contra el catalogo `estados`. Los cuatro comparten prefijo
+// desde la migracion 20260817_2600: hasta ahi sentido / origen / producto
+// vivian bajo `datasale_prospecto_` porque el catalogo era compartido con el
+// ABM legacy de Datasale, y solo `moneda` (que el legacy no manejaba) usaba el
+// propio. Eliminado Datasale, el catalogo entero es de Datarocket.
+const DR_OPO_COMBO_CAMPOS = ['sentido', 'origen', 'producto', 'moneda'];
 const DR_OPO_CAMPO_PREFIX = 'datarocket_oportunidad_';
 
 // Monedas aceptadas en el payload (ISO-4217). Se valida contra esta lista y no
@@ -158,14 +167,15 @@ function drOpoFetchProspectosByIds(PDO $pdo, array $ids): array {
     return $out;
 }
 
-// Etapas con sus tres columnas relevantes. No reusa drOpoFetchLookupByIds
-// (que solo trae `nombre`) porque el forecast necesita `tipo`
-// (activa / ganada / perdida) y `probabilidad` para ponderar el monto.
+// Etapas con las dos columnas relevantes. No reusa drOpoFetchLookupByIds (que
+// solo trae `nombre`) porque las filas exponen tambien `tipo`
+// (activa / ganada / perdida). `probabilidad` no se trae: la unica ponderacion
+// que quedo es la de drOpoForecast, que la lee en su propio SQL.
 function drOpoFetchEtapasByIds(PDO $pdo, array $ids): array {
     if (!$ids) return [];
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
     $stmt = $pdo->prepare(
-        "SELECT id, nombre, tipo, probabilidad
+        "SELECT id, nombre, tipo
            FROM datarocket_etapas
           WHERE id IN ({$placeholders})"
     );
@@ -217,21 +227,15 @@ function drOpoEnrichRows(PDO $pdo, array $rows): array {
         $r['atendido_nombre'] = !empty($r['atendido'])    ? ($usuarios[(int)$r['atendido']]     ?? null) : null;
         $r['embudo_nombre']   = !empty($r['embudo_id'])   ? ($embudos[(int)$r['embudo_id']]     ?? null) : null;
 
-        // Etapa: ademas del nombre se exponen `tipo` y `probabilidad`, que son
-        // los que convierten `monto` en pipeline ponderado. `monto_ponderado`
-        // se calcula solo para etapas activas: una oportunidad ganada ya vale
-        // su monto completo y una perdida vale cero, ponderarlas seria mentir
-        // sobre el forecast.
+        // Etapa: nombre para mostrar y `tipo` (activa / ganada / perdida), que
+        // el frontend usa al pintar la fila. `etapa_probabilidad` y el
+        // `monto_ponderado` que se derivaba de el ya no se exponen por fila: la
+        // ponderacion vive solo en el agregado de drOpoForecast.
         $e = !empty($r['etapa_id']) ? ($etapas[(int)$r['etapa_id']] ?? null) : null;
         $r['etapa_nombre']       = $e ? (string)$e['nombre'] : null;
         $r['etapa_tipo']         = $e ? (string)$e['tipo']   : null;
-        $r['etapa_probabilidad'] = $e && $e['probabilidad'] !== null ? (int)$e['probabilidad'] : null;
 
         $r['monto'] = $r['monto'] !== null ? (float)$r['monto'] : null;
-        $r['monto_ponderado'] = ($r['monto'] !== null && $r['etapa_tipo'] === 'activa'
-                                 && $r['etapa_probabilidad'] !== null)
-            ? round($r['monto'] * $r['etapa_probabilidad'] / 100, 2)
-            : null;
 
         // Datos derivados del prospecto vinculado. Prefijo `prospecto_*` para
         // que el frontend los muestre como read-only (la fuente de verdad es
@@ -295,10 +299,11 @@ function handleLookupsOportunidad(PDO $pdo): void {
     )->fetchAll();
 
     // Etapas de todos los embudos — el frontend las filtra por embudo_id al
-    // renderizar el select dependiente. Trae `tipo` y `probabilidad` para que
-    // el modal pueda mostrarlas al lado del nombre.
+    // renderizar el select dependiente, y usa `color` / `tipo` para pintar las
+    // filas del listado (opEnriquecerConColores). `probabilidad` no viaja: el
+    // select muestra solo el nombre y el modal ya no la expone.
     $etapas = $pdo->query(
-        'SELECT id, embudo_id, nombre, orden, color, tipo, probabilidad
+        'SELECT id, embudo_id, nombre, orden, color, tipo
            FROM datarocket_etapas
        ORDER BY embudo_id ASC, orden ASC, id ASC'
     )->fetchAll();
@@ -340,7 +345,6 @@ function handleLookupsOportunidad(PDO $pdo): void {
             'orden'        => (int)$r['orden'],
             'color'        => $r['color'] !== null ? (string)$r['color'] : null,
             'tipo'         => (string)$r['tipo'],
-            'probabilidad' => $r['probabilidad'] !== null ? (int)$r['probabilidad'] : null,
         ], $etapas),
         'opciones'  => $opciones,
     ]);
@@ -358,7 +362,6 @@ function handleListOportunidades(PDO $pdo, array $q): void {
     $etapa     = isset($q['etapa_id'])    && $q['etapa_id']    !== '' ? (int)$q['etapa_id']    : null;
     $asignado  = isset($q['asignado'])    && $q['asignado']    !== '' ? (int)$q['asignado']    : null;
     $atendido  = isset($q['atendido'])    && $q['atendido']    !== '' ? (int)$q['atendido']    : null;
-    $estado    = isset($q['estado'])      && $q['estado']      !== '' ? (int)$q['estado']      : null;
     $sentido   = trim((string)($q['sentido']  ?? ''));
     $origen    = trim((string)($q['origen']   ?? ''));
     $desde     = trim((string)($q['desde']    ?? ''));
@@ -377,7 +380,7 @@ function handleListOportunidades(PDO $pdo, array $q): void {
     // `prospecto_nombre`. `tipo` salio por el mismo motivo (migracion 20260817_1800).
     $allowedOrder = ['id', 'ingreso', 'proyecto_id', 'embudo_id', 'etapa_id', 'etapa_ingreso',
                      'sentido', 'origen', 'producto', 'monto', 'cierre_esperado',
-                     'estado', 'calificacion', 'asignado', 'atendido', 'actualizado', 'aplazado',
+                     'calificacion', 'asignado', 'atendido', 'actualizado', 'aplazado',
                      'prospecto_nombre'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
@@ -394,7 +397,6 @@ function handleListOportunidades(PDO $pdo, array $q): void {
     if ($etapa    !== null) { $where[] = 'o.etapa_id = :etapa_id';       $params[':etapa_id']  = $etapa; }
     if ($asignado !== null) { $where[] = 'o.asignado = :asignado';       $params[':asignado']  = $asignado; }
     if ($atendido !== null) { $where[] = 'o.atendido = :atendido';       $params[':atendido']  = $atendido; }
-    if ($estado   !== null) { $where[] = 'o.estado = :estado';           $params[':estado']    = $estado; }
     if ($sentido  !== '')   { $where[] = 'o.sentido = :sentido';         $params[':sentido']   = $sentido; }
     if ($origen   !== '')   { $where[] = 'o.origen = :origen';           $params[':origen']    = $origen; }
     if ($desde    !== '')   { $where[] = 'o.ingreso >= :desde';          $params[':desde']     = $desde . ' 00:00:00'; }
@@ -409,11 +411,12 @@ function handleListOportunidades(PDO $pdo, array $q): void {
         // PDO con emulate_prepares=false no permite reusar el mismo placeholder
         // en varias posiciones — duplicamos el bind, uno por columna.
         //
-        // `o.asunto` salio del buscador (migracion 20260817_1700): su contenido
-        // vive ahora en `o.comentarios`, que ya estaba cubierto.
+        // `o.asunto` sigue cubierto por el buscador: entre la 20260817_1600 y la
+        // 20260817_2800 la columna se llamo `comentarios`, y su contenido (asunto
+        // fusionado + notas) es el mismo.
         $where[] = '(c.nombre LIKE :s1 OR c.empresa_nombre LIKE :s2 OR c.correo LIKE :s3
                      OR c.celular LIKE :s4
-                     OR o.producto LIKE :s5 OR o.comentarios LIKE :s6)';
+                     OR o.producto LIKE :s5 OR o.asunto LIKE :s6)';
         $like = "%{$search}%";
         $params[':s1'] = $like;  $params[':s2'] = $like;  $params[':s3'] = $like;
         $params[':s4'] = $like;  $params[':s5'] = $like;  $params[':s6'] = $like;
@@ -589,7 +592,6 @@ function drOpoSanitizePayload(array $in): array {
         'moneda'          => drOpoMoneda($in['moneda']                ?? null),
         'cierre_esperado' => drOpoNullableFecha($in['cierre_esperado'] ?? null),
         'calificacion'  => drOpoNullableInt($in['calificacion']       ?? null),
-        'estado'        => drOpoNullableInt($in['estado']             ?? null),
         'embudo_id'     => drOpoNullableInt($in['embudo_id']          ?? null),
         'etapa_id'      => drOpoNullableInt($in['etapa_id']           ?? null),
         'etapa_ingreso' => drOpoNullableDateTime($in['etapa_ingreso'] ?? null),
@@ -597,7 +599,7 @@ function drOpoSanitizePayload(array $in): array {
         'atendido'      => drOpoNullableInt($in['atendido']           ?? null),
         'actualizado'   => drOpoNullableDateTime($in['actualizado']   ?? null),
         'aplazado'      => drOpoNullableDateTime($in['aplazado']      ?? null),
-        'comentarios'   => drOpoNullableStr($in['comentarios']        ?? null, 1000),
+        'asunto'        => drOpoNullableStr($in['asunto']             ?? null, 1000),
     ];
 }
 
@@ -656,19 +658,19 @@ function handleCreateOportunidad(PDO $pdo, array $in): void {
     }
 
     // Las 12 columnas de identidad legacy ya no existen (migracion 20260816_1500):
-    // la identidad se lee del prospecto vinculado. `asunto` y `acciones` tampoco
+    // la identidad se lee del prospecto vinculado. `acciones` tampoco
     // (migracion 20260817_1700).
     $sql = "
         INSERT INTO datarocket_oportunidades
             (prospecto_id, ingreso, proyecto_id, sentido, origen, producto,
              monto, moneda, cierre_esperado,
-             calificacion, estado, embudo_id, etapa_id, etapa_ingreso,
-             asignado, atendido, actualizado, aplazado, comentarios)
+             calificacion, embudo_id, etapa_id, etapa_ingreso,
+             asignado, atendido, actualizado, aplazado, asunto)
         VALUES
             (:prospecto_id, :ingreso, :proyecto_id, :sentido, :origen, :producto,
              :monto, :moneda, :cierre_esperado,
-             :calificacion, :estado, :embudo_id, :etapa_id, :etapa_ingreso,
-             :asignado, :atendido, :actualizado, :aplazado, :comentarios)
+             :calificacion, :embudo_id, :etapa_id, :etapa_ingreso,
+             :asignado, :atendido, :actualizado, :aplazado, :asunto)
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
@@ -682,7 +684,6 @@ function handleCreateOportunidad(PDO $pdo, array $in): void {
         ':moneda'          => $p['moneda'],
         ':cierre_esperado' => $p['cierre_esperado'],
         ':calificacion'  => $p['calificacion'],
-        ':estado'        => $p['estado'],
         ':embudo_id'     => $p['embudo_id'],
         ':etapa_id'      => $p['etapa_id'],
         ':etapa_ingreso' => $p['etapa_ingreso'],
@@ -690,7 +691,7 @@ function handleCreateOportunidad(PDO $pdo, array $in): void {
         ':atendido'      => $p['atendido'],
         ':actualizado'   => $p['actualizado'],
         ':aplazado'      => $p['aplazado'],
-        ':comentarios'   => $p['comentarios'],
+        ':asunto'        => $p['asunto'],
     ]);
     jsonOk(['id' => (int)$pdo->lastInsertId()], 201);
 }
@@ -742,7 +743,6 @@ function handleUpdateOportunidad(PDO $pdo, int $id, array $in): void {
             moneda          = :moneda,
             cierre_esperado = :cierre_esperado,
             calificacion  = :calificacion,
-            estado        = :estado,
             embudo_id     = :embudo_id,
             etapa_id      = :etapa_id,
             etapa_ingreso = :etapa_ingreso,
@@ -750,7 +750,7 @@ function handleUpdateOportunidad(PDO $pdo, int $id, array $in): void {
             atendido      = :atendido,
             actualizado   = :actualizado,
             aplazado      = :aplazado,
-            comentarios   = :comentarios
+            asunto        = :asunto
         WHERE id = :id
     ";
     $stmt = $pdo->prepare($sql);
@@ -764,7 +764,6 @@ function handleUpdateOportunidad(PDO $pdo, int $id, array $in): void {
         ':moneda'          => $p['moneda'],
         ':cierre_esperado' => $p['cierre_esperado'],
         ':calificacion'  => $p['calificacion'],
-        ':estado'        => $p['estado'],
         ':embudo_id'     => $p['embudo_id'],
         ':etapa_id'      => $p['etapa_id'],
         ':etapa_ingreso' => $p['etapa_ingreso'],
@@ -772,7 +771,7 @@ function handleUpdateOportunidad(PDO $pdo, int $id, array $in): void {
         ':atendido'      => $p['atendido'],
         ':actualizado'   => $p['actualizado'],
         ':aplazado'      => $p['aplazado'],
-        ':comentarios'   => $p['comentarios'],
+        ':asunto'        => $p['asunto'],
         ':id'            => $id,
     ]);
     jsonOk(['id' => $id]);
