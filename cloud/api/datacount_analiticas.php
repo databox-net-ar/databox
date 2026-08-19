@@ -32,7 +32,8 @@
 //                     peor_mes:  {mes, resultado}|null,
 //                     meses_positivos, meses_negativos,
 //                     sin_fecha_ingresos_cant, sin_fecha_egresos_cant },
-//          rango: {...}, anios: [...] }
+//          rango: { ..., piso: 'YYYY-MM', recortado?: true },
+//          anios: [...] }
 //
 // Fuentes:
 //   - facturas / notas: `datacount_comprobantes`, filtradas por
@@ -49,7 +50,8 @@
 //     definicion que la pestana "Facturas" (comprobantes autorizados con
 //     tipo LIKE 'F%'); egresos = misma definicion que "Ordenes de pago".
 //     Las notas de credito NO se restan: la pestana replica exactamente lo
-//     que muestran las pestanas de origen.
+//     que muestran las pestanas de origen. UNICA diferencia: ignora todo lo
+//     anterior a DCA_RESULTADOS_DESDE (ver la constante).
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'}.
 // Un unico verbo `.consultar` cubre todas las acciones — es un modulo
