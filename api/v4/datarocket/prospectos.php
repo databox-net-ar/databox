@@ -743,6 +743,13 @@ function drPrSanitize(array $in): array {
 // conocer: `embudo_id`, `proyecto_id` (el del embudo — no se acepta del cliente)
 // y `etapa_id` (la PRIMERA etapa del embudo por `orden`, que es la entrada del
 // pipeline). Ver api/v4/datarocket/embudos.php.
+//
+// A QUE PROSPECTO SE LE CUELGA: identifica el `correo`, y si la llamada no trae
+// correo identifica el `celular`. Si el campo que corresponda ya esta en una
+// ficha, la consulta va ahi (la mas reciente si hubiera varias); si no, se crea
+// un prospecto nuevo con todos los datos aprovechables del body. El chequeo de
+// unicidad del alta simple NO corre en este modo — registrar la consulta es lo
+// que no se puede perder. Ver drPrProspectoAReutilizar().
 
 // Espejo de embSlugify() de api/v4/datarocket/embudos.php y de dremSlugify() del
 // ABM cloud. Que la busqueda use la MISMA transformacion que el alta es lo que
@@ -961,28 +968,97 @@ function drPrOportunidadAbierta(PDO $pdo, int $prospectoId, int $embudoId): ?int
     return $row ? (int)$row['id'] : null;
 }
 
-// Decide si el alta de una consulta puede reutilizar un prospecto ya cargado.
-// Devuelve su id, o null si no hay duplicado.
+// Con bloque de consulta hace falta al menos UN dato de contacto. Sin `correo`
+// ni `celular` no se da de alta nada: ni el prospecto, ni la oportunidad, ni la
+// interaccion.
 //
-// Corta con 409 en un solo caso: cuando el correo matchea contra un prospecto y
-// el celular contra OTRO. Ahi no hay forma de elegir a cual colgarle la
-// oportunidad sin adivinar, y adivinar mal significa mandarle la consulta al
-// legajo equivocado. El body del error trae las coincidencias para que el
-// cliente (o una persona) resuelva cual es.
-function drPrProspectoAReutilizar(PDO $pdo, array $p): ?int {
-    $coincidencias = drPrBuscarDuplicados($pdo, $p['correo'], $p['celular']);
-    if (!$coincidencias) return null;
+// La razon es que una consulta sin ninguna via de contacto no se puede
+// responder. Se abriria una tarjeta en el kanban que nadie puede contestar y una
+// ficha que ninguna consulta posterior va a poder reencontrar — no tiene por
+// donde identificarse (ver drPrProspectoAReutilizar), asi que cada mensaje
+// nuevo del mismo contacto abriria otra ficha mas. Es basura que ensucia el
+// pipeline, no un lead.
+//
+// Se mira el valor NORMALIZADO, no el crudo: un `correo` de "no informado" o un
+// `celular` sin ningun digito ya vinieron a null desde drPrSanitize(), y tienen
+// que contar como ausentes.
+//
+// OJO que esto vale SOLO para el alta con consulta. El alta a secas (un
+// importador, un padron) sigue aceptando prospectos sin datos de contacto:
+// la tabla tiene 9.679 filas sin correo y 20.575 sin celular, todas legitimas.
+function drPrAssertContacto(array $p): void {
+    $correo  = (string)($p['correo']  ?? '');
+    $celular = (string)($p['celular'] ?? '');
+    if ($correo !== '' || $celular !== '') return;
 
-    $ids = array_unique(array_map(fn($c) => (int)$c['prospecto']['id'], $coincidencias));
-    if (count($ids) > 1) {
-        jsonError(
-            'El correo y el celular pertenecen a prospectos distintos, asi que no se puede '
-            . 'determinar a cual corresponde la consulta. Resolvelo indicando datos de uno solo.',
-            409,
-            ['coincidencias' => $coincidencias]
-        );
+    jsonError(
+        'Para registrar la consulta hace falta al menos `correo` o `celular`: sin una via de '
+        . 'contacto la consulta no se puede responder ni se puede reencontrar la ficha, asi que '
+        . 'no se da de alta el prospecto ni la oportunidad ni la interaccion.',
+        400
+    );
+}
+
+// Ultima ficha (la mas reciente) que tenga ese valor exacto en esa columna, o
+// null si no hay ninguna. `$campo` sale siempre de un literal del call site,
+// nunca del body, asi que interpolarlo es seguro; el valor va por bind.
+//
+// El desempate por `id DESC` importa porque la base historica arrastra
+// duplicados en los dos campos (1.984 correos y 1.586 celulares en mas de una
+// ficha, dev al 2026-08-19): entre varias, la mas reciente es la que mas
+// probablemente este en uso.
+function drPrUltimoPorContacto(PDO $pdo, string $campo, ?string $valor): ?int {
+    if ($valor === null || $valor === '') return null;
+    $st = $pdo->prepare("SELECT id FROM datarocket_prospectos
+                          WHERE {$campo} = :v ORDER BY id DESC LIMIT 1");
+    $st->execute([':v' => $valor]);
+    $row = $st->fetch();
+    return $row ? (int)$row['id'] : null;
+}
+
+// Decide si el alta de una consulta puede reutilizar un prospecto ya cargado.
+// Devuelve su id, o null si hay que crear uno nuevo.
+//
+// El `correo` es el factor de identificacion PRINCIPAL y el `celular` el de
+// RESPALDO. El respaldo solo entra cuando la llamada no trae correo:
+//
+//   con correo:  correo en la base   -> esa ficha
+//                correo que no esta  -> prospecto nuevo
+//   sin correo:  celular en la base  -> esa ficha
+//                celular que no esta -> prospecto nuevo
+//
+// Ojo con el segundo renglon: que el celular no participe de la BUSQUEDA no
+// significa que se descarte. El prospecto nuevo se crea con todos los datos
+// aprovechables del body, celular incluido. Aca se decide a QUE ficha se le
+// cuelga la consulta, no que se guarda en ella.
+//
+// El caso "sin correo y sin celular" no llega hasta aca: lo corta antes
+// drPrAssertContacto() con 400, sin crear nada.
+//
+// El respaldo por celular existe para que las consultas que entran por un canal
+// donde nadie deja el correo — WhatsApp es el caso — no abran una ficha nueva
+// cada vez. Sin el, el mismo contacto escribiendo tres veces generaba tres
+// prospectos, tres oportunidades y tres hilos de interacciones sueltos; con el,
+// las tres caen en la misma linea de mensajeria.
+//
+// Que el correo NO caiga al respaldo cuando no matchea es a proposito: si la
+// llamada trae correo, ese correo es la identidad que declara, y un celular
+// compartido (el conmutador de una empresa, el telefono de una familia) no debe
+// mandar la consulta al legajo de otra persona. Sin correo no hay nada mejor
+// que el celular, y ahi el riesgo se acepta.
+//
+// Esta funcion no corta con 409 en ningun caso, y es deliberado: registrar la
+// consulta es lo que no se puede perder. Una consulta rechazada es un lead que
+// se cae, y del lado del cliente el unico recorte posible es reintentar mandando
+// menos datos — que es exactamente como el formulario de cotizacion
+// (vigicom-www/cotizar) venia guardando prospectos sin telefono: se comia un 409
+// por un celular repetido en la base historica y reintentaba sin el celular.
+function drPrProspectoAReutilizar(PDO $pdo, array $p): ?int {
+    $correo = $p['correo'];
+    if ($correo !== null && $correo !== '') {
+        return drPrUltimoPorContacto($pdo, 'correo', $correo);
     }
-    return (int)reset($ids);
+    return drPrUltimoPorContacto($pdo, 'celular', $p['celular']);
 }
 
 // Crea la oportunidad y la interaccion del bloque de consulta y responde. No
@@ -1001,17 +1077,22 @@ function drPrAltaConsulta(
 
     $uuid       = $p['uuid']       ?? null;
     $registrado = $p['registrado'] ?? null;
+    $completado = [];
 
     if (!$creado) {
         // Sobre un prospecto que ya existia NO se pisa nada de lo cargado: los
         // datos del formulario pueden ser mas pobres que los que ya tiene (un
         // alta previa con domicilio y cargo, una consulta nueva con solo el
-        // nombre y el correo). Se lee su identidad para responderla y listo.
-        $st = $pdo->prepare('SELECT uuid, registrado FROM datarocket_prospectos WHERE id = :i');
+        // nombre y el correo). Se lee su identidad para responderla, y de paso
+        // el contacto para completar los huecos (ver drPrCompletarContacto).
+        $st = $pdo->prepare('SELECT uuid, registrado, correo, celular
+                               FROM datarocket_prospectos WHERE id = :i');
         $st->execute([':i' => $prospectoId]);
         $row        = $st->fetch() ?: [];
         $uuid       = $row['uuid']       ?? null;
         $registrado = $row['registrado'] ?? null;
+
+        $completado = drPrCompletarContacto($pdo, $prospectoId, $row, $p);
 
         // Las listas y etiquetas si se SUMAN — es informacion nueva sobre el
         // prospecto ("ademas vino por la expo"), y aca no se puede usar el
@@ -1099,6 +1180,12 @@ function drPrAltaConsulta(
             'uuid'       => $uuid,
             'registrado' => $registrado,
             'creado'     => $creado,
+            // Campos que estaban vacios en la ficha y se llenaron con lo que
+            // trajo esta consulta. Vacio en un alta nueva (ahi entro todo) y en
+            // una reutilizacion que no aporto nada. Se publica para que el
+            // cliente pueda ver que su POST enriquecio la ficha: sin esto, la
+            // unica forma de enterarse es releer el prospecto y compararlo.
+            'completado' => $completado,
         ],
         'oportunidad' => [
             'id'          => $oportunidadId,
@@ -1116,6 +1203,57 @@ function drPrAltaConsulta(
             'canal'   => $c['canal'],
         ],
     ], $creado ? 201 : 200);
+}
+
+// Completa `correo` / `celular` del prospecto reutilizado con los que trajo la
+// consulta, UNICAMENTE cuando la ficha los tiene vacios. Devuelve la lista de
+// campos que se escribieron (vacia si no habia nada que completar).
+//
+// Es la unica excepcion al "no se pisa nada de lo cargado" del alta con
+// consulta, y no la contradice: no se reemplaza un dato por otro, se llena un
+// hueco. El caso tipico es el prospecto identificado por su correo que nunca
+// dejo un telefono y ahora lo deja. Sin esto la ficha se queda a medias para
+// siempre y el dato solo vive en la interaccion.
+//
+// Un valor YA cargado no se toca ni se compara: si difiere del que vino, es una
+// correccion y eso es un PATCH deliberado, no un efecto colateral de registrar
+// un mensaje.
+//
+// En la practica el unico campo que llega a completarse es `celular`, y sale de
+// como identifica drPrProspectoAReutilizar(): el campo por el que matcheo nunca
+// esta vacio, y el camino del celular solo se toma cuando la llamada NO trae
+// correo, asi que por ahi tampoco hay correo para completar. Se deja el loop
+// sobre los dos porque la regla es la misma y no depende de cual sea hoy el
+// campo identificador.
+//
+// No se chequea unicidad antes del UPDATE, y no es un olvido: el celular que se
+// escribe puede estar ya en otra ficha, y esta bien que asi sea. Un celular
+// repetido dejo de ser un conflicto — es un numero compartido, o dos fichas
+// historicas del mismo contacto. La columna no tiene UNIQUE y el alta con
+// consulta no rechaza duplicados, asi que frenar el relleno aca seria perder el
+// telefono de alguien cuya ficha ya identificamos por su correo.
+function drPrCompletarContacto(PDO $pdo, int $prospectoId, array $row, array $p): array {
+    $campos = [];
+    foreach (['correo', 'celular'] as $campo) {
+        // La columna arrastra NULL y '' como "vacio" (el '' viene del default
+        // historico), asi que los dos cuentan como hueco.
+        $guardado = trim((string)($row[$campo] ?? ''));
+        $nuevo    = $p[$campo] ?? null;
+        if ($guardado === '' && $nuevo !== null && $nuevo !== '') $campos[] = $campo;
+    }
+    if (!$campos) return [];
+
+    $sets   = [];
+    $params = [':i' => $prospectoId];
+    foreach ($campos as $campo) {
+        $sets[]              = "{$campo} = :{$campo}";
+        $params[":{$campo}"] = $p[$campo];
+    }
+    // Los nombres de columna salen del array literal de arriba, nunca del body.
+    $pdo->prepare('UPDATE datarocket_prospectos SET ' . implode(', ', $sets) . ' WHERE id = :i')
+        ->execute($params);
+
+    return $campos;
 }
 
 // Suma listas / etiquetas sin borrar las que el prospecto ya tenia — la variante
@@ -1159,6 +1297,7 @@ function handleCreate(PDO $pdo, array $in): void {
         jsonError('El tipo es obligatorio (persona o empresa).', 400);
     }
     drPrAssertIdentidad($p);
+    if ($consulta !== null) drPrAssertContacto($p);
     $p['nombre'] = drPrDerivarNombre($p);
     drPrAssertUbicacion($pdo, $p);
     $p['uuid'] = drPrNullableStr($in['uuid'] ?? null, 255) ?? drPrUuidV4();
@@ -1181,11 +1320,19 @@ function handleCreate(PDO $pdo, array $in): void {
         // vuelve. Se reutiliza su fila y la oportunidad se le cuelga ahi. Sin
         // bloque de consulta el POST sigue siendo un alta a secas y el duplicado
         // sigue siendo el error que el 409 previene.
-        $reusaId = $consulta !== null ? drPrProspectoAReutilizar($pdo, $p) : null;
-        if ($reusaId !== null) {
-            drPrAltaConsulta($pdo, $reusaId, $p, $consulta, $listaIds, $etiquetaIds, false);
+        if ($consulta !== null) {
+            $reusaId = drPrProspectoAReutilizar($pdo, $p);
+            if ($reusaId !== null) {
+                drPrAltaConsulta($pdo, $reusaId, $p, $consulta, $listaIds, $etiquetaIds, false);
+            }
+            // Sin drPrAssertUnico(): con bloque de consulta la identificacion ya
+            // la resolvio drPrProspectoAReutilizar(), y si decidio "prospecto
+            // nuevo" teniendo un celular repetido en la base historica, ese es
+            // justamente el desenlace que se quiere — no un 409. Volver a
+            // chequear unicidad aca lo revertiria.
+        } else {
+            drPrAssertUnico($pdo, $p);
         }
-        drPrAssertUnico($pdo, $p);
 
         $sql = "INSERT INTO datarocket_prospectos
                     (uuid, tipo, nombre,

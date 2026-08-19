@@ -11338,13 +11338,12 @@ function dcaNiceMax(v) {
 // Comparte con el resto los chips de rango + selector de año, pero tiene su
 // propio bloque de stats, un gráfico de barras agrupadas y una tabla mensual
 // con el resultado acumulado.
-
-// Piso de la tabla de detalle mensual. El gráfico sigue mostrando el rango
-// completo que elija el usuario, pero la tabla arranca en enero 2025: antes
-// de esa fecha el cruce no es representativo (hay órdenes de pago cargadas
-// desde 2023 contra facturas que recién empiezan en septiembre 2024, así que
-// los meses previos dan resultados negativos que no reflejan la operación).
-const DCA_RESULTADOS_MES_DESDE = '2025-01';
+//
+// El piso histórico (ignorar todo lo anterior a 2025, porque la carga de esos
+// años quedó incompleta) lo aplica el backend: la serie, los totales y la
+// lista de años elegibles ya vienen recortados. El frontend NO vuelve a
+// filtrar — sólo muestra el piso que informa `rango.piso` para que quede
+// claro por qué el histórico arranca donde arranca.
 
 // '$ 1.234,56' / '-$ 1.234,56' — el signo va delante del símbolo para que la
 // columna quede alineada a la derecha sin saltos.
@@ -11422,7 +11421,7 @@ async function dcaRenderTabResultados(panel, cfg) {
     <div class="table-card" style="margin-top:16px">
       <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
         <div style="font-weight:600;font-size:.95rem">Detalle mensual</div>
-        <div style="font-size:.8rem;color:var(--muted)">Desde ${esc(dcaMesLabel(DCA_RESULTADOS_MES_DESDE))}</div>
+        <div id="${p}TablaDesde" style="font-size:.8rem;color:var(--muted)"></div>
       </div>
       <table>
         <thead>
@@ -11539,6 +11538,7 @@ async function dcaCargarResultadosData(cfg) {
   const cont   = document.getElementById(`${p}ChartInner`);
   const subtit = document.getElementById(`${p}Subtitulo`);
   const notas  = document.getElementById(`${p}Notas`);
+  const desde  = document.getElementById(`${p}TablaDesde`);
   const tbody  = document.getElementById(`${p}Tbody`);
   const tip    = document.getElementById(`${p}Tooltip`);
   if (!cont) return;
@@ -11572,19 +11572,25 @@ async function dcaCargarResultadosData(cfg) {
     elRes.style.color   = dcaColorResultado(r.resultado_rango ?? 0);
     document.getElementById(`${p}StatMargen`).textContent   = dcaFmtPct(margen);
 
-    // Subtítulo con la ventana efectiva
+    // Subtítulo con la ventana efectiva. `recortado` avisa que el extremo
+    // izquierdo se movió al piso histórico (p.ej. "Últimos 36 meses" pedido
+    // en 2026 arrancaría en 2023, pero se recorta a enero 2025).
+    const piso = (data.rango && data.rango.piso) || null;
     if (data.rango && data.rango.desde && data.rango.hasta) {
       const modoTxt = data.rango.modo === 'year'
         ? `Año ${data.rango.desde.slice(0, 4)}`
         : (data.rango.modo === 'ultimos'
             ? `Últimos ${data.rango.meses} meses`
             : 'Histórico completo');
-      subtit.textContent = `${modoTxt} · ${dcaMesLabel(data.rango.desde)} → ${dcaMesLabel(data.rango.hasta)}`;
+      subtit.textContent = `${modoTxt} · ${dcaMesLabel(data.rango.desde)} → ${dcaMesLabel(data.rango.hasta)}`
+        + (data.rango.recortado ? ' (recortado al piso histórico)' : '');
     } else {
       subtit.textContent = 'Sin registros con fecha de emisión.';
     }
+    if (desde) desde.textContent = piso ? `Desde ${dcaMesLabel(piso)}` : '';
 
-    // Notas al pie: mejor / peor mes, meses en positivo y registros sin fecha.
+    // Notas al pie: piso histórico, mejor / peor mes, meses en positivo y
+    // registros sin fecha.
     const avisos = [];
     if (r.mejor_mes) avisos.push(`Mejor mes: <strong>${esc(dcaMesLabel(r.mejor_mes.mes))}</strong> (${dcaFmtMoneySigno(r.mejor_mes.resultado)})`);
     if (r.peor_mes)  avisos.push(`Peor mes: <strong>${esc(dcaMesLabel(r.peor_mes.mes))}</strong> (${dcaFmtMoneySigno(r.peor_mes.resultado)})`);
@@ -11593,8 +11599,11 @@ async function dcaCargarResultadosData(cfg) {
     }
     const sinFecha = (r.sin_fecha_ingresos_cant ?? 0) + (r.sin_fecha_egresos_cant ?? 0);
     let notasHtml = avisos.length ? avisos.join(' &nbsp;·&nbsp; ') : '';
+    if (piso) {
+      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> Se ignora todo lo anterior a ${esc(dcaMesLabel(piso))}: la carga de datos de esos años quedó incompleta y el cruce no sería representativo.`;
+    }
     if (sinFecha > 0) {
-      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> ${fmtNum(r.sin_fecha_ingresos_cant ?? 0)} factura(s) y ${fmtNum(r.sin_fecha_egresos_cant ?? 0)} orden(es) de pago sin fecha de emisión (no entran en la serie mensual, pero sí en los históricos).`;
+      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> ${fmtNum(r.sin_fecha_ingresos_cant ?? 0)} factura(s) y ${fmtNum(r.sin_fecha_egresos_cant ?? 0)} orden(es) de pago sin fecha de emisión (no se pueden ubicar respecto del piso, así que no suman en ningún total).`;
     }
     notas.innerHTML = notasHtml;
 
@@ -11605,7 +11614,7 @@ async function dcaCargarResultadosData(cfg) {
     }
 
     cont.innerHTML  = dcaRenderBarChartComparativa(data.serie, chart.clientWidth);
-    tbody.innerHTML = dcaRenderFilasResultados(data.serie);
+    tbody.innerHTML = dcaRenderFilasResultados(data.serie, r);
   } catch (e) {
     cont.innerHTML  = `<div class="table-empty" style="text-align:center;padding:40px 20px;color:var(--danger)">Error: ${esc(e.message)}</div>`;
     tbody.innerHTML = `<tr><td colspan="6" class="table-empty" style="color:var(--danger)">Error: ${esc(e.message)}</td></tr>`;
@@ -11680,25 +11689,13 @@ function dcaRenderBarChartComparativa(serie, anchoDisponible) {
 // Filas de la tabla mensual + fila de totales. Los meses sin ningún
 // movimiento se atenúan para que el padding del rango no compita
 // visualmente con los meses que sí tienen datos.
-//
-// La tabla arranca en `DCA_RESULTADOS_MES_DESDE`, así que los totales y el
-// acumulado se recalculan sobre las filas efectivamente mostradas — NO se
-// reusa `resumen`, que cubre todo el rango del gráfico.
-function dcaRenderFilasResultados(serie) {
-  const visible = serie.filter((s) => s.mes >= DCA_RESULTADOS_MES_DESDE);
-  if (!visible.length) {
-    return `<tr><td colspan="6" class="table-empty">El rango elegido no incluye meses desde ${esc(dcaMesLabel(DCA_RESULTADOS_MES_DESDE))} en adelante.</td></tr>`;
-  }
-
+function dcaRenderFilasResultados(serie, resumen) {
   let acumulado = 0;
-  let tIng = 0, tEgr = 0;
-  const filas = visible.map((s) => {
+  const filas = serie.map((s) => {
     const ing = Number(s.ingresos)  || 0;
     const egr = Number(s.egresos)   || 0;
     const res = Number(s.resultado) || 0;
     acumulado += res;
-    tIng += ing;
-    tEgr += egr;
     const vacio = (s.cant_ingresos === 0 && s.cant_egresos === 0);
     return `
       <tr${vacio ? ' style="opacity:.45"' : ''}>
@@ -11712,10 +11709,12 @@ function dcaRenderFilasResultados(serie) {
     `;
   }).join('');
 
-  const tRes = tIng - tEgr;
+  const tIng = Number(resumen.ingresos_rango  || 0);
+  const tEgr = Number(resumen.egresos_rango   || 0);
+  const tRes = Number(resumen.resultado_rango || 0);
   const total = `
     <tr style="background:var(--bg);font-weight:700">
-      <td>Total ${esc(dcaMesLabel(visible[0].mes))} → ${esc(dcaMesLabel(visible[visible.length - 1].mes))}</td>
+      <td>Total del rango</td>
       <td style="text-align:right">$ ${dcaFmtMoney(tIng)}</td>
       <td style="text-align:right">$ ${dcaFmtMoney(tEgr)}</td>
       <td style="text-align:right;color:${dcaColorResultado(tRes)}">${dcaFmtMoneySigno(tRes)}</td>
@@ -30110,20 +30109,25 @@ async function abrirConsultaOp(id) {
   });
 }
 
+// La baja es en cascada: el endpoint borra primero las interacciones de la
+// oportunidad y recien ahi la oportunidad. Por eso el confirm lo avisa y el
+// toast informa cuantas interacciones se llevo puestas — no es solo una fila.
 async function eliminarOp(id) {
   const p = opItems.find((x) => x.id === id);
   if (!p) return;
   const nombre = p.prospecto_nombre || `#${id}`;
   const ok = await confirmar({
     title:       'Eliminar oportunidad',
-    message:     `¿Eliminás la oportunidad "${nombre}"? Esta acción no se puede deshacer.`,
+    message:     `Se eliminará la oportunidad "${nombre}" junto con todas sus interacciones. Esta acción no se puede deshacer.`,
     confirmText: 'Eliminar',
     danger:      true,
   });
   if (!ok) return;
   try {
-    await apiSend(`${OP_API}?id=${id}`, 'DELETE');
-    toast('Oportunidad eliminada');
+    const r = await apiSend(`${OP_API}?id=${id}`, 'DELETE');
+    toast(r?.interacciones
+      ? `Oportunidad eliminada (${r.interacciones} interacci${r.interacciones === 1 ? 'ón' : 'ones'}).`
+      : 'Oportunidad eliminada');
     await cargarOp();
   } catch (err) {
     toast(err.message, { error: true });

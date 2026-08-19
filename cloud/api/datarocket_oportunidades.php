@@ -24,7 +24,14 @@
 //                                                        que pertenecer al
 //                                                        embudo de la oportunidad.
 //   PUT    api/datarocket_oportunidades.php?id=N          -> modificacion (JSON body)
-//   DELETE api/datarocket_oportunidades.php?id=N          -> baja
+//   DELETE api/datarocket_oportunidades.php?id=N          -> baja en cascada:
+//                                                        borra primero las
+//                                                        interacciones de la
+//                                                        oportunidad y despues
+//                                                        la oportunidad.
+//                                                        Devuelve la cantidad
+//                                                        de interacciones
+//                                                        eliminadas.
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
 require_once __DIR__ . '/db.php';
@@ -777,11 +784,31 @@ function handleUpdateOportunidad(PDO $pdo, int $id, array $in): void {
     jsonOk(['id' => $id]);
 }
 
+// Baja en cascada: primero se borran las interacciones de la oportunidad y
+// recien despues la oportunidad. La FK `fk_dri_oportunidad` es ON DELETE SET
+// NULL, asi que sin este paso las interacciones sobrevivirian huerfanas (con
+// `oportunidad_id` NULL) colgando solo del prospecto. Mismo criterio que la
+// baja de prospectos en datarocketprospectos.php.
 function handleDeleteOportunidad(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare('DELETE FROM datarocket_oportunidades WHERE id = :id');
-    $stmt->execute([':id' => $id]);
-    if ($stmt->rowCount() === 0) jsonError('Oportunidad no encontrada', 404);
-    jsonOk(['id' => $id]);
+    $exists = $pdo->prepare('SELECT id FROM datarocket_oportunidades WHERE id = :id');
+    $exists->execute([':id' => $id]);
+    if (!$exists->fetchColumn()) jsonError('Oportunidad no encontrada', 404);
+
+    $pdo->beginTransaction();
+    try {
+        $delInteracciones = $pdo->prepare('DELETE FROM datarocket_interacciones WHERE oportunidad_id = :id');
+        $delInteracciones->execute([':id' => $id]);
+        $interacciones = $delInteracciones->rowCount();
+
+        $delOportunidad = $pdo->prepare('DELETE FROM datarocket_oportunidades WHERE id = :id');
+        $delOportunidad->execute([':id' => $id]);
+
+        $pdo->commit();
+        jsonOk(['id' => $id, 'interacciones' => $interacciones]);
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
 }
 
 // Movimiento de la oportunidad entre etapas del kanban (equivalente a arrastrar

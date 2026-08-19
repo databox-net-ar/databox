@@ -50,8 +50,11 @@
 //     definicion que la pestana "Facturas" (comprobantes autorizados con
 //     tipo LIKE 'F%'); egresos = misma definicion que "Ordenes de pago".
 //     Las notas de credito NO se restan: la pestana replica exactamente lo
-//     que muestran las pestanas de origen. UNICA diferencia: ignora todo lo
-//     anterior a DCA_RESULTADOS_DESDE (ver la constante).
+//     que muestran las pestanas de origen.
+//     Piso historico: solo cuenta lo emitido desde 2025-01 (ver
+//     DCA_RESULTADOS_MES_MIN). Los registros sin fecha de emision quedan
+//     fuera de los totales — no se pueden ubicar respecto del piso — y solo
+//     se reportan como conteo informativo.
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'}.
 // Un unico verbo `.consultar` cubre todas las acciones — es un modulo
@@ -65,14 +68,14 @@ require_once __DIR__ . '/lib/auth_check.php';
 // compile-time — se procesa al ejecutar la linea; incidente 2026-08-02).
 const DCA_ESTADO_AUTORIZADO = '3';  // datacount_comprobante_estado
 
-// Piso de la accion `resultados`: nada anterior a este mes entra en el cruce
-// ingresos/egresos (ni en la serie, ni en los totales, ni en el selector de
-// anios). Antes de 2025 el cruce no es representativo — hay ordenes de pago
-// cargadas desde 2023 contra facturas que recien arrancan en septiembre 2024,
-// asi que los meses previos daban resultados negativos que no reflejan la
-// operacion real. Las pestanas facturas / notas / pagos NO tienen este piso:
-// siguen mostrando su historia completa.
-const DCA_RESULTADOS_DESDE = '2025-01';
+// Piso historico de la accion `resultados`. Todo lo anterior a 2025 se
+// ignora: la carga de datos de esos anos quedo incompleta y el cruce
+// ingresos/egresos daria resultados enganosos. Afecta al historico
+// completo, a las ventanas de N meses y a la lista de anios elegibles.
+// NO aplica a las acciones facturas / notas / pagos, que siguen mostrando
+// todo lo cargado.
+const DCA_RESULTADOS_MES_MIN   = '2025-01';
+const DCA_RESULTADOS_FECHA_MIN = '2025-01-01';
 
 requireAuth();
 requirePermission('datacount.analiticas.consultar');
@@ -324,11 +327,9 @@ function dcaResponderSerie(array $porMes, int $sinFechaCant, float $sinFechaTota
 // restan las notas de credito: la pestana es un cruce de las dos pestanas
 // mencionadas y nada mas, para que los numeros cierren contra ellas.
 //
-// Todo lo anterior a DCA_RESULTADOS_DESDE queda afuera: las dos queries lo
-// filtran en el WHERE, asi que no entra ni en la serie, ni en los totales
-// historicos, ni en el selector de anios. Si el rango pedido empieza antes
-// del piso se recorta y se marca `rango.recortado = true` para que el
-// frontend pueda decirlo.
+// Todo lo emitido antes de DCA_RESULTADOS_MES_MIN se descarta en la query,
+// asi que el piso rige por igual para la serie, los totales del rango, los
+// historicos y la lista de anios elegibles.
 
 function handleResultados(PDO $pdo, array $q): void {
     $empresaId = (int)($q['empresa'] ?? 0);
@@ -336,9 +337,8 @@ function handleResultados(PDO $pdo, array $q): void {
         jsonError('Falta parametro `empresa`.', 400);
     }
 
-    $modo     = (string)($q['rango'] ?? 'all');
-    $anio     = isset($q['anio']) ? (int)$q['anio'] : 0;
-    $pisoDate = DCA_RESULTADOS_DESDE . '-01';
+    $modo = (string)($q['rango'] ?? 'all');
+    $anio = isset($q['anio']) ? (int)$q['anio'] : 0;
 
     // --- Ingresos (facturas autorizadas) ---
     $st = $pdo->prepare("
@@ -353,7 +353,12 @@ function handleResultados(PDO $pdo, array $q): void {
          GROUP BY mes
          ORDER BY mes ASC
     ");
-    $st->execute([':emp' => $empresaId, ':est' => DCA_ESTADO_AUTORIZADO, ':tipo' => 'F%', ':piso' => $pisoDate]);
+    $st->execute([
+        ':emp'  => $empresaId,
+        ':est'  => DCA_ESTADO_AUTORIZADO,
+        ':tipo' => 'F%',
+        ':piso' => DCA_RESULTADOS_FECHA_MIN,
+    ]);
     $ingPorMes = [];
     foreach ($st->fetchAll() as $row) {
         $ingPorMes[(string)$row['mes']] = [
@@ -361,6 +366,19 @@ function handleResultados(PDO $pdo, array $q): void {
             'cantidad' => (int)$row['cantidad'],
         ];
     }
+
+    // Registros sin fecha de emision: no se pueden ubicar respecto del piso,
+    // asi que no suman en ningun total. Se cuentan solo para avisar en la UI.
+    $st = $pdo->prepare("
+        SELECT COUNT(*) AS n
+          FROM datacount_comprobantes
+         WHERE empresa = :emp
+           AND estado  = :est
+           AND tipo    LIKE :tipo
+           AND emision IS NULL
+    ");
+    $st->execute([':emp' => $empresaId, ':est' => DCA_ESTADO_AUTORIZADO, ':tipo' => 'F%']);
+    $ingSinFechaN = (int)(($st->fetch() ?: ['n' => 0])['n'] ?? 0);
 
     // --- Egresos (ordenes de pago) ---
     $st = $pdo->prepare("
@@ -373,7 +391,7 @@ function handleResultados(PDO $pdo, array $q): void {
          GROUP BY mes
          ORDER BY mes ASC
     ");
-    $st->execute([':emp' => $empresaId, ':piso' => $pisoDate]);
+    $st->execute([':emp' => $empresaId, ':piso' => DCA_RESULTADOS_FECHA_MIN]);
     $egrPorMes = [];
     foreach ($st->fetchAll() as $row) {
         $egrPorMes[(string)$row['mes']] = [
@@ -382,31 +400,20 @@ function handleResultados(PDO $pdo, array $q): void {
         ];
     }
 
-    // --- Totales de todo el periodo considerado (desde el piso hasta hoy) ---
-    // No suman los registros sin fecha de emision: al no tener periodo no se
-    // puede decidir si caen dentro o fuera del piso. Se informan aparte para
-    // que quede explicito por que estos numeros no cierran contra las
-    // pestanas Facturas / Ordenes de pago.
+    $st = $pdo->prepare("
+        SELECT COUNT(*) AS n
+          FROM datacount_pagos
+         WHERE empresa = :emp
+           AND emision IS NULL
+    ");
+    $st->execute([':emp' => $empresaId]);
+    $egrSinFechaN = (int)(($st->fetch() ?: ['n' => 0])['n'] ?? 0);
+
+    // --- Historicos (ya acotados al piso por la query) ---
     $ingTotalHist = 0.0; $ingCantHist = 0;
     foreach ($ingPorMes as $m) { $ingTotalHist += $m['total']; $ingCantHist += $m['cantidad']; }
     $egrTotalHist = 0.0; $egrCantHist = 0;
     foreach ($egrPorMes as $m) { $egrTotalHist += $m['total']; $egrCantHist += $m['cantidad']; }
-
-    $st = $pdo->prepare("
-        SELECT COUNT(*) AS n
-          FROM datacount_comprobantes
-         WHERE empresa = :emp AND estado = :est AND tipo LIKE :tipo AND emision IS NULL
-    ");
-    $st->execute([':emp' => $empresaId, ':est' => DCA_ESTADO_AUTORIZADO, ':tipo' => 'F%']);
-    $ingSinFechaN = (int)(($st->fetch()['n']) ?? 0);
-
-    $st = $pdo->prepare("
-        SELECT COUNT(*) AS n
-          FROM datacount_pagos
-         WHERE empresa = :emp AND emision IS NULL
-    ");
-    $st->execute([':emp' => $empresaId]);
-    $egrSinFechaN = (int)(($st->fetch()['n']) ?? 0);
 
     // --- Rango: la union de los meses de ambas fuentes ---
     $mesesUnion = array_keys($ingPorMes + $egrPorMes);
@@ -415,23 +422,25 @@ function handleResultados(PDO $pdo, array $q): void {
     $ultimo  = $mesesUnion ? $mesesUnion[count($mesesUnion) - 1] : null;
 
     $rango     = dcaCalcularRango($primero, $ultimo, $modo, $anio);
-    $rangoInfo = $rango['info'];
-
-    // Recorte contra el piso. Un rango que termina antes del piso (p.ej.
-    // ?rango=year&anio=2024) queda directamente sin serie.
-    $sinDatos = ($rango['desde'] === null)
-             || ($rango['hasta'] !== null && $rango['hasta'] < DCA_RESULTADOS_DESDE);
-    if (!$sinDatos && $rango['desde'] < DCA_RESULTADOS_DESDE) {
-        $rango['desde']         = DCA_RESULTADOS_DESDE;
-        $rangoInfo['desde']     = DCA_RESULTADOS_DESDE;
-        $rangoInfo['recortado'] = true;
-    }
-    $rangoInfo['piso'] = DCA_RESULTADOS_DESDE;
-
-    if ($sinDatos) {
-        if ($rango['desde'] !== null) {
-            $rangoInfo['recortado'] = true;
+    // Las ventanas de N meses y los anios anteriores al piso pueden arrancar
+    // antes de 2025: recortar el extremo izquierdo para no pintar meses que
+    // la query ya vacio. Si la ventana entera queda debajo del piso, no hay
+    // nada que mostrar.
+    if ($rango['desde'] !== null && $rango['desde'] < DCA_RESULTADOS_MES_MIN) {
+        if ($rango['hasta'] < DCA_RESULTADOS_MES_MIN) {
+            $rango['desde'] = null;
+            $rango['info']['desde'] = null;
+            $rango['info']['hasta'] = null;
+        } else {
+            $rango['desde'] = DCA_RESULTADOS_MES_MIN;
+            $rango['info']['desde'] = DCA_RESULTADOS_MES_MIN;
+            $rango['info']['recortado'] = true;
         }
+    }
+    $rangoInfo = $rango['info'];
+    $rangoInfo['piso'] = DCA_RESULTADOS_MES_MIN;
+
+    if ($rango['desde'] === null) {
         jsonOk([
             'serie'   => [],
             'resumen' => dcaResumenResultados([], $ingTotalHist, $ingCantHist, $egrTotalHist, $egrCantHist,

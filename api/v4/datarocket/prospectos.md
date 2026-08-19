@@ -26,10 +26,16 @@ claves el alta crea unicamente el prospecto, como siempre. Ver
 
 **Un prospecto no se puede dar de alta si su `correo` o su `celular` ya estan
 registrados.** El `POST` corta con `409`; `?verificar=1` permite preguntarlo
-antes. Ver [Unicidad de correo y celular](#unicidad-de-correo-y-celular). La
-excepcion es el alta con consulta: ahi el prospecto que ya existe **se
-reutiliza** en vez de rechazarse — el cliente que vuelve a escribir no es un
-error.
+antes. Ver [Unicidad de correo y celular](#unicidad-de-correo-y-celular).
+
+**El alta con consulta no rechaza duplicados.** Ahi identifica el `correo`, y si
+la llamada no lo trae identifica el `celular`: si el valor ya esta en una ficha,
+la consulta se le cuelga a esa; si no, se crea un prospecto nuevo con todos los
+datos del body. El cliente que vuelve a escribir no es un error, y un lead nuevo
+con un celular repetido en la base historica tampoco. Lo que **si** rechaza es
+una consulta **sin `correo` ni `celular`**: sin via de contacto no se da de alta
+ni el prospecto, ni la oportunidad, ni la interaccion. Ver
+[Como se identifica al prospecto](#como-se-identifica-al-prospecto).
 
 **Para seleccionar el pais, la provincia y la localidad se usa
 [/v4/databox/ubicaciones](../databox/ubicaciones.md).** Este endpoint recibe
@@ -157,8 +163,10 @@ completo, con la carrera obvia si alguien lo edito en el medio.
 Este endpoint es la puerta de entrada de los formularios y los importadores
 externos, y ahi es donde se generan los prospectos duplicados. Por eso:
 
-- **`POST`** rechaza con `409` si el `correo` **o** el `celular` del payload ya
-  estan cargados en otra fila.
+- **`POST` sin bloque de consulta** rechaza con `409` si el `correo` **o** el
+  `celular` del payload ya estan cargados en otra fila. **Con** bloque de
+  consulta esta regla no corre: ver
+  [Como se identifica al prospecto](#como-se-identifica-al-prospecto).
 - **`PUT`** aplica la misma regla, excluyendose a si mismo (un prospecto no
   choca contra su propio correo).
 - **`PATCH`** la aplica solo sobre los campos que el body escribe: si el parche
@@ -486,13 +494,15 @@ guarda la variante canonica del catalogo (`"instagram"` entra como `Instagram`,
 `400`. Un valor que no este en el catalogo si corta con `400`, con la lista de
 validos en el mensaje.
 
-### Si el prospecto ya existe, se reutiliza
+### Si el contacto ya existe, se reutiliza su ficha
 
 Aca el `409` por correo o celular duplicado **no aplica**. Con bloque de
 consulta el `POST` ya no significa "dar de alta un prospecto" sino "registrar
 una consulta", y que quien la manda ya este en la base es lo normal: es un
 cliente que vuelve. Se reutiliza su fila, la oportunidad se le cuelga ahi y la
-respuesta trae `prospecto.creado: false` con `200` en vez de `201`.
+respuesta trae `prospecto.creado: false` con `200` en vez de `201`. El criterio
+exacto esta en
+[Como se identifica al prospecto](#como-se-identifica-al-prospecto).
 
 **No se le pisa nada de lo que ya tenia cargado.** Los datos de un formulario
 suelen ser mas pobres que los de la ficha (un alta previa con domicilio y cargo,
@@ -500,18 +510,92 @@ una consulta nueva con solo el nombre y el correo), asi que el body se usa para
 identificar al prospecto, no para actualizarlo. Si hay que corregirle un campo,
 eso es un [`PATCH`](#patch-v4datarocketprospectosidn--modificacion-parcial).
 
-`lista_ids` y `etiqueta_ids` son la excepcion: **se suman** a las que ya tenia
-—son informacion nueva ("ademas vino por la expo")— en vez de reemplazarlas como
-hacen el `PUT` y el `PATCH`.
+**Pero los huecos de contacto si se completan.** Si la ficha tiene el `celular`
+**vacio** y la consulta lo trae, se guarda: el caso tipico es el prospecto
+identificado por su correo que nunca dejo un telefono y ahora lo deja. Sin esto
+la ficha se queda a medias para siempre y el dato solo vive en la interaccion.
+No es una excepcion al parrafo anterior sino su complemento: **no se reemplaza
+un valor por otro, se llena un hueco**. Un valor ya cargado que difiera del que
+vino no se toca ni se compara — eso es una correccion, y una correccion es un
+`PATCH` deliberado, no un efecto colateral de registrar un mensaje.
+
+En la practica el unico campo que se completa es `celular`: el campo por el que
+se identifico nunca esta vacio, y cuando la identificacion fue **por celular**
+es porque la llamada no traia correo, asi que tampoco hay correo para completar.
+
+Los campos completados vuelven en `prospecto.completado` (ver
+[La respuesta](#la-respuesta)).
+
+> El celular que se completa **puede quedar repetido** con el de otra ficha, y
+> esta bien que asi sea: un celular compartido dejo de ser un conflicto y este
+> modo no rechaza duplicados. Frenar el relleno por eso seria perder el telefono
+> de alguien cuya ficha ya identificamos por su correo.
+
+`lista_ids` y `etiqueta_ids` siguen la misma logica de sumar sin destruir: **se
+agregan** a las que ya tenia —son informacion nueva ("ademas vino por la
+expo")— en vez de reemplazarlas como hacen el `PUT` y el `PATCH`.
 
 > **Sin bloque de consulta el `409` sigue vivo.** Un `POST` que solo trae datos
 > del prospecto sigue siendo un alta a secas, y ahi el duplicado sigue siendo el
 > error que el `409` previene. Ver
 > [Unicidad de correo y celular](#unicidad-de-correo-y-celular).
 
-Hay un caso que si corta con `409`: cuando el **correo matchea contra un
-prospecto y el celular contra otro**. No hay forma de elegir a cual pertenece la
-consulta sin adivinar, y adivinar mal la manda al legajo equivocado.
+### Como se identifica al prospecto
+
+Identifica el **`correo`**. Si la llamada **no trae correo**, identifica el
+**`celular`** (ya normalizado).
+
+| Que trae la llamada | Que pasa |
+| ------------------- | -------- |
+| `correo` que **ya esta** en una ficha | La interaccion y la oportunidad se cuelgan de **esa** ficha. |
+| `correo` que **no esta** | Prospecto **nuevo**, con el `celular` y el resto de los datos del body. |
+| Sin correo, `celular` que **ya esta** en una ficha | La interaccion y la oportunidad se cuelgan de **esa** ficha. |
+| Sin correo, `celular` que **no esta** | Prospecto **nuevo**, con el `celular` y el resto de los datos del body. |
+| **Sin correo y sin `celular`** | **`400`. No se da de alta nada**: ni prospecto, ni oportunidad, ni interaccion. |
+
+> Esta tabla dice **a que ficha se le cuelga la consulta**, no que se guarda en
+> ella. Que el `celular` no participe de la busqueda cuando vino un `correo` no
+> significa que se descarte: el prospecto nuevo se crea con **todos** los datos
+> aprovechables del body, celular incluido.
+
+En los dos casos, si el valor esta cargado en **varias** fichas se usa la **mas
+reciente** — entre duplicados historicos (1.984 correos y 1.586 celulares en mas
+de una ficha, dev al 2026-08-19) es la que mas probablemente este en uso.
+
+**Sin ninguna via de contacto no se registra la consulta.** Una consulta que no
+trae `correo` ni `celular` no se puede responder: abriria una tarjeta en el
+kanban que nadie puede contestar y una ficha que ninguna consulta posterior va a
+poder reencontrar —no tiene por donde identificarse—, asi que cada mensaje nuevo
+del mismo contacto abriria otra ficha mas. Se corta con `400` **antes de
+escribir nada**.
+
+Se mira el valor **normalizado**, no el crudo: un `correo` de `"no informado"` o
+un `celular` sin ningun digito cuentan como ausentes.
+
+> Esto vale **solo para el alta con consulta**. El alta a secas (un importador,
+> un padron) sigue aceptando prospectos sin datos de contacto: la tabla tiene
+> 9.679 filas sin correo y 20.575 sin celular, todas legitimas.
+
+**Por que el celular es respaldo y no criterio principal.** En un canal donde
+nadie deja el correo —WhatsApp es el caso— sin este respaldo el mismo contacto
+escribiendo tres veces abriria tres prospectos, tres oportunidades y tres hilos
+de interacciones sueltos. Con el, las tres caen en la **misma linea de
+mensajeria**. Pero cuando la llamada **si** trae correo, ese correo es la
+identidad que el contacto declara, y un celular compartido (el conmutador de una
+empresa, el telefono de una familia, el del corredor que carga a varios
+clientes) no debe mandar la consulta al legajo de otra persona: por eso un
+correo que no matchea crea ficha nueva en vez de caer al celular.
+
+**Este modo no rechaza ninguna consulta por duplicados.** No hay `409` de
+identidad: registrar la consulta es lo que no se puede perder, porque una
+consulta rechazada es un lead que se cae. Del lado del cliente el unico recorte
+posible ante un rechazo es reintentar mandando menos datos, que es justamente
+como el formulario de cotizacion de vigicom venia guardando prospectos **sin
+telefono**: se comia un `409` por un celular repetido en la base historica y
+reintentaba sin el celular.
+
+> Regla vigente desde el 2026-08-19. Antes los dos campos identificaban a la
+> vez y cualquier ambiguedad entre ellos cortaba con `409`.
 
 ### Si ya hay una oportunidad abierta, se reutiliza
 
@@ -546,7 +630,7 @@ cliente dejen tres tarjetas duplicadas en el kanban.
     "id": 149311,
     "uuid": "14268d59-db2f-42a5-86da-0e5b9b709fb6",
     "registrado": "2026-08-18 12:20:51",
-    "prospecto":  { "id": 149311, "uuid": "…", "registrado": "…", "creado": true },
+    "prospecto":  { "id": 149311, "uuid": "…", "registrado": "…", "creado": true, "completado": [] },
     "oportunidad": {
       "id": 4958, "creada": true,
       "embudo_id": 4, "embudo_slug": "causam-clientes", "proyecto_id": 109,
@@ -575,19 +659,40 @@ que releer nada:
 | `false`            | `false`              | Cliente conocido insistiendo sobre lo mismo.|
 | `true`             | `false`              | No puede pasar (un prospecto recien creado no tiene oportunidades). |
 
+`prospecto.completado` es un array con los campos de contacto que estaban
+vacios en la ficha y se llenaron con esta consulta — `["celular"]`,
+`["correo"]`, los dos, o `[]`. Ver
+[Si el contacto ya existe, se reutiliza su ficha](#si-el-contacto-ya-existe-se-reutiliza-su-ficha).
+
+**`completado: []` no significa que no se haya guardado nada.** Los dos casos en
+que viene vacio son:
+
+- **`creado: true`** — el prospecto es nuevo, asi que entro el body **entero**:
+  si mandaste `correo` y `celular`, los dos quedaron guardados (normalizados).
+  No hay huecos que completar porque la ficha se acaba de escribir con lo que
+  vino.
+- **`creado: false` sin huecos** — el prospecto ya existia y ya tenia cargados
+  los campos de contacto que trajo la consulta, asi que no habia nada que
+  llenar.
+
 ### Errores
 
 | Codigo | Cuando                                                                              |
 | ------ | ----------------------------------------------------------------------------------- |
 | 400    | El bloque vino incompleto (falta `embudo`, `asunto` o `mensaje`).                   |
+| 400    | No vino **ni `correo` ni `celular`**: sin via de contacto no se registra nada.      |
 | 400    | El embudo no existe. **No se crea al vuelo** — ver abajo.                            |
 | 400    | `canal` u `origen` fuera del catalogo (el mensaje lista los validos).               |
 | 409    | El embudo existe pero **no tiene etapas cargadas**: no hay donde ubicar la oportunidad. |
 | 409    | El slug del embudo existe en mas de un proyecto (mandar tambien `proyecto_id`).      |
-| 409    | El `correo` y el `celular` pertenecen a prospectos **distintos**.                    |
 
 Mas los del alta simple (`tipo` obligatorio, identidad, correo invalido, FK de
 ubicacion).
+
+**Ningun duplicado de `correo` ni de `celular` da error en este modo.** Los
+`409` que quedan son todos de configuracion del embudo, no de identidad del
+prospecto. Ver
+[Como se identifica al prospecto](#como-se-identifica-al-prospecto).
 
 Un embudo que no existe es `400` y no se crea solo. No hay un `?resolver=1` como
 el de [etiquetas](etiquetas.md), y es a proposito: una etiqueta nueva es
@@ -1055,9 +1160,10 @@ Con bloque de consulta la respuesta suma `prospecto`, `oportunidad` e
 | 500    | `<mensaje de la excepcion>`                                                | Falla inesperada (PDO, etc.).                 |
 
 Los tres `409` de duplicado **no se aplican al alta con consulta**: ahi el
-prospecto existente se reutiliza. Los errores propios de ese modo (bloque
-incompleto, embudo inexistente, embudo sin etapas, canal u origen invalidos)
-estan en [Registrar una consulta](#registrar-una-consulta-embudo-asunto-y-mensaje).
+`correo` identifica y todo lo demas se crea. Los errores propios de ese modo
+(bloque incompleto, embudo inexistente, embudo sin etapas, canal u origen
+invalidos) estan en
+[Registrar una consulta](#registrar-una-consulta-embudo-asunto-y-mensaje).
 
 El cuerpo del `409` trae ademas `coincidencias`, con el mismo shape que
 `?verificar=1`, para poder ofrecer *"ya lo tenes cargado, ¿queres verlo?"* en
@@ -1101,8 +1207,9 @@ curl -X POST https://api.databox.net.ar/v4/datarocket/prospectos \
 
 **Si el formulario es una consulta** (tiene un campo "mensaje" y cae en un
 pipeline), no hay flujo: es un solo `POST` con `embudo` + `asunto` + `mensaje`.
-El duplicado no hace falta preguntarlo porque no es un error — el prospecto se
-reutiliza. Ver
+El duplicado no hace falta preguntarlo porque no es un error — el `correo`
+identifica y todo lo demas se crea. **No hace falta ningun reintento con menos
+datos**: ese modo no devuelve `409` de identidad. Ver
 [Registrar una consulta](#registrar-una-consulta-embudo-asunto-y-mensaje).
 
 **Si es un alta a secas** (un formulario de suscripcion, un importador):
