@@ -84,6 +84,12 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/sucesos.php';
+require_once dirname(__DIR__) . '/_lib/log.php';
+
+// Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
+// del panel). Va antes de la auth para que los 401 tambien caigan adentro.
+// El alta exitosa se sigue registrando aparte, como `info` (ver handleCreate).
+v4InitLog('v4/datarocket.etiquetas');
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -149,7 +155,7 @@ const DR_ET_SEPARADOR_GC = '||~||';
 // ---------------------------------------------------------------------------
 
 try {
-    $app    = etqRequireApp();
+    $app    = v4LogApp(etqRequireApp());
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

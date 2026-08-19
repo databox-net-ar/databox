@@ -28,6 +28,11 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/evolution_mensajes.php';
+require_once dirname(__DIR__) . '/_lib/log.php';
+
+// Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
+// del panel). Va antes de la auth para que los 401 tambien caigan adentro.
+v4InitLog('v4/evolution.mensajes');
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -90,7 +95,7 @@ const EVO_MSG_ESTADO_LABEL = [
 // ---------------------------------------------------------------------------
 
 try {
-    requireApp();
+    v4LogApp(requireApp());
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'POST') {

@@ -10858,9 +10858,14 @@ route('/datacount', async (mount) => {
 //
 // Pestañas (config-driven — agregar una nueva es sumar una entrada en DCA_TABS
 // y una acción en el PHP; el resto del scaffolding es común):
-//   - facturas: `datacount_comprobantes` autorizados, tipo LIKE 'F%'.
-//   - notas:    `datacount_comprobantes` autorizados, tipo LIKE 'N%'.
-//   - pagos:    `datacount_pagos` contabilizados.
+//   - facturas:   `datacount_comprobantes` autorizados, tipo LIKE 'F%'.
+//   - notas:      `datacount_comprobantes` autorizados, tipo LIKE 'N%'.
+//   - pagos:      `datacount_pagos` contabilizados.
+//   - resultados: cruce mes a mes de facturas (ingresos) contra órdenes de
+//                 pago (egresos). Es la única pestaña de dos series, marcada
+//                 con `tipo: 'comparativa'`: tiene su propio render (stats,
+//                 gráfico de barras agrupadas y tabla mensual) pero comparte
+//                 el shell de rango/año con el resto.
 //
 // Los gráficos son SVG plano (sin librerías, coherente con "sin build step").
 
@@ -10905,6 +10910,13 @@ const DCA_TABS = [
     statLabelTotalHist:  'Pagado histórico',
     statLabelCantHist:   'Órdenes históricas',
     sinFechaMsg: 'orden(es) de pago contabilizada(s) sin fecha de emisión',
+  },
+  {
+    key: 'resultados',
+    label: 'Resultados',
+    icon: 'fa-scale-balanced',
+    tipo: 'comparativa',
+    tituloChart: 'Ingresos vs. egresos mensuales',
   },
 ];
 
@@ -11024,7 +11036,11 @@ route('/datacount_analiticas', async (mount) => {
         const chart = document.getElementById(`dca_${cfg.key}_Chart`);
         const inner = document.getElementById(`dca_${cfg.key}_ChartInner`);
         const tip   = document.getElementById(`dca_${cfg.key}_Tooltip`);
-        if (chart && inner) inner.innerHTML = dcaRenderBarChart(st.ultimaData.serie, chart.clientWidth);
+        if (chart && inner) {
+          inner.innerHTML = (cfg.tipo === 'comparativa')
+            ? dcaRenderBarChartComparativa(st.ultimaData.serie, chart.clientWidth)
+            : dcaRenderBarChart(st.ultimaData.serie, chart.clientWidth);
+        }
         if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
       }, 150);
     });
@@ -11063,6 +11079,9 @@ async function dcaRenderTab(panel, cfg) {
     panel.innerHTML = `<div class="table-empty" style="padding:40px 20px;text-align:center;color:var(--muted)">No hay empresas registradas — creá una en Datacount &gt; Empresas antes de ver analíticas.</div>`;
     return;
   }
+
+  // La pestaña Resultados cruza dos series y tiene su propio shell.
+  if (cfg.tipo === 'comparativa') return dcaRenderTabResultados(panel, cfg);
 
   const p  = `dca_${cfg.key}_`;   // prefijo de IDs de esta pestaña
   const st = dcaState[cfg.key];
@@ -11107,23 +11126,7 @@ async function dcaRenderTab(panel, cfg) {
     </div>
   `;
 
-  // Wiring de los chips de rango
-  const chips   = panel.querySelectorAll(`#${p}RangoChips .filter-chip`);
-  const selAnio = document.getElementById(`${p}AnioSel`);
-  chips.forEach((b) => {
-    b.classList.toggle('active', (b.dataset.val || 'all') === st.rango);
-    b.addEventListener('click', () => {
-      st.rango = b.dataset.val || 'all';
-      chips.forEach((x) => x.classList.toggle('active', x.dataset.val === st.rango));
-      selAnio.style.display = (st.rango === 'year') ? '' : 'none';
-      dcaCargarTabData(cfg);
-    });
-  });
-  if (st.rango === 'year') selAnio.style.display = '';
-  selAnio.addEventListener('change', () => {
-    st.anio = Number(selAnio.value) || null;
-    if (st.anio) dcaCargarTabData(cfg);
-  });
+  dcaWirearRangoChips(panel, p, st, () => dcaCargarTabData(cfg));
 
   // Click en una barra: muestra un tooltip flotante con mes, total y
   // cantidad, posicionado en el tope de la barra visible. Volver a
@@ -11202,21 +11205,7 @@ async function dcaCargarTabData(cfg) {
     const data = await apiGet('api/datacount_analiticas.php?' + qs.toString());
     st.ultimaData = data;
 
-    // Poblar el selector de año con los años que efectivamente tienen datos.
-    const selAnio = document.getElementById(`${p}AnioSel`);
-    if (selAnio) {
-      const anios = (data.anios || []).slice();
-      if (st.rango === 'year' && st.anio && !anios.includes(st.anio)) {
-        anios.push(st.anio);
-        anios.sort();
-      }
-      const anioActual = st.anio || (anios.length ? anios[anios.length - 1] : new Date().getFullYear());
-      if (!st.anio) st.anio = anioActual;
-      selAnio.innerHTML = anios.length
-        ? anios.map((y) => `<option value="${y}">${y}</option>`).join('')
-        : `<option value="${new Date().getFullYear()}">${new Date().getFullYear()}</option>`;
-      selAnio.value = String(st.anio);
-    }
+    dcaPoblarSelectorAnios(p, st, data.anios);
 
     // Stats
     const r = data.resumen || {};
@@ -11337,6 +11326,405 @@ function dcaNiceMax(v) {
   else if (norm <= 5)   nice = 5;
   else                  nice = 10;
   return nice * base;
+}
+
+// --------------------- Pestaña: Analíticas > Resultados ---------------------
+//
+// Única pestaña de dos series (`tipo: 'comparativa'`). Cruza mes a mes los
+// ingresos (facturas autorizadas, misma definición que la pestaña Facturas)
+// contra los egresos (órdenes de pago, misma definición que esa pestaña) y
+// muestra el resultado del período.
+//
+// Comparte con el resto los chips de rango + selector de año, pero tiene su
+// propio bloque de stats, un gráfico de barras agrupadas y una tabla mensual
+// con el resultado acumulado.
+
+// Piso de la tabla de detalle mensual. El gráfico sigue mostrando el rango
+// completo que elija el usuario, pero la tabla arranca en enero 2025: antes
+// de esa fecha el cruce no es representativo (hay órdenes de pago cargadas
+// desde 2023 contra facturas que recién empiezan en septiembre 2024, así que
+// los meses previos dan resultados negativos que no reflejan la operación).
+const DCA_RESULTADOS_MES_DESDE = '2025-01';
+
+// '$ 1.234,56' / '-$ 1.234,56' — el signo va delante del símbolo para que la
+// columna quede alineada a la derecha sin saltos.
+function dcaFmtMoneySigno(n) {
+  const v = Number(n || 0);
+  return (v < 0 ? '-$ ' : '$ ') + dcaFmtMoney(Math.abs(v));
+}
+
+function dcaColorResultado(n) {
+  return Number(n || 0) < 0 ? 'var(--danger)' : 'var(--success)';
+}
+
+// Margen sobre ingresos, en %. Devuelve null cuando no hay ingresos (dividir
+// por cero no dice nada útil: se muestra '—').
+function dcaMargen(ingresos, resultado) {
+  const i = Number(ingresos || 0);
+  if (i <= 0) return null;
+  return (Number(resultado || 0) / i) * 100;
+}
+
+function dcaFmtPct(n) {
+  if (n === null || n === undefined) return '—';
+  return Number(n).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
+}
+
+async function dcaRenderTabResultados(panel, cfg) {
+  const p  = `dca_${cfg.key}_`;
+  const st = dcaState[cfg.key];
+
+  panel.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px">
+      <div class="toolbar-left" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.85rem;color:var(--muted)">Rango:</label>
+        <div id="${p}RangoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button type="button" class="filter-chip" data-val="all">Histórico completo</button>
+          <button type="button" class="filter-chip" data-val="12">Últimos 12 meses</button>
+          <button type="button" class="filter-chip" data-val="24">Últimos 24 meses</button>
+          <button type="button" class="filter-chip" data-val="36">Últimos 36 meses</button>
+          <button type="button" class="filter-chip" data-val="year">Año…</button>
+        </div>
+        <select id="${p}AnioSel" style="min-width:110px;display:none" title="Año">
+          <option value="">—</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-card"><span class="stat-label">Ingresos del rango</span><span class="stat-value green" id="${p}StatIngresos">—</span></div>
+      <div class="stat-card"><span class="stat-label">Egresos del rango</span><span class="stat-value red" id="${p}StatEgresos">—</span></div>
+      <div class="stat-card"><span class="stat-label">Resultado del rango</span><span class="stat-value" id="${p}StatResultado">—</span></div>
+      <div class="stat-card"><span class="stat-label">Margen del rango</span><span class="stat-value blue" id="${p}StatMargen">—</span></div>
+    </div>
+
+    <div class="table-card" style="padding:16px 20px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+          <div style="font-weight:600;font-size:.95rem">${esc(cfg.tituloChart)}</div>
+          <div style="display:flex;gap:12px;font-size:.78rem;color:var(--muted)">
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--success);margin-right:5px"></span>Ingresos</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--danger);margin-right:5px"></span>Egresos</span>
+          </div>
+        </div>
+        <div id="${p}Subtitulo" style="font-size:.8rem;color:var(--muted)">—</div>
+      </div>
+      <div id="${p}Chart" style="width:100%;min-height:320px;position:relative">
+        <div id="${p}ChartInner">
+          <div style="text-align:center;padding:80px 0"><div class="spin"></div></div>
+        </div>
+        <div id="${p}Tooltip" hidden
+             style="position:absolute;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow-lg);font-size:.82rem;pointer-events:none;z-index:5;white-space:nowrap;transform:translate(-50%,-100%);margin-top:-8px;line-height:1.35"></div>
+      </div>
+      <div id="${p}Notas" style="margin-top:8px;font-size:.78rem;color:var(--muted)"></div>
+    </div>
+
+    <div class="table-card" style="margin-top:16px">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+        <div style="font-weight:600;font-size:.95rem">Detalle mensual</div>
+        <div style="font-size:.8rem;color:var(--muted)">Desde ${esc(dcaMesLabel(DCA_RESULTADOS_MES_DESDE))}</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Mes</th>
+            <th style="text-align:right">Ingresos</th>
+            <th style="text-align:right">Egresos</th>
+            <th style="text-align:right">Resultado</th>
+            <th style="text-align:right">Acumulado</th>
+            <th style="text-align:right">Margen</th>
+          </tr>
+        </thead>
+        <tbody id="${p}Tbody">
+          <tr><td colspan="6" class="table-empty"><div class="spin"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  dcaWirearRangoChips(panel, p, st, () => dcaCargarResultadosData(cfg));
+
+  // Click en una banda: tooltip con ingresos, egresos y resultado del mes.
+  // El rect transparente cubre exactamente el área de ploteo, así que su
+  // bounding box más `data-topfrac` ubica el tope de la barra más alta sin
+  // depender del factor de escala del SVG.
+  const chart = document.getElementById(`${p}Chart`);
+  chart.addEventListener('click', (ev) => {
+    const rect = ev.target.closest('.dca-bar');
+    const tip  = document.getElementById(`${p}Tooltip`);
+    if (!tip) return;
+    if (!rect) { tip.hidden = true; tip.dataset.mes = ''; return; }
+
+    const mes = rect.dataset.mes || '';
+    const ing = Number(rect.dataset.ing || 0);
+    const egr = Number(rect.dataset.egr || 0);
+    const res = ing - egr;
+
+    if (tip.dataset.mes === mes && !tip.hidden) {
+      tip.hidden = true;
+      tip.dataset.mes = '';
+      return;
+    }
+
+    const box      = rect.getBoundingClientRect();
+    const chartBox = chart.getBoundingClientRect();
+    const cx = box.left - chartBox.left + box.width / 2;
+    const cy = box.top  - chartBox.top  + box.height * Number(rect.dataset.topfrac || 0);
+
+    tip.innerHTML = `
+      <div style="font-weight:600;margin-bottom:2px">${esc(dcaMesLabel(mes))}</div>
+      <div style="color:var(--success)">Ingresos: <strong>$ ${dcaFmtMoney(ing)}</strong></div>
+      <div style="color:var(--danger)">Egresos: <strong>$ ${dcaFmtMoney(egr)}</strong></div>
+      <div style="margin-top:3px;padding-top:3px;border-top:1px solid var(--border);color:${dcaColorResultado(res)};font-weight:700">Resultado: ${dcaFmtMoneySigno(res)}</div>
+      <div style="color:var(--muted);font-size:.75rem">${fmtNum(rect.dataset.cantIng || 0)} factura(s) · ${fmtNum(rect.dataset.cantEgr || 0)} orden(es)</div>
+    `;
+    tip.dataset.mes = mes;
+    tip.hidden = false;
+
+    tip.style.left = cx + 'px';
+    tip.style.top  = cy + 'px';
+    const tipBox = tip.getBoundingClientRect();
+    let dx = 0;
+    if (tipBox.left < chartBox.left + 4)         dx = (chartBox.left + 4) - tipBox.left;
+    else if (tipBox.right > chartBox.right - 4)  dx = (chartBox.right - 4) - tipBox.right;
+    if (dx !== 0) tip.style.left = (cx + dx) + 'px';
+  });
+
+  await dcaCargarResultadosData(cfg);
+}
+
+// Wiring común de los chips de rango + selector de año. `recargar` es la
+// función que vuelve a pedir los datos de la pestaña.
+function dcaWirearRangoChips(panel, p, st, recargar) {
+  const chips   = panel.querySelectorAll(`#${p}RangoChips .filter-chip`);
+  const selAnio = document.getElementById(`${p}AnioSel`);
+  chips.forEach((b) => {
+    b.classList.toggle('active', (b.dataset.val || 'all') === st.rango);
+    b.addEventListener('click', () => {
+      st.rango = b.dataset.val || 'all';
+      chips.forEach((x) => x.classList.toggle('active', x.dataset.val === st.rango));
+      selAnio.style.display = (st.rango === 'year') ? '' : 'none';
+      recargar();
+    });
+  });
+  if (st.rango === 'year') selAnio.style.display = '';
+  selAnio.addEventListener('change', () => {
+    st.anio = Number(selAnio.value) || null;
+    if (st.anio) recargar();
+  });
+}
+
+// Puebla el `<select>` de año con los años que efectivamente tienen datos.
+// Compartido por todas las pestañas.
+function dcaPoblarSelectorAnios(p, st, anios) {
+  const selAnio = document.getElementById(`${p}AnioSel`);
+  if (!selAnio) return;
+  const lista = (anios || []).slice();
+  if (st.rango === 'year' && st.anio && !lista.includes(st.anio)) {
+    lista.push(st.anio);
+    lista.sort();
+  }
+  const anioActual = st.anio || (lista.length ? lista[lista.length - 1] : new Date().getFullYear());
+  if (!st.anio) st.anio = anioActual;
+  selAnio.innerHTML = lista.length
+    ? lista.map((y) => `<option value="${y}">${y}</option>`).join('')
+    : `<option value="${new Date().getFullYear()}">${new Date().getFullYear()}</option>`;
+  selAnio.value = String(st.anio);
+}
+
+async function dcaCargarResultadosData(cfg) {
+  const p      = `dca_${cfg.key}_`;
+  const st     = dcaState[cfg.key];
+  const chart  = document.getElementById(`${p}Chart`);
+  const cont   = document.getElementById(`${p}ChartInner`);
+  const subtit = document.getElementById(`${p}Subtitulo`);
+  const notas  = document.getElementById(`${p}Notas`);
+  const tbody  = document.getElementById(`${p}Tbody`);
+  const tip    = document.getElementById(`${p}Tooltip`);
+  if (!cont) return;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) return;
+
+  if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
+
+  cont.innerHTML  = `<div style="text-align:center;padding:80px 0"><div class="spin"></div></div>`;
+  tbody.innerHTML = `<tr><td colspan="6" class="table-empty"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  qs.set('action',  cfg.key);
+  qs.set('empresa', String(empresaId));
+  qs.set('rango',   st.rango);
+  if (st.rango === 'year' && st.anio) qs.set('anio', String(st.anio));
+
+  try {
+    const data = await apiGet('api/datacount_analiticas.php?' + qs.toString());
+    st.ultimaData = data;
+
+    dcaPoblarSelectorAnios(p, st, data.anios);
+
+    const r      = data.resumen || {};
+    const margen = dcaMargen(r.ingresos_rango, r.resultado_rango);
+    document.getElementById(`${p}StatIngresos`).textContent = '$ ' + dcaFmtMoney(r.ingresos_rango ?? 0);
+    document.getElementById(`${p}StatEgresos`).textContent  = '$ ' + dcaFmtMoney(r.egresos_rango  ?? 0);
+    const elRes = document.getElementById(`${p}StatResultado`);
+    elRes.textContent   = dcaFmtMoneySigno(r.resultado_rango ?? 0);
+    elRes.style.color   = dcaColorResultado(r.resultado_rango ?? 0);
+    document.getElementById(`${p}StatMargen`).textContent   = dcaFmtPct(margen);
+
+    // Subtítulo con la ventana efectiva
+    if (data.rango && data.rango.desde && data.rango.hasta) {
+      const modoTxt = data.rango.modo === 'year'
+        ? `Año ${data.rango.desde.slice(0, 4)}`
+        : (data.rango.modo === 'ultimos'
+            ? `Últimos ${data.rango.meses} meses`
+            : 'Histórico completo');
+      subtit.textContent = `${modoTxt} · ${dcaMesLabel(data.rango.desde)} → ${dcaMesLabel(data.rango.hasta)}`;
+    } else {
+      subtit.textContent = 'Sin registros con fecha de emisión.';
+    }
+
+    // Notas al pie: mejor / peor mes, meses en positivo y registros sin fecha.
+    const avisos = [];
+    if (r.mejor_mes) avisos.push(`Mejor mes: <strong>${esc(dcaMesLabel(r.mejor_mes.mes))}</strong> (${dcaFmtMoneySigno(r.mejor_mes.resultado)})`);
+    if (r.peor_mes)  avisos.push(`Peor mes: <strong>${esc(dcaMesLabel(r.peor_mes.mes))}</strong> (${dcaFmtMoneySigno(r.peor_mes.resultado)})`);
+    if ((r.meses_positivos ?? 0) + (r.meses_negativos ?? 0) > 0) {
+      avisos.push(`${fmtNum(r.meses_positivos ?? 0)} mes(es) en positivo · ${fmtNum(r.meses_negativos ?? 0)} en negativo`);
+    }
+    const sinFecha = (r.sin_fecha_ingresos_cant ?? 0) + (r.sin_fecha_egresos_cant ?? 0);
+    let notasHtml = avisos.length ? avisos.join(' &nbsp;·&nbsp; ') : '';
+    if (sinFecha > 0) {
+      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> ${fmtNum(r.sin_fecha_ingresos_cant ?? 0)} factura(s) y ${fmtNum(r.sin_fecha_egresos_cant ?? 0)} orden(es) de pago sin fecha de emisión (no entran en la serie mensual, pero sí en los históricos).`;
+    }
+    notas.innerHTML = notasHtml;
+
+    if (!data.serie || !data.serie.length) {
+      cont.innerHTML  = `<div class="table-empty" style="text-align:center;padding:60px 20px;color:var(--muted)">Sin datos para el rango elegido.</div>`;
+      tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin datos para el rango elegido.</td></tr>`;
+      return;
+    }
+
+    cont.innerHTML  = dcaRenderBarChartComparativa(data.serie, chart.clientWidth);
+    tbody.innerHTML = dcaRenderFilasResultados(data.serie);
+  } catch (e) {
+    cont.innerHTML  = `<div class="table-empty" style="text-align:center;padding:40px 20px;color:var(--danger)">Error: ${esc(e.message)}</div>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty" style="color:var(--danger)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+// Barras agrupadas (ingresos | egresos) por mes, en SVG plano. Mismo layout
+// que `dcaRenderBarChart` pero con dos barras por banda y una zona clickeable
+// por mes que lleva ambos valores + `data-topfrac` (fracción del alto del
+// área de ploteo donde arranca la barra más alta) para anclar el tooltip.
+function dcaRenderBarChartComparativa(serie, anchoDisponible) {
+  const W = Math.max(320, Math.floor(anchoDisponible || 800));
+  const H = 320;
+  const PAD = { top: 20, right: 16, bottom: 44, left: 76 };
+  const plotW = W - PAD.left - PAD.right;
+  const plotH = H - PAD.top - PAD.bottom;
+
+  const maxVal = serie.reduce((m, s) =>
+    Math.max(m, Number(s.ingresos) || 0, Number(s.egresos) || 0), 0);
+  const yMax = dcaNiceMax(maxVal);
+
+  const yTicks = 5;
+  const gridLines = [];
+  const yLabels   = [];
+  for (let i = 0; i <= yTicks; i++) {
+    const val = (yMax / yTicks) * i;
+    const y   = PAD.top + plotH - (plotH * i / yTicks);
+    gridLines.push(`<line x1="${PAD.left}" y1="${y.toFixed(1)}" x2="${(PAD.left + plotW).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="1" ${i === 0 ? '' : 'stroke-dasharray="2,3"'}/>`);
+    yLabels.push(`<text x="${PAD.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)" font-family="inherit">$ ${dcaFmtMoneyCompacto(val)}</text>`);
+  }
+
+  const n     = serie.length;
+  const bandW = plotW / n;
+  // Dos barras por banda con una hendija de 2px al medio. El par ocupa como
+  // mucho el 72% de la banda para que se distingan los meses entre sí.
+  const parW  = Math.max(3, Math.min(56, bandW * 0.72));
+  const barW  = Math.max(1.5, (parW - 2) / 2);
+  const stepX = Math.max(1, Math.ceil(n / 14));
+
+  const bars  = [];
+  const xLabs = [];
+  serie.forEach((s, i) => {
+    const ing = Number(s.ingresos) || 0;
+    const egr = Number(s.egresos)  || 0;
+    const hIng = yMax > 0 ? (plotH * ing / yMax) : 0;
+    const hEgr = yMax > 0 ? (plotH * egr / yMax) : 0;
+    const cx   = PAD.left + i * bandW + bandW / 2;
+    const xIng = cx - 1 - barW;
+    const xEgr = cx + 1;
+
+    bars.push(`<rect x="${xIng.toFixed(1)}" y="${(PAD.top + plotH - hIng).toFixed(1)}" width="${barW.toFixed(1)}" height="${hIng.toFixed(1)}" rx="2" fill="var(--success)" opacity="${ing > 0 ? '.92' : '0'}"/>`);
+    bars.push(`<rect x="${xEgr.toFixed(1)}" y="${(PAD.top + plotH - hEgr).toFixed(1)}" width="${barW.toFixed(1)}" height="${hEgr.toFixed(1)}" rx="2" fill="var(--danger)" opacity="${egr > 0 ? '.92' : '0'}"/>`);
+
+    const topFrac = plotH > 0 ? (plotH - Math.max(hIng, hEgr)) / plotH : 1;
+    bars.push(`<rect class="dca-bar" x="${(PAD.left + i * bandW).toFixed(1)}" y="${PAD.top}" width="${bandW.toFixed(1)}" height="${plotH}" fill="transparent" style="cursor:pointer" data-mes="${esc(s.mes)}" data-ing="${ing}" data-egr="${egr}" data-cant-ing="${s.cant_ingresos}" data-cant-egr="${s.cant_egresos}" data-topfrac="${topFrac.toFixed(4)}"/>`);
+
+    if (i % stepX === 0 || i === n - 1) {
+      xLabs.push(`<text x="${cx.toFixed(1)}" y="${(PAD.top + plotH + 14).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">${esc(dcaMesLabel(s.mes))}</text>`);
+    }
+  });
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block">
+      ${gridLines.join('')}
+      ${yLabels.join('')}
+      ${bars.join('')}
+      ${xLabs.join('')}
+    </svg>
+  `;
+}
+
+// Filas de la tabla mensual + fila de totales. Los meses sin ningún
+// movimiento se atenúan para que el padding del rango no compita
+// visualmente con los meses que sí tienen datos.
+//
+// La tabla arranca en `DCA_RESULTADOS_MES_DESDE`, así que los totales y el
+// acumulado se recalculan sobre las filas efectivamente mostradas — NO se
+// reusa `resumen`, que cubre todo el rango del gráfico.
+function dcaRenderFilasResultados(serie) {
+  const visible = serie.filter((s) => s.mes >= DCA_RESULTADOS_MES_DESDE);
+  if (!visible.length) {
+    return `<tr><td colspan="6" class="table-empty">El rango elegido no incluye meses desde ${esc(dcaMesLabel(DCA_RESULTADOS_MES_DESDE))} en adelante.</td></tr>`;
+  }
+
+  let acumulado = 0;
+  let tIng = 0, tEgr = 0;
+  const filas = visible.map((s) => {
+    const ing = Number(s.ingresos)  || 0;
+    const egr = Number(s.egresos)   || 0;
+    const res = Number(s.resultado) || 0;
+    acumulado += res;
+    tIng += ing;
+    tEgr += egr;
+    const vacio = (s.cant_ingresos === 0 && s.cant_egresos === 0);
+    return `
+      <tr${vacio ? ' style="opacity:.45"' : ''}>
+        <td class="td-nombre">${esc(dcaMesLabel(s.mes))}</td>
+        <td style="text-align:right">$ ${dcaFmtMoney(ing)}</td>
+        <td style="text-align:right">$ ${dcaFmtMoney(egr)}</td>
+        <td style="text-align:right;font-weight:600;color:${dcaColorResultado(res)}">${dcaFmtMoneySigno(res)}</td>
+        <td style="text-align:right;color:${dcaColorResultado(acumulado)}">${dcaFmtMoneySigno(acumulado)}</td>
+        <td style="text-align:right;color:var(--muted)">${dcaFmtPct(dcaMargen(ing, res))}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const tRes = tIng - tEgr;
+  const total = `
+    <tr style="background:var(--bg);font-weight:700">
+      <td>Total ${esc(dcaMesLabel(visible[0].mes))} → ${esc(dcaMesLabel(visible[visible.length - 1].mes))}</td>
+      <td style="text-align:right">$ ${dcaFmtMoney(tIng)}</td>
+      <td style="text-align:right">$ ${dcaFmtMoney(tEgr)}</td>
+      <td style="text-align:right;color:${dcaColorResultado(tRes)}">${dcaFmtMoneySigno(tRes)}</td>
+      <td style="text-align:right;color:${dcaColorResultado(tRes)}">${dcaFmtMoneySigno(tRes)}</td>
+      <td style="text-align:right">${dcaFmtPct(dcaMargen(tIng, tRes))}</td>
+    </tr>
+  `;
+
+  return filas + total;
 }
 
 // ------------------------- Vista: Datacount > Comprobantes (ABM) -------------------------
@@ -25873,6 +26261,7 @@ route('/datarocketinteracciones', async (mount) => {
               <th>Código</th>
               <th>Fecha</th>
               <th>Prospecto</th>
+              <th>Oportunidad</th>
               <th style="width:70px;text-align:center" title="Sentido y canal">Vía</th>
               <th>Asunto / Mensaje</th>
               <th style="width:170px">Asignado</th>
@@ -25881,7 +26270,7 @@ route('/datarocketinteracciones', async (mount) => {
             </tr>
           </thead>
           <tbody id="drIntTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -26107,7 +26496,7 @@ async function marcarRespondidaDrInt(id, respondida) {
 async function cargarDrInt() {
   const tbody = $('#drIntTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(drIntFiltros).forEach(([k, v]) => {
@@ -26122,7 +26511,7 @@ async function cargarDrInt() {
     pintarStatsDrInt(data.stats);
     pintarTablaDrInt(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -26142,7 +26531,7 @@ function pintarStatsDrInt(s) {
 function pintarTablaDrInt(rows) {
   const tbody = $('#drIntTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin interacciones.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin interacciones.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((a) => {
@@ -26153,6 +26542,17 @@ function pintarTablaDrInt(rows) {
     const prospectoTxt = a.prospecto_nombre
       ? esc(a.prospecto_nombre)
       : `<span style="color:var(--muted)">#${esc(a.prospecto_id)}</span>`;
+    // Oportunidad: el `producto` es lo que la nombra en el resto del panel (el
+    // `asunto` se dropeo en la migracion 20260817_1700). `oportunidad_id` es
+    // NULL-able —las interacciones sueltas del prospecto no cuelgan de ningun
+    // negocio—, asi que ahi va el guion. Texto plano y no link, igual que la
+    // columna Prospecto: la fila entera ya es clickeable y el salto a la ficha
+    // de la oportunidad vive en el modal de Consultar.
+    const oportunidadTxt = !a.oportunidad_id
+      ? '<span style="color:var(--muted)">—</span>'
+      : (a.oportunidad_producto
+          ? esc(a.oportunidad_producto)
+          : `<span style="color:var(--muted)">#${esc(a.oportunidad_id)}</span>`);
     // `data-sentido` / `data-respondida` los lee el menú contextual para
     // decidir si ofrece "Marcar respondida" o "Volver a pendiente".
     return `
@@ -26161,6 +26561,7 @@ function pintarTablaDrInt(rows) {
       <td class="td-id">#${esc(a.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(a.fecha))}</td>
       <td>${prospectoTxt}</td>
+      <td>${oportunidadTxt}</td>
       <td style="text-align:center">${drIntViaCelda(a)}</td>
       <td>${drIntAsuntoCelda(a)}</td>
       <td>${drIntAsignadoCelda(a)}</td>

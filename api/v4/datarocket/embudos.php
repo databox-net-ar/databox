@@ -74,6 +74,11 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
+require_once dirname(__DIR__) . '/_lib/log.php';
+
+// Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
+// del panel). Va antes de la auth para que los 401 tambien caigan adentro.
+v4InitLog('v4/datarocket.embudos');
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -149,7 +154,7 @@ const DR_EM_SLUG_MAX = 40;  // = varchar(40) de la columna
 // ---------------------------------------------------------------------------
 
 try {
-    embRequireApp();
+    v4LogApp(embRequireApp());
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

@@ -104,6 +104,14 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/prospectos_normalizar.php';
+require_once dirname(__DIR__) . '/_lib/log.php';
+
+// Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
+// del panel). Va antes de la auth para que los 401 tambien caigan adentro.
+// Ojo al leerlo: el 409 de `?verificar=1` es una respuesta de diseño (dice
+// que hay duplicados), no una falla — por eso entra como `alerta` y no como
+// `error`.
+v4InitLog('v4/datarocket.prospectos');
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -205,7 +213,7 @@ const DR_CT_OPO_SENTIDO_ENTRANTE = 'E';
 const DR_CT_INT_SENTIDO_ENTRANTE = 'entrante';
 
 try {
-    requireApp();
+    v4LogApp(requireApp());
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;

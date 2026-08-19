@@ -28,6 +28,12 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/aws_mensajes.php';
+require_once dirname(__DIR__) . '/_lib/log.php';
+
+// Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
+// del panel). Va antes de la auth para que los 401 tambien caigan adentro.
+// El endpoint hermano /v4/aws/eventos ya registraba los suyos a mano.
+v4InitLog('v4/aws.mensajes');
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -103,7 +109,7 @@ const AWS_MSG_RESULTADO_LABEL = [
 // ---------------------------------------------------------------------------
 
 try {
-    requireApp();
+    v4LogApp(requireApp());
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'POST') {

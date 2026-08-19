@@ -23,6 +23,12 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
+require_once dirname(__DIR__) . '/_lib/log.php';
+
+// Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
+// del panel). Va antes de la auth para que los 401 tambien caigan adentro, y
+// antes del require del phar de MadelineProto para atrapar un fatal de ahi.
+v4InitLog('v4/telegram.mensajes');
 
 // ---------------------------------------------------------------------------
 // Auth (idem /v4/evolution/mensajes)
@@ -67,7 +73,7 @@ function requireApp(): array {
 // ---------------------------------------------------------------------------
 
 try {
-    requireApp();
+    v4LogApp(requireApp());
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'POST') {

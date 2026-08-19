@@ -40,7 +40,16 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
-require_once dirname(__DIR__, 3) . '/cloud/api/lib/sucesos.php';
+require_once dirname(__DIR__) . '/_lib/log.php';
+
+// Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
+// del panel). Va antes de la auth para que los 401 tambien caigan adentro.
+//
+// Antes esto lo hacia un wrapper propio (`dcErrorAlta`) que llamaba a
+// registrarSuceso() en cada rechazo. Se saco: el handler compartido cubre lo
+// mismo sin depender de que cada rechazo nuevo se acuerde de usar el wrapper,
+// y ademas atrapa los fatales PHP, que el wrapper no veia.
+v4InitLog('v4/datacount.comprobantes');
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -60,14 +69,14 @@ function dcReadBearer(): string {
 
 function dcRequireApp(): array {
     $token = dcReadBearer();
-    if ($token === '') dcErrorAlta('Bearer token ausente', 401);
+    if ($token === '') jsonError('Bearer token ausente', 401);
 
     $pdo = db();
     $st  = $pdo->prepare('SELECT id, nombre, habilitada FROM aplicaciones WHERE apikey = :k LIMIT 1');
     $st->execute([':k' => $token]);
     $app = $st->fetch();
-    if (!$app)                              dcErrorAlta('API key desconocida', 401);
-    if ((string)$app['habilitada'] !== '1') dcErrorAlta('Aplicacion deshabilitada', 401);
+    if (!$app)                              jsonError('API key desconocida', 401);
+    if ((string)$app['habilitada'] !== '1') jsonError('Aplicacion deshabilitada', 401);
 
     // Contador de uso -- best effort, un fallo aca no debe tumbar el request.
     try {
@@ -83,34 +92,13 @@ function dcRequireApp(): array {
 // ---------------------------------------------------------------------------
 
 try {
-    dcRequireApp();
+    v4LogApp(dcRequireApp());
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-    if ($method !== 'POST') dcErrorAlta('Metodo no soportado', 405);
+    if ($method !== 'POST') jsonError('Metodo no soportado', 405);
 
     handleCreate(readJsonBody());
 } catch (Throwable $e) {
-    // Cualquier excepcion no controlada durante el alta se registra como
-    // suceso 'error' antes de responder al caller, para dejar traza en el
-    // visor.
-    try {
-        registrarSuceso(db(), 'v4/datacount.comprobantes', 'error',
-            'excepcion en alta: ' . $e->getMessage());
-    } catch (Throwable $_) { /* no romper el flujo */ }
     jsonError($e->getMessage(), 500);
-}
-
-/**
- * Wrapper de `jsonError` que ademas registra el fallo como suceso 'error'
- * en el visor. Se usa para todos los rechazos de alta (400/401/404/405/etc.)
- * para que quede constancia de cada intento fallido de registrar un
- * comprobante.
- */
-function dcErrorAlta(string $msg, int $code = 400): void {
-    try {
-        registrarSuceso(db(), 'v4/datacount.comprobantes', 'error',
-            "alta rechazada (HTTP {$code}): {$msg}");
-    } catch (Throwable $_) { /* no romper el flujo */ }
-    jsonError($msg, $code);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +108,7 @@ function dcErrorAlta(string $msg, int $code = 400): void {
 function handleCreate(array $in): void {
     $talonarioId = isset($in['talonario']) && $in['talonario'] !== ''
                         ? (int)$in['talonario'] : 0;
-    if ($talonarioId <= 0) dcErrorAlta('Falta `talonario` (id > 0).', 400);
+    if ($talonarioId <= 0) jsonError('Falta `talonario` (id > 0).', 400);
 
     $pdo = db();
 
@@ -132,16 +120,16 @@ function handleCreate(array $in): void {
     );
     $tSt->execute([':id' => $talonarioId]);
     $tal = $tSt->fetch();
-    if (!$tal) dcErrorAlta("Talonario {$talonarioId} no existe.", 404);
+    if (!$tal) jsonError("Talonario {$talonarioId} no existe.", 404);
 
     // Renglones son obligatorios: sin ellos no hay como calcular neto/iva/total.
     $renglones = $in['renglones'] ?? null;
     if (!is_array($renglones) || !$renglones) {
-        dcErrorAlta('Falta `renglones` (array con al menos 1 item).', 400);
+        jsonError('Falta `renglones` (array con al menos 1 item).', 400);
     }
     $r = dcSanitizeRenglones($renglones);
     if (!$r['lineas']) {
-        dcErrorAlta('`renglones` no contiene items validos.', 400);
+        jsonError('`renglones` no contiene items validos.', 400);
     }
 
     // Defaults: emision = hoy AR, vencimiento = hoy+7, concepto = 1 (Productos).
@@ -152,7 +140,7 @@ function handleCreate(array $in): void {
                     ?? (clone $ahora)->modify('+7 days')->format('Y-m-d');
     $concepto = isset($in['concepto']) && $in['concepto'] !== '' ? (int)$in['concepto'] : 3;
     if (!in_array($concepto, [1, 2, 3], true)) {
-        dcErrorAlta('`concepto` debe ser 1 (Productos), 2 (Servicios) o 3 (Prod+Serv).', 400);
+        jsonError('`concepto` debe ser 1 (Productos), 2 (Servicios) o 3 (Prod+Serv).', 400);
     }
 
     // Estado inicial = '2' (Pendiente) -- el comprobante entra directo a la
