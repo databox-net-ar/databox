@@ -16,6 +16,7 @@ Las operaciones que motivan el microservicio:
 | Saber si un prospecto ya existe            | `GET /v4/datarocket/prospectos?verificar=1`           |
 | Corregirle un campo suelto                 | `PATCH /v4/datarocket/prospectos?id=N`                |
 | Etiquetarlo                                | `etiqueta_ids` + [/v4/datarocket/etiquetas](etiquetas.md) |
+| Suscribirlo a una lista                    | `lista_ids` + [/v4/datarocket/listas](listas.md)      |
 | **Registrar una consulta que entra por la web** | `POST` con `embudo` + `asunto` + `mensaje`       |
 
 **Un `POST` con `embudo`, `asunto` y `mensaje` crea tres registros: el
@@ -46,10 +47,16 @@ un nombre a esos ids, con la misma apikey. Ver
 
 **Las etiquetas tampoco se mandan como texto: `etiqueta_ids` son ids del
 catalogo [/v4/datarocket/etiquetas](etiquetas.md).** Ese endpoint —misma
-apikey— traduce el nombre a un id (`GET ?nombre=expo`) y, si la etiqueta todavia
-no existe, **la crea al vuelo** (`POST ?resolver=1`), asi que un importador que
-trae etiquetas nuevas no se frena. Ver
-[Seleccionar las etiquetas](#seleccionar-las-etiquetas).
+apikey— traduce el texto a un id (`GET ?slug=expo`, que acepta el nombre sin
+formatear) y, si la etiqueta todavia no existe, **la crea al vuelo**
+(`POST ?resolver=1`), asi que un importador que trae etiquetas nuevas no se
+frena. Ver [Seleccionar las etiquetas](#seleccionar-las-etiquetas).
+
+**Y las listas igual: `lista_ids` son ids del catalogo
+[/v4/datarocket/listas](listas.md)**, que se resuelven con `GET ?slug=...` — un
+endpoint de solo lectura, sin `?resolver=1`: una lista que no existe es un `404`
+que se resuelve en el panel, no una audiencia que se crea sola. Ver
+[Seleccionar las listas](#seleccionar-las-listas).
 
 **El `embudo` se manda por nombre o por slug, no por id.** Se resuelve contra el
 catalogo [/v4/datarocket/embudos](embudos.md) —`Causam Clientes` y
@@ -57,6 +64,12 @@ catalogo [/v4/datarocket/embudos](embudos.md) —`Causam Clientes` y
 etapa de entrada de la oportunidad. La columna `embudo_id` no existe en
 `datarocket_prospectos`: vive en `datarocket_oportunidades`. Ver
 [El embudo no es una columna del prospecto](#el-embudo-no-es-una-columna-del-prospecto).
+
+**Los tres catalogos de Datarocket —etiquetas, listas y embudos— se buscan por
+`slug` o por `id`, ninguno por texto libre.** `?q=` y `?nombre=` cortan con
+`400` en los tres desde el 2026-08-21. El `?q=` de **este** endpoint no tiene
+nada que ver y sigue vivo: busca prospectos, no catalogos. Ver
+[Como se busca en los catalogos](#como-se-busca-en-los-catalogos).
 
 > **Renombrado el 2026-08-17.** Este recurso se llamaba `/v4/datarocket/contactos`
 > hasta la migracion `20260817_2700`. Esa ruta **ya no responde** (`404`): el
@@ -221,6 +234,54 @@ La migracion `20260818_1300` agrega indices **comunes** sobre `correo` y
 
 ---
 
+## Como se busca en los catalogos
+
+Un alta casi nunca viaja sola: trae una ubicacion, unas etiquetas, unas listas
+y —si es una consulta— un embudo. Ninguno de esos cuatro se manda como texto: se
+mandan **ids**, y cada id sale de su propio catalogo. Lo que cambio el
+2026-08-21 es **como se pregunta** por ellos.
+
+| Catalogo | Se resuelve con | Texto libre | Crea si no existe |
+| -------- | --------------- | ----------- | ----------------- |
+| [/v4/databox/ubicaciones](../databox/ubicaciones.md) | `?tipo=localidades&q=quilmes` | **Si** — `?q=` es el modo normal | No |
+| [/v4/datarocket/etiquetas](etiquetas.md) | `?slug=EXPO` o `?id=N`             | No — `?q=` y `?nombre=` dan `400` | **Si**, con `POST ?resolver=1` |
+| [/v4/datarocket/embudos](embudos.md)     | `?slug=Causam Clientes` o `?id=N`  | No — `?q=` y `?nombre=` dan `400` | No |
+| [/v4/datarocket/listas](listas.md)       | `?slug=Vigicom Usuarios` o `?id=N` | No — `?q=` y `?nombre=` dan `400` | No |
+
+**`?slug=` no obliga a slugificar del lado del cliente.** Los tres catalogos de
+Datarocket le aplican al termino la misma transformacion con la que derivan el
+slug al dar de alta —acentos plegados (tambien en forma NFD), minusculas, todo lo que no sea
+`[a-z0-9]` a guion, corte a 40—, asi que `Causam Clientes`, `causam-clientes` y
+` CAUSAM_CLIENTES ` caen en la misma fila. Un CSV se consulta tal como viene.
+
+**Los parametros retirados no se ignoran: cortan.** Mandar `?nombre=expo` a
+etiquetas devuelve `400` con la explicacion de como se hace ahora, no el
+catalogo entero con `200`. Una integracion vieja se entera de que tiene que
+migrar en vez de creer que filtro y llevarse las 29 filas.
+
+**Migrar es cambiar el nombre del parametro**, no rehacer la llamada:
+`?nombre=EXPO` pasa a `?slug=EXPO` y resuelve lo mismo. Lo unico que se pierde
+es la aproximacion de `?q=`, y los tres catalogos son chicos (7 embudos, 29
+etiquetas, 29 listas) — entran enteros en una llamada y se filtran del lado del
+consumidor si de verdad hace falta.
+
+**El `?q=` de este endpoint es otra cosa y sigue vivo.**
+`GET /v4/datarocket/prospectos?q=juan` es la busqueda difusa sobre los
+prospectos (`nombre`, `correo`, `celular`, `uuid`…), no sobre ningun catalogo.
+La asimetria es a proposito: un prospecto se busca por aproximacion porque es un
+dato de la realidad que alguien tipeo, y un catalogo se resuelve por clave
+porque el resultado se usa como id — devolver "el mas parecido" ahi es ponerle
+al prospecto la etiqueta equivocada, suscribirlo a la audiencia equivocada o
+abrirle la oportunidad en el embudo de otro proyecto. Ver
+[Listado](#get-v4datarocketprospectos--listado).
+
+**Un slug puede matchear mas de una fila.** En embudos y en listas el `UNIQUE`
+es (`proyecto_id`, `slug`), asi que la resolucion contesta `409` con los
+candidatos y se desambigua con `&proyecto_id=N`. En etiquetas no pasa: el
+catalogo es unico para todo Datarocket y el `UNIQUE` es sobre `slug` a secas.
+
+---
+
 ## Seleccionar pais, provincia y localidad
 
 La ubicacion de un prospecto **no se manda como texto**. `pais_id`,
@@ -307,21 +368,24 @@ curl -H "Authorization: Bearer $APIKEY" \
 Viene ordenado alfabeticamente y con `limite` default de 100 — el catalogo tiene
 29 filas, asi que entra entero en una llamada.
 
-### B) Ya tenes el nombre y solo queres el id
+### B) Ya tenes el texto de la etiqueta y solo queres el id
 
 ```bash
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/etiquetas?nombre=EXPO"
-# -> {"ok":true,"data":{"id":5,"nombre":"expo",...}}
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=EXPO"
+# -> {"ok":true,"data":{"id":5,"nombre":"expo","slug":"expo",...}}
 ```
 
 `404` si no existe — **no la crea**. Es la opcion para cuando el catalogo lo
 curan personas y una etiqueta desconocida es un error de datos que alguien tiene
 que mirar.
 
-La comparacion es **insensible a mayusculas y acentos** (`EXPO`, `expo`, `expó`
-son la misma etiqueta), asi que no hace falta normalizar el texto del CSV antes
-de consultar.
+El parametro se llama `slug` pero **acepta el texto sin formatear**: lo slugifica
+con la misma transformacion que corre el alta, asi que `EXPO`, `expo`, `expó` y
+`Estudio Jurídico` (→ `estudio-juridico`) resuelven sin que haya que normalizar
+el texto del CSV antes de consultar. El viejo `?nombre=` se retiro y hoy devuelve
+`400` — ver
+[etiquetas.md](etiquetas.md#se-busca-por-slug-o-por-id).
 
 ### C) "Dame el id, y si no existe creala"
 
@@ -372,7 +436,8 @@ primero el prospecto y postear la union (`GET ?id=N` -> `etiqueta_ids: [12,18]`
 -> `PATCH {"etiqueta_ids":[12,18,5]}`).
 
 Si la clave **no viene** en el body de un `PUT` o un `PATCH`, la puente no se
-toca. Lo mismo vale para `lista_ids`, con el catalogo `datarocket_listas`.
+toca. Lo mismo vale para `lista_ids` — ver
+[Seleccionar las listas](#seleccionar-las-listas).
 
 ### Flujo completo
 
@@ -403,6 +468,88 @@ prospectos que la tienen puesta, y borrarla se lleva las asignaciones por el
 `ON DELETE CASCADE` de la puente. Esas operaciones viven unicamente en el ABM
 del panel cloud. Ver
 [Por que no se puede modificar ni borrar](etiquetas.md#por-que-no-se-puede-modificar-ni-borrar).
+
+---
+
+## Seleccionar las listas
+
+Las listas de un prospecto **tampoco se mandan como texto**. `lista_ids` es un
+`int[]` con ids de `datarocket_listas`, y el catalogo se consulta desde
+**[/v4/datarocket/listas](listas.md)**, con la misma apikey. Ese endpoint es el
+unico camino desde afuera: el ABM del panel tiene su propio lookup pero autentica
+por sesion, no por Bearer.
+
+Es el gemelo del de etiquetas, con **una diferencia que importa**: no tiene
+`?resolver=1`. Una etiqueta nueva es inofensiva; una lista creada al vuelo es
+una audiencia fantasma que nadie configuro y a la que despues alguien le manda
+una campaña. Un slug que no existe es un `404` que hay que ir a resolver al
+panel.
+
+### A) Ver que listas hay (combo, pantalla de seleccion)
+
+```bash
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/listas"
+# -> {"ok":true,"data":{"total":29,"items":[{"id":124,"slug":"causam-clientes",...},...]}}
+```
+
+Viene ordenado alfabeticamente por `slug` y con `limite` default de 100 — el
+catalogo tiene 29 filas al 2026-08-21, asi que entra entero en una llamada.
+
+### B) Ya tenes el texto de la lista y solo queres el id
+
+```bash
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/listas?slug=Vigicom%20Usuarios"
+# -> {"ok":true,"data":{"id":136,"proyecto_id":102,"slug":"vigicom-usuarios",...}}
+```
+
+Igual que en etiquetas y embudos, el parametro se llama `slug` pero **acepta el
+texto sin formatear**: lo slugifica con la misma transformacion que corre el
+alta, asi que `vigicom-usuarios`, `Vigicom Usuarios` y ` VIGICOM_USUARIOS `
+resuelven la misma fila. `404` si no existe.
+
+**Si el slug matchea en mas de un proyecto la respuesta es `409`** con los
+candidatos, no "la primera": el `UNIQUE` es (`proyecto_id`, `slug`) y llevarse
+la lista de otro proyecto termina en un envio masivo a la audiencia equivocada.
+Se desambigua con `&proyecto_id=N` (`&proyecto_id=0` = las que no tienen
+proyecto). Ver
+[El slug es unico por proyecto](listas.md#el-slug-es-unico-por-proyecto).
+
+### Un id inexistente en `lista_ids` se descarta en silencio
+
+Exactamente como `etiqueta_ids`: los ids que no existan en `datarocket_listas`
+se filtran antes del `INSERT` y el alta responde `201` igual, con esa suscripcion
+simplemente sin aplicar. Los duplicados dentro del array tambien se colapsan. Por
+eso conviene resolver el id contra `/v4/datarocket/listas` en vez de inventarlo:
+no hay error que avise.
+
+Para confirmar que quedo aplicada, releer con
+`GET /v4/datarocket/prospectos?id=N` y mirar `lista_ids` / `lista_nombres`.
+
+### Mandar el nombre de la lista en vez del id no funciona
+
+`lista_nombres` es **solo de lectura**, igual que `etiqueta_nombres`: se devuelve
+en el `GET`, pero si viene en el body de un `POST` / `PUT` / `PATCH` se ignora en
+silencio. Y a diferencia del `embudo` —que si acepta nombre o slug— aca **no hay
+alias por texto**: primero se resuelve el id, despues se postea.
+
+### `lista_ids` es reemplazo total, no "agregar"
+
+Misma regla que `etiqueta_ids`: en `PUT` y `PATCH` la puente se reemplaza por
+completo con lo que traiga el array, y si la clave no viene, no se toca. La
+**unica** excepcion es el alta con consulta sobre un prospecto que ya existe,
+donde las listas se **suman** a las que ya tenia. Ver
+[Si el contacto ya existe, se reutiliza su ficha](#si-el-contacto-ya-existe-se-reutiliza-su-ficha).
+
+### Crear, modificar y borrar listas no se puede desde afuera
+
+`/v4/datarocket/listas` es de **solo lectura**: no tiene `POST`, `PUT`, `PATCH`
+ni `DELETE`. Borrar una lista se lleva **todas** sus suscripciones por el
+`ON DELETE CASCADE` de la puente (`vigicom-usuarios` tiene 7.038 al 2026-08-21).
+Eso vive unicamente en el ABM del panel cloud. Lo que si es una operacion de
+integracion —suscribir un prospecto— es `lista_ids`, y esta aca. Ver
+[Por que es de solo lectura](listas.md#por-que-es-de-solo-lectura).
 
 ---
 
@@ -782,7 +929,12 @@ una operacion sobre la oportunidad, y vive en el ABM del panel.
 | --------------------------- | --------------------------- | ---------------------------------- |
 | `pais_id` / `provincia_id` / `localidad_id` | `datarocket_prospectos` | [/v4/databox/ubicaciones](../databox/ubicaciones.md) |
 | `etiqueta_ids`              | puente del prospecto        | [/v4/datarocket/etiquetas](etiquetas.md) |
+| `lista_ids`                 | puente del prospecto        | [/v4/datarocket/listas](listas.md) |
 | `embudo_id` / `etapa_id`    | `datarocket_oportunidades`  | [/v4/datarocket/embudos](embudos.md) |
+
+Los tres de Datarocket se resuelven igual —`?slug=`, que acepta el texto sin
+formatear— y ninguno acepta `?q=`. Ver
+[Como se busca en los catalogos](#como-se-busca-en-los-catalogos).
 
 > **El ABM de oportunidades todavia no esta expuesto en `v4`.** Este alta las
 > crea, pero para listarlas, moverlas de etapa o cerrarlas hay que ir al panel
@@ -835,8 +987,8 @@ Ademas, el listado y la consulta individual anexan las relaciones N:M:
 
 | Clave              | Tipo       | Notas                                                                          |
 | ------------------ | ---------- | ------------------------------------------------------------------------------ |
-| `lista_ids`        | int[]      | Suscripciones en `datarocket_prospectos_listas`.                               |
-| `lista_nombres`    | string[]   | Mismos indices que `lista_ids`, para pintar sin un fetch extra del catalogo.   |
+| `lista_ids`        | int[]      | Suscripciones en `datarocket_prospectos_listas`. Ids del catalogo — se obtienen de [/v4/datarocket/listas](listas.md). |
+| `lista_nombres`    | string[]   | Mismos indices que `lista_ids`, para pintar sin un fetch extra del catalogo. **Solo lectura**: en el body se ignora. |
 | `etiqueta_ids`     | int[]      | Etiquetas en `datarocket_prospectos_etiquetas`. Ids del catalogo — se obtienen de [/v4/datarocket/etiquetas](etiquetas.md). |
 | `etiqueta_nombres` | string[]   | Mismos indices que `etiqueta_ids`. **Solo lectura**: en el body se ignora.      |
 
@@ -845,9 +997,18 @@ En `POST` se aceptan `lista_ids` y `etiqueta_ids` como int[]. En `PUT` y en
 se reemplazan por completo.
 
 > **¿De donde saco los `etiqueta_ids`?** De
-> [/v4/datarocket/etiquetas](etiquetas.md), que ademas **crea la etiqueta si no
-> existe** con `POST ?resolver=1` — ver
+> [/v4/datarocket/etiquetas](etiquetas.md) (`GET ?slug=...`), que ademas **crea
+> la etiqueta si no existe** con `POST ?resolver=1` — ver
 > [Seleccionar las etiquetas](#seleccionar-las-etiquetas).
+
+> **¿Y los `lista_ids`?** De [/v4/datarocket/listas](listas.md)
+> (`GET ?slug=...`), que es de solo lectura: sin `?resolver=1`, una lista que no
+> existe es un `404` — ver
+> [Seleccionar las listas](#seleccionar-las-listas).
+
+> Los dos catalogos se buscan **por `slug` o por `id`**, nunca por `?q=` ni por
+> `?nombre=` (dan `400`). El `?slug=` acepta el texto sin formatear. Ver
+> [Como se busca en los catalogos](#como-se-busca-en-los-catalogos).
 
 > **No hay `embudo_id` ni `etapa_id` en esta tabla** — son columnas de
 > `datarocket_oportunidades`. El `embudo` que acepta el `POST` es un dato de
@@ -1013,6 +1174,21 @@ Todos opcionales; combinables con `AND`.
 | `dir`            | string | `asc` / `desc`. Default `desc`.                                                                                          |
 | `limite`         | int    | Default `100`. Clampeado a `[1, 1000]`.                                                                                  |
 
+> **Este `?q=` no es el de los catalogos.** En [embudos](embudos.md),
+> [etiquetas](etiquetas.md) y [listas](listas.md) el parametro se retiro y hoy
+> devuelve `400`; aca sigue siendo la busqueda difusa de siempre y no esta en
+> discusion. Un prospecto se busca por aproximacion porque es un dato que tipeo
+> alguien; un catalogo se resuelve por clave porque el resultado se usa como id.
+> Ver [Como se busca en los catalogos](#como-se-busca-en-los-catalogos).
+
+> **No se puede filtrar el listado por etiqueta, lista ni embudo.**
+> `etiqueta_ids` y `lista_ids` se **devuelven** en cada item pero no son
+> parametros de filtro, y `embudo` ni siquiera es una columna del prospecto (ver
+> [El embudo no es una columna del prospecto](#el-embudo-no-es-una-columna-del-prospecto)).
+> Resolver el id contra el catalogo no habilita ese filtro: el id sirve para
+> **escribir** la puente, no para acotar la lectura. Para segmentar por
+> pertenencia hay que ir al ABM del panel cloud.
+
 ### Respuesta (200)
 
 ```json
@@ -1117,6 +1293,11 @@ Campos con tratamiento especial:
   existe** (`POST ?resolver=1`) — ver
   [Seleccionar las etiquetas](#seleccionar-las-etiquetas). A diferencia de las
   ubicaciones, un id inexistente **no** corta con `400`: se descarta en silencio.
+- **`lista_ids`**: idem — **ids del catalogo, no nombres**. Se obtienen de
+  [/v4/datarocket/listas](listas.md) con `GET ?slug=...`, que **no** crea la
+  lista si falta (no hay `?resolver=1`) — ver
+  [Seleccionar las listas](#seleccionar-las-listas). Un id inexistente tambien se
+  descarta en silencio.
 
 > Si venis de un importador con el formato compuesto `EMPRESA - Persona` en un
 > solo campo: **partilo antes de postear**, mandando `empresa_nombre` y
@@ -1407,7 +1588,9 @@ caller necesita limpiar historial, tiene que hacerlo aparte.
 - Normalizacion compartida: [cloud/api/lib/prospectos_normalizar.php](../../../cloud/api/lib/prospectos_normalizar.php).
 - Catalogo geografico para resolver `pais_id` / `provincia_id` / `localidad_id`: [/v4/databox/ubicaciones](../databox/ubicaciones.md).
 - Catalogo de etiquetas para resolver (o crear) los `etiqueta_ids`: [/v4/datarocket/etiquetas](etiquetas.md).
+- Catalogo de listas para resolver los `lista_ids`: [/v4/datarocket/listas](listas.md).
 - Catalogo de embudos, para resolver el `embudo` del alta con consulta o para poblar un combo: [/v4/datarocket/embudos](embudos.md).
+- Como se pregunta en cada uno de esos catalogos (`?slug=` si, `?q=` / `?nombre=` no): [Como se busca en los catalogos](#como-se-busca-en-los-catalogos).
 - Tablas que escribe el alta con consulta: `datarocket_oportunidades` y `datarocket_interacciones` — schema en [db/schema.sql](../../../db/schema.sql); las etapas salen de `datarocket_etapas` (migracion `20260812_0300`).
 - ABM de oportunidades del panel (mover de etapa, cerrar, listar): [cloud/api/datarocket_oportunidades.php](../../../cloud/api/datarocket_oportunidades.php).
 - Catalogos de `canal` y `origen`: tabla `estados`, campos `datarocket_interaccion_canal` y `datarocket_oportunidad_origen` (panel > Herramientas > Editor de estados).

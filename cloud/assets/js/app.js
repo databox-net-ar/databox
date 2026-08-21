@@ -9002,6 +9002,7 @@ route('/datarocketplantillas', async (mount) => {
               <th>Proyecto</th>
               <th style="text-align:center">Medio</th>
               <th>Nombre</th>
+              <th>Slug</th>
               <th>Remitente</th>
               <th>Asunto</th>
               <th style="text-align:center">Formato</th>
@@ -9009,7 +9010,7 @@ route('/datarocketplantillas', async (mount) => {
             </tr>
           </thead>
           <tbody id="drPlTbody">
-            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -9184,7 +9185,7 @@ route('/datarocketplantillas', async (mount) => {
 async function cargarDrPl() {
   const tbody = $('#drPlTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(drPlFiltros).forEach(([k, v]) => {
@@ -9198,7 +9199,7 @@ async function cargarDrPl() {
     pintarStatsDrPl(data.stats);
     pintarTablaDrPl(data.items || [], proyectos);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -9221,7 +9222,7 @@ function pintarStatsDrPl(s) {
 function pintarTablaDrPl(rows, proyectos = []) {
   const tbody = $('#drPlTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin plantillas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin plantillas.</td></tr>`;
     return;
   }
   const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
@@ -9237,6 +9238,7 @@ function pintarTablaDrPl(rows, proyectos = []) {
       <td>${proyCell}</td>
       <td style="text-align:center">${medioCell}</td>
       <td class="td-nombre">${esc(p.nombre || '—')}</td>
+      <td style="white-space:nowrap"><code style="font-size:.78rem;color:var(--muted)">${esc(p.slug || '—')}</code></td>
       <td>${esc(p.remitente || '—')}</td>
       <td>${esc(p.asunto || '—')}</td>
       <td style="text-align:center">${DR_PL_FORMATO_ICON[p.formato] || (p.formato ? esc(p.formato) : '—')}</td>
@@ -23006,7 +23008,7 @@ route('/datarocketlistas', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="drLiSearch"
-                   placeholder="🔍 Buscar nombre o descripción…">
+                   placeholder="🔍 Buscar nombre, slug o descripción…">
             <button class="search-clear" id="drLiSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="drLiFiltrosBtn" title="Filtros">
@@ -23032,13 +23034,14 @@ route('/datarocketlistas', async (mount) => {
               <th>Código</th>
               <th>Proyecto</th>
               <th>Nombre</th>
+              <th style="width:160px">Slug</th>
               <th>Descripción</th>
               <th style="text-align:right">Suscriptos</th>
               <th style="text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="drLiTbody">
-            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -23099,6 +23102,7 @@ route('/datarocketlistas', async (mount) => {
               <select id="fDrLiOrderBy" onchange="onFiltroDrLi('order_by', this.value)">
                 <option value="id">Código</option>
                 <option value="nombre">Nombre</option>
+                <option value="slug">Slug</option>
                 <option value="proyecto_id">Proyecto</option>
                 <option value="suscriptos">Suscriptos</option>
               </select>
@@ -23203,7 +23207,7 @@ async function drLiCargarProyectos() {
 async function cargarDrLi() {
   const tbody = $('#drLiTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(drLiFiltros).forEach(([k, v]) => {
@@ -23218,7 +23222,7 @@ async function cargarDrLi() {
     pintarStatsDrLi(data.stats);
     pintarTablaDrLi(data.items || [], proyectos);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -23243,7 +23247,7 @@ function pintarStatsDrLi(s) {
 function pintarTablaDrLi(rows, proyectos = []) {
   const tbody = $('#drLiTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin listas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin listas.</td></tr>`;
     return;
   }
   const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
@@ -23259,6 +23263,7 @@ function pintarTablaDrLi(rows, proyectos = []) {
       <td class="td-id">#${esc(l.id)}</td>
       <td>${proyCell}</td>
       <td class="td-nombre">${esc(l.nombre || '—')}</td>
+      <td style="white-space:nowrap"><code style="font-size:.78rem;color:var(--muted)">${esc(l.slug || '—')}</code></td>
       <td style="color:var(--muted)">${desc ? esc(descCorta) : '—'}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums">${l.suscriptos == null ? '—' : fmtNum(l.suscriptos)}</td>
       <td style="text-align:center">
@@ -23376,6 +23381,12 @@ function renderConsultaDrLi(l, proyectos = []) {
         <span class="data-value${empty ? ' muted' : ''}">${empty ? 'Sin dato' : esc(value)}</span>
       </div>`;
   };
+  // Variante del card que no escapa el valor — para inyectar el <code> del slug.
+  const cardHtml = (label, html, full = false) => `
+      <div class="data-row${full ? ' full' : ''}">
+        <span class="data-label">${esc(label)}</span>
+        <span class="data-value">${html}</span>
+      </div>`;
 
   const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
   const proyNombre = l.proyecto_id == null || l.proyecto_id === ''
@@ -23386,7 +23397,7 @@ function renderConsultaDrLi(l, proyectos = []) {
     <div style="padding:14px 18px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
       <div>
         <div style="font-size:1.15rem;font-weight:700">${esc(l.nombre || '—')}</div>
-        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">#${esc(l.id)}${proyNombre ? ` · ${esc(proyNombre)}` : ''}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">#${esc(l.id)} · <code>${esc(l.slug || '—')}</code>${proyNombre ? ` · ${esc(proyNombre)}` : ''}</div>
       </div>
       <div style="text-align:right">
         <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Suscriptos</div>
@@ -23398,6 +23409,7 @@ function renderConsultaDrLi(l, proyectos = []) {
       ${card('Código',        l.id)}
       ${card('Proyecto',      proyNombre)}
       ${card('Nombre',        l.nombre)}
+      ${cardHtml('Slug',      `<code style="font-family:monospace">${esc(l.slug || '—')}</code>`)}
       ${card('Suscriptos', l.suscriptos == null ? null : fmtNum(l.suscriptos))}
     </dl>
     <dl class="data-list" style="grid-template-columns:1fr">
@@ -23428,6 +23440,7 @@ async function abrirAltaEdicionDrLi(id) {
       drLiCargarProyectos(),
     ]);
     $('#modalRoot .modal-body').innerHTML = formDrLiHtml(l, proyectos);
+    bindAutoSlugDrLi();
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -23461,11 +23474,54 @@ function formDrLiHtml(l, proyectos = []) {
       </div>
     </div>
     <div class="form-group">
+      <label for="drlSlug">
+        Slug <span style="color:var(--danger)">*</span>
+        <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+          — identificador estable de la lista (kebab-case, se autocompleta desde el nombre)
+        </span>
+      </label>
+      <input type="text" id="drlSlug" placeholder="vigicom-clientes" maxlength="40"
+             style="font-family:monospace" autocomplete="off"
+             pattern="^[a-z0-9]+(-[a-z0-9]+)*$" value="${v('slug')}">
+    </div>
+    <div class="form-group">
       <label>Descripción</label>
       <textarea id="drlDescripcion" rows="3" maxlength="500" placeholder="Para qué se usa esta lista…">${v('descripcion')}</textarea>
     </div>
     <div class="field-error" id="drlFormError" style="display:none"></div>
   `;
+}
+
+// Mirror JS de drliSlugify() (cloud/api/datarocketlistas.php).
+// Normaliza a kebab-case sin acentos, para autocompletar el input `slug`
+// mientras el operador tipea el nombre.
+function drliSlugify(s) {
+  if (!s) return '';
+  const pares = { 'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+                  'à':'a','è':'e','ì':'i','ò':'o','ù':'u',
+                  'ä':'a','ë':'e','ï':'i','ö':'o','ü':'u',
+                  'Á':'a','É':'e','Í':'i','Ó':'o','Ú':'u',
+                  'ñ':'n','Ñ':'n','ç':'c','Ç':'c' };
+  let out = String(s).trim();
+  out = out.replace(/[áéíóúàèìòùäëïöüÁÉÍÓÚñÑçÇ]/g, (c) => pares[c] || c);
+  out = out.toLowerCase();
+  out = out.replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, '');
+  return out.slice(0, 40);
+}
+
+// Auto-deriva el slug desde el nombre mientras el operador no lo edite a mano.
+// Si el slug ya tenia valor (edicion) o el operador lo escribio explicito, no
+// lo pisamos. Mismo patron que el ABM de embudos (`dremSlugify`).
+function bindAutoSlugDrLi() {
+  const slugInp   = $('#drlSlug');
+  const nombreInp = $('#drlNombre');
+  if (!slugInp || !nombreInp) return;
+  let slugManual = slugInp.value.trim() !== '';
+  slugInp.addEventListener('input', () => { slugManual = slugInp.value.trim() !== ''; });
+  nombreInp.addEventListener('input', () => {
+    if (!slugManual) slugInp.value = drliSlugify(nombreInp.value);
+  });
 }
 
 async function guardarDrLi(id, btn) {
@@ -23481,8 +23537,27 @@ async function guardarDrLi(id, btn) {
     return;
   }
 
+  // Si el operador nunca tocó el slug y el nombre llegó por pegado (sin evento
+  // `input`), el fallback de derivarlo acá cubre ese caso.
+  const slug = ($('#drlSlug').value.trim() || drliSlugify(nombre)).toLowerCase();
+  if (slug === '') {
+    err.textContent = 'El slug es obligatorio.';
+    err.style.display = '';
+    $('#drlSlug').classList.add('input-invalid');
+    $('#drlSlug').focus();
+    return;
+  }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+    err.textContent = 'El slug solo admite minúsculas, dígitos y guiones (kebab-case).';
+    err.style.display = '';
+    $('#drlSlug').classList.add('input-invalid');
+    $('#drlSlug').focus();
+    return;
+  }
+
   const payload = {
     nombre,
+    slug,
     proyecto_id: $('#drlProyecto').value,
     descripcion: $('#drlDescripcion').value,
   };
@@ -25174,6 +25249,17 @@ async function abrirConsultarDrPr(id) {
     }
     // Fila de interacción → abrimos la ficha de la interacción.
     if (drIntFilaEmbebidaClick(ev)) return;
+    // Chip de etiqueta / lista de la pestaña Clasificación → ficha del objeto,
+    // con el mismo criterio que la fila de oportunidad: cerramos este modal y
+    // abrimos el de destino (los modales de la app se reemplazan, no se apilan).
+    const chip = ev.target.closest('#modalRoot [data-drpr-chip]');
+    if (chip) {
+      const chipId = Number(chip.dataset.chipId);
+      closeModal();
+      if (chip.dataset.drprChip === 'etiqueta') await abrirConsultaDre(chipId);
+      else                                      await abrirConsultarDrLi(chipId);
+      return;
+    }
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrPr(id); }
     drPrSwitchTab(ev);
@@ -25255,9 +25341,23 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
   // como una unica linea (sin newlines dentro del `.data-value`) porque esa
   // clase tiene `white-space: pre-wrap` global — cualquier salto de linea en
   // el HTML aparece como espacio real y "hincha" la fila.
-  const pillsRow = (label, nombres) => {
-    const arr = Array.isArray(nombres) ? nombres : [];
-    const pill = (n) => `<span style="display:inline-block;padding:2px 9px;background:color-mix(in srgb, var(--primary) 22%, transparent);color:var(--text);border:1px solid color-mix(in srgb, var(--primary) 40%, transparent);border-radius:999px;font-size:.78rem;line-height:1.4;white-space:nowrap">${esc(n)}</span>`;
+  //
+  // `ids` viene en paralelo a `nombres` (el API arma los dos arrays con el
+  // mismo ORDER BY, ver anexarListas/anexarEtiquetas en
+  // api/datarocketprospectos.php) y hace cada pill clickeable: abre la ficha
+  // de esa etiqueta / lista. Si el usuario no tiene el permiso de consulta del
+  // modulo destino la pill se pinta igual pero muerta, para no ofrecer una
+  // accion que despues rebota con 403.
+  const pillsRow = (label, nombres, ids, tipo, permiso) => {
+    const arr  = Array.isArray(nombres) ? nombres : [];
+    const idsA = Array.isArray(ids)     ? ids     : [];
+    const linkeable = hasPermission(permiso);
+    const pill = (n, i) => {
+      const pid  = idsA[i];
+      const link = linkeable && pid;
+      const attrs = link ? ` data-drpr-chip="${esc(tipo)}" data-chip-id="${esc(pid)}" title="Ver ficha"` : '';
+      return `<span${attrs} style="display:inline-block;padding:2px 9px;background:color-mix(in srgb, var(--primary) 22%, transparent);color:var(--text);border:1px solid color-mix(in srgb, var(--primary) 40%, transparent);border-radius:999px;font-size:.78rem;line-height:1.4;white-space:nowrap${link ? ';cursor:pointer' : ''}">${esc(n)}</span>`;
+    };
     const inner = arr.length
       ? `<span style="display:inline-flex;flex-wrap:wrap;gap:5px">${arr.map(pill).join('')}</span>`
       : 'Sin dato';
@@ -25366,8 +25466,8 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
          Origen se fue con la columna (migracion 20260817_2000). -->
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <dl class="data-list" style="grid-template-columns:1fr">
-        ${pillsRow('Etiquetas', c.etiqueta_nombres)}
-        ${pillsRow('Listas',    c.lista_nombres)}
+        ${pillsRow('Etiquetas', c.etiqueta_nombres, c.etiqueta_ids, 'etiqueta', 'datarocket.etiquetas.consultar')}
+        ${pillsRow('Listas',    c.lista_nombres,    c.lista_ids,    'lista',    'datarocket.listas.consultar')}
         ${card('Comentarios', c.comentarios, true)}
       </dl>
     </div>
@@ -27004,7 +27104,7 @@ route('/datarocket_etiquetas', async (mount) => {
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
           <div class="search-wrap">
             <input type="search" class="search-input" id="dreSearch"
-                   placeholder="🔍 Buscar nombre o descripción…">
+                   placeholder="🔍 Buscar nombre, slug o descripción…">
             <button class="search-clear" id="dreSearchClear" style="display:none">×</button>
           </div>
           <button class="btn btn-ghost btn-icon" id="dreFiltrosBtn" title="Filtros">
@@ -27029,13 +27129,14 @@ route('/datarocket_etiquetas', async (mount) => {
             <tr>
               ${thOrdenable('id',          'Código',       'width:80px')}
               ${thOrdenable('nombre',      'Nombre')}
+              ${thOrdenable('slug',        'Slug')}
               <th>Descripción</th>
               ${thOrdenable('etiquetados', 'Etiquetados',  'width:120px;text-align:right')}
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="dreTbody">
-            <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -27092,6 +27193,7 @@ route('/datarocket_etiquetas', async (mount) => {
               <select id="fDreOrden" onchange="onFiltroDre('orden', this.value)">
                 <option value="id">Código</option>
                 <option value="nombre">Nombre</option>
+                <option value="slug">Slug</option>
                 <option value="etiquetados">Etiquetados</option>
                 <option value="fecha_creacion">Alta</option>
                 <option value="fecha_modificacion">Modificada</option>
@@ -27199,7 +27301,7 @@ route('/datarocket_etiquetas', async (mount) => {
 async function cargarDre() {
   const tbody = $('#dreTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (dreBusqueda)     qs.set('q', dreBusqueda);
@@ -27213,7 +27315,7 @@ async function cargarDre() {
     pintarStatsDre(data.stats || {});
     renderDre();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -27226,7 +27328,7 @@ function renderDre() {
   if (!tbody) return;
   actualizarSortIndicadores($('#dreThead'), { order_by: dreFiltroOrden, dir: dreFiltroDir });
   if (!dreItems.length) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin etiquetas registradas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin etiquetas registradas.</td></tr>`;
     return;
   }
 
@@ -27237,7 +27339,7 @@ function renderDre() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -27245,6 +27347,7 @@ function renderDre() {
     <tr data-id="${e.id}" class="row-clickable">
       <td><code style="font-size:.82rem">${e.id}</code></td>
       <td style="font-weight:600">${esc(e.nombre)}</td>
+      <td style="white-space:nowrap"><code style="font-size:.78rem;color:var(--muted)">${esc(e.slug || '—')}</code></td>
       <td style="color:var(--muted);font-size:.88rem">${esc(e.descripcion || '—')}</td>
       <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.etiquetados || 0)}</td>
       <td style="text-align:center">
@@ -27329,10 +27432,13 @@ function dreActualizarBadgeFiltros() {
   }
 }
 
-function abrirAltaEdicionDre(id) {
+// `pre` es la etiqueta ya resuelta, para los llamadores que la abren sin el
+// listado del ABM cargado detrás (ver `abrirConsultaDre`). Desde el ABM se
+// omite y sale del cache como siempre.
+function abrirAltaEdicionDre(id, pre = null) {
   dreEditandoId = id;
   const editando = !!id;
-  const e = editando ? dreItems.find((x) => x.id === id) : null;
+  const e = editando ? (pre || dreItems.find((x) => x.id === id)) : null;
   const titulo = editando ? 'Editar etiqueta' : 'Nueva etiqueta';
 
   openModal(`
@@ -27346,6 +27452,17 @@ function abrirAltaEdicionDre(id) {
           <label for="dreNombre">Nombre *</label>
           <input type="text" id="dreNombre" placeholder="Ej.: VIP, Prospecto, Lead frío"
                  maxlength="80" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="dreSlug">
+            Slug *
+            <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+              — identificador estable de la etiqueta (kebab-case, se autocompleta desde el nombre)
+            </span>
+          </label>
+          <input type="text" id="dreSlug" placeholder="lead-frio" maxlength="40"
+                 style="font-family:monospace" autocomplete="off"
+                 pattern="^[a-z0-9]+(-[a-z0-9]+)*$">
         </div>
         <div class="form-group">
           <label for="dreDescripcion">Descripción</label>
@@ -27362,14 +27479,48 @@ function abrirAltaEdicionDre(id) {
 
   if (editando && e) {
     $('#dreNombre').value      = e.nombre      || '';
+    $('#dreSlug').value        = e.slug        || '';
     $('#dreDescripcion').value = e.descripcion || '';
   }
 
+  bindAutoSlugDre();
   setTimeout(() => $('#dreNombre')?.focus(), 50);
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))   closeModal();
     if (ev.target.closest('[data-act="guardar"]')) guardarDre();
+  });
+}
+
+// Mirror JS de dreSlugify() (cloud/api/datarocket_etiquetas.php).
+// Normaliza a kebab-case sin acentos, para autocompletar el input `slug`
+// mientras el operador tipea el nombre.
+function dreSlugify(s) {
+  if (!s) return '';
+  const pares = { 'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+                  'à':'a','è':'e','ì':'i','ò':'o','ù':'u',
+                  'ä':'a','ë':'e','ï':'i','ö':'o','ü':'u',
+                  'Á':'a','É':'e','Í':'i','Ó':'o','Ú':'u',
+                  'ñ':'n','Ñ':'n','ç':'c','Ç':'c' };
+  let out = String(s).trim();
+  out = out.replace(/[áéíóúàèìòùäëïöüÁÉÍÓÚñÑçÇ]/g, (c) => pares[c] || c);
+  out = out.toLowerCase();
+  out = out.replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, '');
+  return out.slice(0, 40);
+}
+
+// Auto-deriva el slug desde el nombre mientras el operador no lo edite a mano.
+// Si el slug ya tenia valor (edicion) o el operador lo escribio explicito, no
+// lo pisamos. Mismo patron que los ABM de listas y embudos.
+function bindAutoSlugDre() {
+  const slugInp   = $('#dreSlug');
+  const nombreInp = $('#dreNombre');
+  if (!slugInp || !nombreInp) return;
+  let slugManual = slugInp.value.trim() !== '';
+  slugInp.addEventListener('input', () => { slugManual = slugInp.value.trim() !== ''; });
+  nombreInp.addEventListener('input', () => {
+    if (!slugManual) slugInp.value = dreSlugify(nombreInp.value);
   });
 }
 
@@ -27379,7 +27530,17 @@ async function guardarDre() {
 
   if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
 
-  const body = { nombre, descripcion };
+  // Si el operador nunca tocó el slug y el nombre llegó por pegado (sin evento
+  // `input`), el fallback de derivarlo acá cubre ese caso.
+  const slug = ($('#dreSlug').value.trim() || dreSlugify(nombre)).toLowerCase();
+  if (!slug) { toast('El slug es obligatorio', { error: true }); return; }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+    toast('El slug solo admite minúsculas, dígitos y guiones (kebab-case).', { error: true });
+    $('#dreSlug').focus();
+    return;
+  }
+
+  const body = { nombre, slug, descripcion };
 
   try {
     if (dreEditandoId) {
@@ -27397,8 +27558,21 @@ async function guardarDre() {
   }
 }
 
-function abrirConsultaDre(id) {
-  const e = dreItems.find((x) => x.id === id);
+// La etiqueta puede venir del ABM (ya está en `dreItems`) o de otro módulo
+// —los chips de la pestaña Clasificación del modal de prospecto—, donde no hay
+// listado detrás: en ese caso la traemos por id. La etiqueta resuelta se le
+// pasa a `abrirAltaEdicionDre` para que el botón Editar tampoco dependa del
+// cache del listado.
+async function abrirConsultaDre(id) {
+  let e = dreItems.find((x) => x.id === id);
+  if (!e) {
+    try {
+      e = await apiGet(`${DRE_API}?id=${id}`);
+    } catch (err) {
+      toast(err.message, { error: true });
+      return;
+    }
+  }
   if (!e) return;
 
   const card = (label, valor, ancho) => `
@@ -27422,7 +27596,8 @@ function abrirConsultaDre(id) {
         <div style="display:flex;flex-wrap:wrap;gap:12px">
           ${card('Código',      `<code>${e.id}</code>`)}
           ${card('Etiquetados', `<span style="font-family:monospace">${fmtNum(e.etiquetados || 0)}</span>`)}
-          ${card('Nombre',      esc(e.nombre), 'full')}
+          ${card('Nombre',      esc(e.nombre))}
+          ${card('Slug',        `<code style="font-family:monospace">${esc(e.slug || '—')}</code>`)}
           ${card('Modificada',  esc(fmtFecha(e.fecha_modificacion)))}
           ${card('Alta',        esc(fmtFecha(e.fecha_creacion)))}
           ${card('Descripción', esc(e.descripcion || '—'), 'full')}
@@ -27437,7 +27612,7 @@ function abrirConsultaDre(id) {
 
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDre(id); }
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDre(id, e); }
   });
 }
 
@@ -27595,8 +27770,8 @@ route('/datarocket_embudos', async (mount) => {
             <tr>
               ${thOrdenable('id',          'Código',   'width:80px')}
               ${thOrdenable('proyecto_id', 'Proyecto', 'width:150px')}
-              ${thOrdenable('slug',        'Slug',     'width:160px')}
               ${thOrdenable('nombre',      'Nombre')}
+              ${thOrdenable('slug',        'Slug',     'width:160px')}
               <th>Descripción</th>
               <th style="width:90px;text-align:right">Etapas</th>
               <th style="width:110px;text-align:right">Oportunidades</th>
@@ -27810,8 +27985,8 @@ function renderDrem() {
       <tr data-id="${e.id}" class="row-clickable">
         <td><code style="font-size:.82rem">${e.id}</code></td>
         <td style="font-size:.9rem">${esc(e.proyecto_nombre || (e.proyecto_id ? `#${e.proyecto_id}` : '—'))}</td>
-        <td><code style="font-size:.78rem;color:var(--muted)">${esc(e.slug || '—')}</code></td>
         <td style="font-weight:600">${esc(e.nombre)}</td>
+        <td style="white-space:nowrap"><code style="font-size:.78rem;color:var(--muted)">${esc(e.slug || '—')}</code></td>
         <td style="color:var(--muted);font-size:.88rem">${esc(e.descripcion || '—')}</td>
         <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.etapas_count || 0)}</td>
         <td style="text-align:right;font-family:monospace;font-size:.85rem">${fmtNum(e.oportunidades_count || 0)}</td>

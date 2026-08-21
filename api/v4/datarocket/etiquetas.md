@@ -13,14 +13,18 @@ Las operaciones que motivan el microservicio:
 | Quiero…                                              | Uso                                                |
 | ---------------------------------------------------- | -------------------------------------------------- |
 | Ver que etiquetas hay disponibles                    | `GET /v4/datarocket/etiquetas`                     |
-| Tengo el nombre y necesito el id                     | `GET /v4/datarocket/etiquetas?nombre=expo`         |
+| **Tengo el slug (o el texto) y necesito el id**      | `GET /v4/datarocket/etiquetas?slug=expo`           |
 | Crear una etiqueta nueva                             | `POST /v4/datarocket/etiquetas`                    |
 | "Dame el id, y si no existe creala"                  | `POST /v4/datarocket/etiquetas?resolver=1`         |
 | Ponerle la etiqueta a un prospecto                   | `PATCH /v4/datarocket/prospectos?id=N` (ver abajo) |
 
+**Se busca por `slug` o por `id`, nada mas.** `?nombre=` y `?q=` existieron y se
+retiraron: los dos devuelven `400`. Ver
+[Se busca por slug o por id](#se-busca-por-slug-o-por-id).
+
 **Buscar no distingue mayusculas ni acentos.** `EXPO`, `Expo`, `expo` y `expó`
-son la misma etiqueta, y `prueba_nandu` encuentra a `prueba_ñandú`. Vale para
-las dos formas de buscar y tambien para el control de duplicados del alta. Ver
+resuelven la misma etiqueta, y `prueba_nandu` encuentra a `prueba_ñandú`. Vale
+para `?slug=` y tambien para el control de duplicados del alta. Ver
 [Mayusculas, acentos y espacios](#mayusculas-acentos-y-espacios).
 
 **Este endpoint no modifica ni borra etiquetas.** Solo consulta y alta; no hay
@@ -42,6 +46,55 @@ Etiquetas) usa su propio endpoint
 que ademas expone la modificacion, la baja y el recalculo del contador. Ambos
 caminos escriben en la misma tabla; la diferencia es la capa de auth (permisos
 de sesion vs. Bearer estatico) y el alcance de las operaciones.
+
+---
+
+## Se busca por slug o por id
+
+Las dos unicas claves de busqueda son **`?slug=`** y **`?id=N`** (`?codigo=N` en
+el listado, que es el mismo id con el nombre que usa el ABM). Las dos formas que
+habia antes de llegar a una etiqueta por texto se retiraron:
+
+| Parametro  | Antes                                          | Ahora                |
+| ---------- | ---------------------------------------------- | -------------------- |
+| `?nombre=` | Igualdad contra la columna `nombre`            | **`400`** — retirado |
+| `?q=`      | Coincidencia parcial sobre `nombre` y `descripcion` | **`400`** — retirado |
+
+`nombre` sigue siendo `UNIQUE` y sigue siendo lo que el usuario ve y elige, pero
+**no es una referencia estable**: es texto libre y se edita desde el ABM cloud
+(`expo` → `Expo 2027`). Una integracion que lo usa como clave queda atada a la
+redaccion del catalogo de hoy, y el dia que alguien lo retoca la resolucion pasa
+a devolver `404` sin que nada falle de forma visible. El `slug` —`NOT NULL` y
+`UNIQUE` global desde la migracion `20260821_1100`— existe exactamente para eso:
+se deriva del nombre al dar de alta y despues no se mueve.
+
+**Migrar de `?nombre=` a `?slug=` es cambiar el nombre del parametro**, nada mas:
+`?slug=` aplica al termino la misma derivacion con la que se genera el slug en el
+alta, asi que acepta el texto de la etiqueta sin formatear.
+
+```bash
+# Antes:  ?nombre=EXPO
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=EXPO"
+# -> {"ok":true,"data":{"id":5,"nombre":"expo","slug":"expo",...}}
+```
+
+Los dos parametros **no se ignoran en silencio**. Mandar `?nombre=expo` y recibir
+el catalogo entero con `200` seria una respuesta silenciosamente incorrecta —el
+cliente creeria que resolvio una etiqueta y tendria las 29— asi que se corta con
+`400` y el error dice como se hace ahora:
+
+```json
+{"ok":false,"error":"El parametro `nombre` no esta soportado: `/v4/datarocket/etiquetas` se consulta por `?slug=...` o por `?id=N`, nada mas. `?slug=` acepta el texto de la etiqueta sin formatear (`?slug=EXPO` resuelve `expo`); para resolver por nombre creando la etiqueta si no existe esta `POST ?resolver=1`."}
+```
+
+**El `POST ?resolver=1` sigue trabajando por `nombre`** y no cambio. No es una
+excepcion a la regla: ahi el nombre no es una referencia a algo preexistente sino
+el contenido de la fila que se va a crear — es un alta, y el `UNIQUE` que evita
+el duplicado es justamente el de esa columna.
+
+Si de verdad hace falta una aproximacion, el catalogo entra entero en una sola
+llamada (29 filas al 2026-08-18) y se filtra del lado del consumidor.
 
 ---
 
@@ -91,28 +144,32 @@ Base URL: `https://api.databox.net.ar/v4/datarocket/etiquetas`
 | ------ | ------------------------------------------ | ------------------------------------------------ |
 | GET    | `/v4/datarocket/etiquetas`                 | Listado con filtros (query string).              |
 | GET    | `/v4/datarocket/etiquetas?id=N`            | Consulta individual de la etiqueta N.            |
-| GET    | `/v4/datarocket/etiquetas?nombre=expo`     | Resolucion exacta nombre → id. `404` si no esta. |
+| GET    | `/v4/datarocket/etiquetas?slug=expo`       | Resolucion slug → registro completo. `404` si no esta. |
 | POST   | `/v4/datarocket/etiquetas`                 | Alta. `409` si el nombre ya existe.              |
 | POST   | `/v4/datarocket/etiquetas?resolver=1`      | Alta idempotente: devuelve la existente o la crea. |
 
 Cualquier otro metodo devuelve `405 Metodo no soportado`.
 
-Precedencia de los parametros en `GET`: `?id=N` gana sobre `?nombre=`, y
-`?nombre=` gana sobre el listado. `?resolver=1` en un `GET` devuelve `405` con
-la aclaracion de que va por `POST` — no cae silenciosamente al listado.
+Precedencia de los parametros en `GET`: `?id=N` gana sobre `?slug=`, y `?slug=`
+gana sobre el listado. `?q=` y `?nombre=` cortan con `400` antes de todo eso (ver
+[Se busca por slug o por id](#se-busca-por-slug-o-por-id)). `?resolver=1` en un
+`GET` devuelve `405` con la aclaracion de que va por `POST` — no cae
+silenciosamente al listado.
 
-### `?nombre=` o `?resolver=1`
+### `?slug=` o `?resolver=1`
 
-Los dos resuelven un nombre a un id. La diferencia es que uno escribe:
+Los dos llegan al id. La diferencia es que uno escribe — y que cada uno entra por
+una clave distinta:
 
-| | `GET ?nombre=expo` | `POST ?resolver=1` |
+| | `GET ?slug=expo` | `POST ?resolver=1` |
 | ------------------------------- | ------------------------- | ----------------------------- |
+| Entra por                       | `slug` (derivado del texto) | `nombre` (en el body)       |
 | Si la etiqueta existe           | La devuelve (`200`)       | La devuelve (`200`)           |
 | Si no existe                    | `404`                     | La crea y la devuelve (`201`) |
 | Escribe en la base              | Nunca                     | Solo cuando no existia        |
 | Como se distingue un caso del otro | Por el codigo HTTP     | Por `data.creada` (bool)      |
 
-Regla practica: **`GET ?nombre=` cuando el catalogo lo curan personas** (si la
+Regla practica: **`GET ?slug=` cuando el catalogo lo curan personas** (si la
 etiqueta no esta, es un error de datos que alguien tiene que mirar);
 **`POST ?resolver=1` cuando el catalogo lo alimenta la integracion** — un
 importador que trae etiquetas nuevas junto con los prospectos y no quiere
@@ -122,13 +179,14 @@ frenarse ni manejar un `409`.
 
 ## Modelo de datos
 
-Tabla `datarocket_etiquetas` (migraciones `20260811_1200`, `_1400`, `_1800` y
-`20260812_0000`).
+Tabla `datarocket_etiquetas` (migraciones `20260811_1200`, `_1400`, `_1800`,
+`20260812_0000` y `20260821_1100`).
 
 | Campo                | Tipo           | En el JSON | Notas                                                        |
 | -------------------- | -------------- | ---------- | ------------------------------------------------------------ |
 | `id`                 | `int`          | `int`      | Autoincremental. Es lo que se manda en `etiqueta_ids`.       |
-| `nombre`             | `varchar(80)`  | `string`   | **UNIQUE.** Clave logica del catalogo. Se normaliza (ver abajo). |
+| `nombre`             | `varchar(80)`  | `string`   | **UNIQUE.** Texto editable. Es la clave del **alta**, no de la busqueda. |
+| `slug`               | `varchar(40)`  | `string`   | **UNIQUE.** Identificador estable en kebab-case. Es la clave de **busqueda** (ver abajo). |
 | `descripcion`        | `varchar(500)` | `string?`  | Nota interna opcional. Vacia se guarda como `null`.          |
 | `etiquetados`        | `int unsigned` | `int`      | Contador denormalizado. **Puede estar atrasado** (ver abajo). |
 | `fecha_creacion`     | `datetime`     | `string`   | La pone la base (`CURRENT_TIMESTAMP`).                       |
@@ -140,6 +198,7 @@ Una fila tal como sale del endpoint:
 {
   "id": 5,
   "nombre": "expo",
+  "slug": "expo",
   "descripcion": null,
   "etiquetados": 5066,
   "fecha_creacion": "2026-08-11 19:43:28",
@@ -147,27 +206,52 @@ Una fila tal como sale del endpoint:
 }
 ```
 
+### `slug`: se busca por el, pero no se escribe
+
+El `slug` es el identificador estable de la etiqueta — el `nombre` es texto
+editable desde el ABM cloud, el `slug` no cambia. Por eso es la clave con la que
+se consulta (`?slug=`, ver
+[Se busca por slug o por id](#se-busca-por-slug-o-por-id)).
+
+**No se acepta como campo de entrada en el `POST`**: el alta por API resuelve un
+nombre, no carga metadata. El endpoint lo deriva del nombre (minusculas, sin
+acentos, todo lo no alfanumerico a guion, max 40 chars) y, si ese slug ya esta
+tomado por otra etiqueta, sufija `-2`, `-3`, etc.
+
+Como `nombre` es UNIQUE pero dos nombres distintos pueden colapsar al mismo
+slug (`"santa fe"` y `"santa-fe"`), **el slug que termina teniendo una etiqueta
+recien creada puede no ser el que derivarias vos** — la segunda queda como
+`santa-fe-2`. Leelo de la respuesta del alta, no lo asumas: es lo que despues hay
+que mandar en `?slug=`. Para editarlo a mano esta el ABM del panel cloud.
+
 Los `POST` agregan la clave `creada` (bool) y `?con_conteo=1` agrega
 `etiquetados_reales` (int).
 
 ### Mayusculas, acentos y espacios
 
 **La busqueda es insensible a mayusculas y a acentos, y no hay que normalizar
-nada del lado del cliente.** Los tres ejemplos devuelven la misma fila:
+nada del lado del cliente.** Los cuatro ejemplos devuelven la misma fila:
 
 ```bash
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/etiquetas?nombre=expo"
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=expo"
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/etiquetas?nombre=EXPO"
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=EXPO"
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/etiquetas?nombre=ExP%C3%B3"   # ExPó
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=ExP%C3%B3"     # ExPó
+curl -H "Authorization: Bearer $APIKEY" \
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=%20%20Expo%20" #「  Expo 」
 ```
 
-Vale para las dos busquedas (`?nombre=` por igualdad y `?q=` por coincidencia
-parcial) y **tambien para el control de duplicados**: dar de alta `PRUEBA_NANDU`
-choca con la `prueba_ñandú` que ya estaba, y `POST ?resolver=1` devuelve esa
-misma fila en vez de crear una segunda.
+Vale para `?slug=` y **tambien para el control de duplicados**: dar de alta
+`PRUEBA_NANDU` choca con la `prueba_ñandú` que ya estaba, y `POST ?resolver=1`
+devuelve esa misma fila en vez de crear una segunda.
+
+`?slug=` va un paso mas alla que la igualdad de texto porque ademas **slugifica**
+el termino: espacios y guiones bajos pasan a guion medio, asi que
+`?slug=estudio_juridico` y `?slug=Estudio Jurídico` resuelven los dos la fila
+cuyo slug es `estudio-juridico` (y cuyo `nombre` es, todavia,
+`estudio_juridico`).
 
 Lo resuelven dos capas:
 
@@ -217,7 +301,7 @@ numero tiene que ser exacto va **`?con_conteo=1`**, que agrega
 }
 ```
 
-El flag vale para el listado, para `?id=N` y para `?nombre=`. Cuesta una query
+El flag vale para el listado, para `?id=N` y para `?slug=`. Cuesta una query
 agrupada extra sobre la puente (53.741 filas en dev al 2026-08-18), asi que no
 viene por default.
 
@@ -227,17 +311,21 @@ viene por default.
 
 ### Query params
 
+El listado **no busca: filtra.** Los parametros de abajo acotan o presentan el
+conjunto; para llegar a una fila puntual estan `?slug=` y `?id=N`.
+
 | Param        | Tipo   | Default  | Notas                                                          |
 | ------------ | ------ | -------- | -------------------------------------------------------------- |
-| `q`          | string | —        | Coincidencia parcial sobre `nombre` **y** `descripcion`.        |
 | `codigo`     | int    | —        | Filtra por `id` exacto.                                         |
-| `order_by`   | enum   | `nombre` | `id`, `nombre`, `etiquetados`, `fecha_creacion`, `fecha_modificacion`. Tambien se acepta como `orden`. |
+| `order_by`   | enum   | `nombre` | `id`, `nombre`, `slug`, `etiquetados`, `fecha_creacion`, `fecha_modificacion`. Tambien se acepta como `orden`. |
 | `dir`        | enum   | ver nota | `asc` / `desc`.                                                 |
 | `limite`     | int    | `100`    | Clampeado a `[1, 1000]`.                                        |
 | `con_conteo` | flag   | `0`      | Agrega `etiquetados_reales` a cada item.                        |
 
 Un `order_by` desconocido cae al default en vez de dar `400` — un parametro mal
-escrito no justifica romperle la pantalla al cliente.
+escrito no justifica romperle la pantalla al cliente. `q` y `nombre`, en cambio,
+si cortan con `400`: no son parametros mal escritos, son busquedas que el
+endpoint ya no hace, y contestarlas con el catalogo entero seria mentir.
 
 > **Default del orden:** alfabetico ascendente (`nombre ASC`), al reves que
 > `/v4/datarocket/prospectos` (que ordena por `id DESC`). Es a proposito: esto es
@@ -252,11 +340,11 @@ escrito no justifica romperle la pantalla al cliente.
   "data": {
     "total": 3,
     "items": [
-      { "id": 13, "nombre": "barrio_privado", "descripcion": null, "etiquetados": 258,
+      { "id": 13, "nombre": "barrio_privado", "slug": "barrio-privado", "descripcion": null, "etiquetados": 258,
         "fecha_creacion": "2026-08-11 19:43:28", "fecha_modificacion": "2026-08-11 22:50:24" },
-      { "id": 35, "nombre": "Causam", "descripcion": null, "etiquetados": 27,
+      { "id": 35, "nombre": "Causam", "slug": "causam", "descripcion": null, "etiquetados": 27,
         "fecha_creacion": "2026-08-12 00:21:21", "fecha_modificacion": "2026-08-17 20:04:49" },
-      { "id": 17, "nombre": "club", "descripcion": null, "etiquetados": 62,
+      { "id": 17, "nombre": "club", "slug": "club", "descripcion": null, "etiquetados": 62,
         "fecha_creacion": "2026-08-11 19:43:28", "fecha_modificacion": "2026-08-11 22:50:24" }
     ]
   }
@@ -279,10 +367,10 @@ curl -H "Authorization: Bearer $APIKEY" \
 curl -H "Authorization: Bearer $APIKEY" \
   "https://api.databox.net.ar/v4/datarocket/etiquetas?order_by=etiquetados&limite=10&con_conteo=1"
 
-# Buscar por aproximacion (insensible a mayusculas y acentos).
+# Una etiqueta puntual NO sale de aca: va por `?slug=` (acepta el texto crudo).
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/etiquetas?q=jur%C3%ADdico"
-# -> {"ok":true,"data":{"total":1,"items":[{"id":14,"nombre":"estudio_juridico",...}]}}
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=Estudio%20Jur%C3%ADdico"
+# -> {"ok":true,"data":{"id":14,"nombre":"estudio_juridico","slug":"estudio-juridico",...}}
 ```
 
 ---
@@ -303,36 +391,48 @@ curl -H "Authorization: Bearer $APIKEY" \
 
 ---
 
-## `GET /v4/datarocket/etiquetas?nombre=expo` — Resolucion nombre → id
+## `GET /v4/datarocket/etiquetas?slug=expo` — Resolucion slug → registro
 
-El caso de uso que motiva el endpoint: el cliente tiene el **texto** de la
-etiqueta y necesita el **id** para mandarlo en `etiqueta_ids` de
+El caso de uso que motiva el endpoint: el cliente tiene el **identificador** de
+la etiqueta y necesita el **id** para mandarlo en `etiqueta_ids` de
 `/v4/datarocket/prospectos`.
 
-Devuelve la misma forma que `?id=N` (un objeto, no una lista). La comparacion es
-por igualdad, insensible a mayusculas y acentos. Acepta `?con_conteo=1`.
+Devuelve la misma forma que `?id=N` (un objeto, no una lista). Acepta
+`?con_conteo=1`. **Sirve tanto el slug ya armado como el texto de la etiqueta**:
+el termino se deriva con la misma transformacion que corre el alta, asi que
+`EXPO`, `Expó` y ` expo ` caen todos en `expo`.
 
 ```bash
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/etiquetas?nombre=EXPO"
-# -> {"ok":true,"data":{"id":5,"nombre":"expo",...}}
+  "https://api.databox.net.ar/v4/datarocket/etiquetas?slug=EXPO"
+# -> {"ok":true,"data":{"id":5,"nombre":"expo","slug":"expo",...}}
 ```
+
+A diferencia de [embudos](embudos.md) y [listas](listas.md), aca **no hay `409`
+por ambiguedad**: `datarocket_etiquetas` no tiene `proyecto_id` —es un catalogo
+unico compartido por todo Datarocket— asi que el `UNIQUE` es sobre `slug` a secas
+y global. Un slug resuelve una fila o ninguna.
 
 ### Errores
 
 | Codigo | Cuerpo                                                                  |
 | ------ | ----------------------------------------------------------------------- |
-| 400    | `{"ok":false,"error":"El \`nombre\` a buscar no puede estar vacio."}`    |
-| 404    | `{"ok":false,"error":"Etiqueta no encontrada","consulta":{"nombre":"no_existe_xyz"}}` |
+| 400    | `{"ok":false,"error":"El \`slug\` a buscar no puede estar vacio."}`      |
+| 404    | `{"ok":false,"error":"Etiqueta no encontrada","consulta":{"slug":"no-existe-xyz"}}` |
 
-`?nombre=` sin valor es `400`, no "sin filtro": el cliente pidio buscar un nombre
-y devolverle el catalogo entero seria contestarle otra pregunta.
+`?slug=` sin valor es `400`, no "sin filtro": el cliente pidio buscar una etiqueta
+y devolverle el catalogo entero seria contestarle otra pregunta. Cae en el mismo
+`400` un termino que despues de derivar no deja nada aprovechable (`?slug=#$%`):
+no llego a ser una busqueda.
 
-El `404` incluye `consulta.nombre` con el valor **ya normalizado**, para que se
+El `404` incluye `consulta.slug` con el valor **ya derivado**, para que se
 entienda contra que se busco realmente (`" Expo "` se busco como `expo`).
 
-Para buscar por aproximacion en vez de por igualdad esta `?q=`, que devuelve
-listado y nunca `404`.
+**No hay variante por aproximacion.** El `?q=` que la ofrecia se retiro (ver
+[Se busca por slug o por id](#se-busca-por-slug-o-por-id)); un `404` aca significa
+que la etiqueta no existe, no que haya que reintentar con otro texto — la
+derivacion ya cubre mayusculas, acentos, espacios y guiones bajos. Para crearla
+en el acto esta `POST ?resolver=1`.
 
 ---
 
@@ -431,7 +531,7 @@ ABM del panel cloud.
 `?resolver=1` en un `GET` devuelve `405`:
 
 ```json
-{"ok":false,"error":"`?resolver=1` requiere POST (crea la etiqueta si no existe). Para buscar sin crear usa `GET ?nombre=...`."}
+{"ok":false,"error":"`?resolver=1` requiere POST (crea la etiqueta si no existe). Para buscar sin crear usa `GET ?slug=...`."}
 ```
 
 ---
@@ -505,9 +605,11 @@ actualiza la columna `etiquetados`.
 - ABM interno del panel: [cloud/api/datarocket_etiquetas.php](../../../cloud/api/datarocket_etiquetas.php)
 - Endpoint que aplica las etiquetas: [prospectos.md](prospectos.md)
 - Esquema de la base: [db/schema.sql](../../../db/schema.sql)
+- Catalogos hermanos, mismo criterio de busqueda por slug: [embudos.md](embudos.md), [listas.md](listas.md)
 - Migraciones de la tabla: `cloud/sql/migrations/20260811_1200_crear_datarocket_etiquetas.sql`,
   `20260811_1400_datarocket_etiquetas_quitar_activo.sql`,
   `20260811_1800_datarocket_etiquetas_quitar_color.sql`,
-  `20260812_0000_datarocket_etiquetas_agregar_etiquetados.sql`
+  `20260812_0000_datarocket_etiquetas_agregar_etiquetados.sql`,
+  `20260821_1100_datarocket_etiquetas_agregar_slug.sql`
 - Tabla puente con prospectos: `cloud/sql/migrations/20260811_1600_crear_datarocket_contactos_etiquetas.sql`
   (la tabla se llama `datarocket_prospectos_etiquetas` desde el rename del 2026-08-17)

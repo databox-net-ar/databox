@@ -1,0 +1,7 @@
+﻿docker : mysql: [Warning] Using a password on the command line interface can be insecure.
+En línea: 1 Carácter: 302
++ ... tch {} } }; docker exec herramientas-mysql mysql -uroot -proot databo ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (mysql: [Warning...an be insecure.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

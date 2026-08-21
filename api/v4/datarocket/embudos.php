@@ -32,6 +32,32 @@
 // necesitar y no tiene por que conocer de memoria.
 //
 // ---------------------------------------------------------------------------
+// SE BUSCA POR SLUG O POR ID, NADA MAS
+// ---------------------------------------------------------------------------
+// Las dos unicas claves de busqueda son `?slug=` y `?id=N` (`?codigo=N` en el
+// listado, que es el mismo id con el nombre que usa el ABM). No hay busqueda por
+// texto libre: el viejo `?q=` —coincidencia parcial sobre slug, nombre y
+// descripcion— se saco, y `?nombre=` nunca existio.
+//
+// El motivo es el mismo que justifica el endpoint: `nombre` y `descripcion` son
+// texto libre, editables desde el panel, y no identifican nada de forma estable.
+// Una integracion que resuelve su embudo por aproximacion sobre esas columnas
+// queda atada a como este redactado el catalogo hoy, y el dia que alguien lo
+// retoca desde el ABM la resolucion empieza a devolver otra fila —o ninguna—
+// sin que nada falle de forma visible.
+//
+// Perder el `?q=` no le saca alcance al cliente: `?slug=` acepta el texto del
+// nombre tal cual (`?slug=Causam Clientes` cae en `causam-clientes`, ver
+// embSlugify), y el catalogo es lo bastante chico como para traerlo entero y
+// filtrarlo del lado del consumidor si de verdad necesita una aproximacion.
+//
+// Los dos parametros retirados NO se ignoran en silencio: mandar `?q=` y recibir
+// el catalogo entero con 200 seria una respuesta silenciosamente incorrecta —el
+// cliente creeria que filtro— asi que se contestan con 400 (ver
+// embAssertBusqueda). `proyecto_id`, `activo`, `order_by`, `dir` y `limite`
+// siguen estando: son filtros y presentacion del listado, no formas de buscar.
+//
+// ---------------------------------------------------------------------------
 // EL SLUG ES UNICO POR PROYECTO, NO GLOBAL
 // ---------------------------------------------------------------------------
 // El UNIQUE de la tabla es (`proyecto_id`, `slug`), asi que dos proyectos
@@ -165,7 +191,12 @@ try {
         // operacion que buscaba en vez de dejarlo probando verbos.
         jsonError('Metodo no soportado. `/v4/datarocket/embudos` es de solo lectura: '
                 . 'los embudos se crean, editan y borran desde el ABM del panel cloud.', 405);
-    } elseif ($id > 0) {
+    }
+
+    // Corta antes de resolver nada: `?q=` / `?nombre=` no se ignoran en silencio.
+    embAssertBusqueda($_GET);
+
+    if ($id > 0) {
         handleGetOne($pdo, $id, $_GET);
     } elseif (array_key_exists('slug', $_GET)) {
         handleGetPorSlug($pdo, (string)$_GET['slug'], $_GET);
@@ -191,6 +222,33 @@ function embFlagBool(array $q, string $clave): bool {
 
 function embFlagEtapas(array $q): bool { return embFlagBool($q, 'con_etapas'); }
 function embFlagConteo(array $q): bool { return embFlagBool($q, 'con_conteo'); }
+
+// ---------------------------------------------------------------------------
+// Parametros de busqueda retirados
+// ---------------------------------------------------------------------------
+
+// Solo se busca por `slug` o por `id` (ver el encabezado). `q` existio y ya no;
+// `nombre` no existio nunca pero es el tipeo natural de quien tiene el texto del
+// embudo a mano. Los dos cortan con 400 en vez de caer al listado: quien manda
+// `?q=reactor` y recibe el catalogo entero con 200 se lleva una respuesta
+// silenciosamente incorrecta, porque cree que filtro.
+//
+// El 400 no es un callejon sin salida — dice como se hace ahora lo que el
+// cliente estaba intentando, y para los dos casos la respuesta es la misma:
+// `?slug=` acepta el texto sin formatear.
+//
+// La lista va inline y no en una `const` de la seccion de constantes porque el
+// bloque de ruteo corre ANTES de esta parte del archivo: las funciones se
+// hoistean, las constantes de nivel de archivo no.
+function embAssertBusqueda(array $q): void {
+    foreach (['q', 'nombre'] as $clave) {
+        if (!array_key_exists($clave, $q)) continue;
+        jsonError('El parametro `' . $clave . '` no esta soportado: `/v4/datarocket/embudos` '
+                . 'se consulta por `?slug=...` o por `?id=N`, nada mas. `?slug=` acepta el '
+                . 'texto del nombre sin formatear (`?slug=Causam Clientes` resuelve '
+                . '`causam-clientes`).', 400);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Normalizacion
@@ -376,10 +434,13 @@ function embAplicarFlags(PDO $pdo, array $items, array $q): array {
 // Listado / consulta
 // ---------------------------------------------------------------------------
 
+// El listado no busca: filtra. `codigo` es el `id` con el nombre que usa el ABM,
+// `proyecto_id` y `activo` acotan el conjunto por columnas cerradas, y el resto
+// es presentacion. La busqueda por texto vive en `?slug=`, que resuelve una fila
+// y no un subconjunto (ver embAssertBusqueda).
 function handleList(PDO $pdo, array $q): void {
     $codigo   = embFiltroId($q['codigo']      ?? null);
     $proyecto = embFiltroId($q['proyecto_id'] ?? null);
-    $search   = trim((string)($q['q'] ?? ''));
     $activo   = isset($q['activo']) && trim((string)$q['activo']) !== ''
                 ? (int)!!$q['activo'] : null;
 
@@ -415,19 +476,6 @@ function handleList(PDO $pdo, array $q): void {
         $where[] = 'e.activo = :activo';
         $params[':activo'] = $activo;
     }
-    // Busqueda parcial sobre slug, nombre y descripcion (igual que el ABM). No
-    // lleva COLLATE explicito: las tres columnas ya son utf8mb4_general_ci, o
-    // sea que el LIKE sale insensible a mayusculas y a acentos por definicion de
-    // la tabla ("vigia" matchea "Vigía"). El termino NO se slugifica — aca se
-    // busca tambien contra `nombre` y `descripcion`, que son texto libre con
-    // espacios: convertirlos a guiones no encontraria nada.
-    if ($search !== '') {
-        $where[] = '(e.slug LIKE :s_slug OR e.nombre LIKE :s_nom OR e.descripcion LIKE :s_desc)';
-        $params[':s_slug'] = '%' . $search . '%';
-        $params[':s_nom']  = '%' . $search . '%';
-        $params[':s_desc'] = '%' . $search . '%';
-    }
-
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
     // `limite` ya viene clampeado a [1, 1000] e interpolado como int — no puede
@@ -463,8 +511,9 @@ function handleGetOne(PDO $pdo, int $id, array $q): void {
 // necesita el `id` para mandarlo como `embudo_id` a los demas endpoints.
 //
 // Devuelve la MISMA forma que `?id=N` (un objeto, no una lista) con la fila
-// entera, y 404 cuando no existe. Para buscar por aproximacion esta `?q=`, que
-// devuelve listado y nunca 404.
+// entera, y 404 cuando no existe. No hay una variante "por aproximacion": el
+// `?q=` que la ofrecia se retiro (ver el encabezado), asi que para explorar el
+// catalogo va el listado pelado, que igual entra entero en una sola llamada.
 function handleGetPorSlug(PDO $pdo, string $raw, array $q): void {
     $slug = embSlugify($raw);
     // `?slug=` vacio no se trata como "sin filtro": el cliente pidio buscar un

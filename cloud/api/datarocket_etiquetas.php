@@ -1,9 +1,11 @@
 <?php
 // api/datarocket_etiquetas.php
 // Etiquetas Datarocket (CRUD). Lee/escribe sobre la tabla
-// `datarocket_etiquetas` definida en db/schema.sql — catalogo de etiquetas
-// reutilizables que se aplican a otros recursos del stack Datarocket via
-// tablas de union (por ahora solo `datarocket_prospectos_etiquetas`).
+// `datarocket_etiquetas` — catalogo de etiquetas reutilizables que se aplican
+// a otros recursos del stack Datarocket via tablas de union (por ahora solo
+// `datarocket_prospectos_etiquetas`). El campo `slug` (identificador estable
+// en kebab-case, UNIQUE global) lo agrego la migracion
+// 20260821_1100_datarocket_etiquetas_agregar_slug.sql.
 //
 //   GET    api/datarocket_etiquetas.php[?q=...&limite=100&orden=id&dir=desc]
 //                                          -> listado + stats (incluye
@@ -34,8 +36,8 @@ header('Content-Type: application/json; charset=utf-8');
 
 // Columnas persistidas + `etiquetados` (contador denormalizado, sync manual
 // via ?action=recalcular). Sirven tanto para SELECT como para el orden.
-const DRE_COLS    = 'id, nombre, descripcion, etiquetados, fecha_creacion, fecha_modificacion';
-const DRE_ORDENES = ['id', 'nombre', 'etiquetados', 'fecha_creacion', 'fecha_modificacion'];
+const DRE_COLS    = 'id, nombre, slug, descripcion, etiquetados, fecha_creacion, fecha_modificacion';
+const DRE_ORDENES = ['id', 'nombre', 'slug', 'etiquetados', 'fecha_creacion', 'fecha_modificacion'];
 
 try {
     $pdo    = db();
@@ -80,11 +82,33 @@ function normalizarFilaEtiqueta(array $r): array {
     return [
         'id'                 => (int)($r['id'] ?? 0),
         'nombre'             => (string)($r['nombre'] ?? ''),
+        'slug'               => (string)($r['slug'] ?? ''),
         'descripcion'        => $r['descripcion'] !== null ? (string)$r['descripcion'] : null,
         'etiquetados'        => (int)($r['etiquetados'] ?? 0),
         'fecha_creacion'     => $r['fecha_creacion']     ?? null,
         'fecha_modificacion' => $r['fecha_modificacion'] ?? null,
     ];
+}
+
+// Normaliza un string a un slug kebab-case: [a-z0-9-]+, sin acentos, sin
+// caracteres raros, sin guiones al borde, colapsando corridas de separadores.
+// Se usa como fallback cuando el operador no llena el campo `slug` a mano.
+// Espejo JS en app.js (`dreSlugify`) y en la migracion 20260821_1100.
+function dreSlugify(string $s): string {
+    $s = trim($s);
+    if ($s === '') return '';
+    $pares = [
+        'á'=>'a','é'=>'e','í'=>'i','ó'=>'o','ú'=>'u',
+        'à'=>'a','è'=>'e','ì'=>'i','ò'=>'o','ù'=>'u',
+        'ä'=>'a','ë'=>'e','ï'=>'i','ö'=>'o','ü'=>'u',
+        'Á'=>'a','É'=>'e','Í'=>'i','Ó'=>'o','Ú'=>'u',
+        'ñ'=>'n','Ñ'=>'n','ç'=>'c','Ç'=>'c',
+    ];
+    $s = strtr($s, $pares);
+    $s = mb_strtolower($s);
+    $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+    $s = trim($s, '-');
+    return substr($s, 0, 40);
 }
 
 function sanitizePayloadEtiqueta(array $in, bool $esAlta): array {
@@ -101,10 +125,32 @@ function sanitizePayloadEtiqueta(array $in, bool $esAlta): array {
         jsonError('La descripcion no puede superar los 500 caracteres.', 400);
     }
 
+    // `slug` es NOT NULL en la DB (migracion 20260821_1100). Si el operador no
+    // lo carga, se deriva del nombre — mismo criterio que datarocket_listas y
+    // datarocket_embudos.
+    $slug = strtolower(trim((string)($in['slug'] ?? '')));
+    if ($slug === '' && $nombre !== '') $slug = dreSlugify($nombre);
+    if ($slug !== '' && !preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $slug)) {
+        jsonError('El slug solo admite minusculas, digitos y guiones (kebab-case).', 400);
+    }
+    if (strlen($slug) > 40) {
+        jsonError('El slug no puede superar los 40 caracteres.', 400);
+    }
+
     return [
         'nombre'      => $nombre,
+        'slug'        => $slug,
         'descripcion' => $descripcion === '' ? null : $descripcion,
     ];
+}
+
+// Chequeo amigable del UNIQUE de `slug` antes de que MySQL tire el error crudo.
+// A diferencia de listas/embudos el alcance es global: esta tabla no tiene
+// `proyecto_id`. `$excluirId` es la propia etiqueta en un update (0 en el alta).
+function dreValidarSlugUnico(PDO $pdo, string $slug, int $excluirId = 0): void {
+    $st = $pdo->prepare('SELECT id FROM datarocket_etiquetas WHERE slug = :s AND id <> :id LIMIT 1');
+    $st->execute([':s' => $slug, ':id' => $excluirId]);
+    if ($st->fetch()) jsonError('Ya existe otra etiqueta con ese slug.', 409);
 }
 
 // ----------------------------------------------------------------------------
@@ -121,8 +167,9 @@ function handleListEtiquetas(PDO $pdo, array $q): void {
     $params = [];
 
     if ($search !== '') {
-        $where[] = '(e.nombre LIKE :s_nom OR e.descripcion LIKE :s_desc)';
+        $where[] = '(e.nombre LIKE :s_nom OR e.slug LIKE :s_slug OR e.descripcion LIKE :s_desc)';
         $params[':s_nom']  = "%{$search}%";
+        $params[':s_slug'] = "%{$search}%";
         $params[':s_desc'] = "%{$search}%";
     }
 
@@ -181,12 +228,18 @@ function handleCreateEtiqueta(PDO $pdo, array $body): void {
     $st->execute([':n' => $p['nombre']]);
     if ($st->fetch()) jsonError('Ya existe una etiqueta con ese nombre.', 409);
 
+    if ($p['slug'] === '') {
+        jsonError('No se pudo derivar un slug a partir del nombre. Cargalo manualmente.', 400);
+    }
+    dreValidarSlugUnico($pdo, $p['slug']);
+
     $st = $pdo->prepare(
-        'INSERT INTO datarocket_etiquetas (nombre, descripcion)
-         VALUES (:nombre, :descripcion)'
+        'INSERT INTO datarocket_etiquetas (nombre, slug, descripcion)
+         VALUES (:nombre, :slug, :descripcion)'
     );
     $st->execute([
         ':nombre'      => $p['nombre'],
+        ':slug'        => $p['slug'],
         ':descripcion' => $p['descripcion'],
     ]);
 
@@ -198,11 +251,15 @@ function handleCreateEtiqueta(PDO $pdo, array $body): void {
 }
 
 function handleUpdateEtiqueta(PDO $pdo, int $id, array $body): void {
-    $st = $pdo->prepare('SELECT id, nombre, descripcion FROM datarocket_etiquetas WHERE id = :id LIMIT 1');
+    $st = $pdo->prepare('SELECT id, nombre, slug, descripcion FROM datarocket_etiquetas WHERE id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $prev = $st->fetch();
     if (!$prev) jsonError('Etiqueta no encontrada', 404);
 
+    // El `slug` es un identificador estable: si el cliente no lo manda, se
+    // conserva el actual en vez de re-derivarlo del nombre (re-derivarlo
+    // romperia las referencias externas, que es justo lo que el slug evita).
+    // El update es parcial — solo se tocan las claves presentes en el body.
     $p = sanitizePayloadEtiqueta($body, false);
 
     if (array_key_exists('nombre', $body) && $p['nombre'] !== '' && $p['nombre'] !== $prev['nombre']) {
@@ -211,12 +268,21 @@ function handleUpdateEtiqueta(PDO $pdo, int $id, array $body): void {
         if ($st->fetch()) jsonError('Ya existe otra etiqueta con ese nombre.', 409);
     }
 
+    if (array_key_exists('slug', $body)) {
+        if ($p['slug'] === '') jsonError('El slug no puede quedar vacio.', 400);
+        if ($p['slug'] !== (string)$prev['slug']) dreValidarSlugUnico($pdo, $p['slug'], $id);
+    }
+
     $sets   = [];
     $params = [':id' => $id];
 
     if (array_key_exists('nombre', $body) && $p['nombre'] !== '') {
         $sets[] = 'nombre = :nombre';
         $params[':nombre'] = $p['nombre'];
+    }
+    if (array_key_exists('slug', $body)) {
+        $sets[] = 'slug = :slug';
+        $params[':slug'] = $p['slug'];
     }
     if (array_key_exists('descripcion', $body)) {
         $sets[] = 'descripcion = :descripcion';

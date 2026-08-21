@@ -6,7 +6,7 @@
 //
 //   GET  /v4/datarocket/etiquetas              -> listado con filtros (query string)
 //   GET  /v4/datarocket/etiquetas?id=N         -> registro individual
-//   GET  /v4/datarocket/etiquetas?nombre=expo  -> resolucion exacta nombre -> id
+//   GET  /v4/datarocket/etiquetas?slug=expo    -> resolucion slug -> registro completo
 //   POST /v4/datarocket/etiquetas              (JSON body) -> alta, 409 si ya existe
 //   POST /v4/datarocket/etiquetas?resolver=1   (JSON body) -> alta idempotente
 //                                                 (devuelve la existente si la hay)
@@ -34,26 +34,55 @@
 // ya existe no lo puede tocar. Cualquier otro metodo devuelve 405.
 //
 // ---------------------------------------------------------------------------
-// EL NOMBRE ES LA CLAVE LOGICA
+// SE BUSCA POR SLUG O POR ID, NADA MAS
 // ---------------------------------------------------------------------------
-// `datarocket_etiquetas.nombre` es UNIQUE — es lo que el usuario ve y elige, y
-// lo que un importador externo tiene a mano ("expo", "inmobiliaria"). Por eso el
-// endpoint ofrece dos formas de llegar al id:
+// Las dos unicas claves de busqueda son `?slug=` y `?id=N` (`?codigo=N` en el
+// listado, que es el mismo id con el nombre que usa el ABM). Las dos formas que
+// habia antes de llegar a una etiqueta por texto se retiraron: `?nombre=`
+// (igualdad contra la columna `nombre`) y `?q=` (LIKE sobre `nombre` y
+// `descripcion`).
 //
-//   * `GET ?nombre=expo`     busca y NO escribe. 404 si no esta.
-//   * `POST ?resolver=1`     busca y, si no esta, la crea. Nunca 409.
+// `nombre` sigue siendo UNIQUE y sigue siendo lo que el usuario ve y elige, pero
+// NO es una referencia estable: es texto libre y se edita desde el ABM cloud
+// ("expo" -> "Expo 2027"). Una integracion que lo usa como clave queda atada a
+// la redaccion del catalogo de hoy, y el dia que alguien lo retoca la resolucion
+// pasa a devolver 404 sin que nada falle de forma visible. El `slug` —NOT NULL y
+// UNIQUE global desde la migracion 20260821_1100— existe exactamente para eso:
+// se deriva del nombre al dar de alta y despues no se mueve.
+//
+// Perder `?nombre=` y `?q=` no le saca alcance al cliente que tiene el texto a
+// mano: `?slug=` aplica al termino la MISMA derivacion con la que se genera el
+// slug en el alta (etqSlugBusqueda), asi que `?slug=EXPO`, `?slug=Expó` y
+// `?slug=expo` caen todos en la misma fila. Y el catalogo es lo bastante chico
+// como para traerlo entero y filtrarlo del lado del consumidor si de verdad
+// necesita una aproximacion.
+//
+// Los dos parametros retirados NO se ignoran en silencio: mandar `?q=` y recibir
+// el catalogo entero con 200 seria una respuesta silenciosamente incorrecta —el
+// cliente creeria que filtro— asi que se contestan con 400 (ver
+// etqAssertBusqueda).
+//
+// Para llegar al id hay entonces dos caminos, y la diferencia es que uno escribe:
+//
+//   * `GET ?slug=expo`       busca y NO escribe. 404 si no esta.
+//   * `POST ?resolver=1`     busca por `nombre` y, si no esta, la crea. Nunca 409.
+//
+// El `?resolver=1` sigue resolviendo por `nombre` porque es un ALTA, no una
+// busqueda: el `nombre` es el dato obligatorio para crear la etiqueta, y el UNIQUE
+// que evita el duplicado es el de esa columna. Ahi el nombre no se usa como
+// referencia a algo preexistente sino como el contenido de la fila nueva.
 //
 // ---------------------------------------------------------------------------
-// LA BUSQUEDA NO DISTINGUE MAYUSCULAS NI ACENTOS
+// NI EL SLUG NI EL ALTA DISTINGUEN MAYUSCULAS NI ACENTOS
 // ---------------------------------------------------------------------------
-// Buscar "EXPO", "Expo" o "expo" da lo mismo, y buscar "peru" encuentra "Perú".
-// Vale para las dos formas de buscar — `?nombre=` (igualdad) y `?q=` (LIKE) — y
-// tambien para el UNIQUE que impide dar de alta la misma etiqueta dos veces.
+// Buscar "EXPO", "Expo" o "expo" da lo mismo, y dar de alta "PRUEBA_NANDU"
+// choca con la "prueba_ñandú" que ya estaba. Vale para `?slug=` y tambien para
+// el UNIQUE que impide dar de alta la misma etiqueta dos veces.
 //
 // Lo resuelven dos capas:
 //
-//   1. La collation `utf8mb4_general_ci` de la columna, que pliega mayusculas y
-//      diacriticos precompuestos: para MySQL `cafe` = `café`, `nandu` = `ñandú`
+//   1. La collation `utf8mb4_general_ci` de las columnas, que pliega mayusculas
+//      y diacriticos precompuestos: para MySQL `cafe` = `café`, `nandu` = `ñandú`
 //      y `pinguino` = `pingüino`. No hace falta que el cliente normalice nada.
 //   2. etqPlegarTexto() del lado PHP, que ademas de trim + colapsar espacios
 //      + minusculas saca las marcas combinantes (U+0300-U+036F). Eso cubre el
@@ -135,12 +164,12 @@ function etqRequireApp(): array {
 // Constantes del recurso
 // ---------------------------------------------------------------------------
 
-const DR_ET_COLS = 'id, nombre, descripcion, etiquetados, fecha_creacion, fecha_modificacion';
+const DR_ET_COLS = 'id, nombre, slug, descripcion, etiquetados, fecha_creacion, fecha_modificacion';
 
 // Criterios de orden aceptados en el listado. Cualquier otro valor cae al
 // default (`nombre`) en vez de dar 400: un `order_by` mal escrito no justifica
 // romperle la pantalla al cliente.
-const DR_ET_ORDENES = ['id', 'nombre', 'etiquetados', 'fecha_creacion', 'fecha_modificacion'];
+const DR_ET_ORDENES = ['id', 'nombre', 'slug', 'etiquetados', 'fecha_creacion', 'fecha_modificacion'];
 
 const DR_ET_NOMBRE_MAX      = 80;   // = varchar(80) de la columna
 const DR_ET_DESCRIPCION_MAX = 500;  // = varchar(500)
@@ -160,18 +189,28 @@ try {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
-    if ($method === 'GET' && etqFlagResolver($_GET)) {
-        // `?resolver=1` crea si no existe: no puede viajar en un GET. Se contesta
-        // explicito porque el error de tipeo es facil y el 200 con el listado
-        // entero seria una respuesta silenciosamente incorrecta.
-        jsonError('`?resolver=1` requiere POST (crea la etiqueta si no existe). '
-                . 'Para buscar sin crear usa `GET ?nombre=...`.', 405);
-    } elseif ($method === 'GET' && $id > 0) {
-        handleGetOne($pdo, $id, $_GET);
-    } elseif ($method === 'GET' && array_key_exists('nombre', $_GET)) {
-        handleGetPorNombre($pdo, (string)$_GET['nombre'], $_GET);
-    } elseif ($method === 'GET') {
-        handleList($pdo, $_GET);
+    if ($method === 'GET') {
+        if (etqFlagResolver($_GET)) {
+            // `?resolver=1` crea si no existe: no puede viajar en un GET. Se
+            // contesta explicito porque el error de tipeo es facil y el 200 con
+            // el listado entero seria una respuesta silenciosamente incorrecta.
+            // Va antes del assert de abajo porque es el diagnostico mas
+            // especifico: quien manda `?resolver=1&nombre=expo` esta buscando el
+            // verbo, no el parametro.
+            jsonError('`?resolver=1` requiere POST (crea la etiqueta si no existe). '
+                    . 'Para buscar sin crear usa `GET ?slug=...`.', 405);
+        }
+
+        // Corta antes de resolver nada: `?q=` / `?nombre=` no se ignoran en silencio.
+        etqAssertBusqueda($_GET);
+
+        if ($id > 0) {
+            handleGetOne($pdo, $id, $_GET);
+        } elseif (array_key_exists('slug', $_GET)) {
+            handleGetPorSlug($pdo, (string)$_GET['slug'], $_GET);
+        } else {
+            handleList($pdo, $_GET);
+        }
     } elseif ($method === 'POST') {
         handleCreate($pdo, readJsonBody(), $app, etqFlagResolver($_GET));
     } else {
@@ -196,6 +235,36 @@ function etqFlagBool(array $q, string $clave): bool {
 
 function etqFlagResolver(array $q): bool { return etqFlagBool($q, 'resolver'); }
 function etqFlagConteo(array $q): bool   { return etqFlagBool($q, 'con_conteo'); }
+
+// ---------------------------------------------------------------------------
+// Parametros de busqueda retirados
+// ---------------------------------------------------------------------------
+
+// Solo se busca por `slug` o por `id` (ver el encabezado). Los dos parametros de
+// aca existieron y ya no: `nombre` resolvia por igualdad y `q` por LIKE sobre
+// `nombre` + `descripcion`. Cortan con 400 en vez de caer al listado, porque
+// quien manda `?nombre=expo` y recibe el catalogo entero con 200 se lleva una
+// respuesta silenciosamente incorrecta — cree que resolvio una etiqueta y tiene
+// las 29.
+//
+// El 400 no es un callejon sin salida: dice como se hace ahora lo que el cliente
+// estaba intentando. Para `?nombre=` el reemplazo es directo —`?slug=` acepta el
+// mismo texto sin formatear— y quien ademas quiera crearla si no esta tiene el
+// `POST ?resolver=1`, que sigue trabajando por nombre.
+//
+// La lista va inline y no en una `const` de la seccion de constantes porque el
+// bloque de ruteo corre ANTES de esta parte del archivo: las funciones se
+// hoistean, las constantes de nivel de archivo no.
+function etqAssertBusqueda(array $q): void {
+    foreach (['q', 'nombre'] as $clave) {
+        if (!array_key_exists($clave, $q)) continue;
+        jsonError('El parametro `' . $clave . '` no esta soportado: `/v4/datarocket/etiquetas` '
+                . 'se consulta por `?slug=...` o por `?id=N`, nada mas. `?slug=` acepta el '
+                . 'texto de la etiqueta sin formatear (`?slug=EXPO` resuelve `expo`); para '
+                . 'resolver por nombre creando la etiqueta si no existe esta '
+                . '`POST ?resolver=1`.', 400);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Normalizacion y validacion del payload
@@ -264,6 +333,69 @@ function etqSanitizeDescripcion(mixed $raw): ?string {
     return $s;
 }
 
+// `datarocket_etiquetas.slug` es NOT NULL y UNIQUE desde la migracion
+// 20260821_1100. Este endpoint no lo expone como campo de entrada — el alta por
+// API es "resolver un nombre", no cargar metadata — asi que lo deriva del
+// nombre igual que el ABM cloud (`dreSlugify()` en
+// cloud/api/datarocket_etiquetas.php). El nombre ya llega plegado por
+// etqNormalizarNombre() (minusculas, espacios colapsados, diacriticos
+// combinantes fuera); lo que queda es mapear los acentos precompuestos y pasar
+// todo lo no alfanumerico a guion.
+function etqSlugify(string $nombre): string {
+    $pares = [
+        'á'=>'a','é'=>'e','í'=>'i','ó'=>'o','ú'=>'u',
+        'à'=>'a','è'=>'e','ì'=>'i','ò'=>'o','ù'=>'u',
+        'ä'=>'a','ë'=>'e','ï'=>'i','ö'=>'o','ü'=>'u',
+        'ñ'=>'n','ç'=>'c',
+    ];
+    $s = mb_strtolower(strtr(trim($nombre), $pares), 'UTF-8');
+    $s = preg_replace('/[^a-z0-9]+/', '-', $s) ?? '';
+    return substr(trim($s, '-'), 0, 40);
+}
+
+// Slug con el que se BUSCA, derivado del termino crudo que mando el cliente.
+//
+// Es la misma cadena de dos pasos que corre el alta —etqNormalizarNombre() y
+// despues etqSlugify()— y no una variante parecida: que la busqueda aplique
+// exactamente la transformacion del alta es lo que garantiza que `?slug=EXPO`,
+// `?slug=Expó` y `?slug=  expo ` caigan todos en la fila cuyo slug es `expo`.
+// Si divergieran, habria etiquetas imposibles de encontrar por el mismo texto
+// con el que se crearon.
+//
+// El primer paso no es decorativo: etqSlugify() mapea acentos PRECOMPUESTOS
+// (`é` en un solo caracter), y el plegado previo es el que convierte el NFD
+// (`e` + tilde suelta) en algo que ese mapa entiende. Sin el, la tilde suelta
+// caeria en el `[^a-z0-9]+` y quedaria un guion en el medio de la palabra.
+//
+// Devuelve '' cuando no queda nada aprovechable — el llamador lo trata como 400.
+function etqSlugBusqueda(mixed $raw): string {
+    return etqSlugify(etqNormalizarNombre($raw));
+}
+
+// `nombre` UNIQUE no implica `slug` UNIQUE: dos nombres distintos pueden
+// colapsar al mismo slug ("santa fe" y "santa-fe"). Como el slug no es lo que
+// el cliente pidio — es metadata derivada —, un choque no justifica un 409:
+// se busca el primer sufijo libre (`-2`, `-3`, ...) y se sigue. El fallback
+// `etiqueta` cubre un nombre sin caracteres alfanumericos (p.ej. "★"), que
+// etqAssertNombre deja pasar porque como nombre es valido.
+function etqSlugLibre(PDO $pdo, string $nombre): string {
+    $base = etqSlugify($nombre);
+    if ($base === '') $base = 'etiqueta';
+
+    $st   = $pdo->prepare('SELECT id FROM datarocket_etiquetas WHERE slug = :s LIMIT 1');
+    $slug = $base;
+    for ($i = 2; $i <= 99; $i++) {
+        $st->execute([':s' => $slug]);
+        if (!$st->fetch()) return $slug;
+        $sufijo = '-' . $i;
+        $slug   = substr($base, 0, 40 - strlen($sufijo)) . $sufijo;
+    }
+    // 98 variantes ocupadas es un escenario que no se da con un catalogo de
+    // decenas de filas; si pasara, el UNIQUE de la DB corta el INSERT y el
+    // catch de handleCreate lo reporta.
+    return $slug;
+}
+
 // Normaliza un id que llega por query string: vacio / no numerico / <= 0 ->
 // null (equivale a "sin filtro", no a filtrar por 0).
 function etqFiltroId(mixed $v): ?int {
@@ -280,6 +412,7 @@ function etqFormatFila(array $r): array {
     return [
         'id'                 => (int)$r['id'],
         'nombre'             => (string)$r['nombre'],
+        'slug'               => (string)($r['slug'] ?? ''),
         'descripcion'        => $r['descripcion'] !== null ? (string)$r['descripcion'] : null,
         'etiquetados'        => (int)($r['etiquetados'] ?? 0),
         'fecha_creacion'     => $r['fecha_creacion']     ?? null,
@@ -311,6 +444,18 @@ function etqBuscarPorNombre(PDO $pdo, string $nombre): ?array {
     return $row ? etqFormatFila($row) : null;
 }
 
+// `$slug` tiene que venir YA derivado por etqSlugBusqueda(). Devuelve una fila o
+// null, sin la ambiguedad que tienen embudos y listas: `datarocket_etiquetas` no
+// tiene `proyecto_id` —es un catalogo unico compartido por todo Datarocket— asi
+// que el UNIQUE de la migracion 20260821_1100 es sobre `slug` a secas y global.
+// No hay 409 que contestar ni `proyecto_id` con que desambiguar.
+function etqBuscarPorSlug(PDO $pdo, string $slug): ?array {
+    $st = $pdo->prepare('SELECT ' . DR_ET_COLS . ' FROM datarocket_etiquetas WHERE slug = :s LIMIT 1');
+    $st->execute([':s' => $slug]);
+    $row = $st->fetch();
+    return $row ? etqFormatFila($row) : null;
+}
+
 // Anexa `etiquetados_reales` (conteo vivo contra la puente) a cada item, con una
 // sola query agrupada. Solo corre con `?con_conteo=1`: `etiquetados` alcanza
 // para la mayoria de los usos y esto es una lectura extra sobre una tabla que
@@ -337,11 +482,11 @@ function etqAttachConteo(PDO $pdo, array &$items): void {
 // Listado / consulta
 // ---------------------------------------------------------------------------
 
+// El listado no busca: filtra. `codigo` es el `id` con el nombre que usa el ABM
+// y el resto es presentacion. La busqueda por texto vive en `?slug=`, que
+// resuelve una fila y no un subconjunto (ver etqAssertBusqueda).
 function handleList(PDO $pdo, array $q): void {
     $codigo = etqFiltroId($q['codigo'] ?? null);
-    // El termino se pliega igual que un nombre: la collation ya resuelve
-    // mayusculas y acentos precompuestos, pero el NFD hay que plegarlo aca.
-    $search = etqPlegarTexto($q['q'] ?? '');
 
     // `orden` es el nombre que usa el ABM cloud y `order_by` el que usa el resto
     // de v4: se aceptan los dos para no obligar a recordar cual va en cada capa.
@@ -365,16 +510,6 @@ function handleList(PDO $pdo, array $q): void {
         $where[] = 'id = :codigo';
         $params[':codigo'] = $codigo;
     }
-    // Busqueda parcial, sobre nombre Y descripcion (igual que el ABM). No lleva
-    // COLLATE explicito: las dos columnas ya son utf8mb4_general_ci, o sea que
-    // el LIKE sale insensible a mayusculas y a acentos por definicion de la
-    // tabla ("peru" matchea "Perú").
-    if ($search !== '') {
-        $where[] = '(nombre LIKE :s_nom OR descripcion LIKE :s_desc)';
-        $params[':s_nom']  = '%' . $search . '%';
-        $params[':s_desc'] = '%' . $search . '%';
-    }
-
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
     // `limite` ya viene clampeado a [1, 1000] e interpolado como int — no puede
@@ -406,26 +541,30 @@ function handleGetOne(PDO $pdo, int $id, array $q): void {
     jsonOk($items[0]);
 }
 
-// GET /v4/datarocket/etiquetas?nombre=expo
+// GET /v4/datarocket/etiquetas?slug=expo
 //
-// Resolucion exacta nombre -> id, que es el caso de uso que motiva el endpoint:
-// el cliente tiene el texto de la etiqueta y necesita el id para mandarlo en
-// `etiqueta_ids` de /v4/datarocket/prospectos.
+// Resolucion slug -> registro completo, que es el caso de uso que motiva el
+// endpoint: el cliente tiene el identificador estable de la etiqueta y necesita
+// el `id` para mandarlo en `etiqueta_ids` de /v4/datarocket/prospectos.
+//
+// El termino se deriva con etqSlugBusqueda(), asi que sirve tanto el slug ya
+// armado como el texto de la etiqueta (`?slug=Expó` resuelve `expo`).
 //
 // Devuelve la MISMA forma que `?id=N` (un objeto, no una lista) y 404 cuando no
-// existe. Para buscar por aproximacion esta `?q=`, que devuelve listado y nunca
-// 404; para "traemela o creala" esta `POST ?resolver=1`.
-function handleGetPorNombre(PDO $pdo, string $raw, array $q): void {
-    $nombre = etqNormalizarNombre($raw);
-    // `?nombre=` vacio no se trata como "sin filtro": el cliente pidio buscar un
-    // nombre y devolverle el catalogo entero seria contestarle otra pregunta.
-    if ($nombre === '') jsonError('El `nombre` a buscar no puede estar vacio.', 400);
+// existe. Para "traemela o creala" esta `POST ?resolver=1`, que ademas escribe.
+function handleGetPorSlug(PDO $pdo, string $raw, array $q): void {
+    $slug = etqSlugBusqueda($raw);
+    // `?slug=` vacio no se trata como "sin filtro": el cliente pidio buscar una
+    // etiqueta y devolverle el catalogo entero seria contestarle otra pregunta.
+    // Cae aca tambien un termino que no deja nada aprovechable (`?slug=#$%`):
+    // no llego a ser una busqueda, asi que es 400 y no 404.
+    if ($slug === '') jsonError('El `slug` a buscar no puede estar vacio.', 400);
 
-    $fila = etqBuscarPorNombre($pdo, $nombre);
+    $fila = etqBuscarPorSlug($pdo, $slug);
     if ($fila === null) {
-        // El nombre normalizado viaja en el error para que se entienda contra
-        // que se busco realmente (" Expo " se busco como "expo").
-        jsonError('Etiqueta no encontrada', 404, ['consulta' => ['nombre' => $nombre]]);
+        // El slug derivado viaja en el error para que se entienda contra que se
+        // busco realmente (" Expo " se busco como "expo").
+        jsonError('Etiqueta no encontrada', 404, ['consulta' => ['slug' => $slug]]);
     }
 
     $items = [$fila];
@@ -459,9 +598,13 @@ function handleCreate(PDO $pdo, array $in, array $app, bool $resolver): void {
     }
 
     try {
-        $st = $pdo->prepare('INSERT INTO datarocket_etiquetas (nombre, descripcion)
-                             VALUES (:nombre, :descripcion)');
-        $st->execute([':nombre' => $nombre, ':descripcion' => $descripcion]);
+        $st = $pdo->prepare('INSERT INTO datarocket_etiquetas (nombre, slug, descripcion)
+                             VALUES (:nombre, :slug, :descripcion)');
+        $st->execute([
+            ':nombre'      => $nombre,
+            ':slug'        => etqSlugLibre($pdo, $nombre),
+            ':descripcion' => $descripcion,
+        ]);
         $newId = (int)$pdo->lastInsertId();
     } catch (PDOException $e) {
         // Carrera con otro POST simultaneo del mismo nombre: entre el SELECT de

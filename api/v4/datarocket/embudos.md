@@ -18,6 +18,10 @@ La operacion que motiva el microservicio:
 | Ver los de un proyecto                           | `GET /v4/datarocket/embudos?proyecto_id=109`            |
 | Consultar uno que ya tengo identificado          | `GET /v4/datarocket/embudos?id=4`                       |
 
+**Se busca por `slug` o por `id`, nada mas.** No hay busqueda por texto libre:
+`?q=` se retiro y `?nombre=` no existe — los dos devuelven `400`. Ver
+[Se busca por slug o por id](#se-busca-por-slug-o-por-id).
+
 **Este endpoint es de solo lectura.** No hay `POST`, `PUT`, `PATCH` ni `DELETE`.
 Ver [Por que es de solo lectura](#por-que-es-de-solo-lectura).
 
@@ -63,6 +67,47 @@ curl -H "Authorization: Bearer $APIKEY" \
 # -> {"ok":true,"data":{"id":4,"proyecto_id":109,...}}
 #                        ^^^^^^^^ esto es lo que se manda como embudo_id
 ```
+
+---
+
+## Se busca por slug o por id
+
+Las dos unicas claves de busqueda son **`?slug=`** y **`?id=N`** (`?codigo=N` en
+el listado, que es el mismo id con el nombre que usa el ABM). No hay busqueda por
+texto libre:
+
+| Parametro  | Antes                                              | Ahora                |
+| ---------- | -------------------------------------------------- | -------------------- |
+| `?q=`      | Coincidencia parcial sobre `slug`, `nombre` y `descripcion` | **`400`** — retirado |
+| `?nombre=` | Nunca existio                                       | **`400`**            |
+
+El motivo es el mismo que justifica el endpoint: `nombre` y `descripcion` son
+texto libre editable desde el panel y no identifican nada de forma estable. Una
+integracion que resuelve su embudo por aproximacion sobre esas columnas queda
+atada a como este redactado el catalogo hoy, y el dia que alguien lo retoca desde
+el ABM la resolucion empieza a devolver otra fila —o ninguna— sin que nada falle
+de forma visible.
+
+**Perder `?q=` no le saca alcance a nadie**, porque `?slug=` acepta el texto del
+nombre sin formatear: lo que antes se pedia como `?q=Causam Clientes` ahora se
+pide como `?slug=Causam Clientes` y resuelve `causam-clientes` (ver
+[El slug](#el-slug)). La diferencia es que devuelve **la** fila, no un conjunto
+parecido.
+
+Los dos parametros **no se ignoran en silencio**. Mandar `?q=` y recibir el
+catalogo entero con `200` seria una respuesta silenciosamente incorrecta —el
+cliente creeria que filtro— asi que se corta con `400` y el error dice como se
+hace ahora:
+
+```json
+{"ok":false,"error":"El parametro `q` no esta soportado: `/v4/datarocket/embudos` se consulta por `?slug=...` o por `?id=N`, nada mas. `?slug=` acepta el texto del nombre sin formatear (`?slug=Causam Clientes` resuelve `causam-clientes`)."}
+```
+
+`proyecto_id`, `activo`, `order_by`, `dir` y `limite` siguen estando: son filtros
+y presentacion del listado, no formas de buscar.
+
+Si de verdad hace falta una aproximacion, el catalogo entra entero en una sola
+llamada (7 embudos al 2026-08-18) y se filtra del lado del consumidor.
 
 ---
 
@@ -121,7 +166,8 @@ Cualquier otro metodo devuelve `405`:
 ```
 
 Precedencia de los parametros: `?id=N` gana sobre `?slug=`, y `?slug=` gana sobre
-el listado.
+el listado. `?q=` y `?nombre=` cortan con `400` antes de todo eso — ver
+[Se busca por slug o por id](#se-busca-por-slug-o-por-id).
 
 ---
 
@@ -273,9 +319,11 @@ extra, asi que no viene por default.
 
 ### Query params
 
+El listado **no busca: filtra.** Todos los parametros de abajo acotan o presentan
+el conjunto; para llegar a una fila puntual estan `?slug=` y `?id=N`.
+
 | Param         | Tipo   | Default | Notas                                                        |
 | ------------- | ------ | ------- | ------------------------------------------------------------ |
-| `q`           | string | —       | Coincidencia parcial sobre `slug`, `nombre` **y** `descripcion`. |
 | `codigo`      | int    | —       | Filtra por `id` exacto.                                       |
 | `proyecto_id` | int    | —       | Filtra por proyecto.                                          |
 | `activo`      | `1`/`0`| —       | Sin el parametro vienen los dos.                              |
@@ -286,12 +334,9 @@ extra, asi que no viene por default.
 | `con_etapas`  | flag   | `0`     | Agrega `etapas` (array).                                      |
 
 Un `order_by` desconocido cae al default en vez de dar `400` — un parametro mal
-escrito no justifica romperle la pantalla al cliente.
-
-`q` **no** se slugifica: busca tambien contra `nombre` y `descripcion`, que son
-texto libre con espacios, y convertirlos a guiones no encontraria nada. La
-busqueda sale igual insensible a mayusculas y acentos porque las tres columnas
-son `utf8mb4_general_ci` (`vigia` matchea `Vigía`).
+escrito no justifica romperle la pantalla al cliente. `q` y `nombre`, en cambio,
+si cortan con `400`: no son parametros mal escritos, son busquedas que el
+endpoint ya no hace, y contestarlas con el catalogo entero seria mentir.
 
 > **Default del orden:** alfabetico ascendente por `slug`, al reves que
 > `/v4/datarocket/prospectos` (que ordena por `id DESC`). Es a proposito: esto es
@@ -333,9 +378,9 @@ curl -H "Authorization: Bearer $APIKEY" \
 curl -H "Authorization: Bearer $APIKEY" \
   "https://api.databox.net.ar/v4/datarocket/embudos?proyecto_id=109&con_etapas=1&con_conteo=1"
 
-# Buscar por aproximacion (insensible a mayusculas y acentos).
+# Un embudo puntual NO sale de aca: va por `?slug=` (acepta el texto del nombre).
 curl -H "Authorization: Bearer $APIKEY" \
-  "https://api.databox.net.ar/v4/datarocket/embudos?q=reactor"
+  "https://api.databox.net.ar/v4/datarocket/embudos?slug=Reactor%20Clientes"
 ```
 
 ---
@@ -400,8 +445,10 @@ El `404` incluye `consulta.slug` con el valor **ya normalizado**, para que se
 entienda contra que se busco realmente (`" Causam Clientes "` se busco como
 `causam-clientes`). Si se mando `proyecto_id`, tambien viaja ahi.
 
-Para buscar por aproximacion en vez de por igualdad esta `?q=`, que devuelve
-listado y nunca `404`.
+**No hay variante por aproximacion.** El `?q=` que la ofrecia se retiro (ver
+[Se busca por slug o por id](#se-busca-por-slug-o-por-id)); un `404` aca significa
+que el embudo no existe con ese slug, no que haya que reintentar con otro texto —
+la normalizacion ya cubre mayusculas, acentos, espacios y guiones bajos.
 
 ---
 
