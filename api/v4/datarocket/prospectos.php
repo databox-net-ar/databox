@@ -96,6 +96,29 @@
 // 2026-08-18 tampoco conserva las mayusculas del path, asi que un
 // `facebook.com/MENDOSUR` que entre por aca se guarda en minuscula y como link
 // puede no resolver.
+//
+// ---------------------------------------------------------------------------
+// PROCEDENCIA: `extraccion_url` + `extraccion_autor`
+// ---------------------------------------------------------------------------
+// Son la EXCEPCION a todo lo anterior: no se normalizan. Registran de donde se
+// extrajo el prospecto y quien lo extrajo (una persona o un bot).
+//
+// `extraccion_url` se guarda tal cual vino — con esquema y respetando las
+// mayusculas del path y del query, que es justo donde viven los ids que
+// identifican la fuente (`/p/MLA-123`, `?ref=Xk9Q`). Pasarla por
+// prospectoNormalizarWeb() la romperia. Solo se recorta y se trunca a 500. No
+// confundir con `web`, que es el sitio DEL prospecto.
+//
+// PARA QUE SIRVE: un bot pregunta `GET ?verificar=1&extraccion_url=...` ANTES de
+// gastar el scraping, y si esa pagina ya se cargo se la saltea. Va por
+// `idx_dr_prospectos_extraccion_url`.
+//
+// OJO — `extraccion_url` NO participa del chequeo de unicidad que devuelve 409
+// en el alta, y no es un olvido: una sola URL de listado da de alta
+// legitimamente muchos prospectos (una pagina de resultados con 20 empresas
+// sale de una unica URL). Bloquear por eso romperia el caso de uso normal. El
+// 409 sigue siendo solo de `correo` / `celular`; la URL se consulta aparte, en
+// handleVerificar(). Migracion 20260823_1000 (renombro `origen_url`).
 
 declare(strict_types=1);
 
@@ -169,7 +192,8 @@ const DR_CT_COLS = "id, uuid, tipo, nombre,
                     localidad_id, provincia_id, pais_id,
                     localidad_id AS localidad, provincia_id AS provincia, pais_id AS pais,
                     telefono, celular, whatsapp, correo,
-                    web, facebook, instagram, tiktok, comentarios, registrado";
+                    web, facebook, instagram, tiktok, comentarios,
+                    extraccion_url, extraccion_autor, registrado";
 
 // Valores validos para `datarocket_prospectos.tipo`. Se rechazan alta y
 // modificacion que no traigan uno de estos valores; las filas historicas
@@ -185,7 +209,8 @@ const DR_CT_PATCH_COLS = [
     'domicilio', 'ciudad', 'ubicacion',
     'localidad_id', 'provincia_id', 'pais_id',
     'telefono', 'celular', 'whatsapp', 'correo',
-    'web', 'facebook', 'instagram', 'tiktok', 'comentarios', 'registrado',
+    'web', 'facebook', 'instagram', 'tiktok', 'comentarios',
+    'extraccion_url', 'extraccion_autor', 'registrado',
 ];
 
 // Alias legacy del body -> columna real. En POST / PUT alcanza con el `??` de
@@ -255,21 +280,40 @@ function drPrFlagVerificar(array $q): bool {
     return !in_array($v, ['', '0', 'false', 'no'], true);
 }
 
-// GET /v4/datarocket/prospectos?verificar=1&correo=...&celular=...
+// GET /v4/datarocket/prospectos?verificar=1&correo=...&celular=...&extraccion_url=...
 //
-// Responde si un alta con esos datos seria rechazada, SIN escribir nada. Corre
-// exactamente la misma normalizacion y la misma busqueda que el POST, asi que
-// `existe:false` aca implica que el alta pasa el chequeo de unicidad (los otros
-// obligatorios — `tipo` e identidad — se validan aparte, en el alta).
+// Responde si ya hay algo cargado con esos datos, SIN escribir nada. Tiene dos
+// usos que conviene no mezclar, y por eso la respuesta trae DOS banderas:
 //
-// Al menos uno de los dos parametros tiene que venir con contenido; preguntar
+//   `existe`       -> hay al menos una coincidencia por CUALQUIERA de los tres
+//                     campos. Es la pregunta del bot: "esto ya esta en la base,
+//                     me lo salteo?".
+//   `bloquea_alta` -> las coincidencias incluyen `correo` o `celular`, que son
+//                     los unicos dos campos que hacen fallar el POST con 409.
+//                     Es la pregunta del formulario: "si posteo, me rebota?".
+//
+// Para `correo` / `celular` corre exactamente la misma normalizacion y la misma
+// busqueda que el POST, asi que `bloquea_alta:false` implica que el alta pasa el
+// chequeo de unicidad (los otros obligatorios — `tipo` e identidad — se validan
+// aparte, en el alta).
+//
+// `extraccion_url` es distinto: NO bloquea el alta (una misma URL de listado da
+// de alta muchos prospectos), asi que puede poner `existe:true` con
+// `bloquea_alta:false`. Es justamente el caso del bot que chequea antes de
+// scrapear. Hasta el 2026-08-23 `existe` significaba lo que hoy significa
+// `bloquea_alta`; los dos coinciden en cualquier llamada que no mande
+// `extraccion_url`, que son todas las que existian antes del campo.
+//
+// Al menos uno de los tres parametros tiene que venir con contenido; preguntar
 // "existe?" sin datos es un error del cliente, no un "no existe".
 function handleVerificar(PDO $pdo, array $q): void {
     $correoRaw  = trim((string)($q['correo']  ?? ''));
     $celularRaw = trim((string)($q['celular'] ?? ''));
+    // Sin normalizar, igual que al guardarla: la URL se compara tal cual vino.
+    $extraccionUrl = trim((string)($q['extraccion_url'] ?? ''));
 
-    if ($correoRaw === '' && $celularRaw === '') {
-        jsonError('Hay que indicar al menos `correo` o `celular` para verificar.', 400);
+    if ($correoRaw === '' && $celularRaw === '' && $extraccionUrl === '') {
+        jsonError('Hay que indicar al menos `correo`, `celular` o `extraccion_url` para verificar.', 400);
     }
 
     // Un correo con basura se rechaza igual que en el alta: si no se puede
@@ -282,18 +326,70 @@ function handleVerificar(PDO $pdo, array $q): void {
     $correo  = prospectoNormalizarCorreo($correoRaw);
     $celular = prospectoNormalizarTelefono($celularRaw);
 
+    // Dos busquedas separadas a proposito: la de arriba es la que gobierna el
+    // 409 del alta, la de abajo no. Mezclarlas en un solo OR haria que
+    // drPrAssertUnico() —que comparte drPrBuscarDuplicados()— empezara a
+    // rechazar altas por repetir la URL de origen.
     $coincidencias = drPrBuscarDuplicados($pdo, $correo, $celular);
+    $bloqueaAlta   = $coincidencias !== [];
+    if ($extraccionUrl !== '') {
+        $coincidencias = array_merge($coincidencias, drPrBuscarPorExtraccionUrl($pdo, $extraccionUrl));
+    }
 
     jsonOk([
-        'existe' => $coincidencias !== [],
+        'existe'       => $coincidencias !== [],
+        'bloquea_alta' => $bloqueaAlta,
         // Los valores normalizados con los que se busco. El cliente los ve para
         // entender por que "11 5678-1234" matcheo contra "1156781234".
         'consulta' => [
-            'correo'  => $correo,
-            'celular' => $celular,
+            'correo'         => $correo,
+            'celular'        => $celular,
+            'extraccion_url' => $extraccionUrl !== '' ? $extraccionUrl : null,
         ],
         'coincidencias' => $coincidencias,
     ]);
+}
+
+// Prospectos ya cargados que salieron de esta misma URL. Mismo shape que
+// drPrBuscarDuplicados() para que las dos listas se puedan concatenar, con
+// `campo` = 'extraccion_url'.
+//
+// Comparacion por `=` sobre la columna, que es utf8mb4_general_ci: pliega
+// mayusculas y acentos, asi que el bot no pierde el match por como venga
+// escrito el host. La columna GUARDA la capitalizacion original (es un link que
+// hay que poder volver a abrir); es solo la comparacion la que es insensible.
+//
+// Entra por `idx_dr_prospectos_extraccion_url` (migracion 20260823_1000) — sin
+// ese indice esto es un full scan en cada iteracion del scraping.
+//
+// El LIMIT es el mismo criterio que el de los duplicados: una URL de listado
+// puede tener 20 prospectos colgados y la respuesta es informativa.
+function drPrBuscarPorExtraccionUrl(PDO $pdo, string $url): array {
+    $stmt = $pdo->prepare(
+        "SELECT id, uuid, nombre, correo, celular, registrado
+           FROM datarocket_prospectos
+          WHERE extraccion_url = :u
+          ORDER BY id
+          LIMIT 20"
+    );
+    $stmt->execute([':u' => $url]);
+
+    $out = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $out[] = [
+            'campo' => 'extraccion_url',
+            'valor' => $url,
+            'prospecto' => [
+                'id'         => (int)$row['id'],
+                'uuid'       => (string)$row['uuid'],
+                'nombre'     => $row['nombre'],
+                'correo'     => $row['correo'],
+                'celular'    => $row['celular'],
+                'registrado' => $row['registrado'],
+            ],
+        ];
+    }
+    return $out;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +472,107 @@ function drPrAssertUnico(PDO $pdo, array $p, int $excluirId = 0): void {
 }
 
 // ---------------------------------------------------------------------------
+// Filtro por etiquetas / listas (multi-valor, semantica AND)
+// ---------------------------------------------------------------------------
+
+// Normaliza un parametro multi-valor. Acepta las tres formas con que un cliente
+// puede mandarlo: 'expo', 'expo,vip' (CSV) o el parametro repetido
+// (?etiqueta=expo&etiqueta=vip, que PHP entrega como array solo si el cliente
+// usa `etiqueta[]`; el CSV cubre el resto). Devuelve valores recortados, sin
+// vacios y sin duplicados.
+function drPrFiltroMulti(mixed $raw): array {
+    if ($raw === null) return [];
+    $partes = [];
+    foreach (is_array($raw) ? $raw : [$raw] as $v) {
+        foreach (explode(',', (string)$v) as $p) {
+            $p = trim($p);
+            if ($p !== '') $partes[$p] = true;
+        }
+    }
+    return array_keys($partes);
+}
+
+// Igual pero para ids enteros — la variante `etiqueta_id` / `lista_id`, que se
+// mantiene por paridad con el ABM cloud y para el cliente que ya resolvio los
+// ids contra /v4/datarocket/etiquetas.
+function drPrFiltroMultiIds(mixed $raw): array {
+    $out = [];
+    foreach (drPrFiltroMulti($raw) as $v) {
+        $n = (int)$v;
+        if ($n > 0) $out[$n] = true;
+    }
+    return array_keys($out);
+}
+
+// Slugs de etiqueta -> ids. `datarocket_etiquetas.slug` es UNIQUE GLOBAL
+// (migracion 20260821_1100), asi que cada slug resuelve a lo sumo una fila.
+//
+// Se slugifica la entrada con drPrSlugify(), la misma transformacion que usa el
+// alta del catalogo, para que 'Mar del Plata', 'mar-del-plata' y 'MAR DEL PLATA'
+// caigan todos en la misma etiqueta.
+//
+// UN SLUG QUE NO EXISTE CORTA CON 400, y es una divergencia DELIBERADA respecto
+// de `etiqueta_ids` en el POST, donde un id desconocido se descarta en silencio.
+// El motivo es que aca el valor es un FILTRO: descartarlo en silencio AGRANDA el
+// resultado en vez de achicarlo. Un `?etiqueta=expo,vipp` con un typo devolveria
+// a todos los de 'expo' y, en el caso de uso que motiva esto —barrer el
+// resultado para un envio masivo—, eso es mandarle a gente que no correspondia.
+// Fallar ruidoso es lo unico seguro.
+function drPrResolverEtiquetaSlugs(PDO $pdo, array $slugs): array {
+    if (!$slugs) return [];
+    $st  = $pdo->prepare('SELECT id FROM datarocket_etiquetas WHERE slug = :s LIMIT 1');
+    $ids = [];
+    foreach ($slugs as $raw) {
+        $slug = drPrSlugify($raw);
+        if ($slug === '') jsonError("Etiqueta invalida: `{$raw}`.", 400);
+        $st->execute([':s' => $slug]);
+        $id = $st->fetchColumn();
+        if ($id === false) {
+            jsonError("La etiqueta `{$slug}` no existe.", 400);
+        }
+        $ids[(int)$id] = true;
+    }
+    return array_keys($ids);
+}
+
+// Slugs de lista -> ids. A diferencia de las etiquetas, el UNIQUE de
+// `datarocket_listas` es (`proyecto_id`, `slug`): el slug es unico POR PROYECTO,
+// no global, asi que el mismo texto puede resolver a dos listas de proyectos
+// distintos. Ahi no se elige una — se corta con 409 y el cliente desambigua con
+// `&proyecto_id=N`, el mismo contrato que ya tienen /v4/datarocket/listas y el
+// `embudo` del alta. Elegir la primera seria mandarle a la audiencia equivocada
+// sin que nadie se entere.
+function drPrResolverListaSlugs(PDO $pdo, array $slugs, ?int $proyectoId): array {
+    if (!$slugs) return [];
+    $sql = 'SELECT id, proyecto_id FROM datarocket_listas WHERE slug = :s';
+    if ($proyectoId !== null) $sql .= ' AND proyecto_id = :p';
+    $st  = $pdo->prepare($sql);
+    $ids = [];
+    foreach ($slugs as $raw) {
+        $slug = drPrSlugify($raw);
+        if ($slug === '') jsonError("Lista invalida: `{$raw}`.", 400);
+        $bind = [':s' => $slug];
+        if ($proyectoId !== null) $bind[':p'] = $proyectoId;
+        $st->execute($bind);
+        $filas = $st->fetchAll();
+        if (!$filas) {
+            jsonError("La lista `{$slug}` no existe" .
+                      ($proyectoId !== null ? " en el proyecto {$proyectoId}." : '.'), 400);
+        }
+        if (count($filas) > 1) {
+            jsonError("El slug de lista `{$slug}` existe en mas de un proyecto; " .
+                      'desambigua con `proyecto_id`.', 409,
+                      ['candidatos' => array_map(
+                          fn($f) => ['id' => (int)$f['id'], 'proyecto_id' => (int)$f['proyecto_id']],
+                          $filas
+                      )]);
+        }
+        $ids[(int)$filas[0]['id']] = true;
+    }
+    return array_keys($ids);
+}
+
+// ---------------------------------------------------------------------------
 // Listado / consulta individual
 // ---------------------------------------------------------------------------
 
@@ -388,15 +585,58 @@ function handleList(PDO $pdo, array $q): void {
     $provinciaId  = drPrFiltroId($q['provincia_id'] ?? $q['provincia'] ?? null);
     $correo       = trim((string)($q['correo']       ?? ''));
     $celular      = trim((string)($q['celular']      ?? ''));
+    // Procedencia. Son LIKE parcial, igual que `correo` / `celular` aca: sirven
+    // para barrer ("todo lo que salio de mercadolibre", "todo lo que trajo el
+    // bot X"). El chequeo exacto de "esta URL ya se extrajo?" NO es este — es
+    // `?verificar=1&extraccion_url=...`, que compara entera y usa el indice.
+    $extraccionUrl   = trim((string)($q['extraccion_url']   ?? ''));
+    $extraccionAutor = trim((string)($q['extraccion_autor'] ?? ''));
     $desde        = trim((string)($q['desde']        ?? ''));
     $hasta        = trim((string)($q['hasta']        ?? ''));
     $search       = trim((string)($q['q']            ?? ''));
+
+    // Etiquetas y listas: MULTI-VALOR y con semantica AND (ver mas abajo). Se
+    // aceptan por slug (`etiqueta=expo,vip`) o por id (`etiqueta_id=5,14`); las
+    // dos formas se combinan si vienen juntas. El slug es lo recomendado para un
+    // integrador — no obliga a resolver ids contra el catalogo antes de listar.
+    $proyectoId  = drPrFiltroId($q['proyecto_id'] ?? null);
+    // array_values: los EXISTS de abajo usan el indice del array para nombrar el
+    // placeholder y el alias, asi que las claves tienen que ser 0..N seguidas.
+    $etiquetaIds = array_values(array_unique(array_merge(
+        drPrFiltroMultiIds($q['etiqueta_id'] ?? null),
+        drPrResolverEtiquetaSlugs($pdo, drPrFiltroMulti($q['etiqueta'] ?? null))
+    )));
+    $listaIds = array_values(array_unique(array_merge(
+        drPrFiltroMultiIds($q['lista_id'] ?? null),
+        drPrResolverListaSlugs($pdo, drPrFiltroMulti($q['lista'] ?? null), $proyectoId)
+    )));
 
     $orderBy = $q['order_by'] ?? 'id';
     $dir     = strtolower((string)($q['dir'] ?? 'desc'));
     $limite  = isset($q['limite']) ? (int)$q['limite'] : 100;
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
+
+    // ---- Paginacion -------------------------------------------------------
+    // Dos modos, y el correcto depende de para que se pagina:
+    //
+    //   `offset`   navegacion clasica. Anda con cualquier `order_by`, pero es
+    //              INESTABLE: si entran prospectos nuevos mientras se recorre,
+    //              las paginas siguientes se corren y aparecen repetidos o se
+    //              saltean filas. Sirve para mirar, no para barrer.
+    //
+    //   `desde_id` barrido estable (keyset / seek). Pide los que tengan
+    //              `id > desde_id` ordenados por id, asi que un alta concurrente
+    //              no mueve nada de lo ya leido: no hay repetidos ni omitidos.
+    //              Ademas no degrada en profundidad — entra por la PK en vez de
+    //              contar y descartar N filas como hace OFFSET.
+    //
+    // `desde_id` GANA sobre `offset` y sobre `order_by`/`dir` si vienen los dos:
+    // el barrido solo es estable si el orden es por id ascendente, y respetar un
+    // `order_by=nombre` con un cursor de id daria un recorrido incoherente en
+    // silencio. Es el modo recomendado para armar una audiencia de envio.
+    $offset  = isset($q['offset']) ? max(0, (int)$q['offset']) : 0;
+    $desdeId = isset($q['desde_id']) && $q['desde_id'] !== '' ? max(0, (int)$q['desde_id']) : null;
 
     // `pais` / `provincia` siguen aceptandose como criterio de orden (contrato
     // publico) pero se traducen a la columna renombrada.
@@ -416,8 +656,35 @@ function handleList(PDO $pdo, array $q): void {
     if ($provinciaId !== null)  { $where[] = 'provincia_id = :provincia_id'; $params[':provincia_id'] = $provinciaId; }
     if ($correo       !== '')   { $where[] = 'correo LIKE :correo';          $params[':correo']       = '%' . $correo . '%'; }
     if ($celular      !== '')   { $where[] = 'celular LIKE :celular';        $params[':celular']      = '%' . $celular . '%'; }
+    if ($extraccionUrl   !== '') { $where[] = 'extraccion_url LIKE :extraccion_url';     $params[':extraccion_url']   = '%' . $extraccionUrl   . '%'; }
+    if ($extraccionAutor !== '') { $where[] = 'extraccion_autor LIKE :extraccion_autor'; $params[':extraccion_autor'] = '%' . $extraccionAutor . '%'; }
     if ($desde        !== '')   { $where[] = 'registrado >= :desde';         $params[':desde']        = $desde . ' 00:00:00'; }
     if ($hasta        !== '')   { $where[] = 'registrado <= :hasta';         $params[':hasta']        = $hasta . ' 23:59:59'; }
+
+    // Etiquetas asignadas y listas suscriptas, via las tablas puente.
+    //
+    // SEMANTICA CON VARIAS: AND (restrictivo). Un EXISTS por cada id elegido, o
+    // sea "que tenga TODAS estas etiquetas" = interseccion, no union. Entre
+    // etiquetas y listas tambien es AND, asi que el filtro entero se lee como
+    // una sola conjuncion: sumar un valor siempre achica el resultado.
+    //
+    // Un EXISTS por id en vez de un solo IN con `HAVING COUNT(DISTINCT ...) = N`
+    // porque cada uno entra directo por la PK compuesta de la puente y no
+    // obliga a agrupar. Mismo patron que el ABM cloud.
+    foreach ($etiquetaIds as $i => $eid) {
+        $k = ":f_etiqueta{$i}";
+        $params[$k] = $eid;
+        $where[] = 'EXISTS (SELECT 1 FROM datarocket_prospectos_etiquetas dpe' . $i . '
+                             WHERE dpe' . $i . '.prospecto_id = datarocket_prospectos.id
+                               AND dpe' . $i . '.etiqueta_id = ' . $k . ')';
+    }
+    foreach ($listaIds as $i => $lid) {
+        $k = ":f_lista{$i}";
+        $params[$k] = $lid;
+        $where[] = 'EXISTS (SELECT 1 FROM datarocket_prospectos_listas dpl' . $i . '
+                             WHERE dpl' . $i . '.prospecto_id = datarocket_prospectos.id
+                               AND dpl' . $i . '.lista_id = ' . $k . ')';
+    }
 
     if ($search !== '') {
         $where[] = '(nombre LIKE :s1 OR empresa_nombre LIKE :s2 OR correo LIKE :s3
@@ -429,13 +696,40 @@ function handleList(PDO $pdo, array $q): void {
         $params[':s7'] = $like; $params[':s8'] = $like;
     }
 
+    // El cursor del barrido es una condicion mas del WHERE, pero se agrega
+    // DESPUES de calcular el total: `total_filtrado` tiene que contar el
+    // resultado entero, no lo que queda por delante del cursor.
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+    // Cuantos cumplen los filtros, sin LIMIT. Es lo que le dice al cliente
+    // cuantas paginas le quedan (y a un envio masivo, a cuanta gente le va a
+    // llegar antes de empezar a mandar). Mismo calculo que la tarjeta "Total"
+    // del ABM cloud.
+    $stmtTotal = $pdo->prepare("SELECT COUNT(*) FROM datarocket_prospectos {$sqlWhere}");
+    $stmtTotal->execute($params);
+    $totalFiltrado = (int)$stmtTotal->fetchColumn();
+
+    if ($desdeId !== null) {
+        // Modo barrido: el cursor manda y el orden se fuerza por id ascendente.
+        $where[]              = 'id > :desde_id';
+        $params[':desde_id']  = $desdeId;
+        $sqlWhere             = 'WHERE ' . implode(' AND ', $where);
+        $orderBy              = 'id';
+        $dirSql               = 'ASC';
+        $sqlLimit             = "LIMIT {$limite}";
+    } else {
+        // `$limite` y `$offset` ya son int saneados, no llegan del cliente como
+        // texto: interpolarlos es seguro. Van interpolados y no por bind porque
+        // en LIMIT / OFFSET, con emulacion de prepares apagada, PDO los manda
+        // como string y MySQL rechaza la sentencia.
+        $sqlLimit = "LIMIT {$limite}" . ($offset > 0 ? " OFFSET {$offset}" : '');
+    }
 
     $sql = "SELECT " . DR_CT_COLS . "
               FROM datarocket_prospectos
               {$sqlWhere}
               ORDER BY {$orderBy} {$dirSql}
-              LIMIT {$limite}";
+              {$sqlLimit}";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
@@ -446,8 +740,24 @@ function handleList(PDO $pdo, array $q): void {
     drPrAttachListaIds($pdo, $rows);
     drPrAttachEtiquetaIds($pdo, $rows);
 
+    // `cursor` es el valor para el `desde_id` de la proxima vuelta, y solo tiene
+    // sentido en modo barrido: con `offset` el orden puede ser por nombre y el
+    // id del ultimo no sirve de cursor. Va null en ese caso para no invitar a
+    // usarlo mal.
+    $cursor = ($desdeId !== null && $rows) ? (int)$rows[count($rows) - 1]['id'] : null;
+
     jsonOk([
-        'total' => count($rows),
+        // Sin cambios: la cantidad de filas de ESTA respuesta. Se mantiene con
+        // el mismo significado que antes de la paginacion para no romper a
+        // ningun cliente.
+        'total'          => count($rows),
+        'total_filtrado' => $totalFiltrado,
+        'limite'         => $limite,
+        'offset'         => $desdeId !== null ? null : $offset,
+        'cursor'         => $cursor,
+        'hay_mas'        => $desdeId !== null
+            ? count($rows) === $limite
+            : ($offset + count($rows)) < $totalFiltrado,
         'items' => $rows,
     ]);
 }
@@ -706,6 +1016,12 @@ function drPrSanitize(array $in): array {
         'instagram'   => drPrNullableStr($in['instagram']           ?? null, 255),
         'tiktok'      => drPrNullableStr($in['tiktok']              ?? null, 255),
         'comentarios' => drPrNullableStr($in['comentarios']         ?? null, 500),
+        // Procedencia: de que pagina se extrajo el prospecto y quien lo
+        // extrajo. Van SIN normalizar — la URL se guarda tal cual vino, con
+        // esquema y con las mayusculas del path y del query, porque es un link
+        // para volver a la fuente. Ver el encabezado.
+        'extraccion_url'   => drPrNullableStr($in['extraccion_url']   ?? null, 500),
+        'extraccion_autor' => drPrNullableStr($in['extraccion_autor'] ?? null, 255),
         'registrado'  => drPrNullableDateTime($in['registrado']     ?? null),
     ];
     // Un correo cargado por error en `web` se rescata a `correo` cuando ese
@@ -1340,14 +1656,14 @@ function handleCreate(PDO $pdo, array $in): void {
                      persona_nombre, persona_genero, persona_nacimiento, persona_dni,
                      domicilio, ciudad, ubicacion, localidad_id,
                      provincia_id, pais_id, telefono, celular, whatsapp, correo, web, facebook,
-                     instagram, tiktok, comentarios, registrado)
+                     instagram, tiktok, comentarios, extraccion_url, extraccion_autor, registrado)
                 VALUES
                     (:uuid, :tipo, :nombre,
                      :empresa_nombre, :empresa_rubro, :empresa_actividad, :empresa_cargo,
                      :persona_nombre, :persona_genero, :persona_nacimiento, :persona_dni,
                      :domicilio, :ciudad, :ubicacion, :localidad_id,
                      :provincia_id, :pais_id, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
-                     :instagram, :tiktok, :comentarios, :registrado)";
+                     :instagram, :tiktok, :comentarios, :extraccion_url, :extraccion_autor, :registrado)";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
             ':uuid'               => $p['uuid'],
@@ -1376,6 +1692,8 @@ function handleCreate(PDO $pdo, array $in): void {
             ':instagram'          => $p['instagram'],
             ':tiktok'             => $p['tiktok'],
             ':comentarios'        => $p['comentarios'],
+            ':extraccion_url'     => $p['extraccion_url'],
+            ':extraccion_autor'   => $p['extraccion_autor'],
             ':registrado'         => $p['registrado'],
         ]);
         $newId = (int)$pdo->lastInsertId();
@@ -1462,6 +1780,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
                     instagram          = :instagram,
                     tiktok             = :tiktok,
                     comentarios        = :comentarios,
+                    extraccion_url     = :extraccion_url,
+                    extraccion_autor   = :extraccion_autor,
                     registrado         = :registrado
                 WHERE id = :id";
         $stmt = $pdo->prepare($sql);
@@ -1491,6 +1811,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             ':instagram'          => $p['instagram'],
             ':tiktok'             => $p['tiktok'],
             ':comentarios'        => $p['comentarios'],
+            ':extraccion_url'     => $p['extraccion_url'],
+            ':extraccion_autor'   => $p['extraccion_autor'],
             ':registrado'         => $p['registrado'],
             ':id'                 => $id,
         ]);

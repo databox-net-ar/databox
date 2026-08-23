@@ -24,6 +24,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once dirname(__DIR__) . '/_lib/log.php';
+require_once dirname(__DIR__) . '/_lib/telegram.php';
 
 // Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
 // del panel). Va antes de la auth para que los 401 tambien caigan adentro, y
@@ -206,6 +207,11 @@ function handleSend(array $in): void {
         }
         file_put_contents($bootstrap, $src);
     }
+    // Preflight de permisos. MadelineProto escribe el lock del phar, el log y
+    // la sesion dentro del canalDir, y si no puede muere con un TypeError de
+    // flock() que no dice nada del problema real. Ver api/v4/_lib/telegram.php.
+    telegramCanalPreflight($canalDir, (string)$canal['slug']);
+
     // chdir al canalDir ANTES del require: MadelineProto usa cwd para
     // ubicar recursos temporales (auto-restart bootstrap, lock files
     // adicionales). Sin chdir, MadelineProto contamina el root de

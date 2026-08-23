@@ -1600,6 +1600,27 @@ CREATE TABLE `datarocket_prospectos`  (
   `instagram` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
   `tiktok` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '',
   `comentarios` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  -- PROCEDENCIA DEL DATO — de donde se extrajo el prospecto y quien lo extrajo.
+  -- Migracion 20260823_1000 (renombro `origen_url`, de la 20260822_1000: la
+  -- palabra `origen` ya significa "el canal por el que entro esto" en seis
+  -- tablas del esquema y sumarle un septimo sentido la volvia inservible).
+  --
+  -- Las dos se guardan TAL CUAL vienen, SIN normalizar. En particular
+  -- `extraccion_url` conserva el esquema y las mayusculas del path y del query,
+  -- que es donde viven los ids que identifican la fuente (`/p/MLA-123`,
+  -- `?ref=Xk9Q`): es un link para volver a abrir. NO pasa por
+  -- prospectoNormalizarWeb(), que hace exactamente lo contrario. Ojo con la
+  -- confusion facil: `web` es el sitio DEL prospecto, `extraccion_url` es la
+  -- pagina DE LA QUE LO SACAMOS.
+  --
+  -- `extraccion_autor` es texto libre porque casi nunca es un usuario del
+  -- panel: puede ser una persona ('Javier Alvarez') o un proceso
+  -- ('scraper-paginas-amarillas'). Por eso no es FK a `usuarios`.
+  --
+  -- Nullable y sin backfill: las filas historicas no tienen de donde sacar el
+  -- dato y quedan en NULL.
+  `extraccion_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `extraccion_autor` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `registrado` datetime(0) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_dr_prospectos_localidad`(`localidad_id`) USING BTREE,
@@ -1616,6 +1637,15 @@ CREATE TABLE `datarocket_prospectos`  (
   -- unicidad la sostiene la capa PHP hasta que se depuren esos duplicados.
   INDEX `idx_dr_prospectos_correo`(`correo`) USING BTREE,
   INDEX `idx_dr_prospectos_celular`(`celular`) USING BTREE,
+  -- Chequeo previo del bot: `?verificar=1&extraccion_url=...` pregunta si esa
+  -- pagina ya se extrajo ANTES de gastar el scraping. Sin indice esa pregunta
+  -- es un full scan en cada iteracion. Migracion 20260823_1000.
+  --
+  -- NO es UNIQUE a proposito: una sola URL de listado da de alta legitimamente
+  -- muchos prospectos (una pagina de resultados con 20 empresas sale de una
+  -- unica URL). Por eso `extraccion_url` tampoco participa del 409 de unicidad
+  -- del alta — ese sigue siendo solo `correo` / `celular`.
+  INDEX `idx_dr_prospectos_extraccion_url`(`extraccion_url`) USING BTREE,
   CONSTRAINT `fk_dr_prospectos_localidad` FOREIGN KEY (`localidad_id`) REFERENCES `localidades` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT `fk_dr_prospectos_provincia` FOREIGN KEY (`provincia_id`) REFERENCES `provincias` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT `fk_dr_prospectos_pais` FOREIGN KEY (`pais_id`) REFERENCES `paises` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT

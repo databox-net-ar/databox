@@ -20,6 +20,13 @@
 // direccion valida se rechaza con 400; una `web` que no sea una URL va a NULL,
 // salvo que sea un correo y `correo` este vacio (ahi se rescata).
 //
+// `extraccion_url` / `extraccion_autor` son la excepcion: NO se normalizan. Son
+// la procedencia del dato — de que pagina se extrajo el prospecto y quien lo
+// extrajo (una persona o un bot). La URL se guarda tal cual vino, con esquema y
+// respetando mayusculas, porque el path y el query son case sensitive y ahi
+// viven los ids que identifican la fuente. Ver el comentario de las columnas en
+// db/schema.sql.
+//
 // Buscador rapido (`?q=`): matchea nombre / empresa_nombre / correo / telefono /
 // celular / whatsapp / persona_dni / uuid del prospecto, y ademas el nombre de las
 // etiquetas asignadas y de las listas suscriptas (via las puentes
@@ -33,8 +40,9 @@
 // `etiqueta_id` y `lista_id` son MULTI-VALOR (el modal de filtros los pinta
 // con un picker de chips + typeahead, no con un select). Aceptan '5', '5,14'
 // o el parametro repetido — ver drPrFiltroIds(). Con varios valores la
-// semantica es OR dentro del campo ("cualquiera de estas etiquetas") y AND
-// entre campos ("alguna de estas etiquetas Y alguna de estas listas").
+// semantica es AND, tanto dentro del campo ("TODAS estas etiquetas") como
+// entre campos ("todas estas etiquetas Y todas estas listas"): agregar un
+// chip siempre restringe el resultado.
 //
 // Ubicacion: `pais_id` / `provincia_id` / `localidad_id` son INT con FK a
 // `paises` / `provincias` / `localidades` (migracion 20260815_1000). Antes eran
@@ -52,7 +60,8 @@ const DR_CT_COLS = "id, uuid, tipo, nombre,
                     persona_nombre, persona_genero, persona_nacimiento, persona_dni,
                     domicilio, ciudad, ubicacion,
                     localidad_id, provincia_id, pais_id, telefono, celular, whatsapp, correo,
-                    web, facebook, instagram, tiktok, comentarios, registrado";
+                    web, facebook, instagram, tiktok, comentarios,
+                    extraccion_url, extraccion_autor, registrado";
 
 // Valores validos para `datarocket_prospectos.tipo`. Filas historicas quedan
 // en NULL hasta ser editadas (el ABM las obliga a elegir tipo al guardar).
@@ -218,36 +227,36 @@ function handleList(PDO $pdo, array $q): void {
     // con CASCADE). EXISTS evita duplicados y no obliga a aliasar la tabla
     // principal.
     //
-    // SEMANTICA CON VARIAS SELECCIONADAS: OR dentro del campo (el IN), o sea
-    // "que este en CUALQUIERA de estas listas" = union de audiencias. Es lo
-    // que espera un filtro facetado y lo unico util en la practica: con AND,
-    // elegir dos listas devolveria casi siempre cero (un prospecto rara vez
-    // esta en varias a la vez) y se leeria como que el filtro esta roto.
-    // Entre Listas y Etiquetas, en cambio, se combina con AND — son dos
-    // condiciones distintas del mismo query.
+    // SEMANTICA CON VARIAS SELECCIONADAS: AND (restrictivo). Un EXISTS por
+    // cada lista elegida, o sea "que este en TODAS estas listas" =
+    // interseccion de audiencias. Elegir mas listas siempre achica el
+    // resultado, nunca lo agranda. Entre Listas y Etiquetas tambien es AND,
+    // asi que el filtro entero se lee como una sola conjuncion.
+    //
+    // Se emite un EXISTS por id en vez de un solo subquery con
+    // `HAVING COUNT(DISTINCT ...) = N` porque cada uno entra directo por la PK
+    // compuesta de la puente y no obliga a agrupar.
     if ($listaIds) {
-        $ph = [];
         foreach ($listaIds as $i => $lid) {
             $k = ":lista_id{$i}";
-            $ph[] = $k;
             $params[$k] = $lid;
+            $where[] = 'EXISTS (SELECT 1 FROM datarocket_prospectos_listas dcl' . $i . '
+                                WHERE dcl' . $i . '.prospecto_id = datarocket_prospectos.id
+                                  AND dcl' . $i . '.lista_id = ' . $k . ')';
         }
-        $where[] = 'EXISTS (SELECT 1 FROM datarocket_prospectos_listas dcl
-                            WHERE dcl.prospecto_id = datarocket_prospectos.id
-                              AND dcl.lista_id IN (' . implode(',', $ph) . '))';
     }
     // Etiquetas asignadas al prospecto, via `datarocket_prospectos_etiquetas`.
-    // Mismo patron y misma semantica OR-dentro/AND-entre que las listas.
+    // Mismo patron y misma semantica AND-dentro/AND-entre que las listas: con
+    // "San Juan" + "inmobiliaria" elegidas, el prospecto tiene que tener las
+    // dos etiquetas para aparecer.
     if ($etiquetaIds) {
-        $ph = [];
         foreach ($etiquetaIds as $i => $eid) {
             $k = ":etiqueta_id{$i}";
-            $ph[] = $k;
             $params[$k] = $eid;
+            $where[] = 'EXISTS (SELECT 1 FROM datarocket_prospectos_etiquetas dce' . $i . '
+                                WHERE dce' . $i . '.prospecto_id = datarocket_prospectos.id
+                                  AND dce' . $i . '.etiqueta_id = ' . $k . ')';
         }
-        $where[] = 'EXISTS (SELECT 1 FROM datarocket_prospectos_etiquetas dce
-                            WHERE dce.prospecto_id = datarocket_prospectos.id
-                              AND dce.etiqueta_id IN (' . implode(',', $ph) . '))';
     }
     if ($tipo === '_null') {
         // Centinela para "sin tipo asignado" — usado por el filtro del ABM
@@ -623,6 +632,12 @@ function sanitizePayload(array $in): array {
         'instagram'   => nullableStr($in['instagram']               ?? null, 255),
         'tiktok'      => nullableStr($in['tiktok']                  ?? null, 255),
         'comentarios' => nullableStr($in['comentarios']             ?? null, 500),
+        // Procedencia del dato. A diferencia de `web` van SIN normalizar: la
+        // URL se guarda tal cual vino (con esquema y con las mayusculas del
+        // path y del query, que son case sensitive) porque es un link para
+        // volver a la fuente. Solo se recortan y se truncan.
+        'extraccion_url'   => nullableStr($in['extraccion_url']     ?? null, 500),
+        'extraccion_autor' => nullableStr($in['extraccion_autor']   ?? null, 255),
         'registrado'  => nullableDateTime($in['registrado']         ?? null),
     ];
     // Un correo cargado por error en `web` se rescata a `correo` cuando ese
@@ -662,14 +677,14 @@ function handleCreate(PDO $pdo, array $in): void {
                  persona_nombre, persona_genero, persona_nacimiento, persona_dni,
                  domicilio, ciudad, ubicacion, localidad_id,
                  provincia_id, pais_id, telefono, celular, whatsapp, correo, web, facebook,
-                 instagram, tiktok, comentarios, registrado)
+                 instagram, tiktok, comentarios, extraccion_url, extraccion_autor, registrado)
             VALUES
                 (:uuid, :tipo, :nombre,
                  :empresa_nombre, :empresa_rubro, :empresa_actividad, :empresa_cargo,
                  :persona_nombre, :persona_genero, :persona_nacimiento, :persona_dni,
                  :domicilio, :ciudad, :ubicacion, :localidad_id,
                  :provincia_id, :pais_id, :telefono, :celular, :whatsapp, :correo, :web, :facebook,
-                 :instagram, :tiktok, :comentarios, :registrado)
+                 :instagram, :tiktok, :comentarios, :extraccion_url, :extraccion_autor, :registrado)
         ";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
@@ -699,6 +714,8 @@ function handleCreate(PDO $pdo, array $in): void {
             ':instagram'          => $p['instagram'],
             ':tiktok'             => $p['tiktok'],
             ':comentarios'        => $p['comentarios'],
+            ':extraccion_url'     => $p['extraccion_url'],
+            ':extraccion_autor'   => $p['extraccion_autor'],
             ':registrado'         => $p['registrado'],
         ]);
         $newId = (int)$pdo->lastInsertId();
@@ -768,6 +785,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
                 instagram          = :instagram,
                 tiktok             = :tiktok,
                 comentarios        = :comentarios,
+                extraccion_url     = :extraccion_url,
+                extraccion_autor   = :extraccion_autor,
                 registrado         = :registrado
             WHERE id = :id
         ";
@@ -798,6 +817,8 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             ':instagram'          => $p['instagram'],
             ':tiktok'             => $p['tiktok'],
             ':comentarios'        => $p['comentarios'],
+            ':extraccion_url'     => $p['extraccion_url'],
+            ':extraccion_autor'   => $p['extraccion_autor'],
             ':registrado'         => $p['registrado'],
             ':id'                 => $id,
         ]);

@@ -182,6 +182,24 @@ EOF
 echo "  OK"
 echo ""
 
+# ---- 3d. Reponer el owner de las sesiones de MadelineProto ----
+# api/v4/telegram/canales/<telefono>/ es runtime state que Apache (www-data)
+# tiene que poder ESCRIBIR: el `madeline-<v>.phar.lock` que MadelineProto toma
+# con flock(), el MadelineProto.log y todo session.madeline/. Cualquier copia
+# hecha desde el server (scp/cp como ec2-user, docker cp como root) deja esos
+# archivos con otro owner y todo envio de Telegram pasa a fallar con un
+# "flock(): Argument #1 must be of type resource, bool given" — incidente prod
+# 2026-08-23.
+#
+# docker/entrypoint.sh ya hace este chown, pero SOLO al arrancar el contenedor,
+# y el deploy normal no lo recrea (el PHP entra por bind mount). Por eso se
+# re-aplica aca, en cada subida. Es idempotente y no interrumpe el servicio.
+echo "  Reponiendo owner de las sesiones de Telegram (MadelineProto)..."
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" \
+    "docker exec databox-apache sh -c 'test -d /var/www/api/v4/telegram/canales && chown -R www-data:www-data /var/www/api/v4/telegram/canales || true'"
+echo "  OK"
+echo ""
+
 # ---- 4. Rebuild (opcional) / restart selectivo del contenedor ----
 # Por defecto NO se recrea el contenedor: el codigo PHP entra por bind mount
 # (./cloud, ./api, ./robot -> /var/www/...) y se sirve fresco en cada request,

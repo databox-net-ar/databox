@@ -25111,7 +25111,7 @@ async function montarPickersFiltrosDrPr() {
         hostEt, await drPrCargarEtiquetas(), drPrCsvAIds(drPrFiltros.etiqueta_id),
         {
           placeholder: 'Escribí para buscar etiquetas…',
-          ayuda: 'Enter agrega la etiqueta resaltada · filtra por cualquiera de las elegidas',
+          ayuda: 'Enter agrega la etiqueta resaltada · el prospecto debe tener todas las elegidas',
           onChange: (ids) => onFiltroChipsDrPr('etiqueta_id', ids),
         }
       );
@@ -25123,7 +25123,7 @@ async function montarPickersFiltrosDrPr() {
         hostLi, await drPrCargarListas(), drPrCsvAIds(drPrFiltros.lista_id),
         {
           placeholder: 'Escribí para buscar listas…',
-          ayuda: 'Enter agrega la lista resaltada · filtra por cualquiera de las elegidas',
+          ayuda: 'Enter agrega la lista resaltada · el prospecto debe estar en todas las elegidas',
           onChange: (ids) => onFiltroChipsDrPr('lista_id', ids),
         }
       );
@@ -25307,14 +25307,17 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
       </div>`;
   };
 
-  const linkCard = (label, value) => {
+  // `full` la pinta a lo ancho de las dos columnas: lo usa la URL de
+  // extraccion, que es una URL completa de navegador (con esquema y query) y no
+  // entra en media fila.
+  const linkCard = (label, value, full = false) => {
     const empty = value == null || value === '';
     const href  = empty ? '' : (String(value).match(/^https?:\/\//i) ? value : ('https://' + value));
     const inner = empty
       ? 'Sin dato'
-      : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">${esc(value)}</a>`;
+      : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all">${esc(value)}</a>`;
     return `
-      <div class="data-row">
+      <div class="data-row${full ? ' full' : ''}">
         <span class="data-label">${esc(label)}</span>
         <span class="data-value${empty ? ' muted' : ''}">${inner}</span>
       </div>`;
@@ -25460,15 +25463,31 @@ function renderConsultaDrPr(c, oportunidades = [], interacciones = []) {
       </dl>
     </div>
 
-    <!-- Orden de Clasificacion: Etiquetas, Listas y Comentarios al final.
-         Primero como esta clasificado el prospecto (etiquetas y listas, que es
-         lo que se consulta seguido) y despues el texto libre. La tarjeta
-         Origen se fue con la columna (migracion 20260817_2000). -->
+    <!-- Orden de Clasificacion: Etiquetas, Listas, Comentarios y al final la
+         procedencia. Primero como esta clasificado el prospecto (etiquetas y
+         listas, que es lo que se consulta seguido), despues el texto libre y
+         por ultimo de donde salio la ficha. La tarjeta Origen vieja se fue con
+         la columna (migracion 20260817_2000) y no tiene nada que ver con estas
+         dos, que son de la migracion 20260823_1000.
+         La URL de extraccion va con linkCard porque es abrible — es la pagina
+         de la que se extrajo el prospecto, no el sitio del prospecto (eso es
+         la Web, en la pestaña Contacto). Sin backticks en este comentario:
+         esta dentro de un template literal y lo cortarian.
+         Las dos de procedencia comparten fila al 50/50 (autor primero, URL
+         despues), en un segundo data-list de dos columnas — el mismo recurso
+         que usa la pestaña Ubicacion para mezclar anchos en un panel. Ninguna
+         de las dos lleva el flag de ancho completo: eso las haria ocupar las
+         dos columnas. -->
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <dl class="data-list" style="grid-template-columns:1fr">
         ${pillsRow('Etiquetas', c.etiqueta_nombres, c.etiqueta_ids, 'etiqueta', 'datarocket.etiquetas.consultar')}
         ${pillsRow('Listas',    c.lista_nombres,    c.lista_ids,    'lista',    'datarocket.listas.consultar')}
         ${card('Comentarios', c.comentarios, true)}
+      </dl>
+
+      <dl class="data-list" style="grid-template-columns:repeat(2,1fr)">
+        ${card('Autor de la extracción', c.extraccion_autor)}
+        ${linkCard('URL de extracción',  c.extraccion_url)}
       </dl>
     </div>
 
@@ -25883,11 +25902,6 @@ function formDrPrHtml(c, paises) {
                  placeholder="www.empresa.com" style="font-family:monospace">
         </div>
       </div>
-      <p style="margin:4px 0 0;font-size:.75rem;color:var(--muted)">
-        Los teléfonos se guardan como 10 dígitos, sin 0, sin 15 y sin
-        separadores; el correo siempre en minúscula. La web se guarda sin
-        <code>http://</code>: se pega la dirección completa y se recorta sola.
-      </p>
     </div>
 
     <!-- Domicilio y ciudad comparten fila al 50/50 (igual que el modal de
@@ -25931,7 +25945,8 @@ function formDrPrHtml(c, paises) {
     </div>
 
     <!-- Mismo orden que el modal de consulta: primero como se clasifica el
-         prospecto (etiquetas y listas) y recien al final el texto libre. -->
+         prospecto (etiquetas y listas), despues el texto libre y al final la
+         procedencia (de donde salio la ficha y quien la trajo). -->
     <div class="modal-tabpanel" data-panel="comentarios" hidden>
       <div class="form-group">
         <label>Etiquetas</label>
@@ -25944,6 +25959,28 @@ function formDrPrHtml(c, paises) {
       <div class="form-group">
         <label>Comentarios</label>
         <textarea id="drcComentarios" rows="3" maxlength="500">${v('comentarios')}</textarea>
+      </div>
+      <!-- Procedencia, al 50/50 y en el mismo orden que el modal de consulta:
+           primero quien extrajo y despues de donde.
+           La URL, al reves que Web, se guarda TAL CUAL: con esquema y
+           respetando mayusculas (el path y el query son case sensitive y ahi
+           viven los ids que identifican la fuente). Por eso el placeholder
+           muestra el https:// y no se normaliza nada en cliente.
+           El input es de tipo text y no url: tambien se acepta pegada sin
+           esquema, y el modal de consulta le antepone https:// al armar el
+           link (linkCard). Sin backticks en este comentario: esta dentro de un
+           template literal y lo cortarian. -->
+      <div class="form-row">
+        <div class="form-group">
+          <label>Autor de la extracción</label>
+          <input type="text" id="drcExtraccionAutor" maxlength="255" value="${v('extraccion_autor')}"
+                 placeholder="Nombre de la persona o del bot">
+        </div>
+        <div class="form-group">
+          <label>URL de extracción</label>
+          <input type="text" id="drcExtraccionUrl" maxlength="500" value="${v('extraccion_url')}"
+                 placeholder="https://sitio.com/listado?id=123" style="font-family:monospace">
+        </div>
       </div>
     </div>
 
@@ -26023,6 +26060,10 @@ async function guardarDrPr(id, btn) {
     instagram:     $('#drcInstagram').value.trim(),
     tiktok:        $('#drcTiktok').value.trim(),
     comentarios:   $('#drcComentarios').value,
+    // Procedencia. Sin normalizar (ni acá ni en el backend): la URL se guarda
+    // tal cual, con esquema y con las mayúsculas del path.
+    extraccion_url:   $('#drcExtraccionUrl').value.trim(),
+    extraccion_autor: $('#drcExtraccionAutor').value.trim(),
     // Suscripciones a listas y etiquetas asignadas → tablas puente
     // `datarocket_prospectos_listas` / `datarocket_prospectos_etiquetas`. El
     // API hace full-replace: mandamos el estado deseado (incluido `[]` para

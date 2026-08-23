@@ -25,6 +25,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
+require_once dirname(__DIR__) . '/_lib/telegram.php';
 
 // ---------------------------------------------------------------------------
 // Auth (mirror de mensajes.php)
@@ -149,6 +150,12 @@ function handleHealth(array $in): void {
         }
         file_put_contents($bootstrap, $src);
     }
+
+    // Mismo preflight de permisos que mensajes.php: sin permiso de escritura
+    // en el canalDir, MadelineProto muere con un TypeError de flock() que no
+    // explica nada. Ver api/v4/_lib/telegram.php.
+    telegramCanalPreflight($canalDir, (string)$canal['slug']);
+
     chdir($canalDir);
     require_once $bootstrap;
 

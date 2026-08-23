@@ -14,9 +14,12 @@ Las operaciones que motivan el microservicio:
 | Dar de alta un prospecto desde afuera      | `POST /v4/datarocket/prospectos`                      |
 | Listar los prospectos                      | `GET /v4/datarocket/prospectos`                       |
 | Saber si un prospecto ya existe            | `GET /v4/datarocket/prospectos?verificar=1`           |
+| **Saber si una pagina ya se extrajo**      | `GET /v4/datarocket/prospectos?verificar=1&extraccion_url=…` |
 | Corregirle un campo suelto                 | `PATCH /v4/datarocket/prospectos?id=N`                |
 | Etiquetarlo                                | `etiqueta_ids` + [/v4/datarocket/etiquetas](etiquetas.md) |
 | Suscribirlo a una lista                    | `lista_ids` + [/v4/datarocket/listas](listas.md)      |
+| **Armar una audiencia** (todos los que tengan estas N etiquetas) | `GET ?etiqueta=expo,cordoba` |
+| **Recorrer un resultado grande sin repetidos** | `GET ?desde_id=<cursor>`                          |
 | **Registrar una consulta que entra por la web** | `POST` con `embudo` + `asunto` + `mensaje`       |
 
 **Un `POST` con `embudo`, `asunto` y `mensaje` crea tres registros: el
@@ -28,6 +31,22 @@ claves el alta crea unicamente el prospecto, como siempre. Ver
 **Un prospecto no se puede dar de alta si su `correo` o su `celular` ya estan
 registrados.** El `POST` corta con `409`; `?verificar=1` permite preguntarlo
 antes. Ver [Unicidad de correo y celular](#unicidad-de-correo-y-celular).
+
+**El listado filtra por etiquetas y listas con semantica `AND`, y se pagina.**
+`?etiqueta=visitante,cordoba` devuelve solo los que tienen **las dos**, no los
+que tienen alguna. Para recorrer un resultado grande —armar la audiencia de un
+envio— hay cursor estable con `?desde_id=`, que no repite ni saltea filas aunque
+entren altas nuevas en el medio. Ver
+[Filtrar por etiquetas y listas](#filtrar-por-etiquetas-y-listas) y
+[Paginacion](#paginacion).
+
+**Un bot puede preguntar si una pagina ya se extrajo antes de gastar el
+scraping.** Se guarda `extraccion_url` en el alta y despues se consulta con
+`GET ?verificar=1&extraccion_url=...`: si responde `existe: true`, esa fuente ya
+se proceso y se saltea. Va por indice, asi que se puede llamar en cada iteracion
+del recorrido. **`extraccion_url` no participa del `409`** — una sola URL de
+listado da de alta muchos prospectos legitimamente. Ver
+[El chequeo previo del bot](#el-chequeo-previo-del-bot).
 
 **El alta con consulta no rechaza duplicados.** Ahi identifica el `correo`, y si
 la llamada no lo trae identifica el `celular`: si el valor ya esta en una ficha,
@@ -977,6 +996,8 @@ listado y consulta individual):
 | `instagram`          | varchar(255) |                                                                                                                                                          |
 | `tiktok`             | varchar(255) |                                                                                                                                                          |
 | `comentarios`        | varchar(500) |                                                                                                                                                          |
+| `extraccion_url`     | varchar(500) | **De donde se extrajo** el prospecto (el listado, el padron, el perfil, la landing del formulario). Se guarda **tal cual se manda**: no se normaliza. Indexada — es la que consulta `?verificar=1`. No confundir con `web`, que es el sitio *del* prospecto. |
+| `extraccion_autor`   | varchar(255) | **Quien hizo la extraccion**: texto libre, una persona (`Javier Alvarez`) o un proceso (`scraper-paginas-amarillas`). No es FK a `usuarios`.               |
 | `registrado`         | datetime     | Fecha de alta. Si no se manda, default = `NOW()` en `America/Argentina/Buenos_Aires`.                                                                      |
 
 > **¿De donde saco esos tres ids?** De
@@ -1070,6 +1091,23 @@ se reemplazan por completo.
   > Instagram (`?igshid=ZDc4ODBmNjlmNQ==`). Es una decision explicita del
   > 2026-08-18: se prioriza el campo uniforme. Aplica solo a lo que entra —
   > las filas ya cargadas conservan su capitalizacion hasta que se las edite.
+- **`extraccion_url` y `extraccion_autor`**: **no se normalizan**. Se persisten
+  tal cual llegan — se conserva el esquema y **no** se bajan a minuscula. Solo
+  se recorta el whitespace de los bordes y se truncan (500 / 255). Un valor que
+  no parezca una URL tampoco se descarta: se guarda igual.
+
+  | entrada | `web` guardaria | `extraccion_url` guarda |
+  |---|---|---|
+  | `https://Acme.com/p/MLA-123?ref=Xk9Q` | `acme.com/p/mla-123?ref=xk9q` | `https://Acme.com/p/MLA-123?ref=Xk9Q` |
+
+  Es deliberado: `extraccion_url` es un link para **volver a la fuente**, y el
+  path y el query son case sensitive — ahi viven justamente los ids que
+  identifican el resultado del que se saco la ficha. Bajarlos, como hace `web`,
+  lo romperia. Del lado del cliente conviene mandar la URL completa con esquema.
+
+  > **La comparacion si es insensible.** La columna es `utf8mb4_general_ci`, asi
+  > que el `=` de `?verificar=1` pliega mayusculas y acentos: se **guarda**
+  > respetando la capitalizacion pero se **busca** sin depender de ella.
 
 Reglas completas en
 [cloud/api/lib/prospectos_normalizar.php](../../../cloud/api/lib/prospectos_normalizar.php),
@@ -1079,21 +1117,68 @@ compartidas con el ABM cloud.
 
 ## `GET /v4/datarocket/prospectos?verificar=1` — Verificacion de existencia
 
-Responde si un alta con esos datos seria rechazada, **sin escribir nada**.
-Corre exactamente la misma normalizacion y la misma busqueda que el `POST`, con
-lo cual las dos respuestas no pueden divergir: `existe: false` implica que el
-alta pasa el chequeo de unicidad (los otros obligatorios — `tipo` e identidad —
-se validan aparte, en el alta).
+Responde si ya hay algo cargado con esos datos, **sin escribir nada**. Sirve
+para dos preguntas distintas, y por eso devuelve **dos banderas**:
+
+| Bandera        | Contesta                                            | La mira… |
+| -------------- | --------------------------------------------------- | -------- |
+| `existe`       | "¿esto ya esta en la base?"                          | El **bot**, para saltearse el scraping. |
+| `bloquea_alta` | "¿si posteo esto, me rebota con `409`?"              | El **formulario**, antes de dar de alta. |
+
+Para `correo` / `celular` corre exactamente la misma normalizacion y la misma
+busqueda que el `POST`, con lo cual las dos respuestas no pueden divergir:
+`bloquea_alta: false` implica que el alta pasa el chequeo de unicidad (los otros
+obligatorios — `tipo` e identidad — se validan aparte, en el alta).
+
+**`extraccion_url` no bloquea el alta**: una misma URL de listado da de alta
+legitimamente muchos prospectos (una pagina de resultados con 20 empresas sale
+de una unica URL), asi que no participa del `409`. Puede devolver
+`existe: true` con `bloquea_alta: false` — que es exactamente el caso del bot.
+
+> **Compatibilidad.** Hasta el 2026-08-23 `existe` significaba lo que hoy
+> significa `bloquea_alta`. Las dos coinciden en cualquier llamada que **no**
+> mande `extraccion_url`, o sea en todas las que existian antes del campo:
+> ningun integrador viejo cambia de comportamiento.
 
 ### Query params
 
-| Parametro   | Tipo   | Notas                                                                     |
-| ----------- | ------ | ------------------------------------------------------------------------- |
-| `verificar` | flag   | `1` / `true` / cualquier valor no vacio. `0`, `false`, `no` lo desactivan. |
-| `correo`    | string | Se normaliza antes de buscar.                                             |
-| `celular`   | string | Se normaliza antes de buscar.                                             |
+| Parametro        | Tipo   | Notas                                                                     |
+| ---------------- | ------ | ------------------------------------------------------------------------- |
+| `verificar`      | flag   | `1` / `true` / cualquier valor no vacio. `0`, `false`, `no` lo desactivan. |
+| `correo`         | string | Se normaliza antes de buscar. Cuenta para `bloquea_alta`.                 |
+| `celular`        | string | Se normaliza antes de buscar. Cuenta para `bloquea_alta`.                 |
+| `extraccion_url` | string | **No** se normaliza: se compara entera. **No** cuenta para `bloquea_alta`. |
 
-Al menos uno de `correo` / `celular` tiene que venir con contenido.
+Al menos uno de los tres tiene que venir con contenido.
+
+> La comparacion de `extraccion_url` es **exacta pero insensible a mayusculas**
+> (la columna es `utf8mb4_general_ci`). No es un `LIKE`: para busqueda parcial
+> esta el filtro homonimo del [listado](#get-v4datarocketprospectos--listado).
+
+### El chequeo previo del bot
+
+Es el caso de uso que motiva el campo. Antes de gastar una extraccion:
+
+```bash
+curl -G "https://api.databox.net.ar/v4/datarocket/prospectos" \
+  -H "Authorization: Bearer $APIKEY" \
+  --data-urlencode "verificar=1" \
+  --data-urlencode "extraccion_url=https://listado.mercadolibre.com.ar/p/MLA-123"
+```
+
+```json
+{ "ok": true, "data": { "existe": true, "bloquea_alta": false, "…": "…" } }
+```
+
+`existe: true` -> esa pagina ya se proceso, se saltea y se sigue con la
+siguiente. Va por el indice `idx_dr_prospectos_extraccion_url`, asi que se puede
+llamar en cada iteracion del recorrido sin costo.
+
+> **Guarda con que URL mandas.** El chequeo compara la cadena **entera**, asi
+> que solo evita el retrabajo si el bot pregunta con exactamente la misma URL
+> con la que despues va a dar de alta. Si guardas la URL de la ficha
+> (`…/p/MLA-123`) pero preguntas por la del listado (`…/resultados?q=acme`), no
+> matchea nada. Elegi una de las dos y se consistente.
 
 ### Respuesta (200)
 
@@ -1102,7 +1187,12 @@ Al menos uno de `correo` / `celular` tiene que venir con contenido.
   "ok": true,
   "data": {
     "existe": true,
-    "consulta": { "correo": "juan.perez@acme.com", "celular": "1155550981" },
+    "bloquea_alta": true,
+    "consulta": {
+      "correo": "juan.perez@acme.com",
+      "celular": "1155550981",
+      "extraccion_url": null
+    },
     "coincidencias": [
       {
         "campo": "correo",
@@ -1121,24 +1211,26 @@ Al menos uno de `correo` / `celular` tiene que venir con contenido.
 }
 ```
 
-- `existe`: `true` si hay al menos una coincidencia.
-- `consulta`: los valores **ya normalizados** con los que se busco.
-- `coincidencias`: una entrada **por campo en conflicto**. Una misma fila
-  aparece dos veces si repite el correo *y* el celular. Cortado a 20 entradas —
-  es informativo, un correo repetido 300 veces no tiene por que inflar la
-  respuesta.
+- `existe`: `true` si hay al menos una coincidencia, por cualquiera de los tres campos.
+- `bloquea_alta`: `true` solo si la coincidencia es de `correo` o `celular`.
+- `consulta`: los valores con los que se busco — `correo` y `celular` **ya
+  normalizados**, `extraccion_url` tal cual vino (o `null` si no se mando).
+- `coincidencias`: una entrada **por campo en conflicto**, con `campo` en
+  `correo` / `celular` / `extraccion_url`. Una misma fila aparece varias veces
+  si choca por mas de uno. Cortado a 20 entradas por campo — es informativo, un
+  correo repetido 300 veces no tiene por que inflar la respuesta.
 
 Cuando no hay conflicto:
 
 ```json
-{ "ok": true, "data": { "existe": false, "consulta": {...}, "coincidencias": [] } }
+{ "ok": true, "data": { "existe": false, "bloquea_alta": false, "consulta": {...}, "coincidencias": [] } }
 ```
 
 ### Errores
 
 | Codigo | Body `error`                                                | Cuando                                          |
 | ------ | ----------------------------------------------------------- | ----------------------------------------------- |
-| 400    | `Hay que indicar al menos \`correo\` o \`celular\` para verificar.` | No vino ninguno de los dos.             |
+| 400    | `Hay que indicar al menos \`correo\`, \`celular\` o \`extraccion_url\` para verificar.` | No vino ninguno de los tres. |
 | 400    | `El correo no es válido.`                                   | Vino un `correo` del que no se extrae direccion. |
 
 ### Ejemplo `curl`
@@ -1167,12 +1259,103 @@ Todos opcionales; combinables con `AND`.
 | `provincia_id`   | int    | Match exacto. Alias legacy: `provincia`.                                                                                 |
 | `correo`         | string | `LIKE '%<v>%'`. **Es busqueda parcial, no el chequeo de unicidad** — para eso usar `?verificar=1`.                        |
 | `celular`        | string | `LIKE '%<v>%'`. Idem: no normaliza el valor.                                                                             |
+| `extraccion_url` | string | `LIKE '%<v>%'`. Barrido por fuente (`mercadolibre`). **Es parcial** — para "¿esta URL exacta ya se extrajo?" usar `?verificar=1`. |
+| `extraccion_autor` | string | `LIKE '%<v>%'`. Todo lo que trajo una persona o un bot.                                                                 |
+| `etiqueta`       | string | **Multi-valor, semantica AND.** Slugs: `expo` o `expo,cordoba`. Ver [Filtrar por etiquetas y listas](#filtrar-por-etiquetas-y-listas). |
+| `etiqueta_id`    | int[]  | Lo mismo por id: `5,23`. Se combina con `etiqueta` si vienen los dos.                                                     |
+| `lista`          | string | **Multi-valor, semantica AND.** Slugs. El slug de lista es unico **por proyecto** — se desambigua con `proyecto_id`.      |
+| `lista_id`       | int[]  | Lo mismo por id.                                                                                                         |
+| `proyecto_id`    | int    | **Solo** para desambiguar un slug de `lista` repetido en dos proyectos. No filtra prospectos por si mismo.                |
 | `desde`          | date   | `YYYY-MM-DD`. Filtra `registrado >= '<desde> 00:00:00'`.                                                                 |
 | `hasta`          | date   | `YYYY-MM-DD`. Filtra `registrado <= '<hasta> 23:59:59'`.                                                                 |
 | `q`              | string | Busqueda difusa sobre `nombre`, `empresa_nombre`, `correo`, `telefono`, `celular`, `whatsapp`, `persona_dni`, `uuid`.    |
 | `order_by`       | string | Default `id`. Whitelist: `id`, `nombre`, `empresa_nombre`, `correo`, `registrado`, `pais_id`, `provincia_id`. Fuera de la lista cae a `id`. |
 | `dir`            | string | `asc` / `desc`. Default `desc`.                                                                                          |
-| `limite`         | int    | Default `100`. Clampeado a `[1, 1000]`.                                                                                  |
+| `limite`         | int    | Default `100`. Clampeado a `[1, 1000]`. Es el tamaño de pagina.                                                           |
+| `offset`         | int    | Default `0`. Paginacion clasica. Ver [Paginacion](#paginacion).                                                           |
+| `desde_id`       | int    | Barrido estable por cursor. **Pisa** a `offset`, `order_by` y `dir`. Ver [Paginacion](#paginacion).                       |
+
+### Filtrar por etiquetas y listas
+
+Los dos son **multi-valor** y la semantica es **AND**, tanto dentro de un campo
+como entre campos:
+
+```bash
+# Los que tienen visitante Y cordoba — NO los que tienen alguna de las dos.
+curl -G "https://api.databox.net.ar/v4/datarocket/prospectos" \
+  -H "Authorization: Bearer $APIKEY" \
+  --data-urlencode "etiqueta=visitante,cordoba"
+```
+
+Sobre los datos de desarrollo al 2026-08-23: `visitante` da 4.514, `cordoba` da
+1.589 y **las dos juntas dan 1.504**. Si fuera `OR` daria 4.599. Agregar un valor
+siempre achica el resultado.
+
+Se acepta **slug o id**, y se pueden mezclar:
+
+| Forma                            | Ejemplo                          |
+| -------------------------------- | -------------------------------- |
+| Slug (recomendado)               | `?etiqueta=expo,cordoba`         |
+| Id                               | `?etiqueta_id=5,23`              |
+| Mezcla                           | `?etiqueta_id=5&etiqueta=cordoba` |
+
+El slug se **normaliza antes de buscar** con la misma transformacion que usa el
+alta del catalogo, asi que `Mar del Plata`, `mar-del-plata` y `MAR DEL PLATA`
+caen todos en la misma etiqueta.
+
+> **Un slug o un id que no existe corta con `400`.** Es distinto a proposito de
+> `etiqueta_ids` en el `POST`, donde un id desconocido se descarta en silencio:
+> aca el valor es un **filtro**, y descartarlo AGRANDA el resultado en vez de
+> achicarlo. Un `?etiqueta=expo,vipp` con un typo devolveria a todos los de
+> `expo`; si ese listado alimenta un envio, le llega a gente que no
+> correspondia. Fallar ruidoso es lo unico seguro.
+
+**El slug de lista es unico por proyecto, no global** (el `UNIQUE` de la tabla es
+`(proyecto_id, slug)`). Si el mismo slug existe en dos proyectos, el endpoint
+**no elige uno**: corta con `409` y devuelve los candidatos. Se desambigua con
+`&proyecto_id=N`. Con etiquetas no pasa: ahi el slug es `UNIQUE` global.
+
+### Paginacion
+
+Hay **dos modos**, y cual conviene depende de para que se pagina.
+
+| Modo       | Parametro  | Estable | Sirve para                                  |
+| ---------- | ---------- | ------- | ------------------------------------------- |
+| Offset     | `offset`   | No      | Navegar / mirar paginas sueltas.            |
+| Cursor     | `desde_id` | **Si**  | **Barrer el resultado completo.**           |
+
+```bash
+# Modo offset — anda con cualquier order_by.
+curl -G "…/prospectos" -H "Authorization: Bearer $APIKEY" \
+  --data-urlencode "etiqueta=cordoba" --data-urlencode "limite=100" --data-urlencode "offset=100"
+
+# Modo cursor — se arranca sin desde_id y despues se encadena con el `cursor`
+# que devolvio la vuelta anterior, hasta que `hay_mas` sea false.
+curl -G "…/prospectos" -H "Authorization: Bearer $APIKEY" \
+  --data-urlencode "etiqueta=cordoba" --data-urlencode "limite=500" --data-urlencode "desde_id=114494"
+```
+
+> **Para armar una audiencia de envio, usá `desde_id`.** `offset` es inestable:
+> si entran prospectos nuevos mientras recorres —y entran todo el tiempo—, las
+> paginas siguientes se corren y terminas con **repetidos u omitidos**. El
+> cursor pide `id > desde_id`, asi que un alta concurrente no mueve nada de lo
+> ya leido. Ademas no degrada en profundidad: entra por la PK en vez de contar y
+> descartar N filas.
+
+`desde_id` **fuerza el orden por `id` ascendente** e ignora `offset`,
+`order_by` y `dir`: el barrido solo es estable con ese orden, y respetar un
+`order_by=nombre` con un cursor de id daria un recorrido incoherente en silencio.
+
+Claves de paginacion en la respuesta:
+
+| Clave            | Notas                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------- |
+| `total`          | Filas de **esta** respuesta. **Sin cambios** respecto de antes de la paginacion.          |
+| `total_filtrado` | Cuantas cumplen los filtros **sin `LIMIT`**. Es cuanta gente va a recibir el envio.       |
+| `limite`         | El tamaño de pagina efectivo (ya clampeado).                                              |
+| `offset`         | El offset aplicado. `null` en modo cursor.                                                |
+| `cursor`         | El `id` a mandar como `desde_id` en la proxima vuelta. `null` fuera del modo cursor.      |
+| `hay_mas`        | `true` si quedan filas por delante.                                                       |
 
 > **Este `?q=` no es el de los catalogos.** En [embudos](embudos.md),
 > [etiquetas](etiquetas.md) y [listas](listas.md) el parametro se retiro y hoy
@@ -1196,6 +1379,11 @@ Todos opcionales; combinables con `AND`.
   "ok": true,
   "data": {
     "total": 2,
+    "total_filtrado": 1589,
+    "limite": 2,
+    "offset": 0,
+    "cursor": null,
+    "hay_mas": true,
     "items": [
       {
         "id": 149283,
@@ -1219,8 +1407,8 @@ Todos opcionales; combinables con `AND`.
 ```
 
 `total` es la cantidad de filas devueltas (post-`LIMIT`), no el total absoluto
-en la tabla. Cada item trae todas las columnas del modelo (arriba omitidas por
-brevedad).
+en la tabla — para eso esta `total_filtrado`. Cada item trae todas las columnas
+del modelo (arriba omitidas por brevedad).
 
 ### Ejemplo `curl`
 
@@ -1283,6 +1471,12 @@ Campos con tratamiento especial:
 - **`uuid`**: si viene se persiste; si no, se genera un UUID v4.
 - **`registrado`**: si viene y es valido se persiste; si no, `NOW()` en
   `America/Argentina/Buenos_Aires`.
+- **`extraccion_url` / `extraccion_autor`**: de donde salio el dato (el listado,
+  el padron, el perfil, la landing del formulario) y quien lo trajo. Se guardan
+  **tal cual**, sin normalizar — mandá la URL completa, con `https://`. Son
+  opcionales y **no intervienen en ninguna validacion**: repetir una
+  `extraccion_url` no da `409`. Si el que postea es un bot, conviene mandar la
+  misma URL con la que despues va a preguntar en `?verificar=1`.
 - **`pais_id` / `provincia_id` / `localidad_id`**: son **ids del catalogo, no
   nombres**. Se obtienen de
   [/v4/databox/ubicaciones](../databox/ubicaciones.md) — ver
@@ -1380,6 +1574,8 @@ curl -X POST https://api.databox.net.ar/v4/datarocket/prospectos \
     "whatsapp":        "+54 9 11 5555-0981",
     "pais_id":         1,
     "ciudad":          "CABA",
+    "extraccion_url":   "https://www.paginasamarillas.com.ar/acme-sa/f-1234",
+    "extraccion_autor": "scraper-paginas-amarillas",
     "lista_ids":       [3, 7]
   }'
 ```
@@ -1552,6 +1748,14 @@ curl -X PATCH "…/prospectos?id=149299" -H "Authorization: Bearer $APIKEY" \
   -H "Content-Type: application/json" \
   -d '{"web": "contacto@acme.com"}'
 # -> {"ok":true,"data":{"id":149299,"campos":["web","correo"]}}
+
+# Anotarle la procedencia a una ficha que ya estaba cargada. Se guardan tal
+# cual, con esquema y respetando mayusculas.
+curl -X PATCH "…/prospectos?id=149299" -H "Authorization: Bearer $APIKEY" \
+  -H "Content-Type: application/json" \
+  -d '{"extraccion_url": "https://listado.mercadolibre.com.ar/p/MLA-123?ref=Xk9Q",
+       "extraccion_autor": "bot-mercadolibre v2"}'
+# -> {"ok":true,"data":{"id":149299,"campos":["extraccion_url","extraccion_autor"]}}
 ```
 
 ---
