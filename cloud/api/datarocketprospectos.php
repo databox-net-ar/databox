@@ -54,6 +54,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/prospectos_normalizar.php';
+require_once __DIR__ . '/lib/datarocket_etiquetas_uso.php';
 
 const DR_CT_COLS = "id, uuid, tipo, nombre,
                     empresa_nombre, empresa_rubro, empresa_actividad, empresa_cargo,
@@ -949,4 +950,11 @@ function syncEtiquetas(PDO $pdo, int $prospectoId, array $etiquetaIds): void {
     foreach ($validIds as $eid) {
         $ins->execute([':cid' => $prospectoId, ':eid' => $eid]);
     }
+
+    // Estampa `datarocket_etiquetas.fecha_uso` — este es el punto en que las
+    // etiquetas efectivamente se usan. Se marcan TODAS las que quedan aplicadas
+    // y no solo las que entraron nuevas: el sync es un full replace y despues
+    // del DELETE no queda con que distinguirlas. No es una imprecision que
+    // moleste — una etiqueta que se reescribe en un prospecto esta en uso.
+    marcarUsoEtiquetas($pdo, $validIds);
 }

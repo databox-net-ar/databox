@@ -5,8 +5,9 @@
 // encolarEvolutionMensaje() (cloud/api/lib/evolution_mensajes.php).
 //
 // El ABM del panel (cloud/api/datarocketinteracciones.php) es de solo lectura:
-// las interacciones se acumulan automaticamente cada vez que se encola un
-// mensaje. La tabla las lee para reconstruir el historial de prospecto.
+// las interacciones se acumulan cada vez que se encola un mensaje CON opt-in
+// explicito (ver debeRegistrarProspecto() al pie). La tabla las lee para
+// reconstruir el historial de prospecto.
 //
 // Best-effort: si el INSERT falla no bloquea el encolamiento del mensaje —
 // swallow silencioso, se devuelve null. El mensaje ya quedo en la cola, que
@@ -92,6 +93,43 @@ function registrarInteraccionMensaje(
     } catch (Throwable) {
         return null;
     }
+}
+
+// ----------------------------------------------------------------------------
+// Bandera de opt-in (`registrar_prospecto`)
+// ----------------------------------------------------------------------------
+
+// Formas de "verdadero" que aceptamos en el flag. Cubre el JSON de los
+// microservicios v4 (bool), el form-encoded de un cliente HTTP viejo ("1") y
+// el vocabulario de los flags legacy del stack ('S'/'si').
+const DR_INT_FLAG_VERDADERO = ['1', 'true', 'si', 'sí', 's', 'on', 'yes', 'y'];
+
+/**
+ * Decide si un encolamiento debe tocar Datarocket — o sea, resolver/dar de alta
+ * el prospecto y registrar la interaccion en su historial.
+ *
+ * Por DEFECTO NO. Encolar un mensaje es un acto de envio, no de CRM: la enorme
+ * mayoria de los envios transaccionales (recuperos de clave, alertas, avisos de
+ * sistema) no representan un prospecto comercial y ensuciaban
+ * `datarocket_prospectos` con una ficha por cada destinatario. El caller que si
+ * quiera alimentar el historial tiene que pedirlo explicitamente mandando
+ * `registrar_prospecto` en el payload.
+ *
+ * Lo consumen encolarAwsMensaje() y encolarEvolutionMensaje(); ambos lo leen
+ * del payload CRUDO, antes de sanitizar, porque `registrar_prospecto` no es una
+ * columna de las tablas de mensajes y los sanitizadores descartan todo lo que
+ * no lo sea.
+ *
+ * Cualquier valor fuera de la lista blanca (incluido el flag ausente) -> false.
+ */
+function debeRegistrarProspecto(array $datos): bool {
+    if (!array_key_exists('registrar_prospecto', $datos)) return false;
+    $v = $datos['registrar_prospecto'];
+    if ($v === null)  return false;
+    if (is_bool($v))  return $v;
+    if (is_int($v))   return $v === 1;
+    if (is_array($v)) return false;
+    return in_array(mb_strtolower(trim((string)$v)), DR_INT_FLAG_VERDADERO, true);
 }
 
 // $max <= 0 significa "sin limite" — lo usa `mensaje`, que va a un MEDIUMTEXT.

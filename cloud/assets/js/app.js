@@ -7823,6 +7823,16 @@ function formAwsMsgHtml(m, opciones = { proyectos: [], canales: [], plantillas: 
         <input type="datetime-local" id="awsMsgProgramado" value="${dt('programado')}">
       </div>
     </div>
+    <!-- Opt-in a Datarocket. Arranca SIEMPRE apagado, incluso al clonar: que un
+         envio previo haya alimentado el CRM no implica que este tambien deba
+         hacerlo. Espeja el default del backend (encolarAwsMensaje). -->
+    <div class="form-group">
+      <label class="toggle-switch">
+        <input type="checkbox" id="awsMsgRegistrarProspecto">
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Registrar en Datarocket (prospecto + interacción)</span>
+      </label>
+    </div>
     <div class="field-error" id="awsMsgFormError" style="display:none"></div>
   `;
 }
@@ -7870,6 +7880,8 @@ async function guardarAwsMsg(btn) {
     adjunto:      $('#awsMsgAdjunto').value.trim(),
     prioridad:    $('#awsMsgPrioridad').value,
     programado:   $('#awsMsgProgramado').value || null,
+    // Opt-in explicito: sin esto el backend no crea prospecto ni interaccion.
+    registrar_prospecto: $('#awsMsgRegistrarProspecto').checked,
   };
 
   // Validar obligatorios. Mismo criterio que AWS_MSG_REQUERIDOS_CREATE en
@@ -25085,11 +25097,20 @@ function drPrCsvAIds(csv) {
 }
 
 // Cache de etiquetas para poblar el picker del modal de filtros y evitar
-// pedir el catalogo cada vez que se abre. Se invalida por refresh de pagina.
+// pedir el catalogo cada vez que se abre. Se invalida por refresh de pagina y
+// al guardar un prospecto (ver guardarDrPr): guardar es justamente lo que
+// mueve el orden por `fecha_uso`, asi que servir el cache viejo dejaria la
+// etiqueta recien usada abajo.
+//
+// El orden es por `fecha_uso` descendente — las ultimas usadas arriba. El
+// picker (attachChipsPicker) respeta el orden en que viene el catalogo: filtra
+// por substring pero no reordena, asi que el ORDER BY del endpoint es lo que
+// manda en el dropdown. Las nunca usadas (`fecha_uso` NULL) caen al fondo,
+// alfabeticas entre si por el desempate del endpoint.
 let drPrEtiquetasCache = null;
 async function drPrCargarEtiquetas() {
   if (drPrEtiquetasCache) return drPrEtiquetasCache;
-  const data = await apiGet('api/datarocket_etiquetas.php?limite=1000&orden=nombre&dir=asc');
+  const data = await apiGet('api/datarocket_etiquetas.php?limite=1000&orden=fecha_uso&dir=desc');
   drPrEtiquetasCache = data.items || [];
   return drPrEtiquetasCache;
 }
@@ -25553,7 +25574,11 @@ async function abrirAltaEdicionDrPr(id) {
     const [c, listasResp, etiqsResp, paises] = await Promise.all([
       esEdicion ? apiGet(`api/datarocketprospectos.php?id=${id}`) : Promise.resolve({}),
       apiGet('api/datarocketlistas.php?limite=1000&order_by=nombre&dir=asc'),
-      apiGet('api/datarocket_etiquetas.php?limite=1000&orden=nombre&dir=asc'),
+      // Etiquetas por `fecha_uso` desc — las ultimas usadas primero en el
+      // typeahead, que es donde mas se nota: quien esta etiquetando prospectos
+      // repite las mismas etiquetas de la sesion. Las listas siguen alfabeticas
+      // (son pocas y estables; ahi el orden util es el nombre).
+      apiGet('api/datarocket_etiquetas.php?limite=1000&orden=fecha_uso&dir=desc'),
       drPrCargarPaises(),
     ]);
     const listasCatalogo = listasResp?.items || [];
@@ -26083,6 +26108,13 @@ async function guardarDrPr(id, btn) {
       await apiSend(`api/datarocketprospectos.php?id=${id}`, 'PUT', payload);
       toast('Prospecto actualizado.');
     }
+    // Guardar es lo que estampa `fecha_uso` en las etiquetas del prospecto, o
+    // sea que el orden del catalogo cacheado quedo viejo. Se descarta para que
+    // la proxima entrada a la ruta rearme el picker del modal de filtros con
+    // las recien usadas arriba (el picker ya montado conserva su catalogo
+    // hasta que se lo rearma; el del modal de Alta/Edicion no cachea nada y
+    // sale siempre con el orden fresco).
+    drPrEtiquetasCache = null;
     closeModal();
     cargarDrPr();
   } catch (e) {
@@ -27237,6 +27269,7 @@ route('/datarocket_etiquetas', async (mount) => {
                 <option value="slug">Slug</option>
                 <option value="etiquetados">Etiquetados</option>
                 <option value="fecha_creacion">Alta</option>
+                <option value="fecha_uso">Usada</option>
                 <option value="fecha_modificacion">Modificada</option>
               </select>
             </div>
@@ -27639,6 +27672,10 @@ async function abrirConsultaDre(id) {
           ${card('Etiquetados', `<span style="font-family:monospace">${fmtNum(e.etiquetados || 0)}</span>`)}
           ${card('Nombre',      esc(e.nombre))}
           ${card('Slug',        `<code style="font-family:monospace">${esc(e.slug || '—')}</code>`)}
+          <!-- "Usada" = última vez que la etiqueta se aplicó a un prospecto.
+               La estampa el backend al escribir la tabla puente
+               (marcarUsoEtiquetas), no este ABM. "—" = nunca se usó. -->
+          ${card('Usada',       esc(fmtFecha(e.fecha_uso)))}
           ${card('Modificada',  esc(fmtFecha(e.fecha_modificacion)))}
           ${card('Alta',        esc(fmtFecha(e.fecha_creacion)))}
           ${card('Descripción', esc(e.descripcion || '—'), 'full')}
@@ -32308,6 +32345,16 @@ function formEvoMsgHtml(rawM, lookups) {
         <input type="datetime-local" id="evoProgramado" value="${dt('programado')}">
       </div>
     </div>
+    <!-- Opt-in a Datarocket. Arranca SIEMPRE apagado, incluso al clonar: que un
+         envio previo haya alimentado el CRM no implica que este tambien deba
+         hacerlo. Espeja el default del backend (encolarEvolutionMensaje). -->
+    <div class="form-group">
+      <label class="toggle-switch">
+        <input type="checkbox" id="evoRegistrarProspecto">
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Registrar en Datarocket (prospecto + interacción)</span>
+      </label>
+    </div>
     <div class="field-error" id="evoFormError" style="display:none"></div>
   `;
 }
@@ -32334,9 +32381,11 @@ async function guardarEvoMsg(btn) {
     return;
   }
 
-  // Los 13 campos que expone Alta. El resto (fecha, tags, estado, encolado,
-  // enviado, demora, error) los aplica el servidor con defaults; ya no hay
-  // modo Edicion (los mensajes encolados no se editan).
+  // Los 13 campos que expone Alta, mas el opt-in a Datarocket (que no es una
+  // columna de `evolution_mensajes` sino una bandera de comportamiento). El
+  // resto (fecha, tags, estado, encolado, enviado, demora, error) los aplica el
+  // servidor con defaults; ya no hay modo Edicion (los mensajes encolados no se
+  // editan).
   const payload = {
     proyecto_id:  $('#evoProyecto').value,
     plantilla_id: $('#evoPlantilla').value,
@@ -32351,6 +32400,8 @@ async function guardarEvoMsg(btn) {
     adjunto:      $('#evoAdjunto').value.trim(),
     prioridad:    $('#evoPrioridad').value,
     programado:   $('#evoProgramado').value || null,
+    // Opt-in explicito: sin esto el backend no crea prospecto ni interaccion.
+    registrar_prospecto: $('#evoRegistrarProspecto').checked,
   };
 
   btn.disabled = true;

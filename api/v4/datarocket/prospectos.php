@@ -127,6 +127,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/prospectos_normalizar.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/datarocket_etiquetas_uso.php';
 require_once dirname(__DIR__) . '/_lib/log.php';
 
 // Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
@@ -1592,11 +1593,15 @@ function drPrAgregarEtiquetas(PDO $pdo, int $prospectoId, array $etiquetaIds): v
     $ph  = implode(',', array_fill(0, count($etiquetaIds), '?'));
     $val = $pdo->prepare("SELECT id FROM datarocket_etiquetas WHERE id IN ({$ph})");
     $val->execute($etiquetaIds);
+    $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
     $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_prospectos_etiquetas
                           (prospecto_id, etiqueta_id) VALUES (:cid, :eid)');
-    foreach (array_column($val->fetchAll(), 'id') as $eid) {
-        $ins->execute([':cid' => $prospectoId, ':eid' => (int)$eid]);
+    foreach ($validIds as $eid) {
+        $ins->execute([':cid' => $prospectoId, ':eid' => $eid]);
     }
+
+    // Ver drPrSyncEtiquetas(): aplicar una etiqueta es usarla.
+    marcarUsoEtiquetas($pdo, $validIds);
 }
 
 function handleCreate(PDO $pdo, array $in): void {
@@ -2020,4 +2025,10 @@ function drPrSyncEtiquetas(PDO $pdo, int $prospectoId, array $etiquetaIds): void
     foreach ($validIds as $eid) {
         $ins->execute([':cid' => $prospectoId, ':eid' => $eid]);
     }
+
+    // Estampa `datarocket_etiquetas.fecha_uso` — este es el punto en que las
+    // etiquetas efectivamente se usan. Se marcan TODAS las que quedan aplicadas
+    // y no solo las que entraron nuevas: el sync es un full replace y despues
+    // del DELETE no queda con que distinguirlas.
+    marcarUsoEtiquetas($pdo, $validIds);
 }

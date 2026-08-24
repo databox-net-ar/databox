@@ -180,7 +180,7 @@ frenarse ni manejar un `409`.
 ## Modelo de datos
 
 Tabla `datarocket_etiquetas` (migraciones `20260811_1200`, `_1400`, `_1800`,
-`20260812_0000` y `20260821_1100`).
+`20260812_0000`, `20260821_1100` y `20260824_1000`).
 
 | Campo                | Tipo           | En el JSON | Notas                                                        |
 | -------------------- | -------------- | ---------- | ------------------------------------------------------------ |
@@ -190,6 +190,7 @@ Tabla `datarocket_etiquetas` (migraciones `20260811_1200`, `_1400`, `_1800`,
 | `descripcion`        | `varchar(500)` | `string?`  | Nota interna opcional. Vacia se guarda como `null`.          |
 | `etiquetados`        | `int unsigned` | `int`      | Contador denormalizado. **Puede estar atrasado** (ver abajo). |
 | `fecha_creacion`     | `datetime`     | `string`   | La pone la base (`CURRENT_TIMESTAMP`).                       |
+| `fecha_uso`          | `datetime?`    | `string?`  | Ultimo uso de la etiqueta (ver abajo). `null` si nunca se uso. |
 | `fecha_modificacion` | `datetime`     | `string`   | La pone la base (`ON UPDATE CURRENT_TIMESTAMP`).             |
 
 Una fila tal como sale del endpoint:
@@ -202,9 +203,41 @@ Una fila tal como sale del endpoint:
   "descripcion": null,
   "etiquetados": 5066,
   "fecha_creacion": "2026-08-11 19:43:28",
+  "fecha_uso": "2026-08-22 17:04:11",
   "fecha_modificacion": "2026-08-11 22:50:24"
 }
 ```
+
+### `fecha_uso`: ultima vez que la etiqueta se uso
+
+"Usar" una etiqueta es **aplicarla a un prospecto**. Cada vez que un alta o una
+edicion de prospecto escribe la puente `datarocket_prospectos_etiquetas`
+—`POST`/`PUT /v4/datarocket/prospectos` o el ABM del panel cloud— las etiquetas
+involucradas quedan estampadas con `NOW()`.
+
+Es el dato que `etiquetados` no da: ese contador dice **cuantos** prospectos
+tienen la etiqueta puesta, pero no si alguien la sigue usando. Una etiqueta con
+300 etiquetados cargados hace un año y ninguno desde entonces esta tan muerta
+como una con 0.
+
+Tres cosas a tener en cuenta:
+
+* **Es de solo lectura para este endpoint.** No se acepta como campo de entrada
+  en el `POST` ni se toca al crear la etiqueta: un alta no es un uso, asi que
+  una etiqueta recien creada sale con `fecha_uso: null`.
+* **Solo avanza, nunca retrocede.** No se recalcula desde la puente (a
+  diferencia de `etiquetados`, que si tiene un boton de recalculo en el ABM).
+  La puente guarda unicamente las asignaciones vigentes, asi que recalcular
+  borraria los usos de etiquetas que despues se quitaron de un prospecto.
+* **Se estampan todas las etiquetas que quedan aplicadas**, no solo las que
+  entraron nuevas: el sync de etiquetas de un prospecto es un full replace.
+  Reguardar un prospecto sin tocarle las etiquetas les refresca el `fecha_uso`
+  igual — siguen estando en uso.
+
+`null` significa "no hay registro de uso", no "se uso en el epoch". Las
+etiquetas anteriores a la migracion `20260824_1000` arrancan con el ultimo
+`fecha_creacion` de la puente (backfill) o en `null` si no tenian ninguna
+asignacion vigente.
 
 ### `slug`: se busca por el, pero no se escribe
 
@@ -317,7 +350,7 @@ conjunto; para llegar a una fila puntual estan `?slug=` y `?id=N`.
 | Param        | Tipo   | Default  | Notas                                                          |
 | ------------ | ------ | -------- | -------------------------------------------------------------- |
 | `codigo`     | int    | —        | Filtra por `id` exacto.                                         |
-| `order_by`   | enum   | `nombre` | `id`, `nombre`, `slug`, `etiquetados`, `fecha_creacion`, `fecha_modificacion`. Tambien se acepta como `orden`. |
+| `order_by`   | enum   | `nombre` | `id`, `nombre`, `slug`, `etiquetados`, `fecha_creacion`, `fecha_uso`, `fecha_modificacion`. Tambien se acepta como `orden`. |
 | `dir`        | enum   | ver nota | `asc` / `desc`.                                                 |
 | `limite`     | int    | `100`    | Clampeado a `[1, 1000]`.                                        |
 | `con_conteo` | flag   | `0`      | Agrega `etiquetados_reales` a cada item.                        |
@@ -341,11 +374,11 @@ endpoint ya no hace, y contestarlas con el catalogo entero seria mentir.
     "total": 3,
     "items": [
       { "id": 13, "nombre": "barrio_privado", "slug": "barrio-privado", "descripcion": null, "etiquetados": 258,
-        "fecha_creacion": "2026-08-11 19:43:28", "fecha_modificacion": "2026-08-11 22:50:24" },
+        "fecha_creacion": "2026-08-11 19:43:28", "fecha_uso": "2026-08-22 17:04:11", "fecha_modificacion": "2026-08-11 22:50:24" },
       { "id": 35, "nombre": "Causam", "slug": "causam", "descripcion": null, "etiquetados": 27,
-        "fecha_creacion": "2026-08-12 00:21:21", "fecha_modificacion": "2026-08-17 20:04:49" },
+        "fecha_creacion": "2026-08-12 00:21:21", "fecha_uso": "2026-08-19 10:22:38", "fecha_modificacion": "2026-08-17 20:04:49" },
       { "id": 17, "nombre": "club", "slug": "club", "descripcion": null, "etiquetados": 62,
-        "fecha_creacion": "2026-08-11 19:43:28", "fecha_modificacion": "2026-08-11 22:50:24" }
+        "fecha_creacion": "2026-08-11 19:43:28", "fecha_uso": null, "fecha_modificacion": "2026-08-11 22:50:24" }
     ]
   }
 }

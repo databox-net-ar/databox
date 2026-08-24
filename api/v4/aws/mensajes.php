@@ -19,6 +19,18 @@
 // `parametros.aws.mensajes.enviar='2'` para despertar al sender worker
 // (cloud/jobs/aws_mensajes_enviar.php).
 //
+// Datarocket (prospecto + interaccion): NO se toca por defecto. Encolar un
+// mensaje es un acto de envio, no de CRM. Para que el envio ademas de/resuelva
+// el prospecto en `datarocket_prospectos` y le cuelgue la interaccion en
+// `datarocket_interacciones`, el body tiene que traer el opt-in explicito:
+//
+//   { ..., "registrar_prospecto": true }
+//
+// Sin ese flag el mensaje se encola y se envia igual, pero no deja rastro en
+// Datarocket. Un `prospecto_id` explicito en el body se guarda siempre (con
+// flag o sin el) — el flag solo gobierna el alta automatica y la interaccion.
+// Ver debeRegistrarProspecto() en cloud/api/lib/datarocket_interacciones.php.
+//
 // Espejo estructural de api/v4/evolution/mensajes.php.
 //
 // (Cuando v4 se mueva a otro DocumentRoot habra que reajustar el include del

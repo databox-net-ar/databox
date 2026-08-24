@@ -14,6 +14,11 @@
 //     -> como efecto lateral llama marcarColaAwsConPendientes() asi el cron
 //        proxima corrida encuentra el flag activo y despacha (self-heal del
 //        propio cron lo baja a '0' cuando la cola queda vacia)
+//     -> `$datos['registrar_prospecto']` (opt-in, DEFAULT FALSE) habilita el
+//        alta/resolucion del prospecto en `datarocket_prospectos` y el registro
+//        de la interaccion en `datarocket_interacciones`. Sin el flag el
+//        mensaje se encola y se envia igual, pero no deja rastro en Datarocket.
+//        Ver debeRegistrarProspecto() en lib/datarocket_interacciones.php.
 
 require_once __DIR__ . '/../db.php';
 require_once __DIR__ . '/datarocket_interacciones.php';
@@ -73,6 +78,11 @@ const AWS_MSG_REQUERIDOS_SIN_PLANTILLA = [
  * apliquen reglas de ingreso divergentes.
  */
 function encolarAwsMensaje(PDO $pdo, array $datos): int {
+    // Opt-in para alimentar Datarocket. Se lee del payload CRUDO porque
+    // `registrar_prospecto` no es una columna de `aws_mensajes` y
+    // sanitizeAwsMsgPayload() descarta todo lo que no lo sea.
+    $registrar = debeRegistrarProspecto($datos);
+
     $p = sanitizeAwsMsgPayload($pdo, $datos);
 
     // Validar obligatorios antes de tocar la BD. Con plantilla,
@@ -106,10 +116,14 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
 
     // Resolucion de prospecto_id a partir del destino: buscamos en
     // `datarocket_prospectos.correo` y, si no existe, damos de alta el prospecto
-    // antes de insertar el mensaje. Si el caller ya paso un prospecto_id
-    // explicito lo respetamos (por ejemplo, un futuro flujo que ya lo tenga
-    // resuelto no paga el lookup de nuevo).
-    if ($p['prospecto_id'] === null) {
+    // antes de insertar el mensaje. Solo corre bajo opt-in explicito.
+    //
+    // Un `prospecto_id` que vino en el payload se respeta SIEMPRE, con flag o
+    // sin el: es un dato que el caller aporto, no algo que nosotros dedujimos
+    // (y ademas ahorra el lookup a un flujo que ya lo tenia resuelto). Lo que
+    // el flag gobierna es si salimos a buscar/crear el prospecto por nuestra
+    // cuenta.
+    if ($registrar && $p['prospecto_id'] === null) {
         $p['prospecto_id'] = resolverProspectoIdAws($pdo, $p['destino'], $p['destinatario']);
     }
 
@@ -149,18 +163,20 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
     ]);
     $id = (int)$pdo->lastInsertId();
 
-    // Registrar la interaccion en el historial del prospecto. Best-effort:
-    // si falla no tira, el mensaje ya quedo en la cola. Ver
+    // Registrar la interaccion en el historial del prospecto — solo bajo opt-in.
+    // Best-effort: si falla no tira, el mensaje ya quedo en la cola. Ver
     // cloud/api/lib/datarocket_interacciones.php.
-    registrarInteraccionMensaje(
-        $pdo,
-        $p['prospecto_id'],
-        'saliente',
-        'correo',
-        $p['asunto'] ?? $p['destino'],
-        $p['cuerpo'] ?? null,
-        $p['fecha']
-    );
+    if ($registrar) {
+        registrarInteraccionMensaje(
+            $pdo,
+            $p['prospecto_id'],
+            'saliente',
+            'correo',
+            $p['asunto'] ?? $p['destino'],
+            $p['cuerpo'] ?? null,
+            $p['fecha']
+        );
+    }
 
     // Wake-on-demand: si el mensaje quedo pendiente (99% de los casos al
     // encolar), avisar al cron worker. Idempotente — si ya vale '1' el UPDATE

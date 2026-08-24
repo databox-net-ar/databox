@@ -164,12 +164,17 @@ function etqRequireApp(): array {
 // Constantes del recurso
 // ---------------------------------------------------------------------------
 
-const DR_ET_COLS = 'id, nombre, slug, descripcion, etiquetados, fecha_creacion, fecha_modificacion';
+// `fecha_uso` (migracion 20260824_1000) es el timestamp del ultimo uso de la
+// etiqueta — la ultima vez que se aplico a un prospecto. La escriben los
+// escritores de la puente (drPrSyncEtiquetas / drPrAgregarEtiquetas en
+// /v4/datarocket/prospectos, syncEtiquetas en el ABM cloud) via
+// marcarUsoEtiquetas(); este endpoint solo la publica. NULL = nunca se uso.
+const DR_ET_COLS = 'id, nombre, slug, descripcion, etiquetados, fecha_creacion, fecha_uso, fecha_modificacion';
 
 // Criterios de orden aceptados en el listado. Cualquier otro valor cae al
 // default (`nombre`) en vez de dar 400: un `order_by` mal escrito no justifica
 // romperle la pantalla al cliente.
-const DR_ET_ORDENES = ['id', 'nombre', 'slug', 'etiquetados', 'fecha_creacion', 'fecha_modificacion'];
+const DR_ET_ORDENES = ['id', 'nombre', 'slug', 'etiquetados', 'fecha_creacion', 'fecha_uso', 'fecha_modificacion'];
 
 const DR_ET_NOMBRE_MAX      = 80;   // = varchar(80) de la columna
 const DR_ET_DESCRIPCION_MAX = 500;  // = varchar(500)
@@ -416,6 +421,9 @@ function etqFormatFila(array $r): array {
         'descripcion'        => $r['descripcion'] !== null ? (string)$r['descripcion'] : null,
         'etiquetados'        => (int)($r['etiquetados'] ?? 0),
         'fecha_creacion'     => $r['fecha_creacion']     ?? null,
+        // NULL = nunca se uso desde que existe la columna. Se publica como
+        // null y no como '' para que el consumidor pueda distinguirlo.
+        'fecha_uso'          => $r['fecha_uso']          ?? null,
         'fecha_modificacion' => $r['fecha_modificacion'] ?? null,
     ];
 }

@@ -5,7 +5,9 @@
 // a otros recursos del stack Datarocket via tablas de union (por ahora solo
 // `datarocket_prospectos_etiquetas`). El campo `slug` (identificador estable
 // en kebab-case, UNIQUE global) lo agrego la migracion
-// 20260821_1100_datarocket_etiquetas_agregar_slug.sql.
+// 20260821_1100_datarocket_etiquetas_agregar_slug.sql, y el campo `fecha_uso`
+// (ultima vez que la etiqueta se aplico a un prospecto, NULL si nunca) la
+// 20260824_1000_datarocket_etiquetas_agregar_fecha_uso.sql.
 //
 //   GET    api/datarocket_etiquetas.php[?q=...&limite=100&orden=id&dir=desc]
 //                                          -> listado + stats (incluye
@@ -36,8 +38,13 @@ header('Content-Type: application/json; charset=utf-8');
 
 // Columnas persistidas + `etiquetados` (contador denormalizado, sync manual
 // via ?action=recalcular). Sirven tanto para SELECT como para el orden.
-const DRE_COLS    = 'id, nombre, slug, descripcion, etiquetados, fecha_creacion, fecha_modificacion';
-const DRE_ORDENES = ['id', 'nombre', 'slug', 'etiquetados', 'fecha_creacion', 'fecha_modificacion'];
+//
+// `fecha_uso` (migracion 20260824_1000) es el timestamp del ultimo uso de la
+// etiqueta — la ultima vez que se aplico a un prospecto. No la escribe este
+// endpoint sino los que tocan la puente `datarocket_prospectos_etiquetas`, via
+// marcarUsoEtiquetas() (lib/datarocket_etiquetas_uso.php). Aca es solo lectura.
+const DRE_COLS    = 'id, nombre, slug, descripcion, etiquetados, fecha_creacion, fecha_uso, fecha_modificacion';
+const DRE_ORDENES = ['id', 'nombre', 'slug', 'etiquetados', 'fecha_creacion', 'fecha_uso', 'fecha_modificacion'];
 
 try {
     $pdo    = db();
@@ -86,6 +93,9 @@ function normalizarFilaEtiqueta(array $r): array {
         'descripcion'        => $r['descripcion'] !== null ? (string)$r['descripcion'] : null,
         'etiquetados'        => (int)($r['etiquetados'] ?? 0),
         'fecha_creacion'     => $r['fecha_creacion']     ?? null,
+        // NULL = nunca se uso desde que existe la columna. No se degrada a ''
+        // ni a una fecha inventada: el ABM lo pinta como "—".
+        'fecha_uso'          => $r['fecha_uso']          ?? null,
         'fecha_modificacion' => $r['fecha_modificacion'] ?? null,
     ];
 }
@@ -175,9 +185,17 @@ function handleListEtiquetas(PDO $pdo, array $q): void {
 
     $sqlWhere = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
+    // Desempate por `nombre` para que el orden sea determinista y la cola de
+    // empatados quede alfabetica. Importa sobre todo con `orden=fecha_uso`, que
+    // es como piden el catalogo los pickers typeahead de prospectos: ahi TODAS
+    // las etiquetas nunca usadas empatan en NULL, y sin esto saldrian en el
+    // orden que se le cante al motor. `fecha_uso DESC` las deja al fondo (NULL
+    // es el valor mas bajo en MySQL/MariaDB), que es donde tienen que estar.
+    $desempate = $orden === 'nombre' ? '' : ', nombre ASC';
+
     // `etiquetados` es columna persistida — se sincroniza via
     // ?action=recalcular. Sin JOINs.
-    $sql = 'SELECT ' . DRE_COLS . " FROM datarocket_etiquetas e {$sqlWhere} ORDER BY {$orden} {$dir} LIMIT {$limite}";
+    $sql = 'SELECT ' . DRE_COLS . " FROM datarocket_etiquetas e {$sqlWhere} ORDER BY {$orden} {$dir}{$desempate} LIMIT {$limite}";
     $st = $pdo->prepare($sql);
     $st->execute($params);
     $rows = array_map('normalizarFilaEtiqueta', $st->fetchAll());
