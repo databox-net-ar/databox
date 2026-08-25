@@ -12,7 +12,12 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
-const CSIM_COLS = "id, nombre, alias, linea, icc, estado, estado_gprs, estado_lte, limite_datos, consumo_datos, imei, msisdn, en_uso, actualizado, ultimo_trafico, tags";
+// Columnas expuestas por la API. Van calificadas con el alias `s` porque tanto
+// el listado como el detalle hacen LEFT JOIN contra `proyectos` para resolver
+// el nombre del proyecto asignado (`claro_sims.proyecto` guarda solo el id).
+// Sin el prefijo, `nombre` y `id` quedarian ambiguos entre las dos tablas.
+const CSIM_COLS = "s.id, s.proyecto, p.nombre AS proyecto_nombre, s.nombre, s.alias, s.linea, s.icc, s.estado, s.estado_gprs, s.estado_lte, s.limite_datos, s.consumo_datos, s.imei, s.msisdn, s.en_uso, s.actualizado, s.ultimo_trafico, s.tags";
+const CSIM_FROM = "FROM claro_sims s LEFT JOIN proyectos p ON p.id = s.proyecto";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -46,7 +51,8 @@ try {
 // ----------------------------------------------------------------------------
 
 function handleList(PDO $pdo, array $q): void {
-    $codigo = isset($q['codigo']) && $q['codigo'] !== '' ? (int)$q['codigo'] : null;
+    $codigo   = isset($q['codigo'])   && $q['codigo']   !== '' ? (int)$q['codigo']   : null;
+    $proyecto = isset($q['proyecto']) && $q['proyecto'] !== '' ? (int)$q['proyecto'] : null;
     $estado = trim((string)($q['estado'] ?? ''));
     $nombre = trim((string)($q['nombre'] ?? ''));
     $linea  = trim((string)($q['linea']  ?? ''));
@@ -64,18 +70,21 @@ function handleList(PDO $pdo, array $q): void {
     // alfabeticamente ("100 MB" < "20 MB") es ilegible. Casteamos los digitos
     // a UNSIGNED para tener sort numerico. REGEXP_REPLACE existe en MySQL 8
     // y MariaDB 10.11 (los dos entornos del proyecto).
+    // `proyecto` ordena por el nombre del proyecto (no por el id crudo, que no
+    // le dice nada al usuario).
     $orderMap = [
-        'id'             => 'id',
-        'nombre'         => 'nombre',
-        'linea'          => 'linea',
-        'icc'            => 'icc',
-        'imei'           => 'imei',
-        'estado'         => 'estado',
-        'msisdn'         => 'msisdn',
-        'actualizado'    => 'actualizado',
-        'ultimo_trafico' => 'ultimo_trafico',
-        'limite_datos'   => "CAST(REGEXP_REPLACE(COALESCE(limite_datos,  ''), '[^0-9]', '') AS UNSIGNED)",
-        'consumo_datos'  => "CAST(REGEXP_REPLACE(COALESCE(consumo_datos, ''), '[^0-9]', '') AS UNSIGNED)",
+        'id'             => 's.id',
+        'proyecto'       => 'p.nombre',
+        'nombre'         => 's.nombre',
+        'linea'          => 's.linea',
+        'icc'            => 's.icc',
+        'imei'           => 's.imei',
+        'estado'         => 's.estado',
+        'msisdn'         => 's.msisdn',
+        'actualizado'    => 's.actualizado',
+        'ultimo_trafico' => 's.ultimo_trafico',
+        'limite_datos'   => "CAST(REGEXP_REPLACE(COALESCE(s.limite_datos,  ''), '[^0-9]', '') AS UNSIGNED)",
+        'consumo_datos'  => "CAST(REGEXP_REPLACE(COALESCE(s.consumo_datos, ''), '[^0-9]', '') AS UNSIGNED)",
     ];
     if (!isset($orderMap[$orderBy])) $orderBy = 'id';
     $orderExpr = $orderMap[$orderBy];
@@ -84,22 +93,26 @@ function handleList(PDO $pdo, array $q): void {
     $where  = [];
     $params = [];
 
-    if ($codigo !== null) { $where[] = 'id = :codigo';        $params[':codigo'] = $codigo; }
-    if ($estado !== '')   { $where[] = 'estado = :estado';    $params[':estado'] = $estado; }
-    if ($nombre !== '')   { $where[] = 'nombre LIKE :nombre'; $params[':nombre'] = "%{$nombre}%"; }
-    if ($linea  !== '')   { $where[] = 'linea LIKE :linea';   $params[':linea']  = "%{$linea}%"; }
-    if ($imei   !== '')   { $where[] = 'imei LIKE :imei';     $params[':imei']   = "%{$imei}%"; }
+    if ($codigo !== null) { $where[] = 's.id = :codigo';        $params[':codigo'] = $codigo; }
+    if ($estado !== '')   { $where[] = 's.estado = :estado';    $params[':estado'] = $estado; }
+    if ($nombre !== '')   { $where[] = 's.nombre LIKE :nombre'; $params[':nombre'] = "%{$nombre}%"; }
+    if ($linea  !== '')   { $where[] = 's.linea LIKE :linea';   $params[':linea']  = "%{$linea}%"; }
+    if ($imei   !== '')   { $where[] = 's.imei LIKE :imei';     $params[':imei']   = "%{$imei}%"; }
+
+    // proyecto admite: <id> | '0' (sin asignar) | '' (todos).
+    if ($proyecto === 0)        { $where[] = 's.proyecto IS NULL'; }
+    elseif ($proyecto !== null) { $where[] = 's.proyecto = :proyecto'; $params[':proyecto'] = $proyecto; }
 
     // en_uso admite: 'si' | 'no' | 'null' (sin definir) | '' (todos).
-    if ($enUso === 'null')          { $where[] = "(en_uso IS NULL OR en_uso = '')"; }
-    elseif (in_array($enUso, ['si', 'no'], true)) { $where[] = 'en_uso = :en_uso'; $params[':en_uso'] = $enUso; }
+    if ($enUso === 'null')          { $where[] = "(s.en_uso IS NULL OR s.en_uso = '')"; }
+    elseif (in_array($enUso, ['si', 'no'], true)) { $where[] = 's.en_uso = :en_uso'; $params[':en_uso'] = $enUso; }
 
     if ($search !== '') {
         // PDO con ATTR_EMULATE_PREPARES=false no permite reusar el mismo
         // placeholder para varias columnas — hay que bindear uno por columna.
         // `tags` es un JSON array serializado (["a","b"]); un LIKE sobre el
         // string crudo es suficiente para el buscador rapido.
-        $where[] = '(nombre LIKE :s_nombre OR alias LIKE :s_alias OR linea LIKE :s_linea OR icc LIKE :s_icc OR tags LIKE :s_tags)';
+        $where[] = '(s.nombre LIKE :s_nombre OR s.alias LIKE :s_alias OR s.linea LIKE :s_linea OR s.icc LIKE :s_icc OR s.tags LIKE :s_tags)';
         $like = "%{$search}%";
         $params[':s_nombre'] = $like;
         $params[':s_alias']  = $like;
@@ -133,7 +146,7 @@ function handleList(PDO $pdo, array $q): void {
 
     $sql = "
         SELECT " . CSIM_COLS . "
-        FROM claro_sims
+        " . CSIM_FROM . "
         {$sqlWhere}
         ORDER BY {$orderExpr} {$dirSql}
         LIMIT {$limite}
@@ -158,7 +171,7 @@ function handleList(PDO $pdo, array $q): void {
 }
 
 function handleGetOne(PDO $pdo, int $id): void {
-    $stmt = $pdo->prepare("SELECT " . CSIM_COLS . " FROM claro_sims WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT " . CSIM_COLS . " " . CSIM_FROM . " WHERE s.id = :id");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) jsonError('SIM no encontrada', 404);
@@ -228,8 +241,18 @@ function nullableStr(mixed $v, int $max): ?string {
     return $s;
 }
 
+// `proyecto` guarda un `proyectos.id`. El frontend manda '' cuando el combo
+// esta en "sin proyecto"; cualquier valor no positivo se normaliza a NULL.
+function nullableId(mixed $v): ?int {
+    if ($v === null) return null;
+    if (is_string($v) && trim($v) === '') return null;
+    $n = (int)$v;
+    return $n > 0 ? $n : null;
+}
+
 function sanitizePayload(array $in): array {
     return [
+        'proyecto'     => nullableId($in['proyecto']     ?? null),
         'nombre'       => nullableStr($in['nombre']       ?? null, 255),
         'linea'        => nullableStr($in['linea']        ?? null, 30),
         'icc'          => nullableStr($in['icc']          ?? null, 25),
@@ -252,12 +275,13 @@ function handleCreate(PDO $pdo, array $in): void {
     try {
         $sql = "
             INSERT INTO claro_sims
-                (nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn, tags)
+                (proyecto, nombre, linea, icc, estado, estado_gprs, estado_lte, limite_datos, imei, msisdn, tags)
             VALUES
-                (:nombre, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :imei, :msisdn, :tags)
+                (:proyecto, :nombre, :linea, :icc, :estado, :estado_gprs, :estado_lte, :limite_datos, :imei, :msisdn, :tags)
         ";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
+            ':proyecto'     => $p['proyecto'],
             ':nombre'       => $p['nombre'],
             ':linea'        => $p['linea'],
             ':icc'          => $p['icc'],
@@ -284,6 +308,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 
     // Update parcial: solo se tocan las columnas presentes en el payload.
     // Campos editables desde el ABM:
+    //   - `proyecto` -> modal Editar (combo de proyectos internos, tipo = 'I')
     //   - `nombre`  -> modal Editar
     //   - `tags`    -> modal Editar (input tipo pills, se serializa como JSON)
     //   - `en_uso`  -> menu contextual del listado ('si' | 'no' | null)
@@ -292,6 +317,10 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     $sets   = [];
     $params = [':id' => $id];
 
+    if (array_key_exists('proyecto', $in)) {
+        $sets[] = 'proyecto = :proyecto';
+        $params[':proyecto'] = nullableId($in['proyecto']);
+    }
     if (array_key_exists('nombre', $in)) {
         $sets[] = 'nombre = :nombre';
         $params[':nombre'] = nullableStr($in['nombre'], 255);

@@ -105,10 +105,15 @@ function telegramMensajeEnviarPorId(PDO $pdo, int $id, string $origen): array {
         $mensajeTxt = '*' . $m['asunto'] . '*' . PHP_EOL . PHP_EOL . $mensajeTxt;
     }
 
+    // `mensaje_id` le dice al microservicio que esta fila YA existe y que la
+    // persistencia la maneja este lib (pasos 1 y 7). Sin el, el v4 abre su
+    // propia fila en `telegram_mensajes` y cada mensaje del ABM aparece
+    // duplicado en el listado.
     $body = [
         'canal_slug'   => (string) $m['canal_slug'],
         'destinatario' => $destinoRaw,
         'mensaje'      => $mensajeTxt,
+        'mensaje_id'   => $id,
     ];
 
     // -- 6) POST al microservicio v4 ----------------------------------------

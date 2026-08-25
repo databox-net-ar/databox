@@ -20,8 +20,9 @@ del canal (no del slug), de modo que renombrar el slug no muda la sesión.
 A diferencia de:
 
 - **`/v4/evolution/mensajes`** (WhatsApp, cola asíncrona con motor).
-- **`cloud/api/telegrammensajes.php`** (Bot API — el remitente es un bot,
-  requiere que el destinatario haya iniciado la conversación con el bot).
+- **`cloud/api/telegrammensajes.php`** (ABM del panel — no envía por sí mismo:
+  encola en `telegram_mensajes` y el cron worker despacha contra este mismo
+  endpoint).
 
 acá el remitente es una **cuenta de usuario real** autenticada vía MTProto.
 Ventaja: el destinatario ve un mensaje "de una persona", puede responder
@@ -103,6 +104,10 @@ Content-Type: `application/json; charset=utf-8`.
 | `mensaje`      | string | Sí                                                       | Texto. Se envía tal cual, sin markdown ni templating.                        |
 | `canal_slug`   | string | Sí si hay más de un canal habilitado ¹                   | Slug del canal remitente (ej. `"javier"`). Case-sensitive.                   |
 | `canal_id`     | int    | Alternativa numérica a `canal_slug` (mismo criterio) ¹   | Si mandás los dos, `canal_slug` gana.                                        |
+| `proyecto_id`  | int    | No                                                       | Para el historial. Si no viene, se hereda de `telegram_canales.proyecto`.    |
+| `prospecto_id` | int    | No                                                       | Cuelga la interacción en el historial del prospecto de Datarocket.           |
+| `tags`         | string | No                                                       | Etiqueta libre que queda en la fila del historial.                           |
+| `mensaje_id`   | int    | No — **uso interno** ²                                   | Id de una fila de `telegram_mensajes` ya existente. Desactiva el registro.   |
 
 ¹ **Selección del canal**:
 - Si hay **un solo** canal habilitado en `telegram_canales`, el endpoint lo
@@ -111,6 +116,13 @@ Content-Type: `application/json; charset=utf-8`.
   slugs disponibles.
 - `canal_slug` (o `canal_id`) que no existe → `400 Canal '<x>' no encontrado`.
 - Canal existe pero `habilitado != '1'` → `400 Canal '<x>' esta deshabilitado`.
+
+² **`mensaje_id`** lo usa el worker de la cola del panel
+([cloud/api/lib/telegram_mensajes_enviar.php](../../../cloud/api/lib/telegram_mensajes_enviar.php)),
+que ya tiene su propia fila y la persiste él mismo. Ver
+[Historial en `telegram_mensajes`](#historial-en-telegram_mensajes). Una
+aplicación externa **no** debe mandarlo: sin fila propia que actualizar, el
+envío no quedaría registrado en ningún lado.
 
 El handler normaliza el `destinatario` sacando el `+` y cualquier carácter
 no numérico, así que aceptar variantes con espacios / paréntesis
@@ -131,7 +143,8 @@ no numérico, así que aceptar variantes con espacios / paréntesis
     "destinatario": "+542644984568",
     "mensaje":      "PRUEBA",
     "message_id":   1234,
-    "fecha":        "2026-07-30 19:45:12"
+    "fecha":        "2026-07-30 19:45:12",
+    "mensaje_id":   87
   }
 }
 ```
@@ -139,7 +152,49 @@ no numérico, así que aceptar variantes con espacios / paréntesis
 `canal` es el remitente resuelto (útil cuando dependés del auto-pick).
 `message_id` es el id del mensaje que asignó Telegram (útil para
 correlacionar respuestas). `fecha` es el timestamp del mensaje según
-Telegram, convertido a `America/Argentina/Buenos_Aires`.
+Telegram, convertido a `America/Argentina/Buenos_Aires`. `mensaje_id` es el
+id de la fila en `telegram_mensajes` — con él ubicás el envío en el ABM del
+panel (ver abajo).
+
+---
+
+## Historial en `telegram_mensajes`
+
+Cada envío que entra por acá queda registrado en la tabla
+`telegram_mensajes`, que es lo que lista el ABM del panel en
+**Plataformas > Telegram > Mensajes**. No hay que hacer nada del lado del
+cliente: alcanza con llamar al endpoint.
+
+La fila se abre **antes** de hablar con Telegram y se cierra después:
+
+| Estado      | Cuándo                                                              |
+|-------------|---------------------------------------------------------------------|
+| `enviando`  | Fila recién abierta; el envío está en curso en ese mismo request.    |
+| `enviado`   | Telegram aceptó el mensaje.                                          |
+| `error`     | Falló la sesión, la resolución del destinatario o el envío. El motivo queda en la columna `error`. |
+
+Abrirla antes es deliberado: si MadelineProto se cuelga o el proceso muere a
+mitad de camino, en el panel queda un `enviando` visible en vez de no quedar
+rastro de que se intentó. Se abre en `enviando` (y no en `pendiente`) para
+que el cron worker de la cola **nunca** la levante — su `SELECT` toma sólo
+`pendiente` —, así que no hay riesgo de que el mensaje salga dos veces.
+
+Los campos se completan solos a partir del canal resuelto: `remitente` =
+`telegram_canales.nombre`, `remite` = `telegram_canales.telefono` y
+`proyecto_id` = `telegram_canales.proyecto` (salvo que el body traiga
+`proyecto_id`). El `cuerpo` es exactamente el `mensaje` que se mandó por el
+cable.
+
+El registro es **best effort**: el producto del endpoint es el mensaje
+entregado, la fila es contabilidad. Si la inserción falla (DB caída, drift de
+schema), queda el rastro en Herramientas > Visor de sucesos y el envío sigue
+su curso — la respuesta trae `mensaje_id: null`.
+
+> **Mensajes encolados desde el panel.** El ABM cloud no llama a este endpoint
+> directamente: encola en `telegram_mensajes` con estado `pendiente` y el cron
+> worker despacha contra `/v4/telegram/mensajes` pasando `mensaje_id`. Ese
+> campo desactiva el registro acá, porque la fila ya existe y la persiste el
+> worker. Sin ese guard cada mensaje del ABM aparecería duplicado.
 
 ### Errores
 
@@ -271,14 +326,14 @@ curl -X POST https://api.databox.net.ar/v4/telegram/mensajes \
 
 ## Fuera del alcance
 
-Este microservicio es intencionalmente mínimo: **solo envío**. No hay:
+Este microservicio es intencionalmente mínimo: **envío + registro**. No hay:
 
-- Persistencia en `telegram_mensajes` (esa tabla la usa el ABM cloud vía
-  Bot API — mecanismo distinto).
-- ABM de `telegram_canales` desde el panel — hoy se administra vía SQL /
-  Migrador DB. Cuando aparezca la necesidad, se hace en `cloud/api/`.
-- Consulta de estado — el envío es síncrono, el resultado vive en la
-  respuesta del POST.
+- Consulta de estado por GET — el envío es síncrono, el resultado vive en la
+  respuesta del POST. Para ver el histórico está el ABM del panel
+  (`telegram_mensajes`, ver [Historial](#historial-en-telegram_mensajes)).
+- Plantillas (`plantilla_id`) — se registra tal cual el `mensaje` del body.
+- Reintentos automáticos: un envío fallido queda en `error` y no se
+  reprograma solo.
 - Adjuntos (fotos, docs). Se agrega con `messages.sendMedia` cuando
   aparezca la necesidad.
 - Recepción de mensajes / respuestas.
@@ -292,4 +347,6 @@ Este microservicio es intencionalmente mínimo: **solo envío**. No hay:
   generan en <https://my.telegram.org> y viven en `.env.production`.
 - Migración de la tabla: [cloud/sql/migrations/20260730_2300_crear_telegram_canales.sql](../../../cloud/sql/migrations/20260730_2300_crear_telegram_canales.sql).
 - Helper de login CLI: [api/v4/telegram/login.php](login.php).
-- ABM Telegram por Bot API (mecanismo alternativo): [cloud/api/telegrammensajes.php](../../../cloud/api/telegrammensajes.php).
+- ABM Telegram del panel (lista `telegram_mensajes`): [cloud/api/telegrammensajes.php](../../../cloud/api/telegrammensajes.php).
+- Worker de la cola (cliente de este endpoint, pasa `mensaje_id`): [cloud/api/lib/telegram_mensajes_enviar.php](../../../cloud/api/lib/telegram_mensajes_enviar.php).
+- Encolador compartido (`encolarTelegramMensaje`): [cloud/api/lib/telegram_mensajes.php](../../../cloud/api/lib/telegram_mensajes.php).

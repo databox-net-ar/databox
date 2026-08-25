@@ -10,12 +10,18 @@
 // UNA UNICA VEZ en desarrollo via CLI interactivo (`login.php --canal=X`) y
 // transportado a prod por deploy.sh. Prod jamas inicia sesion.
 //
-//   POST /v4/telegram/mensajes  (JSON body) -> envia, devuelve {canal, destinatario, mensaje, message_id, fecha}
+//   POST /v4/telegram/mensajes  (JSON body) -> envia, devuelve {canal, destinatario, mensaje, message_id, fecha, mensaje_id}
 //
 // GET/otros -> 405 Metodo no soportado.
 //
 // Auth: Bearer con apikey de la tabla `aplicaciones` (mismo esquema que
 // /v4/evolution/mensajes).
+//
+// Historial: cada envio queda registrado en `telegram_mensajes`, que es lo que
+// lista el ABM cloud (Plataformas > Telegram > Mensajes). Ver el bloque
+// "Registro en `telegram_mensajes`" mas abajo para el ciclo de vida de la fila
+// y para el guard que evita duplicarla cuando quien llama es el worker de la
+// cola.
 
 declare(strict_types=1);
 
@@ -23,6 +29,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/telegram_mensajes.php';
 require_once dirname(__DIR__) . '/_lib/log.php';
 require_once dirname(__DIR__) . '/_lib/telegram.php';
 
@@ -83,6 +90,10 @@ try {
         jsonError('Metodo no soportado', 405);
     }
 } catch (Throwable $e) {
+    // Si ya habiamos abierto la fila del historial, cerrarla como error antes
+    // de contestar -- si no, queda un 'enviando' colgado para siempre (el
+    // lock del worker solo levanta 'pendiente'/'error').
+    tgRegistroCerrarError($e->getMessage());
     jsonError($e->getMessage(), 500);
 }
 
@@ -106,7 +117,7 @@ function resolverCanal(array $in): array {
     $id   = isset($in['canal_id']) && $in['canal_id'] !== '' ? (int)$in['canal_id'] : 0;
 
     if ($slug !== '') {
-        $st = $pdo->prepare("SELECT id, slug, nombre, telefono, habilitado
+        $st = $pdo->prepare("SELECT id, slug, nombre, telefono, habilitado, proyecto
                                FROM telegram_canales
                               WHERE slug = :s LIMIT 1");
         $st->execute([':s' => $slug]);
@@ -117,7 +128,7 @@ function resolverCanal(array $in): array {
     }
 
     if ($id > 0) {
-        $st = $pdo->prepare("SELECT id, slug, nombre, telefono, habilitado
+        $st = $pdo->prepare("SELECT id, slug, nombre, telefono, habilitado, proyecto
                                FROM telegram_canales
                               WHERE id = :i LIMIT 1");
         $st->execute([':i' => $id]);
@@ -128,7 +139,7 @@ function resolverCanal(array $in): array {
     }
 
     // Auto-pick: si hay exactamente un canal habilitado, usarlo.
-    $rows = $pdo->query("SELECT id, slug, nombre, telefono, habilitado
+    $rows = $pdo->query("SELECT id, slug, nombre, telefono, habilitado, proyecto
                            FROM telegram_canales
                           WHERE habilitado = '1'
                             AND slug IS NOT NULL AND slug <> ''
@@ -140,6 +151,130 @@ function resolverCanal(array $in): array {
     $slugs = implode(', ', array_map(fn($r) => "'{$r['slug']}'", $rows));
     jsonError("Hay varios canales habilitados ({$slugs}); pasar `canal_slug` o `canal_id` en el body.", 400);
     throw new RuntimeException('unreachable'); // jsonError() hace exit; esto es para el analizador estatico.
+}
+
+// ---------------------------------------------------------------------------
+// Registro en `telegram_mensajes` (historial que lista el ABM cloud)
+// ---------------------------------------------------------------------------
+// Este endpoint envia de forma SINCRONA, pero la fila se abre ANTES de hablar
+// con Telegram y se cierra despues, con el mismo ciclo de vida que usa el
+// worker de la cola:
+//
+//     'enviando' -> 'enviado'  (Telegram acepto)
+//                -> 'error'    (fallo la resolucion del destino o el envio)
+//
+// Abrirla antes es a proposito: si MadelineProto se cuelga o el proceso muere
+// a mitad de camino, en el panel queda un 'enviando' visible en vez de no
+// quedar rastro de que se intento. Se abre en estado 'enviando' (y no
+// 'pendiente') para que el cron worker NUNCA la levante -- su SELECT toma
+// solo 'pendiente' --, con lo cual no hay riesgo de que el mensaje se mande
+// dos veces.
+//
+// GUARD DE DUPLICADOS: el worker de la cola
+// (cloud/api/lib/telegram_mensajes_enviar.php) tambien despacha por aca, pero
+// el ya tiene su propia fila y la persiste el mismo. Manda su id en
+// `mensaje_id`; cuando ese campo viene, este endpoint no registra nada. Sin
+// ese guard cada mensaje originado en el ABM aparecería duplicado.
+//
+// El registro es BEST EFFORT: el producto de este endpoint es el mensaje
+// entregado, la fila es contabilidad. Si la insercion falla (proyecto sin
+// resolver, DB caida, drift de schema) se deja el rastro en el Visor de
+// sucesos y el envio sigue igual.
+
+/** Getter/setter del id de `telegram_mensajes` abierto por este request. */
+function tgRegistroId(?int $id = null): ?int {
+    static $actual = null;
+    if ($id !== null) $actual = $id;
+    return $actual;
+}
+
+/**
+ * Abre la fila del historial en estado 'enviando'. No-op si quien llama ya
+ * tiene la suya (worker de la cola, via `mensaje_id`).
+ *
+ * `proyecto_id` se resuelve body -> `telegram_canales.proyecto`. El ABM lista
+ * con LEFT JOIN a `proyectos`, asi que un mensaje sin proyecto igual se ve.
+ */
+function tgRegistroAbrir(array $in, array $canal, string $telDest, string $mensaje): void {
+    if (isset($in['mensaje_id']) && (int)$in['mensaje_id'] > 0) return;
+
+    try {
+        // Se registra EXACTAMENTE lo que se manda por el cable: no se pasa
+        // `plantilla_id` aunque venga en el body, porque encolarTelegramMensaje()
+        // reescribiria `cuerpo` con el texto de la plantilla y la fila dejaria
+        // de coincidir con lo que Telegram recibio.
+        $id = encolarTelegramMensaje(db(), [
+            'proyecto_id'  => $in['proyecto_id'] ?? $in['proyecto'] ?? $canal['proyecto'] ?? null,
+            'canal_id'     => (int)$canal['id'],
+            'prospecto_id' => $in['prospecto_id'] ?? null,
+            'remitente'    => $canal['nombre']   ?? null,
+            'remite'       => $canal['telefono'] ?? null,
+            'destinatario' => $in['destinatario'] ?? null,
+            'destino'      => $telDest,
+            'cuerpo'       => $mensaje,
+            'tags'         => $in['tags'] ?? null,
+            'estado'       => 'enviando',
+        ]);
+        tgRegistroId($id);
+    } catch (Throwable $e) {
+        tgRegistroAvisarFallo('abrir la fila', $e->getMessage());
+    }
+}
+
+/** Cierra la fila como 'enviado'. No-op si no habiamos abierto ninguna. */
+function tgRegistroCerrarOk(): void {
+    $id = tgRegistroId();
+    if ($id === null) return;
+    try {
+        db()->prepare("
+            UPDATE telegram_mensajes
+               SET estado  = 'enviado',
+                   error   = NULL,
+                   enviado = NOW(),
+                   demora  = TIMESTAMPDIFF(SECOND, COALESCE(encolado, fecha, NOW()), NOW())
+             WHERE id = :id
+        ")->execute([':id' => $id]);
+    } catch (Throwable $e) {
+        tgRegistroAvisarFallo('cerrar la fila como enviado', $e->getMessage());
+    }
+}
+
+/** Cierra la fila como 'error'. No-op si no habiamos abierto ninguna. */
+function tgRegistroCerrarError(string $err): void {
+    $id = tgRegistroId();
+    if ($id === null) return;
+    try {
+        db()->prepare("
+            UPDATE telegram_mensajes
+               SET estado = 'error',
+                   error  = :err,
+                   demora = TIMESTAMPDIFF(SECOND, COALESCE(encolado, fecha, NOW()), NOW())
+             WHERE id = :id
+        ")->execute([':err' => substr($err, 0, 1000), ':id' => $id]);
+    } catch (Throwable $e) {
+        tgRegistroAvisarFallo('cerrar la fila como error', $e->getMessage());
+    }
+}
+
+/**
+ * Deja constancia en `sucesos` de que el historial no se pudo escribir. Se
+ * traga cualquier fallo propio: un problema del log no puede tumbar el envio.
+ */
+function tgRegistroAvisarFallo(string $paso, string $err): void {
+    try {
+        registrarSuceso(db(), 'v4/telegram.mensajes', 'alerta',
+            "No se pudo {$paso} en telegram_mensajes (el envio sigue su curso): {$err}");
+    } catch (Throwable) { /* ignore */ }
+}
+
+/**
+ * Marca la fila como error y contesta. Reemplaza a jsonError() en todo camino
+ * de salida POSTERIOR a tgRegistroAbrir() -- jsonError() hace exit, asi que si
+ * no se cierra aca la fila se queda en 'enviando' para siempre.
+ */
+function tgFallar(string $msg, int $code): void {
+    tgRegistroCerrarError($msg);
+    jsonError($msg, $code);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +316,11 @@ function handleSend(array $in): void {
         jsonError("Canal '{$canal['slug']}' no tiene `telefono` cargado; no puedo ubicar la sesion.", 500);
     }
 
+    // Historial: se abre ANTES de tocar MadelineProto para que un cuelgue del
+    // phar deje rastro. De aca en adelante toda salida de error va por
+    // tgFallar() (o por el catch global), nunca por jsonError() pelado.
+    tgRegistroAbrir($in, $canal, $telDest, $mensaje);
+
     $canalDir  = __DIR__ . '/canales/' . $telCanal;
     $sessDir   = $canalDir . '/session.madeline';
     $bootstrap = $canalDir . '/madeline.php';
@@ -190,7 +330,7 @@ function handleSend(array $in): void {
     // la ruta esperada, para que el operador sepa que hay que correr el
     // login CLI en dev (php login.php --canal=<slug>) y luego deployar.
     if (!is_dir($sessDir)) {
-        jsonError(
+        tgFallar(
             "Sesion del canal '{$canal['slug']}' (+{$telCanal}) no inicializada (falta canales/{$telCanal}/session.madeline/). "
             . "Loguear en desarrollo: docker exec -it databox-apache php /var/www/api/v4/telegram/login.php --canal={$canal['slug']}",
             500
@@ -203,7 +343,7 @@ function handleSend(array $in): void {
         if (!is_dir($canalDir)) @mkdir($canalDir, 0775, true);
         $src = @file_get_contents('https://phar.madelineproto.xyz/madeline.php');
         if ($src === false) {
-            jsonError('No se pudo descargar el bootstrap de MadelineProto', 500);
+            tgFallar('No se pudo descargar el bootstrap de MadelineProto', 500);
         }
         file_put_contents($bootstrap, $src);
     }
@@ -247,10 +387,10 @@ function handleSend(array $in): void {
     try {
         $resolved = $MadelineProto->contacts->resolvePhone(['phone' => $telDest]);
     } catch (Throwable $e) {
-        jsonError('No se pudo resolver el destinatario +' . $telDest . ': ' . $e->getMessage(), 400);
+        tgFallar('No se pudo resolver el destinatario +' . $telDest . ': ' . $e->getMessage(), 400);
     }
     if (empty($resolved['users'])) {
-        jsonError('El numero +' . $telDest . ' no tiene cuenta de Telegram (o esta oculto).', 400);
+        tgFallar('El numero +' . $telDest . ' no tiene cuenta de Telegram (o esta oculto).', 400);
     }
     $user = $resolved['users'][0];
 
@@ -260,7 +400,7 @@ function handleSend(array $in): void {
             'message' => $mensaje,
         ]);
     } catch (Throwable $e) {
-        jsonError('Telegram rechazo el envio: ' . $e->getMessage(), 502);
+        tgFallar('Telegram rechazo el envio: ' . $e->getMessage(), 502);
     }
 
     // El id del mensaje puede venir en $res['id'] (updateShortSentMessage)
@@ -281,6 +421,9 @@ function handleSend(array $in): void {
         : (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
               ->format('Y-m-d H:i:s');
 
+    // Telegram acepto: cerrar la fila del historial antes de contestar.
+    tgRegistroCerrarOk();
+
     jsonOk([
         'canal' => [
             'id'       => (int)$canal['id'],
@@ -292,5 +435,9 @@ function handleSend(array $in): void {
         'mensaje'      => $mensaje,
         'message_id'   => $messageId,
         'fecha'        => $fecha,
+        // Id de la fila en `telegram_mensajes` (lo que lista el ABM cloud).
+        // null cuando quien llama trajo su propia fila via `mensaje_id`, o si
+        // el registro best-effort no pudo escribirse.
+        'mensaje_id'   => tgRegistroId(),
     ], 200);
 }

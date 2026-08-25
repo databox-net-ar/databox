@@ -2809,6 +2809,7 @@ CREATE TABLE `migraciones`  (
 DROP TABLE IF EXISTS `claro_sims`;
 CREATE TABLE `claro_sims`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `proyecto` int(11) NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `alias` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `linea` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -2825,7 +2826,8 @@ CREATE TABLE `claro_sims`  (
   `ultimo_trafico` datetime(0) NULL DEFAULT NULL,
   `tags` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_claro_sims_icc`(`icc`) USING BTREE
+  UNIQUE INDEX `uk_claro_sims_icc`(`icc`) USING BTREE,
+  INDEX `idx_claro_sims_proyecto`(`proyecto`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -2834,6 +2836,7 @@ CREATE TABLE `claro_sims`  (
 DROP TABLE IF EXISTS `movistar_sims`;
 CREATE TABLE `movistar_sims`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `proyecto` int(11) NULL DEFAULT NULL,
   `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `alias` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `linea` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -2850,7 +2853,8 @@ CREATE TABLE `movistar_sims`  (
   `ultimo_trafico` datetime(0) NULL DEFAULT NULL,
   `tags` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_movistar_sims_icc`(`icc`) USING BTREE
+  UNIQUE INDEX `uk_movistar_sims_icc`(`icc`) USING BTREE,
+  INDEX `idx_movistar_sims_proyecto`(`proyecto`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

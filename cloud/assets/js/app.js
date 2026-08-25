@@ -38889,7 +38889,7 @@ route('/movistar', async (mount) => {
 
 // ------------------------- Vista: Movistar > SIMs (ABM) -------------------------
 const msimFiltrosDefaults = {
-  q: '', codigo: '', nombre: '', linea: '', imei: '', estado: '', en_uso: '',
+  q: '', codigo: '', proyecto: '', nombre: '', linea: '', imei: '', estado: '', en_uso: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const msimFiltros = { ...msimFiltrosDefaults };
@@ -38902,6 +38902,39 @@ let msimTagsEditor      = null;
 // con cada corrida de `cargarMsim` (viene en `stats.estados`) y se usa para
 // poblar el <select> de estado del modal de Filtros.
 let msimEstadosCache    = [];
+// Lookup de proyectos para el combo `proyecto` de los dos ABMs de SIMs
+// (Movistar y Claro) — de ahi el prefijo `sim` en vez de `msim`/`csim`, igual
+// que `simFmtEnUso`. Se carga una vez por sesion: poco volumen (~15 filas) y
+// cambia muy rara vez. Filtramos por `tipo=I` (interno) porque una SIM M2M
+// siempre se asigna a un proyecto propio del grupo, nunca a un cliente externo.
+let simProyectosLookup = [];
+
+async function simCargarProyectosLookup() {
+  if (simProyectosLookup.length) return simProyectosLookup;
+  try {
+    const data = await apiGet('api/proyectos.php?tipo=I');
+    simProyectosLookup = (data.items || []).map((p) => ({ id: p.id, nombre: p.nombre }));
+  } catch { simProyectosLookup = []; }
+  return simProyectosLookup;
+}
+
+// <option>s del combo de proyectos del modal Editar. `vacio` es el texto de la
+// opcion nula y `actual` el id seleccionado (string o number, se compara como
+// string).
+function simOptionsProyecto(vacio, actual) {
+  return [`<option value="">${vacio}</option>`]
+    .concat(simProyectosLookup.map((p) =>
+      `<option value="${p.id}"${String(p.id) === String(actual ?? '') ? ' selected' : ''}>${esc(p.nombre)}</option>`))
+    .join('');
+}
+
+// <option>s del combo de proyectos del modal Filtros: suma "Todos" ('') y
+// "Sin proyecto" ('0', que el backend traduce a `proyecto IS NULL`).
+function simOptionsProyectoFiltro() {
+  return `<option value="">Todos</option>`
+       + `<option value="0">— Sin proyecto —</option>`
+       + simProyectosLookup.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+}
 
 function msimFmtEstado(v) {
   if (v == null || v === '') return `<span class="badge badge-muted">—</span>`;
@@ -38926,6 +38959,8 @@ function simFmtEnUso(v) {
 }
 
 route('/movistar_sims', async (mount) => {
+  await simCargarProyectosLookup();
+
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -38941,6 +38976,9 @@ route('/movistar_sims', async (mount) => {
             el ICC, el estado general/GPRS/LTE, el límite de datos, el IMEI del
             equipo asociado y el MSISDN. El botón "Sincronizar con Kite" trae
             las líneas vigentes desde la API de Kite y las mantiene actualizadas.
+            El <strong>proyecto</strong> se asigna a mano desde "Editar SIM" e
+            indica en cuál de los proyectos internos está usándose esa línea; el
+            sync con Kite no lo pisa.
           </div>
         </div>
       </div>
@@ -38977,6 +39015,7 @@ route('/movistar_sims', async (mount) => {
           <thead id="msimThead">
             <tr>
               <th style="width:90px">Código</th>
+              ${thOrdenable('proyecto',      'Proyecto', 'width:150px')}
               ${thOrdenable('nombre',        'Nombre')}
               ${thOrdenable('linea',         'Línea')}
               <th style="width:180px">ICC</th>
@@ -38990,7 +39029,7 @@ route('/movistar_sims', async (mount) => {
             </tr>
           </thead>
           <tbody id="msimTbody">
-            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="12" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -39067,6 +39106,12 @@ route('/movistar_sims', async (mount) => {
               </select>
             </div>
           </div>
+          <div class="form-group">
+            <label>Proyecto</label>
+            <select id="fMsimProyecto" onchange="onFiltroMsim('proyecto', this.value)">
+              ${simOptionsProyectoFiltro()}
+            </select>
+          </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Límite</label>
@@ -39076,6 +39121,7 @@ route('/movistar_sims', async (mount) => {
               <label>Ordenar por</label>
               <select id="fMsimOrderBy" onchange="onFiltroMsim('order_by', this.value)">
                 <option value="id">Código</option>
+                <option value="proyecto">Proyecto</option>
                 <option value="nombre">Nombre</option>
                 <option value="linea">Línea</option>
                 <option value="icc">ICC</option>
@@ -39192,7 +39238,7 @@ route('/movistar_sims', async (mount) => {
 async function cargarMsim() {
   const tbody = $('#msimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(msimFiltros).forEach(([k, v]) => {
@@ -39204,7 +39250,7 @@ async function cargarMsim() {
     pintarStatsMsim(data.stats);
     pintarTablaMsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -39224,12 +39270,13 @@ function pintarStatsMsim(s) {
 function pintarTablaMsim(rows) {
   const tbody = $('#msimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
+      <td>${r.proyecto_nombre ? esc(r.proyecto_nombre) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}${renderTagsPills(r.tags)}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
@@ -39251,7 +39298,7 @@ function pintarTablaMsim(rows) {
 }
 
 function onFiltroMsim(key, value) {
-  if (['order_by', 'dir', 'estado', 'en_uso'].includes(key)) {
+  if (['order_by', 'dir', 'estado', 'en_uso', 'proyecto'].includes(key)) {
     msimFiltros[key] = value;
   } else if (key === 'codigo') {
     const v = String(value).trim();
@@ -39281,14 +39328,15 @@ function refrescarBadgeFiltrosMsim() {
 
 function sincronizarControlesFiltrosMsim() {
   const f = msimFiltros;
-  $('#fMsimCodigo').value  = f.codigo;
-  $('#fMsimNombre').value  = f.nombre;
-  $('#fMsimLinea').value   = f.linea;
-  $('#fMsimImei').value    = f.imei;
-  $('#fMsimEnUso').value   = f.en_uso;
-  $('#fMsimLimite').value  = f.limite;
-  $('#fMsimOrderBy').value = f.order_by;
-  $('#fMsimDir').value     = f.dir;
+  $('#fMsimCodigo').value   = f.codigo;
+  $('#fMsimProyecto').value = f.proyecto;
+  $('#fMsimNombre').value   = f.nombre;
+  $('#fMsimLinea').value    = f.linea;
+  $('#fMsimImei').value     = f.imei;
+  $('#fMsimEnUso').value    = f.en_uso;
+  $('#fMsimLimite').value   = f.limite;
+  $('#fMsimOrderBy').value  = f.order_by;
+  $('#fMsimDir').value      = f.dir;
 
   // Poblar el <select> de estado desde la cache (viene del stats del ultimo
   // cargarMsim). Si el valor actualmente filtrado no esta en la lista (raro
@@ -39527,6 +39575,7 @@ function pintarConsultarMsimGeneral(r) {
   const est   = r.estado      ? msimFmtEstado(r.estado)      : '—';
   const gprs  = r.estado_gprs ? msimFmtEstado(r.estado_gprs) : '—';
   const lte   = r.estado_lte  ? msimFmtEstado(r.estado_lte)  : '—';
+  const proy  = esc(r.proyecto_nombre || '—');
   const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
   const enUsoTxt = r.en_uso === 'si' ? 'Sí' : r.en_uso === 'no' ? 'No' : 'Sin definir';
   const trafFecha = r.ultimo_trafico ? String(r.ultimo_trafico).replace('T', ' ').slice(0, 19) : null;
@@ -39537,6 +39586,7 @@ function pintarConsultarMsimGeneral(r) {
   $('#modalRoot [data-panel="general"]').innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       ${card('Código',         `#${esc(r.id)}`)}
+      ${card('Proyecto',       proy)}
       ${card('Nombre',         esc(r.nombre || '—'))}
       ${card('Alias',          esc(r.alias  || '—'))}
       ${card('Línea',          esc(r.linea  || '—'))}
@@ -39616,10 +39666,11 @@ async function cambiarEstadoMsim(id, target, btn) {
   }
 }
 
-// Edicion: `nombre` es el unico campo editable. El resto (alias, linea, icc,
-// estado, limite_datos, consumo_datos, imei, msisdn, ...) proviene del sync
-// con Kite y se sobreescribe en cada corrida — mostrarlos como editables
-// confundiria al usuario. Los datos read-only estan en el modal Consultar.
+// Edicion: `proyecto`, `nombre` y las etiquetas son los unicos campos
+// editables. El resto (alias, linea, icc, estado, limite_datos,
+// consumo_datos, imei, msisdn, ...) proviene del sync con Kite y se
+// sobreescribe en cada corrida — mostrarlos como editables confundiria al
+// usuario. Los datos read-only estan en el modal Consultar.
 async function abrirAltaEdicionMsim(id) {
   openModal(`
     <div class="modal" style="max-width:520px">
@@ -39658,6 +39709,10 @@ function formMsimHtml(r) {
   const v = (k) => esc(r?.[k] ?? '');
   return `
     <div class="form-group">
+      <label>Proyecto</label>
+      <select id="msimProyecto">${simOptionsProyecto('— Sin proyecto —', r?.proyecto)}</select>
+    </div>
+    <div class="form-group">
       <label>Nombre</label>
       <input type="text" id="msimNombre" maxlength="255" value="${v('nombre')}" autofocus>
     </div>
@@ -39677,8 +39732,9 @@ async function guardarMsim(id, btn) {
   err.style.display = 'none';
 
   const payload = {
-    nombre: $('#msimNombre').value.trim() || null,
-    tags:   msimTagsEditor ? msimTagsEditor.getTags() : [],
+    proyecto: $('#msimProyecto').value || null,
+    nombre:   $('#msimNombre').value.trim() || null,
+    tags:     msimTagsEditor ? msimTagsEditor.getTags() : [],
   };
 
   btn.disabled = true;
@@ -41382,7 +41438,7 @@ function renderDetalleArcAut(r) {
 
 // ------------------------- Vista: Claro > SIMs (ABM) -------------------------
 const csimFiltrosDefaults = {
-  q: '', codigo: '', nombre: '', linea: '', imei: '', estado: '', en_uso: '',
+  q: '', codigo: '', proyecto: '', nombre: '', linea: '', imei: '', estado: '', en_uso: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const csimFiltros = { ...csimFiltrosDefaults };
@@ -41408,6 +41464,8 @@ function csimFmtEstado(v) {
 }
 
 route('/claro_sims', async (mount) => {
+  await simCargarProyectosLookup();
+
   mount.innerHTML = `
     <div class="section">
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
@@ -41422,6 +41480,9 @@ route('/claro_sims', async (mount) => {
             Autogestión Empresas — cada fila trae el nombre, la línea,
             el ICC, el estado general/GPRS/LTE, el límite de datos, el IMEI
             del equipo asociado y el MSISDN.
+            El <strong>proyecto</strong> se asigna a mano desde "Editar SIM" e
+            indica en cuál de los proyectos internos está usándose esa línea; el
+            sync con Autogestión no lo pisa.
           </div>
         </div>
       </div>
@@ -41464,6 +41525,7 @@ route('/claro_sims', async (mount) => {
           <thead id="csimThead">
             <tr>
               <th style="width:90px">Código</th>
+              ${thOrdenable('proyecto',      'Proyecto', 'width:150px')}
               ${thOrdenable('nombre',        'Nombre')}
               ${thOrdenable('linea',         'Línea')}
               <th style="width:180px">ICC</th>
@@ -41477,7 +41539,7 @@ route('/claro_sims', async (mount) => {
             </tr>
           </thead>
           <tbody id="csimTbody">
-            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="12" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -41548,6 +41610,12 @@ route('/claro_sims', async (mount) => {
               </select>
             </div>
           </div>
+          <div class="form-group">
+            <label>Proyecto</label>
+            <select id="fCsimProyecto" onchange="onFiltroCsim('proyecto', this.value)">
+              ${simOptionsProyectoFiltro()}
+            </select>
+          </div>
           <div class="form-row form-row-3">
             <div class="form-group">
               <label>Límite</label>
@@ -41557,6 +41625,7 @@ route('/claro_sims', async (mount) => {
               <label>Ordenar por</label>
               <select id="fCsimOrderBy" onchange="onFiltroCsim('order_by', this.value)">
                 <option value="id">Código</option>
+                <option value="proyecto">Proyecto</option>
                 <option value="nombre">Nombre</option>
                 <option value="linea">Línea</option>
                 <option value="icc">ICC</option>
@@ -41673,7 +41742,7 @@ route('/claro_sims', async (mount) => {
 async function cargarCsim() {
   const tbody = $('#csimTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(csimFiltros).forEach(([k, v]) => {
@@ -41685,7 +41754,7 @@ async function cargarCsim() {
     pintarStatsCsim(data.stats);
     pintarTablaCsim(data.items || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -41705,12 +41774,13 @@ function pintarStatsCsim(s) {
 function pintarTablaCsim(rows) {
   const tbody = $('#csimTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin SIMs.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="table-empty">Sin SIMs.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr data-id="${r.id}" data-en-uso="${esc(r.en_uso || '')}" class="row-clickable">
       <td class="td-id">#${esc(r.id)}</td>
+      <td>${r.proyecto_nombre ? esc(r.proyecto_nombre) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${esc(r.nombre || '—')}${r.alias ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(r.alias)}</div>` : ''}${renderTagsPills(r.tags)}</td>
       <td style="font-family:monospace">${esc(r.linea || '—')}</td>
       <td style="font-family:monospace;white-space:nowrap">${esc(r.icc || '—')}</td>
@@ -41732,7 +41802,7 @@ function pintarTablaCsim(rows) {
 }
 
 function onFiltroCsim(key, value) {
-  if (['order_by', 'dir', 'estado', 'en_uso'].includes(key)) {
+  if (['order_by', 'dir', 'estado', 'en_uso', 'proyecto'].includes(key)) {
     csimFiltros[key] = value;
   } else if (key === 'codigo') {
     const v = String(value).trim();
@@ -41762,14 +41832,15 @@ function refrescarBadgeFiltrosCsim() {
 
 function sincronizarControlesFiltrosCsim() {
   const f = csimFiltros;
-  $('#fCsimCodigo').value  = f.codigo;
-  $('#fCsimNombre').value  = f.nombre;
-  $('#fCsimLinea').value   = f.linea;
-  $('#fCsimImei').value    = f.imei;
-  $('#fCsimEnUso').value   = f.en_uso;
-  $('#fCsimLimite').value  = f.limite;
-  $('#fCsimOrderBy').value = f.order_by;
-  $('#fCsimDir').value     = f.dir;
+  $('#fCsimCodigo').value   = f.codigo;
+  $('#fCsimProyecto').value = f.proyecto;
+  $('#fCsimNombre').value   = f.nombre;
+  $('#fCsimLinea').value    = f.linea;
+  $('#fCsimImei').value     = f.imei;
+  $('#fCsimEnUso').value    = f.en_uso;
+  $('#fCsimLimite').value   = f.limite;
+  $('#fCsimOrderBy').value  = f.order_by;
+  $('#fCsimDir').value      = f.dir;
 
   // Poblar el <select> de estado desde la cache (viene del stats del ultimo
   // cargarCsim). Si el valor actualmente filtrado no esta en la lista (raro
@@ -41983,6 +42054,7 @@ function pintarConsultarCsimGeneral(r) {
   const est   = r.estado      ? csimFmtEstado(r.estado)      : '—';
   const gprs  = r.estado_gprs ? csimFmtEstado(r.estado_gprs) : '—';
   const lte   = r.estado_lte  ? csimFmtEstado(r.estado_lte)  : '—';
+  const proy  = esc(r.proyecto_nombre || '—');
   const sync  = r.actualizado ? String(r.actualizado).replace('T', ' ').slice(0, 19) : '—';
   const enUsoTxt = r.en_uso === 'si' ? 'Sí' : r.en_uso === 'no' ? 'No' : 'Sin definir';
   const trafFecha = r.ultimo_trafico ? String(r.ultimo_trafico).replace('T', ' ').slice(0, 19) : null;
@@ -41993,6 +42065,7 @@ function pintarConsultarCsimGeneral(r) {
   $('#modalRoot [data-panel="general"]').innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       ${card('Código',         `#${esc(r.id)}`)}
+      ${card('Proyecto',       proy)}
       ${card('Nombre',         esc(r.nombre || '—'))}
       ${card('Alias',          esc(r.alias  || '—'))}
       ${card('Línea',          esc(r.linea  || '—'))}
@@ -42040,10 +42113,10 @@ function pintarConsultarCsimEstado(r) {
   `;
 }
 
-// Edicion: `nombre` es el unico campo editable. El resto proviene del CSV
-// que sube openclaw y se sobreescribe en cada corrida — mostrarlos como
-// editables confundiria al usuario. Los datos read-only estan en el modal
-// Consultar.
+// Edicion: `proyecto`, `nombre` y las etiquetas son los unicos campos
+// editables. El resto proviene del CSV que sube openclaw y se sobreescribe en
+// cada corrida — mostrarlos como editables confundiria al usuario. Los datos
+// read-only estan en el modal Consultar.
 async function abrirAltaEdicionCsim(id) {
   openModal(`
     <div class="modal" style="max-width:520px">
@@ -42082,6 +42155,10 @@ function formCsimHtml(r) {
   const v = (k) => esc(r?.[k] ?? '');
   return `
     <div class="form-group">
+      <label>Proyecto</label>
+      <select id="csimProyecto">${simOptionsProyecto('— Sin proyecto —', r?.proyecto)}</select>
+    </div>
+    <div class="form-group">
       <label>Nombre</label>
       <input type="text" id="csimNombre" maxlength="255" value="${v('nombre')}" autofocus>
     </div>
@@ -42101,8 +42178,9 @@ async function guardarCsim(id, btn) {
   err.style.display = 'none';
 
   const payload = {
-    nombre: $('#csimNombre').value.trim() || null,
-    tags:   csimTagsEditor ? csimTagsEditor.getTags() : [],
+    proyecto: $('#csimProyecto').value || null,
+    nombre:   $('#csimNombre').value.trim() || null,
+    tags:     csimTagsEditor ? csimTagsEditor.getTags() : [],
   };
 
   btn.disabled = true;
