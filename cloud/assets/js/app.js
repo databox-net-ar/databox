@@ -10883,10 +10883,16 @@ route('/datacount', async (mount) => {
 //   - notas:      `datacount_comprobantes` autorizados, tipo LIKE 'N%'.
 //   - pagos:      `datacount_pagos` contabilizados.
 //   - resultados: cruce mes a mes de facturas (ingresos) contra órdenes de
-//                 pago (egresos). Es la única pestaña de dos series, marcada
-//                 con `tipo: 'comparativa'`: tiene su propio render (stats,
-//                 gráfico de barras agrupadas y tabla mensual) pero comparte
-//                 el shell de rango/año con el resto.
+//                 pago (egresos).
+//   - consistencia: cruce mes a mes de lo facturado (neto de notas de crédito)
+//                 contra lo efectivamente acreditado en las cuentas de fondos
+//                 del módulo Bancos. Sirve para detectar meses donde la plata
+//                 que entró no se parece a lo que se emitió.
+//
+// Las dos últimas son pestañas de dos series: llevan `chartComparativa` con
+// las claves y colores del gráfico agrupado, y `tipo` propio porque cada una
+// tiene su render de stats + tabla. El shell de rango/año lo comparten con el
+// resto.
 //
 // Los gráficos son SVG plano (sin librerías, coherente con "sin build step").
 
@@ -10938,6 +10944,17 @@ const DCA_TABS = [
     icon: 'fa-scale-balanced',
     tipo: 'comparativa',
     tituloChart: 'Ingresos vs. egresos mensuales',
+    chartComparativa: { keyA: 'ingresos', keyB: 'egresos',
+                        colorA: 'var(--success)', colorB: 'var(--danger)' },
+  },
+  {
+    key: 'consistencia',
+    label: 'Consistencia',
+    icon: 'fa-scale-unbalanced',
+    tipo: 'consistencia',
+    tituloChart: 'Facturado vs. acreditado en cuentas de fondos',
+    chartComparativa: { keyA: 'facturado_neto', keyB: 'acreditado',
+                        colorA: 'var(--info)', colorB: 'var(--success)' },
   },
 ];
 
@@ -10948,6 +10965,7 @@ const dcaState = Object.fromEntries(DCA_TABS.map((t) => [t.key, {
   rango:      'all',   // 'all' | '12' | '24' | '36' | 'year'
   anio:       null,    // solo cuando rango === 'year'
   ultimaData: null,    // cache del último payload para redibujar en resize
+  tolerancia: 10,      // solo Consistencia: % de desvío que se considera OK
 }]));
 
 let dcaTabActual   = DCA_TABS[0].key;
@@ -11058,8 +11076,8 @@ route('/datacount_analiticas', async (mount) => {
         const inner = document.getElementById(`dca_${cfg.key}_ChartInner`);
         const tip   = document.getElementById(`dca_${cfg.key}_Tooltip`);
         if (chart && inner) {
-          inner.innerHTML = (cfg.tipo === 'comparativa')
-            ? dcaRenderBarChartComparativa(st.ultimaData.serie, chart.clientWidth)
+          inner.innerHTML = cfg.chartComparativa
+            ? dcaRenderBarChartComparativa(st.ultimaData.serie, chart.clientWidth, cfg.chartComparativa)
             : dcaRenderBarChart(st.ultimaData.serie, chart.clientWidth);
         }
         if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
@@ -11101,8 +11119,9 @@ async function dcaRenderTab(panel, cfg) {
     return;
   }
 
-  // La pestaña Resultados cruza dos series y tiene su propio shell.
-  if (cfg.tipo === 'comparativa') return dcaRenderTabResultados(panel, cfg);
+  // Las pestañas de cruce (dos series) tienen cada una su propio shell.
+  if (cfg.tipo === 'comparativa')  return dcaRenderTabResultados(panel, cfg);
+  if (cfg.tipo === 'consistencia') return dcaRenderTabConsistencia(panel, cfg);
 
   const p  = `dca_${cfg.key}_`;   // prefijo de IDs de esta pestaña
   const st = dcaState[cfg.key];
@@ -11464,11 +11483,26 @@ async function dcaRenderTabResultados(panel, cfg) {
 
   dcaWirearRangoChips(panel, p, st, () => dcaCargarResultadosData(cfg));
 
-  // Click en una banda: tooltip con ingresos, egresos y resultado del mes.
-  // El rect transparente cubre exactamente el área de ploteo, así que su
-  // bounding box más `data-topfrac` ubica el tope de la barra más alta sin
-  // depender del factor de escala del SVG.
+  dcaWirearTooltipComparativa(p, cfg, (s) => `
+    <div style="font-weight:600;margin-bottom:2px">${esc(dcaMesLabel(s.mes))}</div>
+    <div style="color:var(--success)">Ingresos: <strong>$ ${dcaFmtMoney(s.ingresos)}</strong></div>
+    <div style="color:var(--danger)">Egresos: <strong>$ ${dcaFmtMoney(s.egresos)}</strong></div>
+    <div style="margin-top:3px;padding-top:3px;border-top:1px solid var(--border);color:${dcaColorResultado(s.resultado)};font-weight:700">Resultado: ${dcaFmtMoneySigno(s.resultado)}</div>
+    <div style="color:var(--muted);font-size:.75rem">${fmtNum(s.cant_ingresos)} factura(s) · ${fmtNum(s.cant_egresos)} orden(es)</div>
+  `);
+
+  await dcaCargarResultadosData(cfg);
+}
+
+// Wiring del tooltip de un gráfico de barras agrupadas, compartido por las
+// pestañas de cruce. El comportamiento es siempre el mismo —click en la banda
+// del mes lo abre, volver a clickearla o clickear el fondo lo cierra— y lo
+// único que cambia es el contenido, que arma `construirHtml(punto)` a partir
+// del punto de la serie cacheada.
+function dcaWirearTooltipComparativa(p, cfg, construirHtml) {
   const chart = document.getElementById(`${p}Chart`);
+  if (!chart) return;
+
   chart.addEventListener('click', (ev) => {
     const rect = ev.target.closest('.dca-bar');
     const tip  = document.getElementById(`${p}Tooltip`);
@@ -11476,30 +11510,27 @@ async function dcaRenderTabResultados(panel, cfg) {
     if (!rect) { tip.hidden = true; tip.dataset.mes = ''; return; }
 
     const mes = rect.dataset.mes || '';
-    const ing = Number(rect.dataset.ing || 0);
-    const egr = Number(rect.dataset.egr || 0);
-    const res = ing - egr;
-
     if (tip.dataset.mes === mes && !tip.hidden) {
       tip.hidden = true;
       tip.dataset.mes = '';
       return;
     }
 
+    const serie = (dcaState[cfg.key].ultimaData || {}).serie || [];
+    const punto = serie.find((s) => s.mes === mes);
+    if (!punto) return;
+
+    tip.innerHTML   = construirHtml(punto);
+    tip.dataset.mes = mes;
+    tip.hidden      = false;
+
+    // El rect transparente cubre exactamente el área de ploteo, así que su
+    // bounding box más `data-topfrac` ubica el tope de la barra más alta sin
+    // depender del factor de escala del SVG.
     const box      = rect.getBoundingClientRect();
     const chartBox = chart.getBoundingClientRect();
     const cx = box.left - chartBox.left + box.width / 2;
     const cy = box.top  - chartBox.top  + box.height * Number(rect.dataset.topfrac || 0);
-
-    tip.innerHTML = `
-      <div style="font-weight:600;margin-bottom:2px">${esc(dcaMesLabel(mes))}</div>
-      <div style="color:var(--success)">Ingresos: <strong>$ ${dcaFmtMoney(ing)}</strong></div>
-      <div style="color:var(--danger)">Egresos: <strong>$ ${dcaFmtMoney(egr)}</strong></div>
-      <div style="margin-top:3px;padding-top:3px;border-top:1px solid var(--border);color:${dcaColorResultado(res)};font-weight:700">Resultado: ${dcaFmtMoneySigno(res)}</div>
-      <div style="color:var(--muted);font-size:.75rem">${fmtNum(rect.dataset.cantIng || 0)} factura(s) · ${fmtNum(rect.dataset.cantEgr || 0)} orden(es)</div>
-    `;
-    tip.dataset.mes = mes;
-    tip.hidden = false;
 
     tip.style.left = cx + 'px';
     tip.style.top  = cy + 'px';
@@ -11509,8 +11540,6 @@ async function dcaRenderTabResultados(panel, cfg) {
     else if (tipBox.right > chartBox.right - 4)  dx = (chartBox.right - 4) - tipBox.right;
     if (dx !== 0) tip.style.left = (cx + dx) + 'px';
   });
-
-  await dcaCargarResultadosData(cfg);
 }
 
 // Wiring común de los chips de rango + selector de año. `recargar` es la
@@ -11634,7 +11663,7 @@ async function dcaCargarResultadosData(cfg) {
       return;
     }
 
-    cont.innerHTML  = dcaRenderBarChartComparativa(data.serie, chart.clientWidth);
+    cont.innerHTML  = dcaRenderBarChartComparativa(data.serie, chart.clientWidth, cfg.chartComparativa);
     tbody.innerHTML = dcaRenderFilasResultados(data.serie, r);
   } catch (e) {
     cont.innerHTML  = `<div class="table-empty" style="text-align:center;padding:40px 20px;color:var(--danger)">Error: ${esc(e.message)}</div>`;
@@ -11642,19 +11671,31 @@ async function dcaCargarResultadosData(cfg) {
   }
 }
 
-// Barras agrupadas (ingresos | egresos) por mes, en SVG plano. Mismo layout
-// que `dcaRenderBarChart` pero con dos barras por banda y una zona clickeable
-// por mes que lleva ambos valores + `data-topfrac` (fracción del alto del
-// área de ploteo donde arranca la barra más alta) para anclar el tooltip.
-function dcaRenderBarChartComparativa(serie, anchoDisponible) {
+// Barras agrupadas por mes, en SVG plano. Mismo layout que `dcaRenderBarChart`
+// pero con dos barras por banda y una zona clickeable por mes que lleva
+// `data-mes` + `data-topfrac` (fracción del alto del área de ploteo donde
+// arranca la barra más alta) para anclar el tooltip; los valores los saca el
+// handler de la serie cacheada.
+//
+// `opts` (la `chartComparativa` de la cfg de la pestaña) dice qué dos claves
+// de la serie se grafican y con qué color cada una.
+function dcaRenderBarChartComparativa(serie, anchoDisponible, opts) {
+  const o = Object.assign(
+    { keyA: 'ingresos', keyB: 'egresos', colorA: 'var(--success)', colorB: 'var(--danger)' },
+    opts || {});
+
   const W = Math.max(320, Math.floor(anchoDisponible || 800));
   const H = 320;
   const PAD = { top: 20, right: 16, bottom: 44, left: 76 };
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
 
-  const maxVal = serie.reduce((m, s) =>
-    Math.max(m, Number(s.ingresos) || 0, Number(s.egresos) || 0), 0);
+  // Los valores negativos (posibles en Consistencia: un mes con más notas de
+  // crédito que facturas) se dibujan como barra vacía en vez de romper el
+  // `height` del rect. El número real igual aparece en el tooltip y la tabla.
+  const val = (s, k) => Math.max(0, Number(s[k]) || 0);
+
+  const maxVal = serie.reduce((m, s) => Math.max(m, val(s, o.keyA), val(s, o.keyB)), 0);
   const yMax = dcaNiceMax(maxVal);
 
   const yTicks = 5;
@@ -11678,19 +11719,19 @@ function dcaRenderBarChartComparativa(serie, anchoDisponible) {
   const bars  = [];
   const xLabs = [];
   serie.forEach((s, i) => {
-    const ing = Number(s.ingresos) || 0;
-    const egr = Number(s.egresos)  || 0;
-    const hIng = yMax > 0 ? (plotH * ing / yMax) : 0;
-    const hEgr = yMax > 0 ? (plotH * egr / yMax) : 0;
-    const cx   = PAD.left + i * bandW + bandW / 2;
-    const xIng = cx - 1 - barW;
-    const xEgr = cx + 1;
+    const a  = val(s, o.keyA);
+    const b  = val(s, o.keyB);
+    const hA = yMax > 0 ? (plotH * a / yMax) : 0;
+    const hB = yMax > 0 ? (plotH * b / yMax) : 0;
+    const cx = PAD.left + i * bandW + bandW / 2;
+    const xA = cx - 1 - barW;
+    const xB = cx + 1;
 
-    bars.push(`<rect x="${xIng.toFixed(1)}" y="${(PAD.top + plotH - hIng).toFixed(1)}" width="${barW.toFixed(1)}" height="${hIng.toFixed(1)}" rx="2" fill="var(--success)" opacity="${ing > 0 ? '.92' : '0'}"/>`);
-    bars.push(`<rect x="${xEgr.toFixed(1)}" y="${(PAD.top + plotH - hEgr).toFixed(1)}" width="${barW.toFixed(1)}" height="${hEgr.toFixed(1)}" rx="2" fill="var(--danger)" opacity="${egr > 0 ? '.92' : '0'}"/>`);
+    bars.push(`<rect x="${xA.toFixed(1)}" y="${(PAD.top + plotH - hA).toFixed(1)}" width="${barW.toFixed(1)}" height="${hA.toFixed(1)}" rx="2" fill="${o.colorA}" opacity="${a > 0 ? '.92' : '0'}"/>`);
+    bars.push(`<rect x="${xB.toFixed(1)}" y="${(PAD.top + plotH - hB).toFixed(1)}" width="${barW.toFixed(1)}" height="${hB.toFixed(1)}" rx="2" fill="${o.colorB}" opacity="${b > 0 ? '.92' : '0'}"/>`);
 
-    const topFrac = plotH > 0 ? (plotH - Math.max(hIng, hEgr)) / plotH : 1;
-    bars.push(`<rect class="dca-bar" x="${(PAD.left + i * bandW).toFixed(1)}" y="${PAD.top}" width="${bandW.toFixed(1)}" height="${plotH}" fill="transparent" style="cursor:pointer" data-mes="${esc(s.mes)}" data-ing="${ing}" data-egr="${egr}" data-cant-ing="${s.cant_ingresos}" data-cant-egr="${s.cant_egresos}" data-topfrac="${topFrac.toFixed(4)}"/>`);
+    const topFrac = plotH > 0 ? (plotH - Math.max(hA, hB)) / plotH : 1;
+    bars.push(`<rect class="dca-bar" x="${(PAD.left + i * bandW).toFixed(1)}" y="${PAD.top}" width="${bandW.toFixed(1)}" height="${plotH}" fill="transparent" style="cursor:pointer" data-mes="${esc(s.mes)}" data-topfrac="${topFrac.toFixed(4)}"/>`);
 
     if (i % stepX === 0 || i === n - 1) {
       xLabs.push(`<text x="${cx.toFixed(1)}" y="${(PAD.top + plotH + 14).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">${esc(dcaMesLabel(s.mes))}</text>`);
@@ -11741,6 +11782,387 @@ function dcaRenderFilasResultados(serie, resumen) {
       <td style="text-align:right;color:${dcaColorResultado(tRes)}">${dcaFmtMoneySigno(tRes)}</td>
       <td style="text-align:right;color:${dcaColorResultado(tRes)}">${dcaFmtMoneySigno(tRes)}</td>
       <td style="text-align:right">${dcaFmtPct(dcaMargen(tIng, tRes))}</td>
+    </tr>
+  `;
+
+  return filas + total;
+}
+
+// -------------------- Pestaña: Analíticas > Consistencia --------------------
+//
+// Cruza mes a mes lo FACTURADO contra lo efectivamente ACREDITADO en las
+// cuentas de fondos (Datacount > Bancos). Responde "¿la plata que entró se
+// parece a lo que emitimos?": un desvío grande y sostenido delata facturación
+// sin cobrar, cobranzas sin facturar o un extracto que no se importó.
+//
+// Definiciones y exclusiones las decide el backend (ver el docblock de
+// handleConsistencia en api/datacount_analiticas.php). Acá lo importante es:
+//   - "Facturado" va NETO de notas de crédito, a diferencia de Resultados.
+//   - El acreditado deja afuera transferencias entre cuentas propias,
+//     rendimientos/intereses/ajustes y las cuentas de tipo tarjeta. Lo que
+//     queda afuera se lista al pie para que el número sea auditable.
+//
+// El semáforo por mes es 100% client-side: cambiar la tolerancia repinta la
+// tabla y las notas sin volver a pedir datos.
+
+// Umbrales del semáforo a partir de la tolerancia elegida. Verde hasta la
+// tolerancia, amarillo hasta el doble, rojo de ahí en más. Se mira el desvío
+// EN VALOR ABSOLUTO: acreditar 40 % de más es tan inconsistente como acreditar
+// 40 % de menos, sólo cambia por dónde empezar a buscar el problema.
+function dcaClaveDesvio(pct, tolerancia) {
+  if (pct === null || pct === undefined) return 'vacio';
+  const abs = Math.abs(Number(pct));
+  if (abs <= tolerancia)     return 'ok';
+  if (abs <= tolerancia * 2) return 'tibio';
+  return 'malo';
+}
+
+// Color del semáforo. La diferencia y el desvío NO se pintan por signo (como
+// sí hace Resultados con `dcaColorResultado`): acá el exceso en verde diría
+// "todo bien" justo en el caso que la pestaña busca marcar.
+function dcaColorConsistencia(clave) {
+  if (clave === 'ok')    return 'var(--success)';
+  if (clave === 'tibio') return 'var(--warn)';
+  if (clave === 'malo')  return 'var(--danger)';
+  return 'var(--muted)';
+}
+
+function dcaEstadoConsistencia(punto, tolerancia) {
+  const sinDatos = (punto.cant_facturas === 0 && punto.cant_notas === 0 && punto.cant_movimientos === 0);
+  if (sinDatos) return { clave: 'vacio', badge: 'badge-muted', texto: 'Sin movimiento' };
+
+  // Sin facturación no hay base para un porcentaje. Si además entró plata, es
+  // el caso más ruidoso de todos y merece su propio estado.
+  if (punto.desvio_pct === null || punto.desvio_pct === undefined) {
+    return Number(punto.acreditado) > 0
+      ? { clave: 'malo',  badge: 'badge-danger', texto: 'Cobros sin facturar' }
+      : { clave: 'vacio', badge: 'badge-muted',  texto: 'Sin facturación' };
+  }
+
+  const clave = dcaClaveDesvio(punto.desvio_pct, tolerancia);
+  if (clave === 'ok')    return { clave, badge: 'badge-success', texto: 'Consistente' };
+  if (clave === 'tibio') return { clave, badge: 'badge-warn',    texto: 'Revisar' };
+  return { clave, badge: 'badge-danger', texto: 'Inconsistente' };
+}
+
+// '+12,3 %' / '-4,0 %' — con signo explícito, porque acá el signo es la mitad
+// de la información (de más = cobré más de lo que facturé, de menos = al revés).
+function dcaFmtPctSigno(n) {
+  if (n === null || n === undefined) return '—';
+  const v = Number(n);
+  return (v > 0 ? '+' : '') + v.toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
+}
+
+async function dcaRenderTabConsistencia(panel, cfg) {
+  const p  = `dca_${cfg.key}_`;
+  const st = dcaState[cfg.key];
+
+  panel.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px">
+      <div class="toolbar-left" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.85rem;color:var(--muted)">Rango:</label>
+        <div id="${p}RangoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button type="button" class="filter-chip" data-val="all">Histórico completo</button>
+          <button type="button" class="filter-chip" data-val="12">Últimos 12 meses</button>
+          <button type="button" class="filter-chip" data-val="24">Últimos 24 meses</button>
+          <button type="button" class="filter-chip" data-val="36">Últimos 36 meses</button>
+          <button type="button" class="filter-chip" data-val="year">Año…</button>
+        </div>
+        <select id="${p}AnioSel" style="min-width:110px;display:none" title="Año">
+          <option value="">—</option>
+        </select>
+        <span style="width:1px;height:22px;background:var(--border);margin:0 4px"></span>
+        <label style="font-size:.85rem;color:var(--muted)">Tolerancia:</label>
+        <select id="${p}TolSel" style="min-width:90px" title="Desvío mensual que se considera aceptable">
+          <option value="5">± 5 %</option>
+          <option value="10">± 10 %</option>
+          <option value="15">± 15 %</option>
+          <option value="20">± 20 %</option>
+          <option value="25">± 25 %</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-card"><span class="stat-label">Facturado del rango</span><span class="stat-value blue" id="${p}StatFacturado">—</span></div>
+      <div class="stat-card"><span class="stat-label">Acreditado del rango</span><span class="stat-value green" id="${p}StatAcreditado">—</span></div>
+      <div class="stat-card"><span class="stat-label">Diferencia del rango</span><span class="stat-value" id="${p}StatDiferencia">—</span></div>
+      <div class="stat-card"><span class="stat-label">Cobertura</span><span class="stat-value" id="${p}StatCobertura">—</span></div>
+    </div>
+
+    <div class="table-card" style="padding:16px 20px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+          <div style="font-weight:600;font-size:.95rem">${esc(cfg.tituloChart)}</div>
+          <div style="display:flex;gap:12px;font-size:.78rem;color:var(--muted)">
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--info);margin-right:5px"></span>Facturado (neto de NC)</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--success);margin-right:5px"></span>Acreditado</span>
+          </div>
+        </div>
+        <div id="${p}Subtitulo" style="font-size:.8rem;color:var(--muted)">—</div>
+      </div>
+      <div id="${p}Chart" style="width:100%;min-height:320px;position:relative">
+        <div id="${p}ChartInner">
+          <div style="text-align:center;padding:80px 0"><div class="spin"></div></div>
+        </div>
+        <div id="${p}Tooltip" hidden
+             style="position:absolute;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow-lg);font-size:.82rem;pointer-events:none;z-index:5;white-space:nowrap;transform:translate(-50%,-100%);margin-top:-8px;line-height:1.35"></div>
+      </div>
+      <div id="${p}Notas" style="margin-top:8px;font-size:.78rem;color:var(--muted)"></div>
+    </div>
+
+    <div class="table-card" style="margin-top:16px">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+        <div style="font-weight:600;font-size:.95rem">Detalle mensual</div>
+        <div id="${p}TablaDesde" style="font-size:.8rem;color:var(--muted)"></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Mes</th>
+            <th style="text-align:right">Facturado</th>
+            <th style="text-align:right">Acreditado</th>
+            <th style="text-align:right">Diferencia</th>
+            <th style="text-align:right">Desvío</th>
+            <th style="text-align:right">Dif. acumulada</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody id="${p}Tbody">
+          <tr><td colspan="7" class="table-empty"><div class="spin"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-card" id="${p}Excluidos" style="margin-top:16px;display:none">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem">
+        Qué queda fuera del cruce
+      </div>
+      <div id="${p}ExcluidosBody" style="padding:14px 20px;font-size:.82rem;color:var(--muted);line-height:1.6"></div>
+    </div>
+  `;
+
+  dcaWirearRangoChips(panel, p, st, () => dcaCargarConsistenciaData(cfg));
+
+  // La tolerancia sólo cambia el semáforo, que se calcula en el navegador:
+  // repintar tabla y notas alcanza, no hace falta volver a pedir la serie.
+  const selTol = document.getElementById(`${p}TolSel`);
+  selTol.value = String(st.tolerancia);
+  selTol.addEventListener('change', () => {
+    st.tolerancia = Number(selTol.value) || 10;
+    if (st.ultimaData) dcaPintarConsistencia(cfg, st.ultimaData);
+  });
+
+  dcaWirearTooltipComparativa(p, cfg, (s) => {
+    const est = dcaEstadoConsistencia(s, st.tolerancia);
+    return `
+      <div style="font-weight:600;margin-bottom:2px">${esc(dcaMesLabel(s.mes))}</div>
+      <div style="color:var(--info)">Facturado neto: <strong>${dcaFmtMoneySigno(s.facturado_neto)}</strong></div>
+      <div style="color:var(--muted);font-size:.75rem">${fmtNum(s.cant_facturas)} factura(s) por $ ${dcaFmtMoney(s.facturado)}${Number(s.notas) > 0 ? ` · ${fmtNum(s.cant_notas)} NC por $ ${dcaFmtMoney(s.notas)}` : ''}</div>
+      <div style="margin-top:3px;color:var(--success)">Acreditado: <strong>$ ${dcaFmtMoney(s.acreditado)}</strong></div>
+      <div style="color:var(--muted);font-size:.75rem">${fmtNum(s.cant_movimientos)} acreditación(es)</div>
+      <div style="margin-top:3px;padding-top:3px;border-top:1px solid var(--border);color:${dcaColorConsistencia(est.clave)};font-weight:700">Diferencia: ${dcaFmtMoneySigno(s.diferencia)} <span style="font-weight:400">(${dcaFmtPctSigno(s.desvio_pct)})</span></div>
+      <div style="margin-top:3px"><span class="badge ${est.badge}">${esc(est.texto)}</span></div>
+    `;
+  });
+
+  await dcaCargarConsistenciaData(cfg);
+}
+
+async function dcaCargarConsistenciaData(cfg) {
+  const p     = `dca_${cfg.key}_`;
+  const st    = dcaState[cfg.key];
+  const cont  = document.getElementById(`${p}ChartInner`);
+  const tbody = document.getElementById(`${p}Tbody`);
+  const tip   = document.getElementById(`${p}Tooltip`);
+  if (!cont) return;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) return;
+
+  if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
+
+  cont.innerHTML  = `<div style="text-align:center;padding:80px 0"><div class="spin"></div></div>`;
+  tbody.innerHTML = `<tr><td colspan="7" class="table-empty"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams();
+  qs.set('action',  cfg.key);
+  qs.set('empresa', String(empresaId));
+  qs.set('rango',   st.rango);
+  if (st.rango === 'year' && st.anio) qs.set('anio', String(st.anio));
+
+  try {
+    const data = await apiGet('api/datacount_analiticas.php?' + qs.toString());
+    st.ultimaData = data;
+    dcaPoblarSelectorAnios(p, st, data.anios);
+    dcaPintarConsistencia(cfg, data);
+  } catch (e) {
+    cont.innerHTML  = `<div class="table-empty" style="text-align:center;padding:40px 20px;color:var(--danger)">Error: ${esc(e.message)}</div>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty" style="color:var(--danger)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+// Pinta todo lo que depende del payload + la tolerancia actual. Separado de la
+// carga porque el selector de tolerancia lo vuelve a llamar con la data ya
+// cacheada, sin pegarle de nuevo al server.
+function dcaPintarConsistencia(cfg, data) {
+  const p      = `dca_${cfg.key}_`;
+  const st     = dcaState[cfg.key];
+  const chart  = document.getElementById(`${p}Chart`);
+  const cont   = document.getElementById(`${p}ChartInner`);
+  const subtit = document.getElementById(`${p}Subtitulo`);
+  const notas  = document.getElementById(`${p}Notas`);
+  const desde  = document.getElementById(`${p}TablaDesde`);
+  const tbody  = document.getElementById(`${p}Tbody`);
+  if (!cont) return;
+
+  const r    = data.resumen   || {};
+  const ex   = data.excluidos || {};
+  const tol  = st.tolerancia;
+  const piso = (data.rango && data.rango.piso) || null;
+
+  // Stats. La cobertura del rango se juzga con la misma tolerancia que los
+  // meses: 100 % es el ideal y el desvío es cuánto se aparta de ahí.
+  const cobertura = (r.cobertura_pct === null || r.cobertura_pct === undefined) ? null : Number(r.cobertura_pct);
+  const colorSev  = dcaColorConsistencia(dcaClaveDesvio(cobertura === null ? null : cobertura - 100, tol));
+
+  document.getElementById(`${p}StatFacturado`).textContent  = '$ ' + dcaFmtMoney(r.facturado_neto_rango ?? 0);
+  document.getElementById(`${p}StatAcreditado`).textContent = '$ ' + dcaFmtMoney(r.acreditado_rango ?? 0);
+  const elDif = document.getElementById(`${p}StatDiferencia`);
+  elDif.textContent = dcaFmtMoneySigno(r.diferencia_rango ?? 0);
+  elDif.style.color = colorSev;
+  const elCob = document.getElementById(`${p}StatCobertura`);
+  elCob.textContent = cobertura === null ? '—' : dcaFmtPct(cobertura);
+  elCob.style.color = colorSev;
+
+  // Subtítulo con la ventana efectiva (mismo criterio que Resultados).
+  if (data.rango && data.rango.desde && data.rango.hasta) {
+    const modoTxt = data.rango.modo === 'year'
+      ? `Año ${data.rango.desde.slice(0, 4)}`
+      : (data.rango.modo === 'ultimos'
+          ? `Últimos ${data.rango.meses} meses`
+          : 'Histórico completo');
+    subtit.textContent = `${modoTxt} · ${dcaMesLabel(data.rango.desde)} → ${dcaMesLabel(data.rango.hasta)}`
+      + (data.rango.recortado ? ' (recortado al piso histórico)' : '');
+  } else {
+    subtit.textContent = 'Sin datos para cruzar.';
+  }
+  if (desde) desde.textContent = piso ? `Desde ${dcaMesLabel(piso)}` : '';
+
+  const serie = data.serie || [];
+
+  // Notas al pie: resumen del semáforo + el aviso de desfase, que es la
+  // explicación más frecuente de un desvío mensual aislado.
+  const conteo = { ok: 0, tibio: 0, malo: 0, vacio: 0 };
+  serie.forEach((s) => { conteo[dcaEstadoConsistencia(s, tol).clave]++; });
+
+  const avisos = [];
+  if (conteo.ok + conteo.tibio + conteo.malo > 0) {
+    avisos.push(`${fmtNum(conteo.ok)} mes(es) dentro de ± ${tol} % · ${fmtNum(conteo.tibio)} a revisar · ${fmtNum(conteo.malo)} con desvío`);
+  }
+  if (r.mes_mayor_desvio) {
+    avisos.push(`Mayor desvío: <strong>${esc(dcaMesLabel(r.mes_mayor_desvio.mes))}</strong> (${dcaFmtPctSigno(r.mes_mayor_desvio.desvio_pct)}, ${dcaFmtMoneySigno(r.mes_mayor_desvio.diferencia)})`);
+  }
+  let notasHtml = avisos.length ? avisos.join(' &nbsp;·&nbsp; ') : '';
+  notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> El cruce es por mes calendario y no aparea factura con cobro: lo emitido a fin de mes suele acreditarse al mes siguiente, así que un desvío aislado es esperable. La señal a mirar es el desvío sostenido y la diferencia acumulada.`;
+  if (piso) {
+    notasHtml += `<br><i class="fa-solid fa-circle-info"></i> Se ignora todo lo anterior a ${esc(dcaMesLabel(piso))}: la carga de datos de esos años quedó incompleta y el cruce no sería representativo.`;
+  }
+  notas.innerHTML = notasHtml;
+
+  // Bloque "qué queda fuera": todo lo que se descontó del acreditado, para que
+  // el número se pueda auditar contra el ABM de movimientos.
+  const exLineas = [];
+  if ((ex.cuentas_empresa ?? 0) === 0) {
+    exLineas.push(`<i class="fa-solid fa-triangle-exclamation" style="color:var(--warn)"></i> Esta empresa no tiene cuentas de fondos cargadas: el acreditado va a dar cero siempre. Cargalas en Datacount &gt; Bancos &gt; Cuentas.`);
+  }
+  if ((ex.cuentas_sin_empresa ?? 0) > 0) {
+    exLineas.push(`<i class="fa-solid fa-triangle-exclamation" style="color:var(--warn)"></i> Hay ${fmtNum(ex.cuentas_sin_empresa)} cuenta(s) de fondos sin empresa asignada: sus movimientos no entran en el cruce de ninguna empresa.`);
+  }
+  if ((ex.internas_cant ?? 0) > 0) {
+    exLineas.push(`${fmtNum(ex.internas_cant)} transferencia(s) entre cuentas propias por $ ${dcaFmtMoney(ex.internas_total)} — es la misma plata cambiando de lugar, contarla duplicaría el mes.`);
+  } else if ((r.cant_movimientos_rango ?? 0) > 0) {
+    // El cruce excluye las transferencias internas por `contrapartida_id`, que
+    // hoy nadie completa: el importador todavía no aparea las dos patas. Sin
+    // este aviso, un mes inflado por un traspaso entre cuentas propias parece
+    // una inconsistencia de facturación.
+    exLineas.push(`<i class="fa-solid fa-triangle-exclamation" style="color:var(--warn)"></i> No hay transferencias entre cuentas propias apareadas: si moviste plata de una cuenta a otra, ese ingreso hoy está sumando al acreditado e infla el mes.`);
+  }
+  if ((ex.financieros_cant ?? 0) > 0) {
+    exLineas.push(`${fmtNum(ex.financieros_cant)} movimiento(s) de rendimiento / interés / ajuste por $ ${dcaFmtMoney(ex.financieros_total)} — los genera el banco, no un cliente.`);
+  }
+  if ((ex.tarjeta_cant ?? 0) > 0) {
+    exLineas.push(`${fmtNum(ex.tarjeta_cant)} ingreso(s) en cuentas de tipo tarjeta por $ ${dcaFmtMoney(ex.tarjeta_total)} — son pagos del resumen, que salen de otra cuenta propia.`);
+  }
+  if ((ex.otra_moneda_cant ?? 0) > 0) {
+    exLineas.push(`${fmtNum(ex.otra_moneda_cant)} movimiento(s) en moneda distinta de pesos — no hay cotización por movimiento con la cual llevarlos a una única moneda.`);
+  }
+  if ((r.notas_rango ?? 0) > 0) {
+    exLineas.push(`${fmtNum(r.cant_notas_rango ?? 0)} nota(s) de crédito por $ ${dcaFmtMoney(r.notas_rango)} descontadas del facturado — se emitieron y se anularon, esa plata nunca se acredita.`);
+  }
+  if ((r.sin_fecha_facturas_cant ?? 0) > 0) {
+    exLineas.push(`${fmtNum(r.sin_fecha_facturas_cant)} factura(s) autorizada(s) sin fecha de emisión — no se pueden ubicar en ningún mes.`);
+  }
+  const exCard = document.getElementById(`${p}Excluidos`);
+  const exBody = document.getElementById(`${p}ExcluidosBody`);
+  if (exLineas.length) {
+    exCard.style.display = '';
+    exBody.innerHTML = exLineas.map((l) => `<div>• ${l}</div>`).join('');
+  } else {
+    exCard.style.display = 'none';
+    exBody.innerHTML = '';
+  }
+
+  if (!serie.length) {
+    cont.innerHTML  = `<div class="table-empty" style="text-align:center;padding:60px 20px;color:var(--muted)">Sin datos para el rango elegido.</div>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin datos para el rango elegido.</td></tr>`;
+    return;
+  }
+
+  cont.innerHTML  = dcaRenderBarChartComparativa(serie, chart.clientWidth, cfg.chartComparativa);
+  tbody.innerHTML = dcaRenderFilasConsistencia(serie, r, tol);
+}
+
+// Filas de la tabla mensual + fila de totales. La diferencia acumulada es la
+// columna que más dice: un desvío mensual que se compensa al mes siguiente
+// (cobranza corrida) deja el acumulado plano; uno real lo hace crecer.
+function dcaRenderFilasConsistencia(serie, resumen, tolerancia) {
+  let acumulado = 0;
+  const filas = serie.map((s) => {
+    const neto = Number(s.facturado_neto) || 0;
+    const acr  = Number(s.acreditado)     || 0;
+    const dif  = Number(s.diferencia)     || 0;
+    acumulado += dif;
+    const est   = dcaEstadoConsistencia(s, tolerancia);
+    const color = dcaColorConsistencia(est.clave);
+    const vacio = est.clave === 'vacio';
+    return `
+      <tr${vacio ? ' style="opacity:.45"' : ''}>
+        <td class="td-nombre">${esc(dcaMesLabel(s.mes))}</td>
+        <td style="text-align:right">${dcaFmtMoneySigno(neto)}</td>
+        <td style="text-align:right">$ ${dcaFmtMoney(acr)}</td>
+        <td style="text-align:right;font-weight:600;color:${color}">${dcaFmtMoneySigno(dif)}</td>
+        <td style="text-align:right;color:${color}">${dcaFmtPctSigno(s.desvio_pct)}</td>
+        <td style="text-align:right">${dcaFmtMoneySigno(acumulado)}</td>
+        <td><span class="badge ${est.badge}">${esc(est.texto)}</span></td>
+      </tr>
+    `;
+  }).join('');
+
+  const tNeto  = Number(resumen.facturado_neto_rango || 0);
+  const tAcr   = Number(resumen.acreditado_rango     || 0);
+  const tDif   = Number(resumen.diferencia_rango     || 0);
+  const tPct   = tNeto > 0 ? ((tAcr - tNeto) / tNeto) * 100 : null;
+  const tColor = dcaColorConsistencia(dcaClaveDesvio(tPct, tolerancia));
+  const total = `
+    <tr style="background:var(--bg);font-weight:700">
+      <td>Total del rango</td>
+      <td style="text-align:right">${dcaFmtMoneySigno(tNeto)}</td>
+      <td style="text-align:right">$ ${dcaFmtMoney(tAcr)}</td>
+      <td style="text-align:right;color:${tColor}">${dcaFmtMoneySigno(tDif)}</td>
+      <td style="text-align:right;color:${tColor}">${dcaFmtPctSigno(tPct)}</td>
+      <td style="text-align:right">${dcaFmtMoneySigno(tDif)}</td>
+      <td></td>
     </tr>
   `;
 
