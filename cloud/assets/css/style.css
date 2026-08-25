@@ -465,6 +465,29 @@ textarea { resize: vertical; min-height: 60px; }
 .tile-title { font-weight: 600; font-size: .95rem; color: var(--text); }
 .tile-desc  { font-size: .8rem; color: var(--muted); }
 
+/* Selector de sub-vista: tarjetas compactas que hacen de pestañas a nivel de
+   ruta, para módulos partidos en dos vistas hermanas (ej. Datacount > Bancos:
+   Cuentas / Movimientos). Van en la fila superior, a la izquierda de la
+   tarjeta de ayuda, y se estiran a su alto (align-items:stretch en el
+   contenedor) para que la fila quede pareja.
+   La tarjeta activa se marca con el borde y el texto en --primary; el hover
+   sólo cambia el fondo, así activa y hover nunca se confunden. */
+.subnav-cards       { display: flex; gap: 10px; flex-shrink: 0; }
+.subnav-card        { background: var(--surface); border: 1px solid var(--border);
+                      border-radius: var(--radius); padding: 10px 18px;
+                      display: flex; flex-direction: column; gap: 5px;
+                      align-items: center; justify-content: center;
+                      min-width: 108px; cursor: pointer; font-family: inherit;
+                      color: var(--muted); text-align: center;
+                      box-shadow: var(--shadow);
+                      transition: border-color .15s, background .15s, color .15s, transform .1s; }
+.subnav-card:hover  { background: var(--row-hover); color: var(--text); }
+.subnav-card:active { transform: scale(.98); }
+.subnav-card.active { border-color: var(--primary); color: var(--text); }
+.subnav-card.active .subnav-card-label { color: var(--primary); }
+.subnav-card-icon   { font-size: 1.4rem; line-height: 1; }
+.subnav-card-label  { font-weight: 600; font-size: .85rem; }
+
 /* Launcher cascada en topbar (2 columnas: categorías | items).
    Click en el botón → abre. Hover sobre categoría → derecha muestra items.
    Click en item → abre en pestaña nueva y cierra. */

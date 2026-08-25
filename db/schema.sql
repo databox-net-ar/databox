@@ -350,8 +350,13 @@ CREATE TABLE `datacountbancos`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 107 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for datacountbilleteras
+-- Table structure for datacountbilleteras  (LEGACY — sistema anterior)
 -- ----------------------------
+-- Sigue viva porque el sistema legado del grupo la sigue leyendo/escribiendo,
+-- y porque `datacountpagos.billetera` la referencia. El panel cloud pasó a
+-- operar sobre `datacount_bancos_cuentas` (mismos IDs, ver migración
+-- 20260824_1100_datacount_bancos_modulo.sql): cualquier cambio de esquema del
+-- módulo Bancos va sólo sobre la tabla nueva.
 DROP TABLE IF EXISTS `datacountbilleteras`;
 CREATE TABLE `datacountbilleteras`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -367,6 +372,155 @@ CREATE TABLE `datacountbilleteras`  (
   `contrasena` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 116 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_bancos_cuentas
+-- ----------------------------
+-- Cuentas de fondos del módulo Datacount > Bancos: una fila por lugar donde la
+-- empresa tiene dinero. Bancos y billeteras virtuales comparten tabla porque
+-- son la misma entidad contable (Activo corriente > Disponibilidades); lo que
+-- las diferencia es `tipo`, que además define qué medios de pago admite cada
+-- una en el extracto (DCB_MEDIOS_POR_TIPO en cloud/api/lib/datacount_bancos.php).
+--
+-- Clon evolucionado de la legacy `datacountbilleteras` PRESERVANDO LOS IDs: la
+-- migración 20260824_1100 copió las 15 filas con su id original porque
+-- `datacountpagos.billetera` los referencia. Al dar de alta cuentas nuevas
+-- desde el ABM cloud los IDs siguen la serie de esta tabla, así que las dos
+-- pueden divergir de acá en adelante — la legacy no se actualiza más.
+--
+-- `cbu` guarda CBU (bancos) o CVU (billeteras): 22 dígitos en ambos casos.
+-- `contrasena` va cifrada con encriptar()/desencriptar() de cloud/api/db.php.
+-- `import_config` es el JSON con el mapeo de columnas del extracto de esta
+-- cuenta (qué columna es la fecha, cuál el importe, qué separador decimal usa);
+-- lo escribe el importador cuando el usuario tilda "Recordar este mapeo".
+DROP TABLE IF EXISTS `datacount_bancos_movimientos`;
+DROP TABLE IF EXISTS `datacount_bancos_cuentas`;
+CREATE TABLE `datacount_bancos_cuentas`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `empresa_id` int(11) NULL DEFAULT NULL,
+  `proyecto_id` int(11) NULL DEFAULT NULL,
+  `banco_id` int(11) NULL DEFAULT NULL,
+  `tipo` enum('banco','billetera','efectivo','tarjeta','cripto') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'banco',
+  `nombre` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `moneda` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'P',
+  `cbu` varchar(22) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `alias` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `numero` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `titular` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cuit` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `correo` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `celular` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `contrasena` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cuenta_contable_id` int(11) UNSIGNED NULL DEFAULT NULL,
+  `saldo` decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `saldo_fecha` date NULL DEFAULT NULL,
+  `import_config` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `observaciones` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `activa` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_empresa`(`empresa_id`) USING BTREE,
+  INDEX `idx_proyecto`(`proyecto_id`) USING BTREE,
+  INDEX `idx_banco`(`banco_id`) USING BTREE,
+  INDEX `idx_tipo`(`tipo`) USING BTREE,
+  INDEX `idx_activa`(`activa`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 118 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_bancos_movimientos
+-- ----------------------------
+-- El extracto de una cuenta de fondos: cada fila es una entrada o salida de
+-- dinero. La mayoría se cargan importando el resumen mensual del homebanking
+-- (CSV / XLSX) vía cloud/api/datacount_bancos_importar.php; el resto se dan de
+-- alta a mano (`origen` = 'manual').
+--
+-- NO es lo mismo que `datacount_pagos`: ese es el documento comercial (a quién
+-- se le paga, contra qué comprobante) y esto es el hecho financiero. Se
+-- vinculan por `pago_id`, NULLABLE a propósito porque hay movimientos sin pago
+-- asociado (acreditaciones de clientes, transferencias entre cuentas propias,
+-- comisiones, impuesto al débito y crédito, intereses, rendimientos de FCI).
+--
+-- `importe` es SIEMPRE positivo; el signo lo lleva `tipo` (ingreso/egreso).
+-- `saldo` es el saldo que informa el extracto DESPUÉS del movimiento: sirve
+-- para detectar huecos (si no cierra contra la fila anterior, falta algo).
+-- `huella` es un sha256 de fecha+tipo+importe+referencia+descripción
+-- normalizada (planillaHuella() en cloud/api/lib/planilla.php). El UNIQUE
+-- (cuenta_id, huella) es lo que permite reimportar el mismo archivo, o un
+-- extracto que se solapa con el mes anterior, sin duplicar movimientos.
+-- `contrapartida_id` aparea las dos patas de una transferencia entre cuentas
+-- propias; es self-referencial y queda sin FK a propósito (las dos filas se
+-- insertan en el mismo lote y un FK obligaría a ordenar los INSERT).
+CREATE TABLE `datacount_bancos_movimientos`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `cuenta_id` int(11) UNSIGNED NOT NULL,
+  `fecha` date NOT NULL,
+  `fecha_valor` date NULL DEFAULT NULL,
+  `tipo` enum('ingreso','egreso') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `medio` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `descripcion` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `referencia` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `importe` decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `saldo` decimal(14, 2) NULL DEFAULT NULL,
+  `moneda` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'P',
+  `contraparte` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `cuit` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `conciliado` tinyint(1) NOT NULL DEFAULT 0,
+  `pago_id` int(11) NULL DEFAULT NULL,
+  `contrapartida_id` int(11) UNSIGNED NULL DEFAULT NULL,
+  `asiento_id` int(11) UNSIGNED NULL DEFAULT NULL,
+  `importacion_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `huella` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `origen` enum('importado','manual') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'importado',
+  `observaciones` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_cuenta_huella`(`cuenta_id`, `huella`) USING BTREE,
+  INDEX `idx_cuenta_fecha`(`cuenta_id`, `fecha`) USING BTREE,
+  INDEX `idx_fecha`(`fecha`) USING BTREE,
+  INDEX `idx_tipo`(`tipo`) USING BTREE,
+  INDEX `idx_conciliado`(`conciliado`) USING BTREE,
+  INDEX `idx_importacion`(`importacion_id`) USING BTREE,
+  INDEX `idx_pago`(`pago_id`) USING BTREE,
+  CONSTRAINT `fk_dcbm_cuenta` FOREIGN KEY (`cuenta_id`) REFERENCES `datacount_bancos_cuentas` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_bancos_interpretes
+-- ----------------------------
+-- Asocia cada banco de `datacountbancos` con el intérprete PHP que sabe leer
+-- sus exports (cloud/api/lib/bancos_interpretes/<interprete>.php).
+--
+-- El formato del extracto es una propiedad del BANCO, no de la cuenta: con
+-- esta tabla se configura Galicia una vez y lo heredan todas sus cuentas. La
+-- primera versión del importador guardaba el mapeo en
+-- `datacount_bancos_cuentas.import_config`, o sea por cuenta, y había que
+-- repetirlo en cada una.
+--
+-- `import_config` sigue existiendo como override por cuenta y como camino para
+-- los bancos que todavía no tienen intérprete (hoy: Banco Galicia). El
+-- importador cae ahí sólo cuando ningún intérprete reconoce el archivo.
+--
+-- UNIQUE en `banco_id`: un banco, un intérprete. Si un banco exporta en varios
+-- formatos, eso lo resuelve el propio intérprete (sus `firmasEncabezado()`
+-- admiten varias variantes), no una segunda fila.
+--
+-- Sin FK contra `datacountbancos` a propósito: esa tabla es MyISAM en algunos
+-- entornos del grupo y no admite claves foráneas.
+DROP TABLE IF EXISTS `datacount_bancos_interpretes`;
+CREATE TABLE `datacount_bancos_interpretes`  (
+  `id`         int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `banco_id`   int(11) NOT NULL,
+  `interprete` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `notas`      varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `activo`     tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_banco`(`banco_id`) USING BTREE,
+  INDEX `idx_interprete`(`interprete`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for datacountcomprobantes  (LEGACY — sistema anterior)

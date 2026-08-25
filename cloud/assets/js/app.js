@@ -722,6 +722,8 @@ const ROUTE_PERMS = {
   '/datacount_comprobantes':    { perm:   'datacount.comprobantes.consultar' },
   '/datacount_pagos':           { perm:   'datacount.pagos.consultar' },
   '/datacount_asientos':        { perm:   'datacount.asientos.consultar' },
+  '/datacount_bancos':          { perm:   'datacount.bancos.cuentas.consultar' },
+  '/datacount_bancos_movimientos': { perm: 'datacount.bancos.movimientos.consultar' },
   '/datacount_empleados':       { perm:   'datacount.empleados.consultar' },
   '/datacount_recurrentes':     { perm:   'datacount.recurrentes.consultar' },
   '/datacount_cuentas':         { perm:   'datacount.cuentas.consultar' },
@@ -10819,6 +10821,11 @@ route('/datacount', async (mount) => {
         <span class="tile-icon">💵</span>
         <span class="tile-title">Órdenes de pago</span>
         <span class="tile-desc">Facturas recibidas y demás documentos digitalizados con período, monto, moneda y estado de contabilización.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datacount_bancos'">
+        <span class="tile-icon">🏦</span>
+        <span class="tile-title">Bancos</span>
+        <span class="tile-desc">Cuentas de fondos (bancos, billeteras virtuales, efectivo) y el extracto de movimientos de cada una.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datacount_asientos'">
         <span class="tile-icon">📖</span>
@@ -22924,6 +22931,2409 @@ async function eliminarDct(id) {
   } catch (err) {
     toast(err.message, { error: true });
   }
+}
+
+// ------------------------- Vista: Datacount > Bancos -------------------------
+// ABM de cuentas de fondos. Bancos y billeteras virtuales comparten modulo,
+// tabla y extracto porque son la misma entidad contable (disponibilidades):
+// separarlas romperia las transferencias entre cuentas propias, que quedarian
+// como dos movimientos sin relacion en dos listados distintos. Lo unico que
+// las diferencia es `tipo`, que define que medios de pago admite cada una
+// (DCB_MEDIOS_POR_TIPO en cloud/api/lib/datacount_bancos.php).
+//
+// El modulo tiene dos vistas: esta (las cuentas) y `/datacount_bancos_movimientos`
+// (el extracto de una cuenta), a la que se llega desde el menu contextual de
+// cada fila.
+
+const DCB_API  = 'api/datacount_bancos_cuentas.php';
+const DCB_CUENTA_LS_KEY = 'datacount:bancosCuentaId';
+
+const DCB_TIPO_META = {
+  banco:     { label: 'Banco',             icono: '🏦', badge: 'badge-info'    },
+  billetera: { label: 'Billetera virtual', icono: '📱', badge: 'badge-success' },
+  efectivo:  { label: 'Efectivo',          icono: '💵', badge: 'badge-warn'    },
+  tarjeta:   { label: 'Tarjeta',           icono: '💳', badge: 'badge-info'    },
+  cripto:    { label: 'Cripto',            icono: '🪙', badge: 'badge-warn'    },
+};
+
+let dcbItems           = [];
+let dcbBusqueda        = '';
+let dcbFiltroCodigo    = '';
+let dcbFiltroTipo      = '';
+let dcbFiltroBanco     = '';
+let dcbFiltroActiva    = '';
+let dcbFiltroLimite    = 100;
+let dcbFiltroOrden     = 'id';
+let dcbFiltroDir       = 'desc';
+let dcbEditandoId      = null;
+let dcbBuscadorTimer   = null;
+let dcbFiltrosSnapshot = null;
+let dcbLookupsCache    = null;
+let dcbLookupsPromesa  = null;
+
+async function dcbCargarLookups() {
+  if (dcbLookupsCache) return dcbLookupsCache;
+  if (dcbLookupsPromesa) return dcbLookupsPromesa;
+  dcbLookupsPromesa = (async () => {
+    const d = await apiGet(`${DCB_API}?lookups=1`);
+    dcbLookupsCache = {
+      empresas:  d.empresas  || [],
+      proyectos: d.proyectos || [],
+      bancos:    d.bancos    || [],
+      contables: d.contables || [],
+      tipos:     d.tipos     || [],
+      monedas:   d.monedas   || [],
+    };
+    return dcbLookupsCache;
+  })();
+  try { return await dcbLookupsPromesa; }
+  finally { dcbLookupsPromesa = null; }
+}
+
+function dcbNombreDe(coleccion, id) {
+  if (!id) return '—';
+  const x = (dcbLookupsCache?.[coleccion] || []).find((e) => e.id === id);
+  return x ? x.nombre : `#${id}`;
+}
+
+function dcbTipoBadge(t) {
+  const m = DCB_TIPO_META[t] || { label: t || '—', badge: 'badge-info', icono: '' };
+  return `<span class="badge ${m.badge}">${m.icono} ${esc(m.label)}</span>`;
+}
+
+function dcbActivaBadge(v) {
+  return Number(v) === 1
+    ? `<span class="badge badge-success">Activa</span>`
+    : `<span class="badge badge-danger">Inactiva</span>`;
+}
+
+// Importes en formato local con 2 decimales. El simbolo sale de la moneda de
+// la cuenta ('P' pesos / 'D' dolares, catalogo `datacount_pago_moneda`).
+function dcbFmtMoney(n, moneda) {
+  const simbolo = String(moneda || 'P') === 'D' ? 'US$' : '$';
+  const v = Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${simbolo} ${v}`;
+}
+
+// CBU/CVU agrupado de a 4 para que sea legible y comparable de un vistazo.
+function dcbFmtCbu(cbu) {
+  if (!cbu) return '—';
+  return String(cbu).replace(/(.{4})/g, '$1 ').trim();
+}
+
+// Fila superior compartida por las dos vistas del módulo: botón de volver a
+// Datacount, el selector de sub-vista y la tarjeta de ayuda. Vive en una sola
+// función para que las dos rutas no se desincronicen — si mañana se suma una
+// tercera vista (conciliación, por ejemplo) se agrega acá y aparece en todas.
+//
+// `activa` es 'cuentas' | 'movimientos'. La tarjeta activa navega a su propio
+// hash, que no dispara hashchange: clickearla es un no-op, no un re-render.
+function dcbHeaderHtml(activa, emoji, ayuda) {
+  const card = (clave, ruta, icono, label) => `
+    <button type="button" class="subnav-card${activa === clave ? ' active' : ''}"
+            ${activa === clave ? 'aria-current="page"' : ''}
+            onclick="location.hash='#${ruta}'">
+      <span class="subnav-card-icon">${icono}</span>
+      <span class="subnav-card-label">${label}</span>
+    </button>
+  `;
+  return `
+    <div style="display:flex;gap:12px;margin-bottom:16px;align-items:stretch">
+      <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+              title="Volver a Datacount" onclick="location.hash='#/datacount'">
+        <i class="fa-solid fa-chevron-left"></i>
+      </button>
+      <div class="subnav-cards">
+        ${card('cuentas',     '/datacount_bancos',             '🏦', 'Cuentas')}
+        ${card('movimientos', '/datacount_bancos_movimientos', '🔁', 'Movimientos')}
+      </div>
+      <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+        <div style="font-size:1.6rem;line-height:1">${emoji}</div>
+        <div style="font-size:.88rem;color:var(--muted);line-height:1.45">${ayuda}</div>
+      </div>
+    </div>
+  `;
+}
+
+function dcbGetCuentaId() {
+  const n = Number(localStorage.getItem(DCB_CUENTA_LS_KEY));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function dcbSetCuentaId(id) {
+  const n = Number(id);
+  if (Number.isFinite(n) && n > 0) localStorage.setItem(DCB_CUENTA_LS_KEY, String(n));
+  else localStorage.removeItem(DCB_CUENTA_LS_KEY);
+}
+
+route('/datacount_bancos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      ${dcbHeaderHtml('cuentas', '🏦', `
+        Las cuentas de fondos son los lugares donde la empresa tiene su dinero: cuentas
+        bancarias, billeteras virtuales, caja en efectivo, tarjetas y wallets cripto.
+        Cada una guarda su CBU/CVU, titular, saldo y acceso, y lleva su propio extracto
+        de movimientos importado del homebanking.
+      `)}
+
+      <div class="stats-bar" id="dcbStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dcbStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Bancos</span><span class="stat-value" id="dcbStatBancos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Billeteras</span><span class="stat-value" id="dcbStatBilleteras">—</span></div>
+        <div class="stat-card"><span class="stat-label">Saldo total (pesos)</span><span class="stat-value green" id="dcbStatSaldo">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcbEmpresaSel" style="min-width:200px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcbSearch"
+                   placeholder="🔍 Buscar nombre, alias, CBU o titular…">
+            <button class="search-clear" id="dcbSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcbFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcbFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcbRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcbNuevoBtn">+ Nueva cuenta</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Nombre</th>
+              <th style="width:170px">Tipo</th>
+              <th style="width:150px">Entidad</th>
+              <th style="width:210px">CBU / CVU</th>
+              <th style="width:140px;text-align:right">Saldo</th>
+              <th style="width:110px">Estado</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcbTbody">
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dcbCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="movimientos" role="menuitem">
+        <i class="fa-solid fa-right-left"></i><span>Ver movimientos</span>
+      </button>
+      <button type="button" data-action="importar" role="menuitem">
+        <i class="fa-solid fa-file-import"></i><span>Importar extracto</span>
+      </button>
+      <button type="button" data-action="activa" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Desactivar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Menú contextual del modal Consultar (acciones extra del recurso) -->
+    <div id="dcbConsultaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="movimientos" role="menuitem">
+        <i class="fa-solid fa-right-left"></i><span>Ver movimientos</span>
+      </button>
+      <button type="button" data-action="importar" role="menuitem">
+        <i class="fa-solid fa-file-import"></i><span>Importar extracto</span>
+      </button>
+      <button type="button" data-action="copiar-cbu" role="menuitem">
+        <i class="fa-solid fa-copy"></i><span>Copiar CBU/CVU</span>
+      </button>
+      <button type="button" data-action="copiar-alias" role="menuitem">
+        <i class="fa-solid fa-at"></i><span>Copiar alias</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDcbBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcb()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDcb()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcbCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDcb('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Entidad</label>
+              <select id="fDcbBanco" onchange="onFiltroDcb('banco', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Tipo de cuenta</label>
+            <div id="fDcbTipoChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-group">
+            <label>Estado del registro</label>
+            <div id="fDcbActivaChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-activa="">Todas</button>
+              <button type="button" class="filter-chip" data-activa="1">Activa</button>
+              <button type="button" class="filter-chip" data-activa="0">Inactiva</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcbLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDcb('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcbOrden" onchange="onFiltroDcb('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="tipo">Tipo</option>
+                <option value="saldo">Saldo</option>
+                <option value="activa">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcbDir" onchange="onFiltroDcb('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcb()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcb()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcb()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcbSearch');
+  const clr = $('#dcbSearchClear');
+  inp.value = dcbBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcbBusqueda = inp.value.trim();
+    clearTimeout(dcbBuscadorTimer);
+    dcbBuscadorTimer = setTimeout(cargarDcb, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcbBusqueda = ''; cargarDcb();
+  });
+
+  // Selector de empresa (contexto compartido con el resto de Datacount).
+  const selEmp   = $('#dcbEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', async (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    await cargarDcb();
+  });
+
+  $('#dcbFiltrosBtn').addEventListener('click', abrirModalFiltrosDcb);
+  $('#dcbRefrescarBtn').addEventListener('click', cargarDcb);
+  $('#dcbNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcb(null));
+
+  $('#dcbCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    const a = b.dataset.action;
+    if (a === 'consultar')   abrirConsultaDcb(data.id);
+    if (a === 'movimientos') { dcbSetCuentaId(data.id); location.hash = '#/datacount_bancos_movimientos'; }
+    if (a === 'importar')    { dcbSetCuentaId(data.id); abrirImportadorDcb(data.id); }
+    if (a === 'activa')      dcbToggleActiva(data.id);
+    if (a === 'editar')      abrirAltaEdicionDcb(data.id);
+    if (a === 'eliminar')    eliminarDcb(data.id);
+  });
+
+  $('#dcbTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      dcbAbrirMenu(r.right - 200, r.bottom + 4, id);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcb(Number(tr.dataset.id));
+  });
+  $('#dcbTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    dcbAbrirMenu(ev.clientX, ev.clientY, Number(tr.dataset.id));
+  });
+
+  // Acciones extra del modal Consultar. Viven en un menú propio porque el
+  // footer de Consultar sólo admite Cerrar + Editar (ABM.md).
+  $('#dcbConsultaCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    const c = dcbItems.find((x) => x.id === data.id);
+    const a = b.dataset.action;
+    if (a === 'movimientos') {
+      closeModal();
+      dcbSetCuentaId(data.id);
+      location.hash = '#/datacount_bancos_movimientos';
+    }
+    if (a === 'importar') {
+      closeModal();
+      dcbSetCuentaId(data.id);
+      abrirImportadorDcb(data.id);
+    }
+    if (a === 'copiar-cbu')   await dcbCopiar(c?.cbu,   'CBU/CVU');
+    if (a === 'copiar-alias') await dcbCopiar(c?.alias, 'Alias');
+  });
+
+  await dcbCargarLookups();
+
+  // Chips de tipo y combo de entidad se pueblan desde los lookups.
+  const chipsTipo = $('#fDcbTipoChips');
+  if (chipsTipo) {
+    chipsTipo.innerHTML =
+      `<button type="button" class="filter-chip" data-tipo="">Todos</button>` +
+      (dcbLookupsCache?.tipos || []).map((t) =>
+        `<button type="button" class="filter-chip" data-tipo="${esc(t.valor)}">${esc(t.texto)}</button>`).join('');
+    chipsTipo.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      dcbFiltroTipo = b.dataset.tipo || '';
+      dcbSincronizarChipsTipo();
+      dcbActualizarBadgeFiltros();
+      cargarDcb();
+    });
+  }
+
+  const selBanco = $('#fDcbBanco');
+  if (selBanco) {
+    selBanco.innerHTML = `<option value="">— Todas —</option>` +
+      (dcbLookupsCache?.bancos || []).map((b) =>
+        `<option value="${b.id}">${esc(b.nombre)}</option>`).join('');
+  }
+
+  const chipsAct = $('#fDcbActivaChips');
+  if (chipsAct) {
+    chipsAct.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      dcbFiltroActiva = b.dataset.activa || '';
+      dcbSincronizarChipsActiva();
+      dcbActualizarBadgeFiltros();
+      cargarDcb();
+    });
+  }
+
+  dcbActualizarBadgeFiltros();
+  await cargarDcb();
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Bancos'
+ + ' &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Cuentas');
+
+// El label del toggle Activar/Desactivar depende del estado de la fila, asi que
+// se resuelve al abrir el menu (regla del menu contextual en ABM.md).
+function dcbAbrirMenu(x, y, id) {
+  const c = dcbItems.find((r) => r.id === id);
+  const lbl = $('#dcbCtxMenu')?.querySelector('[data-action="activa"] [data-label]');
+  if (lbl) lbl.textContent = Number(c?.activa) === 1 ? 'Desactivar' : 'Activar';
+  abrirCtxMenu($('#dcbCtxMenu'), x, y, { id });
+}
+
+async function cargarDcb() {
+  const tbody = $('#dcbTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">No hay empresas registradas — creá una antes de dar de alta cuentas.</td></tr>`;
+    return;
+  }
+
+  const qs = new URLSearchParams();
+  qs.set('empresa', String(empresaId));
+  if (dcbBusqueda)          qs.set('q',      dcbBusqueda);
+  if (dcbFiltroTipo)        qs.set('tipo',   dcbFiltroTipo);
+  if (dcbFiltroBanco)       qs.set('banco',  dcbFiltroBanco);
+  if (dcbFiltroActiva !== '') qs.set('activa', dcbFiltroActiva);
+  if (dcbFiltroLimite)      qs.set('limite', dcbFiltroLimite);
+  if (dcbFiltroOrden)       qs.set('orden',  dcbFiltroOrden);
+  if (dcbFiltroDir)         qs.set('dir',    dcbFiltroDir);
+
+  try {
+    const data = await apiGet(DCB_API + '?' + qs.toString());
+    dcbItems = data.items || [];
+    const s = data.stats || {};
+    $('#dcbStatTotal').textContent      = fmtNum(s.total ?? dcbItems.length);
+    $('#dcbStatBancos').textContent     = fmtNum(s.bancos ?? 0);
+    $('#dcbStatBilleteras').textContent = fmtNum(s.billeteras ?? 0);
+    $('#dcbStatSaldo').textContent      = dcbFmtMoney(s.saldo_total ?? 0, 'P');
+    renderDcb();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderDcb() {
+  const tbody = $('#dcbTbody');
+  if (!tbody) return;
+  if (!dcbItems.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin cuentas registradas.</td></tr>`;
+    return;
+  }
+
+  // El Código se filtra en cliente; el resto lo resuelve el server.
+  let filas = dcbItems;
+  if (dcbFiltroCodigo) {
+    const cod = Number(dcbFiltroCodigo);
+    filas = filas.filter((c) => c.id === cod);
+  }
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${c.id}</code></td>
+      <td style="font-weight:600">${esc(c.nombre || '—')}</td>
+      <td>${dcbTipoBadge(c.tipo)}</td>
+      <td>${esc(dcbNombreDe('bancos', c.banco_id))}</td>
+      <td style="font-family:monospace;font-size:.8rem">${esc(dcbFmtCbu(c.cbu))}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${esc(dcbFmtMoney(c.saldo, c.moneda))}</td>
+      <td>${dcbActivaBadge(c.activa)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDcb() {
+  dcbFiltrosSnapshot = {
+    codigo: dcbFiltroCodigo, tipo: dcbFiltroTipo, banco: dcbFiltroBanco,
+    activa: dcbFiltroActiva, limite: dcbFiltroLimite,
+    orden: dcbFiltroOrden, dir: dcbFiltroDir,
+  };
+  $('#fDcbCodigo').value = dcbFiltroCodigo || '';
+  $('#fDcbBanco').value  = dcbFiltroBanco  || '';
+  $('#fDcbLimite').value = dcbFiltroLimite || 100;
+  $('#fDcbOrden').value  = dcbFiltroOrden  || 'id';
+  $('#fDcbDir').value    = dcbFiltroDir    || 'desc';
+  dcbSincronizarChipsTipo();
+  dcbSincronizarChipsActiva();
+  document.getElementById('filtrosDcbBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDcb = abrirModalFiltrosDcb;
+
+function cerrarModalFiltrosDcb() {
+  document.getElementById('filtrosDcbBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDcb = cerrarModalFiltrosDcb;
+
+function cancelarFiltrosDcb() {
+  if (dcbFiltrosSnapshot) {
+    dcbFiltroCodigo = dcbFiltrosSnapshot.codigo;
+    dcbFiltroTipo   = dcbFiltrosSnapshot.tipo;
+    dcbFiltroBanco  = dcbFiltrosSnapshot.banco;
+    dcbFiltroActiva = dcbFiltrosSnapshot.activa;
+    dcbFiltroLimite = dcbFiltrosSnapshot.limite;
+    dcbFiltroOrden  = dcbFiltrosSnapshot.orden;
+    dcbFiltroDir    = dcbFiltrosSnapshot.dir;
+    dcbActualizarBadgeFiltros();
+    cargarDcb();
+  }
+  cerrarModalFiltrosDcb();
+}
+window.cancelarFiltrosDcb = cancelarFiltrosDcb;
+
+function limpiarFiltrosDcb() {
+  dcbFiltroCodigo = ''; dcbFiltroTipo = ''; dcbFiltroBanco = '';
+  dcbFiltroActiva = ''; dcbFiltroLimite = 100;
+  dcbFiltroOrden = 'id'; dcbFiltroDir = 'desc';
+  $('#fDcbCodigo').value = '';
+  $('#fDcbBanco').value  = '';
+  $('#fDcbLimite').value = 100;
+  $('#fDcbOrden').value  = 'id';
+  $('#fDcbDir').value    = 'desc';
+  dcbSincronizarChipsTipo();
+  dcbSincronizarChipsActiva();
+  dcbActualizarBadgeFiltros();
+  cargarDcb();
+}
+window.limpiarFiltrosDcb = limpiarFiltrosDcb;
+
+function onFiltroDcb(campo, valor) {
+  if (campo === 'codigo') dcbFiltroCodigo = (valor || '').trim();
+  if (campo === 'banco')  dcbFiltroBanco  = valor || '';
+  if (campo === 'limite') dcbFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dcbFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    dcbFiltroDir    = valor || 'desc';
+  dcbActualizarBadgeFiltros();
+  cargarDcb();
+}
+window.onFiltroDcb = onFiltroDcb;
+
+function dcbSincronizarChipsTipo() {
+  document.querySelectorAll('#fDcbTipoChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.tipo || '') === (dcbFiltroTipo || ''));
+  });
+}
+
+function dcbSincronizarChipsActiva() {
+  document.querySelectorAll('#fDcbActivaChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.activa || '') === (dcbFiltroActiva || ''));
+  });
+}
+
+function dcbActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcbFiltroCodigo)                 n++;
+  if (dcbFiltroTipo)                   n++;
+  if (dcbFiltroBanco)                  n++;
+  if (dcbFiltroActiva !== '')          n++;
+  if (Number(dcbFiltroLimite) !== 100) n++;
+  if (dcbFiltroOrden !== 'id')         n++;
+  if (dcbFiltroDir   !== 'desc')       n++;
+  const badge = $('#dcbFiltrosBadge');
+  const btn   = $('#dcbFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) { badge.style.display = ''; badge.textContent = n; btn.classList.add('active'); }
+  else       { badge.style.display = 'none'; btn.classList.remove('active'); }
+}
+
+function dcbCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-dcb-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.dcbTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-dcb-tab]').forEach((p) => {
+    p.hidden = p.dataset.dcbTab !== tab;
+  });
+}
+window.dcbCambiarTab = dcbCambiarTab;
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDcb(id) {
+  dcbEditandoId = id;
+  const editando = !!id;
+  const c = editando ? dcbItems.find((x) => x.id === id) : null;
+
+  await dcbCargarLookups();
+  const L = dcbLookupsCache || {};
+
+  const opts = (arr, vacio) => `<option value="">${vacio}</option>` +
+    (arr || []).map((x) => `<option value="${x.id}">${esc(x.nombre)}</option>`).join('');
+  const optsEstado = (arr, vacio) => `<option value="">${vacio}</option>` +
+    (arr || []).map((x) => `<option value="${esc(x.valor)}">${esc(x.texto)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:660px">
+      <div class="modal-header">
+        <div class="modal-title">${editando ? 'Editar cuenta' : 'Nueva cuenta'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-dcb-tab="general"
+                  onclick="dcbCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-dcb-tab="bancarios"
+                  onclick="dcbCambiarTab('bancarios')"><i class="fa-solid fa-building-columns"></i> Datos bancarios</button>
+          <button type="button" class="modal-tab" role="tab" data-dcb-tab="acceso"
+                  onclick="dcbCambiarTab('acceso')"><i class="fa-solid fa-key"></i> Acceso</button>
+        </div>
+
+        <div class="modal-tabpanel" data-dcb-tab="general" role="tabpanel">
+          <div class="form-group">
+            <label for="dcbNombre">Nombre *</label>
+            <input type="text" id="dcbNombre" maxlength="255" autocomplete="off"
+                   placeholder="Ej: Databox | Banco Galicia | Cuenta corriente">
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label for="dcbTipo">Tipo *</label>
+              <select id="dcbTipo">${optsEstado(L.tipos, '— Elegir —')}</select>
+            </div>
+            <div class="form-group">
+              <label for="dcbBanco">Entidad</label>
+              <select id="dcbBanco">${opts(L.bancos, '— Sin entidad —')}</select>
+            </div>
+            <div class="form-group">
+              <label for="dcbMoneda">Moneda</label>
+              <select id="dcbMoneda">${optsEstado(L.monedas, '— Elegir —')}</select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dcbEmpresa">Empresa</label>
+              <select id="dcbEmpresa">${opts(L.empresas, '— Sin empresa —')}</select>
+            </div>
+            <div class="form-group">
+              <label for="dcbProyecto">Proyecto</label>
+              <select id="dcbProyecto">${opts(L.proyectos, '— Sin proyecto —')}</select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="dcbObservaciones">Observaciones</label>
+            <textarea id="dcbObservaciones" rows="3" maxlength="5000"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="toggle-switch">
+              <input type="checkbox" id="dcbActiva">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Activa</span>
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — al desactivarla deja de ofrecerse para registrar movimientos
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dcb-tab="bancarios" role="tabpanel" hidden>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dcbCbu">CBU / CVU
+                <span style="color:var(--muted);font-weight:normal;font-size:.85em">— 22 dígitos</span>
+              </label>
+              <input type="text" id="dcbCbu" maxlength="30" autocomplete="off"
+                     style="font-family:monospace" placeholder="0000003100000000000000">
+            </div>
+            <div class="form-group">
+              <label for="dcbAlias">Alias</label>
+              <input type="text" id="dcbAlias" maxlength="50" autocomplete="off" placeholder="mi.alias.banco">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dcbNumero">Número de cuenta</label>
+              <input type="text" id="dcbNumero" maxlength="50" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="dcbCuit">CUIT del titular</label>
+              <input type="text" id="dcbCuit" maxlength="15" autocomplete="off" placeholder="30-12345678-9">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="dcbTitular">Titular</label>
+            <input type="text" id="dcbTitular" maxlength="255" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcbContable">Cuenta contable imputable
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — del plan de cuentas; se usa para asentar los movimientos
+              </span>
+            </label>
+            <select id="dcbContable">${opts(L.contables, '— Sin cuenta contable —')}</select>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dcbSaldo">Saldo</label>
+              <input type="number" id="dcbSaldo" step="0.01" placeholder="0.00">
+            </div>
+            <div class="form-group">
+              <label for="dcbSaldoFecha">Saldo a la fecha</label>
+              <input type="date" id="dcbSaldoFecha">
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dcb-tab="acceso" role="tabpanel" hidden>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="dcbCorreo">Correo</label>
+              <input type="email" id="dcbCorreo" maxlength="100" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="dcbCelular">Celular</label>
+              <input type="text" id="dcbCelular" maxlength="100" autocomplete="off">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="dcbContrasena">Contraseña de homebanking
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — dejala vacía para conservar la actual
+              </span>
+            </label>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="dcbContrasena" maxlength="255" autocomplete="new-password" style="flex:1">
+              <button type="button" class="btn btn-ghost btn-icon" title="Ver contraseña"
+                      onclick="dcbToggleVerPass()"><i class="fa-solid fa-eye" id="dcbPassIcon"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && c) {
+    $('#dcbNombre').value        = c.nombre        || '';
+    $('#dcbTipo').value          = c.tipo          || 'banco';
+    $('#dcbBanco').value         = c.banco_id      != null ? String(c.banco_id) : '';
+    $('#dcbMoneda').value        = c.moneda        || 'P';
+    $('#dcbEmpresa').value       = c.empresa_id    != null ? String(c.empresa_id) : '';
+    $('#dcbProyecto').value      = c.proyecto_id   != null ? String(c.proyecto_id) : '';
+    $('#dcbObservaciones').value = c.observaciones || '';
+    $('#dcbActiva').checked      = Number(c.activa) === 1;
+    $('#dcbCbu').value           = c.cbu           || '';
+    $('#dcbAlias').value         = c.alias         || '';
+    $('#dcbNumero').value        = c.numero        || '';
+    $('#dcbCuit').value          = c.cuit          || '';
+    $('#dcbTitular').value       = c.titular       || '';
+    $('#dcbContable').value      = c.cuenta_contable_id != null ? String(c.cuenta_contable_id) : '';
+    $('#dcbSaldo').value         = c.saldo         != null ? c.saldo : '';
+    $('#dcbSaldoFecha').value    = c.saldo_fecha   || '';
+    $('#dcbCorreo').value        = c.correo        || '';
+    $('#dcbCelular').value       = c.celular       || '';
+    $('#dcbContrasena').value    = c.contrasena    || '';
+  } else {
+    $('#dcbActiva').checked = true;
+    $('#dcbTipo').value     = 'banco';
+    $('#dcbMoneda').value   = 'P';
+    const empActual = await dcAsegurarEmpresaId();
+    if (empActual) $('#dcbEmpresa').value = String(empActual);
+  }
+
+  setTimeout(() => $('#dcbNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcb();
+  });
+}
+
+function dcbToggleVerPass() {
+  const inp = $('#dcbContrasena');
+  const ico = $('#dcbPassIcon');
+  if (!inp || !ico) return;
+  const ver = inp.type === 'password';
+  inp.type = ver ? 'text' : 'password';
+  ico.className = ver ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+}
+window.dcbToggleVerPass = dcbToggleVerPass;
+
+async function guardarDcb() {
+  const nombre = $('#dcbNombre').value.trim();
+  const tipo   = $('#dcbTipo').value;
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+  if (!tipo)   { toast('El tipo de cuenta es obligatorio', { error: true }); return; }
+
+  const cbu = $('#dcbCbu').value.replace(/[^0-9]/g, '');
+  if (cbu && cbu.length !== 22) { toast('El CBU/CVU debe tener 22 dígitos', { error: true }); return; }
+
+  const body = {
+    nombre,
+    tipo,
+    banco_id:           $('#dcbBanco').value    || null,
+    moneda:             $('#dcbMoneda').value   || 'P',
+    empresa_id:         $('#dcbEmpresa').value  || null,
+    proyecto_id:        $('#dcbProyecto').value || null,
+    observaciones:      $('#dcbObservaciones').value.trim(),
+    activa:             $('#dcbActiva').checked ? 1 : 0,
+    cbu,
+    alias:              $('#dcbAlias').value.trim(),
+    numero:             $('#dcbNumero').value.trim(),
+    cuit:               $('#dcbCuit').value.trim(),
+    titular:            $('#dcbTitular').value.trim(),
+    cuenta_contable_id: $('#dcbContable').value || null,
+    saldo:              $('#dcbSaldo').value,
+    saldo_fecha:        $('#dcbSaldoFecha').value,
+    correo:             $('#dcbCorreo').value.trim(),
+    celular:            $('#dcbCelular').value.trim(),
+  };
+
+  // La contraseña solo viaja si el usuario escribió algo: mandarla vacía en un
+  // PUT borraría la guardada.
+  const pass = $('#dcbContrasena').value;
+  if (pass) body.contrasena = pass;
+
+  try {
+    if (dcbEditandoId) {
+      await apiSend(`${DCB_API}?id=${dcbEditandoId}`, 'PUT', body);
+      toast('Cuenta actualizada');
+    } else {
+      await apiSend(DCB_API, 'POST', body);
+      toast('Cuenta creada');
+    }
+    closeModal();
+    dcbEditandoId = null;
+    await cargarDcb();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDcb(id) {
+  const c = dcbItems.find((x) => x.id === id);
+  if (!c) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+  const txt = (v) => esc(v != null && v !== '' ? String(v) : '—');
+
+  openModal(`
+    <div class="modal" style="max-width:660px">
+      <div class="modal-header">
+        <div class="modal-title">
+          🏦 <span class="modal-subtitle">${esc(c.nombre || `#${c.id}`)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-dcb-tab="general"
+                  onclick="dcbCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-dcb-tab="bancarios"
+                  onclick="dcbCambiarTab('bancarios')"><i class="fa-solid fa-building-columns"></i> Datos bancarios</button>
+          <button type="button" class="modal-tab" role="tab" data-dcb-tab="acceso"
+                  onclick="dcbCambiarTab('acceso')"><i class="fa-solid fa-key"></i> Acceso</button>
+        </div>
+
+        <div class="modal-tabpanel" data-dcb-tab="general" role="tabpanel">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Código',   `<code>${c.id}</code>`)}
+            ${card('Estado',   dcbActivaBadge(c.activa))}
+            ${card('Nombre',   txt(c.nombre), 'full')}
+            ${card('Tipo',     dcbTipoBadge(c.tipo))}
+            ${card('Entidad',  txt(dcbNombreDe('bancos', c.banco_id)))}
+            ${card('Empresa',  txt(dcbNombreDe('empresas', c.empresa_id)))}
+            ${card('Proyecto', txt(dcbNombreDe('proyectos', c.proyecto_id)))}
+            ${card('Observaciones', `<div style="white-space:pre-wrap;font-size:.85rem">${txt(c.observaciones)}</div>`, 'full')}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dcb-tab="bancarios" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('CBU / CVU', `<code style="font-size:.82rem">${esc(dcbFmtCbu(c.cbu))}</code>`, 'full')}
+            ${card('Alias',            txt(c.alias))}
+            ${card('Número de cuenta', txt(c.numero))}
+            ${card('Titular',          txt(c.titular))}
+            ${card('CUIT',             txt(c.cuit))}
+            ${card('Moneda',           c.moneda === 'D' ? 'Dólares' : 'Pesos')}
+            ${card('Cuenta contable',  txt(dcbNombreDe('contables', c.cuenta_contable_id)), 'full')}
+            ${card('Saldo',            `<strong>${esc(dcbFmtMoney(c.saldo, c.moneda))}</strong>`)}
+            ${card('Saldo a la fecha', txt(c.saldo_fecha))}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-dcb-tab="acceso" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Correo',  txt(c.correo))}
+            ${card('Celular', txt(c.celular))}
+            ${card('Contraseña de homebanking',
+              c.contrasena
+                ? `<span id="dcbConsPass" data-real="${esc(c.contrasena)}" style="font-family:monospace">••••••••</span>
+                   <button type="button" class="btn-icon-sm" style="margin-left:8px" title="Ver"
+                           onclick="dcbConsultaVerPass()"><i class="fa-solid fa-eye"></i></button>`
+                : '—', 'full')}
+            ${card('Mapeo de importación',
+              c.import_config
+                ? '<span class="badge badge-success">Configurado</span>'
+                : '<span class="badge badge-warn">Sin configurar</span>', 'full')}
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-icon" title="Más acciones" data-act="menu-consulta">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcb(id); }
+    const men = ev.target.closest('[data-act="menu-consulta"]');
+    if (men) {
+      ev.stopPropagation();
+      const r = men.getBoundingClientRect();
+      abrirCtxMenu($('#dcbConsultaCtxMenu'), r.left, r.top - 100, { id });
+    }
+  });
+}
+
+function dcbConsultaVerPass() {
+  const el = document.getElementById('dcbConsPass');
+  if (!el) return;
+  const real = el.dataset.real || '';
+  el.textContent = el.textContent.startsWith('•') ? real : '••••••••';
+}
+window.dcbConsultaVerPass = dcbConsultaVerPass;
+
+async function dcbToggleActiva(id) {
+  const c = dcbItems.find((x) => x.id === id);
+  if (!c) return;
+  const nueva = Number(c.activa) === 1 ? 0 : 1;
+  try {
+    await apiSend(`${DCB_API}?id=${id}`, 'PUT', { activa: nueva });
+    toast(nueva === 1 ? 'Cuenta activada' : 'Cuenta desactivada');
+    await cargarDcb();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDcb(id) {
+  const c = dcbItems.find((x) => x.id === id);
+  if (!c) return;
+  const ok = await confirmar({
+    title:       'Eliminar cuenta',
+    message:     `¿Eliminás la cuenta "${c.nombre || '#' + c.id}"? Se borrarán también todos sus movimientos importados.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    const r = await apiSend(`${DCB_API}?id=${id}`, 'DELETE');
+    const n = r?.movimientos_eliminados ?? 0;
+    toast(n > 0 ? `Cuenta eliminada (${n} movimiento/s)` : 'Cuenta eliminada');
+    await cargarDcb();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function dcbCopiar(valor, etiqueta) {
+  if (!valor) { toast(`La cuenta no tiene ${etiqueta}`, { error: true }); return; }
+  try {
+    await navigator.clipboard.writeText(String(valor));
+    toast(`${etiqueta} copiado`);
+  } catch {
+    toast('No se pudo copiar al portapapeles', { error: true });
+  }
+}
+
+// ------------------- Vista: Datacount > Bancos > Movimientos -------------------
+// El extracto de una cuenta de fondos. La mayoria de las filas entra por
+// importacion del resumen del homebanking (CSV / XLSX); el alta manual cubre lo
+// que el extracto no trae.
+//
+// Un movimiento NO es lo mismo que una orden de pago: `datacount_pagos` es el
+// documento comercial (a quien le pago, contra que comprobante) y esto es el
+// hecho financiero (plata que entra o sale). Se vinculan por `pago_id`, que es
+// opcional porque hay movimientos sin pago (acreditaciones, transferencias
+// internas, comisiones, impuesto al debito y credito, rendimientos).
+
+const DCBM_API = 'api/datacount_bancos_movimientos.php';
+const DCBI_API = 'api/datacount_bancos_importar.php';
+
+let dcbmItems           = [];
+let dcbmCuentas         = [];
+let dcbmMedios          = [];
+let dcbmMediosPorTipo   = {};
+let dcbmBusqueda        = '';
+let dcbmFiltroCodigo    = '';
+let dcbmFiltroTipo      = '';
+let dcbmFiltroMedio     = '';
+let dcbmFiltroConc      = '';
+let dcbmFiltroOrigen    = '';
+let dcbmFiltroDesde     = '';
+let dcbmFiltroHasta     = '';
+let dcbmFiltroLimite    = 100;
+let dcbmFiltroOrden     = 'fecha';
+let dcbmFiltroDir       = 'desc';
+let dcbmEditandoId      = null;
+let dcbmBuscadorTimer   = null;
+let dcbmFiltrosSnapshot = null;
+
+// Cuentas de la empresa activa. La empresa sale del contexto compartido de
+// Datacount (localStorage `datacount:empresaId`, el mismo que usan Cuentas,
+// Comprobantes y el resto), asi que pasar de Cuentas a Movimientos no cambia de
+// empresa por el camino.
+//
+// El filtro es en el front y no en el server porque `?lookups=1` ya trae todas
+// las cuentas con su `empresa_id`: cambiar de empresa reordena un array en
+// memoria en vez de disparar otro request.
+function dcbmCuentasDeEmpresa() {
+  const emp = dcGetEmpresaId();
+  if (!emp) return dcbmCuentas;
+  return dcbmCuentas.filter((c) => c.empresa_id === emp);
+}
+
+function dcbmCuentaActual() {
+  const disponibles = dcbmCuentasDeEmpresa();
+  const id = dcbGetCuentaId();
+  // Si la cuenta persistida es de otra empresa no sirve: cae a la primera de
+  // la empresa actual.
+  return disponibles.find((c) => c.id === id) || disponibles[0] || null;
+}
+
+// Repuebla el combo de cuentas con las de la empresa activa y devuelve la
+// cuenta que quedo elegida (o null si la empresa no tiene ninguna).
+function dcbmPoblarComboCuentas() {
+  const sel = $('#dcbmCuentaSel');
+  if (!sel) return null;
+
+  const disponibles = dcbmCuentasDeEmpresa();
+  if (!disponibles.length) {
+    sel.innerHTML = `<option value="">— Sin cuentas en esta empresa —</option>`;
+    sel.disabled  = true;
+    dcbSetCuentaId(null);
+    return null;
+  }
+
+  sel.disabled  = false;
+  sel.innerHTML = disponibles.map((c) => {
+    const meta     = DCB_TIPO_META[c.tipo] || {};
+    const inactiva = Number(c.activa) === 1 ? '' : ' (inactiva)';
+    return `<option value="${c.id}">${meta.icono || ''} ${esc(c.nombre)}${inactiva}</option>`;
+  }).join('');
+
+  const actual = dcbmCuentaActual();
+  if (actual) { sel.value = String(actual.id); dcbSetCuentaId(actual.id); }
+  return actual;
+}
+
+function dcbmMedioTexto(v) {
+  if (!v) return '—';
+  const m = dcbmMedios.find((x) => x.valor === v);
+  return m ? m.texto : v;
+}
+
+function dcbmTipoBadge(t) {
+  return t === 'ingreso'
+    ? `<span class="badge badge-success"><i class="fa-solid fa-arrow-down"></i> Ingreso</span>`
+    : `<span class="badge badge-danger"><i class="fa-solid fa-arrow-up"></i> Egreso</span>`;
+}
+
+// Medios validos para la cuenta elegida. Es la whitelist que hace que una
+// cuenta bancaria no ofrezca "Pago con QR" ni "Rendimiento".
+function dcbmMediosValidos(cuenta) {
+  const validos = dcbmMediosPorTipo[cuenta?.tipo || 'banco'] || [];
+  return dcbmMedios.filter((m) => validos.includes(m.valor));
+}
+
+route('/datacount_bancos_movimientos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      ${dcbHeaderHtml('movimientos', '🔁', `
+        Los movimientos son cada entrada y salida de dinero de una cuenta de fondos, tal
+        como los informa el extracto del banco o de la billetera. Se cargan importando el
+        resumen del mes (CSV o XLSX); las filas repetidas se detectan solas, así que
+        reimportar un archivo no duplica nada.
+      `)}
+
+      <div class="stats-bar" id="dcbmStats">
+        <div class="stat-card"><span class="stat-label">Movimientos</span><span class="stat-value orange" id="dcbmStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Ingresos</span><span class="stat-value green" id="dcbmStatIng">—</span></div>
+        <div class="stat-card"><span class="stat-label">Egresos</span><span class="stat-value" style="color:#fca5a5" id="dcbmStatEgr">—</span></div>
+        <div class="stat-card"><span class="stat-label">Neto</span><span class="stat-value" id="dcbmStatNeto">—</span></div>
+        <div class="stat-card"><span class="stat-label">Sin conciliar</span><span class="stat-value" id="dcbmStatSinConc">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcbmEmpresaSel" style="min-width:190px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+          <select id="dcbmCuentaSel" style="min-width:260px" title="Cuenta">
+            <option value="">— Cargando cuentas… —</option>
+          </select>
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcbmSearch"
+                   placeholder="🔍 Buscar descripción, referencia o contraparte…">
+            <button class="search-clear" id="dcbmSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcbmFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcbmFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcbmRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-ghost" id="dcbmImportarBtn">
+            <i class="fa-solid fa-file-import"></i> Importar extracto
+          </button>
+          <button class="btn btn-primary" id="dcbmNuevoBtn">+ Nuevo movimiento</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th style="width:105px">Fecha</th>
+              <th style="width:120px">Tipo</th>
+              <th style="width:150px">Medio</th>
+              <th>Descripción</th>
+              <th style="width:130px">Referencia</th>
+              <th style="width:140px;text-align:right">Importe</th>
+              <th style="width:140px;text-align:right">Saldo</th>
+              <th style="width:60px;text-align:center">Conc.</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcbmTbody">
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dcbmCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="conciliar" role="menuitem">
+        <i class="fa-solid fa-check-double"></i><span data-label>Marcar conciliado</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <div class="modal-backdrop" id="filtrosDcbmBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcbm()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDcbm()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcbmCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDcbm('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Medio</label>
+              <select id="fDcbmMedio" onchange="onFiltroDcbm('medio', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Desde</label>
+              <input type="date" id="fDcbmDesde" onchange="onFiltroDcbm('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Hasta</label>
+              <input type="date" id="fDcbmHasta" onchange="onFiltroDcbm('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Tipo</label>
+            <div id="fDcbmTipoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-tipo="">Todos</button>
+              <button type="button" class="filter-chip" data-tipo="ingreso">Ingresos</button>
+              <button type="button" class="filter-chip" data-tipo="egreso">Egresos</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Conciliación</label>
+            <div id="fDcbmConcChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-conc="">Todos</button>
+              <button type="button" class="filter-chip" data-conc="1">Conciliados</button>
+              <button type="button" class="filter-chip" data-conc="0">Sin conciliar</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Origen</label>
+            <div id="fDcbmOrigenChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-origen="">Todos</button>
+              <button type="button" class="filter-chip" data-origen="importado">Importados</button>
+              <button type="button" class="filter-chip" data-origen="manual">Manuales</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcbmLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDcbm('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcbmOrden" onchange="onFiltroDcbm('orden', this.value)">
+                <option value="fecha">Fecha</option>
+                <option value="id">Código</option>
+                <option value="importe">Importe</option>
+                <option value="tipo">Tipo</option>
+                <option value="medio">Medio</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcbmDir" onchange="onFiltroDcbm('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcbm()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcbm()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcbm()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcbmSearch');
+  const clr = $('#dcbmSearchClear');
+  inp.value = dcbmBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcbmBusqueda = inp.value.trim();
+    clearTimeout(dcbmBuscadorTimer);
+    dcbmBuscadorTimer = setTimeout(cargarDcbm, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcbmBusqueda = ''; cargarDcbm();
+  });
+
+  // Lookups: cuentas + catálogo de medios + whitelist por tipo.
+  try {
+    const d = await apiGet(`${DCBM_API}?lookups=1`);
+    dcbmCuentas       = d.cuentas || [];
+    dcbmMedios        = d.medios  || [];
+    dcbmMediosPorTipo = d.medios_por_tipo || {};
+  } catch (e) {
+    $('#dcbmTbody').innerHTML = `<tr><td colspan="10" class="table-empty">Error cargando cuentas: ${esc(e.message)}</td></tr>`;
+    return;
+  }
+
+  // Selector de empresa (contexto compartido con el resto de Datacount). Va a
+  // la izquierda del de cuentas: elegir empresa acota qué cuentas se ofrecen.
+  const selE     = $('#dcbmEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selE.innerHTML = empresas.map((e) => `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selE.value = String(empresaId || empresas[0].id);
+  } else {
+    selE.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selE.disabled = true;
+  }
+  selE.addEventListener('change', async (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    // La cuenta persistida puede ser de la empresa anterior: se descarta para
+    // que dcbmPoblarComboCuentas() elija la primera de la nueva.
+    dcbSetCuentaId(null);
+    dcbmFiltroMedio = '';
+    dcbmPoblarComboCuentas();
+    dcbmPoblarComboMedios();
+    dcbmActualizarBadgeFiltros();
+    await cargarDcbm();
+  });
+
+  const selC = $('#dcbmCuentaSel');
+  dcbmPoblarComboCuentas();
+  selC.addEventListener('change', async (ev) => {
+    dcbSetCuentaId(ev.target.value);
+    dcbmFiltroMedio = '';
+    dcbmPoblarComboMedios();
+    dcbmActualizarBadgeFiltros();
+    await cargarDcbm();
+  });
+
+  dcbmPoblarComboMedios();
+
+  $('#dcbmFiltrosBtn').addEventListener('click', abrirModalFiltrosDcbm);
+  $('#dcbmRefrescarBtn').addEventListener('click', cargarDcbm);
+  $('#dcbmNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcbm(null));
+  $('#dcbmImportarBtn').addEventListener('click', () => abrirImportadorDcb(dcbGetCuentaId()));
+
+  ['Tipo', 'Conc', 'Origen'].forEach((grupo) => {
+    const cont = $(`#fDcbm${grupo}Chips`);
+    if (!cont) return;
+    cont.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      if (grupo === 'Tipo')   dcbmFiltroTipo   = b.dataset.tipo   || '';
+      if (grupo === 'Conc')   dcbmFiltroConc   = b.dataset.conc   || '';
+      if (grupo === 'Origen') dcbmFiltroOrigen = b.dataset.origen || '';
+      dcbmSincronizarChips();
+      dcbmActualizarBadgeFiltros();
+      cargarDcbm();
+    });
+  });
+
+  $('#dcbmCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    const a = b.dataset.action;
+    if (a === 'consultar') abrirConsultaDcbm(data.id);
+    if (a === 'conciliar') dcbmToggleConciliado(data.id);
+    if (a === 'editar')    abrirAltaEdicionDcbm(data.id);
+    if (a === 'eliminar')  eliminarDcbm(data.id);
+  });
+
+  $('#dcbmTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      dcbmAbrirMenu(r.right - 200, r.bottom + 4, id);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcbm(Number(tr.dataset.id));
+  });
+  $('#dcbmTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    dcbmAbrirMenu(ev.clientX, ev.clientY, Number(tr.dataset.id));
+  });
+
+  dcbmActualizarBadgeFiltros();
+  await cargarDcbm();
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Bancos &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Movimientos');
+
+// El combo de medios se repuebla al cambiar de cuenta: sólo ofrece los que
+// aplican al tipo de esa cuenta.
+function dcbmPoblarComboMedios() {
+  const sel = $('#fDcbmMedio');
+  if (!sel) return;
+  const cuenta = dcbmCuentaActual();
+  sel.innerHTML = `<option value="">— Todos —</option>` +
+    dcbmMediosValidos(cuenta).map((m) => `<option value="${esc(m.valor)}">${esc(m.texto)}</option>`).join('');
+  sel.value = dcbmFiltroMedio || '';
+}
+
+function dcbmAbrirMenu(x, y, id) {
+  const m = dcbmItems.find((r) => r.id === id);
+  const lbl = $('#dcbmCtxMenu')?.querySelector('[data-action="conciliar"] [data-label]');
+  if (lbl) lbl.textContent = Number(m?.conciliado) === 1 ? 'Quitar conciliación' : 'Marcar conciliado';
+  abrirCtxMenu($('#dcbmCtxMenu'), x, y, { id });
+}
+
+async function cargarDcbm() {
+  const tbody = $('#dcbmTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const cuentaId = dcbGetCuentaId();
+  if (!cuentaId) {
+    // Sin cuenta activa hay dos casos distintos y conviene no confundirlos:
+    // la empresa no tiene ninguna cuenta cargada, o todavía no se eligió una.
+    const sinCuentas = dcbmCuentas.length > 0 && dcbmCuentasDeEmpresa().length === 0;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">${
+      sinCuentas
+        ? 'Esta empresa no tiene cuentas de fondos cargadas. Creá una desde Cuentas.'
+        : 'Elegí una cuenta para ver su extracto.'
+    }</td></tr>`;
+    ['Total', 'Ing', 'Egr', 'Neto', 'SinConc'].forEach((k) => {
+      const el = $(`#dcbmStat${k}`);
+      if (el) el.textContent = '—';
+    });
+    return;
+  }
+
+  const qs = new URLSearchParams();
+  qs.set('cuenta', String(cuentaId));
+  if (dcbmBusqueda)     qs.set('q',      dcbmBusqueda);
+  if (dcbmFiltroTipo)   qs.set('tipo',   dcbmFiltroTipo);
+  if (dcbmFiltroMedio)  qs.set('medio',  dcbmFiltroMedio);
+  if (dcbmFiltroConc !== '')   qs.set('conciliado', dcbmFiltroConc);
+  if (dcbmFiltroOrigen) qs.set('origen', dcbmFiltroOrigen);
+  if (dcbmFiltroDesde)  qs.set('desde',  dcbmFiltroDesde);
+  if (dcbmFiltroHasta)  qs.set('hasta',  dcbmFiltroHasta);
+  if (dcbmFiltroLimite) qs.set('limite', dcbmFiltroLimite);
+  if (dcbmFiltroOrden)  qs.set('orden',  dcbmFiltroOrden);
+  if (dcbmFiltroDir)    qs.set('dir',    dcbmFiltroDir);
+
+  try {
+    const data = await apiGet(DCBM_API + '?' + qs.toString());
+    dcbmItems = data.items || [];
+    const s = data.stats || {};
+    const mon = dcbmCuentaActual()?.moneda || 'P';
+    $('#dcbmStatTotal').textContent   = fmtNum(s.total ?? 0);
+    $('#dcbmStatIng').textContent     = dcbFmtMoney(s.ingresos ?? 0, mon);
+    $('#dcbmStatEgr').textContent     = dcbFmtMoney(s.egresos  ?? 0, mon);
+    $('#dcbmStatNeto').textContent    = dcbFmtMoney(s.neto     ?? 0, mon);
+    $('#dcbmStatNeto').style.color    = Number(s.neto ?? 0) < 0 ? '#fca5a5' : '';
+    $('#dcbmStatSinConc').textContent = fmtNum(s.sin_conciliar ?? 0);
+    renderDcbm();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderDcbm() {
+  const tbody = $('#dcbmTbody');
+  if (!tbody) return;
+  if (!dcbmItems.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin movimientos. Importá el extracto del mes para cargarlos.</td></tr>`;
+    return;
+  }
+
+  let filas = dcbmItems;
+  if (dcbmFiltroCodigo) {
+    const cod = Number(dcbmFiltroCodigo);
+    filas = filas.filter((m) => m.id === cod);
+  }
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  const mon = dcbmCuentaActual()?.moneda || 'P';
+
+  tbody.innerHTML = filas.map((m) => `
+    <tr data-id="${m.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${m.id}</code></td>
+      <td style="white-space:nowrap">${esc(m.fecha)}</td>
+      <td>${dcbmTipoBadge(m.tipo)}</td>
+      <td>${m.medio ? esc(dcbmMedioTexto(m.medio)) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${esc(m.descripcion || '—')}${
+        m.origen === 'manual'
+          ? ' <span class="badge badge-warn" style="font-size:.62rem">manual</span>' : ''}</td>
+      <td style="font-family:monospace;font-size:.8rem">${esc(m.referencia || '—')}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${m.tipo === 'ingreso' ? '#86efac' : '#fca5a5'}">
+        ${m.tipo === 'ingreso' ? '+' : '−'} ${esc(dcbFmtMoney(m.importe, mon))}
+      </td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)">
+        ${m.saldo != null ? esc(dcbFmtMoney(m.saldo, mon)) : '—'}
+      </td>
+      <td style="text-align:center">${
+        Number(m.conciliado) === 1
+          ? '<i class="fa-solid fa-check-double" style="color:#86efac" title="Conciliado"></i>'
+          : '<i class="fa-regular fa-circle" style="color:var(--muted)" title="Sin conciliar"></i>'}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${m.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDcbm() {
+  dcbmFiltrosSnapshot = {
+    codigo: dcbmFiltroCodigo, tipo: dcbmFiltroTipo, medio: dcbmFiltroMedio,
+    conc: dcbmFiltroConc, origen: dcbmFiltroOrigen, desde: dcbmFiltroDesde,
+    hasta: dcbmFiltroHasta, limite: dcbmFiltroLimite,
+    orden: dcbmFiltroOrden, dir: dcbmFiltroDir,
+  };
+  $('#fDcbmCodigo').value = dcbmFiltroCodigo || '';
+  $('#fDcbmDesde').value  = dcbmFiltroDesde  || '';
+  $('#fDcbmHasta').value  = dcbmFiltroHasta  || '';
+  $('#fDcbmLimite').value = dcbmFiltroLimite || 100;
+  $('#fDcbmOrden').value  = dcbmFiltroOrden  || 'fecha';
+  $('#fDcbmDir').value    = dcbmFiltroDir    || 'desc';
+  dcbmPoblarComboMedios();
+  dcbmSincronizarChips();
+  document.getElementById('filtrosDcbmBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDcbm = abrirModalFiltrosDcbm;
+
+function cerrarModalFiltrosDcbm() {
+  document.getElementById('filtrosDcbmBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDcbm = cerrarModalFiltrosDcbm;
+
+function cancelarFiltrosDcbm() {
+  if (dcbmFiltrosSnapshot) {
+    const s = dcbmFiltrosSnapshot;
+    dcbmFiltroCodigo = s.codigo; dcbmFiltroTipo = s.tipo;   dcbmFiltroMedio = s.medio;
+    dcbmFiltroConc   = s.conc;   dcbmFiltroOrigen = s.origen; dcbmFiltroDesde = s.desde;
+    dcbmFiltroHasta  = s.hasta;  dcbmFiltroLimite = s.limite;
+    dcbmFiltroOrden  = s.orden;  dcbmFiltroDir = s.dir;
+    dcbmActualizarBadgeFiltros();
+    cargarDcbm();
+  }
+  cerrarModalFiltrosDcbm();
+}
+window.cancelarFiltrosDcbm = cancelarFiltrosDcbm;
+
+function limpiarFiltrosDcbm() {
+  dcbmFiltroCodigo = ''; dcbmFiltroTipo = ''; dcbmFiltroMedio = '';
+  dcbmFiltroConc = ''; dcbmFiltroOrigen = ''; dcbmFiltroDesde = ''; dcbmFiltroHasta = '';
+  dcbmFiltroLimite = 100; dcbmFiltroOrden = 'fecha'; dcbmFiltroDir = 'desc';
+  $('#fDcbmCodigo').value = '';
+  $('#fDcbmDesde').value  = '';
+  $('#fDcbmHasta').value  = '';
+  $('#fDcbmLimite').value = 100;
+  $('#fDcbmOrden').value  = 'fecha';
+  $('#fDcbmDir').value    = 'desc';
+  dcbmPoblarComboMedios();
+  dcbmSincronizarChips();
+  dcbmActualizarBadgeFiltros();
+  cargarDcbm();
+}
+window.limpiarFiltrosDcbm = limpiarFiltrosDcbm;
+
+function onFiltroDcbm(campo, valor) {
+  if (campo === 'codigo') dcbmFiltroCodigo = (valor || '').trim();
+  if (campo === 'medio')  dcbmFiltroMedio  = valor || '';
+  if (campo === 'desde')  dcbmFiltroDesde  = valor || '';
+  if (campo === 'hasta')  dcbmFiltroHasta  = valor || '';
+  if (campo === 'limite') dcbmFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dcbmFiltroOrden  = valor || 'fecha';
+  if (campo === 'dir')    dcbmFiltroDir    = valor || 'desc';
+  dcbmActualizarBadgeFiltros();
+  cargarDcbm();
+}
+window.onFiltroDcbm = onFiltroDcbm;
+
+function dcbmSincronizarChips() {
+  document.querySelectorAll('#fDcbmTipoChips .filter-chip').forEach((b) =>
+    b.classList.toggle('active', (b.dataset.tipo || '') === (dcbmFiltroTipo || '')));
+  document.querySelectorAll('#fDcbmConcChips .filter-chip').forEach((b) =>
+    b.classList.toggle('active', (b.dataset.conc || '') === (dcbmFiltroConc || '')));
+  document.querySelectorAll('#fDcbmOrigenChips .filter-chip').forEach((b) =>
+    b.classList.toggle('active', (b.dataset.origen || '') === (dcbmFiltroOrigen || '')));
+}
+
+function dcbmActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcbmFiltroCodigo)                 n++;
+  if (dcbmFiltroTipo)                   n++;
+  if (dcbmFiltroMedio)                  n++;
+  if (dcbmFiltroConc !== '')            n++;
+  if (dcbmFiltroOrigen)                 n++;
+  if (dcbmFiltroDesde)                  n++;
+  if (dcbmFiltroHasta)                  n++;
+  if (Number(dcbmFiltroLimite) !== 100) n++;
+  if (dcbmFiltroOrden !== 'fecha')      n++;
+  if (dcbmFiltroDir   !== 'desc')       n++;
+  const badge = $('#dcbmFiltrosBadge');
+  const btn   = $('#dcbmFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) { badge.style.display = ''; badge.textContent = n; btn.classList.add('active'); }
+  else       { badge.style.display = 'none'; btn.classList.remove('active'); }
+}
+
+// ---- Modal Alta / Edición ----
+function abrirAltaEdicionDcbm(id) {
+  dcbmEditandoId = id;
+  const editando = !!id;
+  const m = editando ? dcbmItems.find((x) => x.id === id) : null;
+  const cuenta = dcbmCuentaActual();
+  if (!cuenta) { toast('Elegí una cuenta primero', { error: true }); return; }
+
+  const optsMedios = `<option value="">— Sin medio —</option>` +
+    dcbmMediosValidos(cuenta).map((x) => `<option value="${esc(x.valor)}">${esc(x.texto)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:620px">
+      <div class="modal-header">
+        <div class="modal-title">${editando ? 'Editar movimiento' : 'Nuevo movimiento'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;
+                    padding:10px 14px;margin-bottom:14px;font-size:.85rem;color:var(--muted)">
+          ${DCB_TIPO_META[cuenta.tipo]?.icono || ''} <strong>${esc(cuenta.nombre)}</strong>
+          · los medios ofrecidos son los que admite una cuenta de tipo
+          «${esc(DCB_TIPO_META[cuenta.tipo]?.label || cuenta.tipo)}»
+        </div>
+        <div class="form-row form-row-3">
+          <div class="form-group">
+            <label for="dcbmFecha">Fecha *</label>
+            <input type="date" id="dcbmFecha">
+          </div>
+          <div class="form-group">
+            <label for="dcbmTipo">Tipo *</label>
+            <select id="dcbmTipo">
+              <option value="ingreso">Ingreso</option>
+              <option value="egreso">Egreso</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="dcbmImporte">Importe *</label>
+            <input type="number" id="dcbmImporte" step="0.01" min="0" placeholder="0.00">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcbmMedio">Medio</label>
+            <select id="dcbmMedio">${optsMedios}</select>
+          </div>
+          <div class="form-group">
+            <label for="dcbmReferencia">Referencia</label>
+            <input type="text" id="dcbmReferencia" maxlength="100" autocomplete="off"
+                   placeholder="Nro de operación">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcbmDescripcion">Descripción</label>
+          <input type="text" id="dcbmDescripcion" maxlength="500" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcbmContraparte">Contraparte</label>
+            <input type="text" id="dcbmContraparte" maxlength="255" autocomplete="off"
+                   placeholder="De quién / para quién">
+          </div>
+          <div class="form-group">
+            <label for="dcbmCuit">CUIT contraparte</label>
+            <input type="text" id="dcbmCuit" maxlength="15" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcbmSaldo">Saldo posterior</label>
+            <input type="number" id="dcbmSaldo" step="0.01" placeholder="según extracto">
+          </div>
+          <div class="form-group">
+            <label for="dcbmFechaValor">Fecha valor</label>
+            <input type="date" id="dcbmFechaValor">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcbmObservaciones">Observaciones</label>
+          <textarea id="dcbmObservaciones" rows="2"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="dcbmConciliado">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Conciliado</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && m) {
+    $('#dcbmFecha').value         = m.fecha         || '';
+    $('#dcbmTipo').value          = m.tipo          || 'ingreso';
+    $('#dcbmImporte').value       = m.importe       != null ? m.importe : '';
+    $('#dcbmMedio').value         = m.medio         || '';
+    $('#dcbmReferencia').value    = m.referencia    || '';
+    $('#dcbmDescripcion').value   = m.descripcion   || '';
+    $('#dcbmContraparte').value   = m.contraparte   || '';
+    $('#dcbmCuit').value          = m.cuit          || '';
+    $('#dcbmSaldo').value         = m.saldo         != null ? m.saldo : '';
+    $('#dcbmFechaValor').value    = m.fecha_valor   || '';
+    $('#dcbmObservaciones').value = m.observaciones || '';
+    $('#dcbmConciliado').checked  = Number(m.conciliado) === 1;
+  } else {
+    $('#dcbmFecha').value = new Date().toISOString().slice(0, 10);
+  }
+
+  setTimeout(() => $('#dcbmFecha')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcbm();
+  });
+}
+
+async function guardarDcbm() {
+  const fecha   = $('#dcbmFecha').value;
+  const tipo    = $('#dcbmTipo').value;
+  const importe = Number($('#dcbmImporte').value);
+
+  if (!fecha)   { toast('La fecha es obligatoria', { error: true }); return; }
+  if (!tipo)    { toast('El tipo es obligatorio', { error: true }); return; }
+  if (!(importe > 0)) { toast('El importe debe ser mayor a cero', { error: true }); return; }
+
+  const body = {
+    fecha, tipo, importe,
+    medio:         $('#dcbmMedio').value || null,
+    referencia:    $('#dcbmReferencia').value.trim(),
+    descripcion:   $('#dcbmDescripcion').value.trim(),
+    contraparte:   $('#dcbmContraparte').value.trim(),
+    cuit:          $('#dcbmCuit').value.trim(),
+    saldo:         $('#dcbmSaldo').value,
+    fecha_valor:   $('#dcbmFechaValor').value,
+    observaciones: $('#dcbmObservaciones').value.trim(),
+    conciliado:    $('#dcbmConciliado').checked ? 1 : 0,
+  };
+
+  try {
+    if (dcbmEditandoId) {
+      await apiSend(`${DCBM_API}?id=${dcbmEditandoId}`, 'PUT', body);
+      toast('Movimiento actualizado');
+    } else {
+      body.cuenta_id = dcbGetCuentaId();
+      await apiSend(DCBM_API, 'POST', body);
+      toast('Movimiento creado');
+    }
+    closeModal();
+    dcbmEditandoId = null;
+    await cargarDcbm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDcbm(id) {
+  const m = dcbmItems.find((x) => x.id === id);
+  if (!m) return;
+  const mon = dcbmCuentaActual()?.moneda || 'P';
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+  const txt = (v) => esc(v != null && v !== '' ? String(v) : '—');
+
+  openModal(`
+    <div class="modal" style="max-width:620px">
+      <div class="modal-header">
+        <div class="modal-title">🔁 <span class="modal-subtitle">Movimiento #${m.id}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código', `<code>${m.id}</code>`)}
+          ${card('Origen', m.origen === 'manual'
+            ? '<span class="badge badge-warn">Carga manual</span>'
+            : '<span class="badge badge-info">Importado</span>')}
+          ${card('Fecha',       txt(m.fecha))}
+          ${card('Fecha valor', txt(m.fecha_valor))}
+          ${card('Tipo',        dcbmTipoBadge(m.tipo))}
+          ${card('Medio',       txt(dcbmMedioTexto(m.medio)))}
+          ${card('Importe',     `<strong style="color:${m.tipo === 'ingreso' ? '#86efac' : '#fca5a5'}">
+                                   ${m.tipo === 'ingreso' ? '+' : '−'} ${esc(dcbFmtMoney(m.importe, mon))}
+                                 </strong>`)}
+          ${card('Saldo posterior', m.saldo != null ? esc(dcbFmtMoney(m.saldo, mon)) : '—')}
+          ${card('Descripción', `<div style="white-space:pre-wrap">${txt(m.descripcion)}</div>`, 'full')}
+          ${card('Referencia',  `<code style="font-size:.82rem">${txt(m.referencia)}</code>`)}
+          ${card('Conciliado',  Number(m.conciliado) === 1
+            ? '<span class="badge badge-success">Sí</span>'
+            : '<span class="badge badge-warn">No</span>')}
+          ${card('Contraparte', txt(m.contraparte))}
+          ${card('CUIT',        txt(m.cuit))}
+          ${card('Orden de pago vinculada', m.pago_id ? `<code>#${m.pago_id}</code>` : '—')}
+          ${card('Asiento vinculado',       m.asiento_id ? `<code>#${m.asiento_id}</code>` : '—')}
+          ${card('Observaciones', `<div style="white-space:pre-wrap;font-size:.85rem">${txt(m.observaciones)}</div>`, 'full')}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcbm(id); }
+  });
+}
+
+async function dcbmToggleConciliado(id) {
+  const m = dcbmItems.find((x) => x.id === id);
+  if (!m) return;
+  const nuevo = Number(m.conciliado) === 1 ? 0 : 1;
+  try {
+    await apiSend(`${DCBM_API}?id=${id}`, 'PUT', { conciliado: nuevo });
+    toast(nuevo === 1 ? 'Marcado como conciliado' : 'Conciliación quitada');
+    await cargarDcbm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDcbm(id) {
+  const m = dcbmItems.find((x) => x.id === id);
+  if (!m) return;
+  const ok = await confirmar({
+    title:       'Eliminar movimiento',
+    message:     `¿Eliminás el movimiento del ${m.fecha} por ${dcbFmtMoney(m.importe, dcbmCuentaActual()?.moneda)}?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCBM_API}?id=${id}`, 'DELETE');
+    toast('Movimiento eliminado');
+    await cargarDcbm();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Importador de extractos -------------------------
+// Asistente de 2 pasos. El archivo NO se sube al server hasta que el usuario
+// confirma: el paso 1 lo manda para analizarlo (el endpoint no persiste nada) y
+// el paso 2 lo vuelve a mandar junto con el mapeo. Se reenvia en vez de dejarlo
+// en un temp del server porque el browser ya tiene el File en memoria y asi no
+// queda basura si el usuario cierra el modal a mitad de camino.
+
+let dcbiArchivo  = null;
+let dcbiAnalisis = null;
+let dcbiCuentaId = null;
+// 'interprete' = el archivo lo lee el PHP del banco y no hay columnas que
+// mapear. 'mapeo' = ningún intérprete lo reconoció (o el usuario eligió mapear
+// a mano) y se usa el asistente de columnas.
+let dcbiModo     = 'mapeo';
+
+function abrirImportadorDcb(cuentaId) {
+  dcbiArchivo  = null;
+  dcbiAnalisis = null;
+  dcbiCuentaId = cuentaId || dcbGetCuentaId();
+
+  // El importador se abre desde las dos vistas; la lista de cuentas puede no
+  // estar cargada si venimos del ABM de cuentas. En los dos casos queda acotada
+  // a la empresa activa: `dcbItems` ya viene filtrada por el server y
+  // dcbmCuentasDeEmpresa() filtra la de movimientos.
+  const cuentas = dcbmCuentas.length
+    ? dcbmCuentasDeEmpresa()
+    : dcbItems.map((c) => ({ id: c.id, nombre: c.nombre, tipo: c.tipo, moneda: c.moneda, activa: c.activa }));
+
+  if (!cuentas.length) { toast('No hay cuentas cargadas', { error: true }); return; }
+  if (!dcbiCuentaId)   dcbiCuentaId = cuentas[0].id;
+
+  openModal(`
+    <div class="modal" style="max-width:900px">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fa-solid fa-file-import"></i> Importar extracto</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body" id="dcbiBody">
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;
+                    padding:12px 14px;margin-bottom:16px;font-size:.85rem;color:var(--muted);line-height:1.5">
+          Subí el resumen del mes tal como lo exporta el homebanking (CSV, TSV o XLSX).
+          Se detectan solas las columnas y las filas que ya estén importadas se omiten,
+          así que podés reimportar el mismo archivo sin duplicar nada.
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcbiCuenta">Cuenta destino</label>
+            <select id="dcbiCuenta">
+              ${cuentas.map((c) => `<option value="${c.id}"${c.id === dcbiCuentaId ? ' selected' : ''}>${
+                (DCB_TIPO_META[c.tipo]?.icono || '')} ${esc(c.nombre)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="dcbiFile">Archivo</label>
+            <input type="file" id="dcbiFile" accept=".csv,.tsv,.txt,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+          </div>
+        </div>
+        <div id="dcbiStatus" style="font-size:.82rem;color:var(--muted);min-height:1.2em;margin-top:8px"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" id="dcbiAnalizarBtn" disabled>Analizar archivo</button>
+      </div>
+    </div>
+  `);
+
+  $('#dcbiCuenta').addEventListener('change', (ev) => { dcbiCuentaId = Number(ev.target.value); });
+  $('#dcbiFile').addEventListener('change', (ev) => {
+    dcbiArchivo = ev.target.files?.[0] || null;
+    $('#dcbiAnalizarBtn').disabled = !dcbiArchivo;
+    $('#dcbiStatus').textContent = dcbiArchivo ? `${dcbiArchivo.name} · ${fmtNum(Math.round(dcbiArchivo.size / 1024))} KB` : '';
+  });
+  $('#dcbiAnalizarBtn').addEventListener('click', dcbiAnalizar);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) closeModal();
+  });
+}
+
+async function dcbiAnalizar() {
+  if (!dcbiArchivo || !dcbiCuentaId) return;
+  const btn    = $('#dcbiAnalizarBtn');
+  const status = $('#dcbiStatus');
+  btn.disabled = true;
+  status.style.color = 'var(--muted)';
+  status.textContent = 'Analizando…';
+
+  const fd = new FormData();
+  fd.append('archivo', dcbiArchivo);
+  fd.append('cuenta', String(dcbiCuentaId));
+
+  try {
+    const r   = await fetch(`${DCBI_API}?action=analizar`, { method: 'POST', credentials: 'same-origin', body: fd });
+    const res = await r.json();
+    if (!res.ok) {
+      status.style.color = 'var(--danger)';
+      status.textContent = res.error || 'No se pudo analizar el archivo';
+      btn.disabled = false;
+      return;
+    }
+    dcbiAnalisis = res.data;
+    dcbiModo     = res.data.modo === 'interprete' ? 'interprete' : 'mapeo';
+    if (dcbiModo === 'interprete') dcbiRenderInterprete();
+    else                           dcbiRenderMapeo();
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = 'Error de red al analizar el archivo';
+    btn.disabled = false;
+  }
+}
+
+// Paso 2 (camino feliz): el intérprete del banco leyó el archivo. No hay
+// columnas que mapear — el usuario sólo confirma que los movimientos son los
+// que espera.
+function dcbiRenderInterprete() {
+  const d   = dcbiAnalisis;
+  const i   = d.interprete || {};
+  const cal = i.calibracion || {};
+  const mon = (dcbmCuentas.find((c) => c.id === dcbiCuentaId)?.moneda) || 'P';
+  const movs = d.preview || [];
+
+  const avisoBox = (texto, tono) => `
+    <div style="background:color-mix(in srgb, var(--surface) 90%, #000);
+                border-left:3px solid ${tono};border-radius:8px;
+                padding:11px 14px;margin-bottom:12px;font-size:.84rem;line-height:1.5">
+      ${esc(texto)}
+    </div>`;
+
+  $('#dcbiBody').innerHTML = `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <span class="badge badge-success" style="font-size:.8rem">
+        <i class="fa-solid fa-wand-magic-sparkles"></i> ${esc(i.nombre || '')}
+      </span>
+      <span class="badge badge-info">${esc(String(d.formato).toUpperCase())}</span>
+      <span style="font-size:.85rem;color:var(--muted)">
+        ${fmtNum(i.total || 0)} movimiento(s) leído(s) · confianza ${i.puntaje || 0}%
+      </span>
+    </div>
+
+    ${d.aviso ? avisoBox(d.aviso, 'var(--warn)') : ''}
+    ${cal.verificado === false
+      ? avisoBox('Este intérprete todavía no se calibró contra un export real de este banco: '
+               + (cal.nota || '') + ' Revisá los movimientos de abajo antes de confirmar.', 'var(--warn)')
+      : ''}
+    ${(i.avisos || []).map((a) => avisoBox(a, 'var(--muted)')).join('')}
+
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:10px;margin-bottom:14px">
+      <table style="font-size:.8rem;margin:0">
+        <thead>
+          <tr>
+            <th style="padding:7px 10px">Fecha</th>
+            <th style="padding:7px 10px">Tipo</th>
+            <th style="padding:7px 10px;text-align:right">Importe</th>
+            <th style="padding:7px 10px">Descripción</th>
+            <th style="padding:7px 10px">Referencia</th>
+            <th style="padding:7px 10px">Medio</th>
+            <th style="padding:7px 10px;text-align:right">Saldo</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${movs.map((m) => `
+            <tr>
+              <td style="padding:6px 10px;white-space:nowrap">${esc(m.fecha)}</td>
+              <td style="padding:6px 10px">${dcbmTipoBadge(m.tipo)}</td>
+              <td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums;
+                         color:${m.tipo === 'ingreso' ? '#86efac' : '#fca5a5'}">
+                ${m.tipo === 'ingreso' ? '+' : '−'} ${esc(dcbFmtMoney(m.importe, mon))}
+              </td>
+              <td style="padding:6px 10px">${esc(m.descripcion || '—')}</td>
+              <td style="padding:6px 10px;font-family:monospace;font-size:.75rem">${esc(m.referencia || '—')}</td>
+              <td style="padding:6px 10px">${m.medio ? esc(dcbmMedioTexto(m.medio)) : '—'}</td>
+              <td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)">
+                ${m.saldo != null ? esc(dcbFmtMoney(m.saldo, mon)) : '—'}
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    ${(i.total || 0) > movs.length
+      ? `<div style="font-size:.8rem;color:var(--muted);margin-bottom:12px">
+           Se muestran los primeros ${movs.length} de ${fmtNum(i.total)}. Se importan todos.
+         </div>`
+      : ''}
+
+    <div style="font-size:.8rem;color:var(--muted);line-height:1.5">
+      Los movimientos que ya estén importados se detectan solos y se omiten.
+    </div>
+
+    <div id="dcbiStatus" style="font-size:.82rem;color:var(--muted);min-height:1.2em;margin-top:10px"></div>
+  `;
+
+  const footer = document.querySelector('#modalRoot .modal-footer');
+  footer.innerHTML = `
+    <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+    <button class="btn btn-ghost"   id="dcbiManualBtn" title="Ignorar el intérprete y mapear las columnas a mano">
+      Mapear a mano
+    </button>
+    <button class="btn btn-ghost"   id="dcbiVolverBtn">← Cambiar archivo</button>
+    <button class="btn btn-primary" id="dcbiImportarBtn">Importar ${fmtNum(i.total || 0)} movimiento(s)</button>
+  `;
+  $('#dcbiVolverBtn').addEventListener('click', () => abrirImportadorDcb(dcbiCuentaId));
+  $('#dcbiImportarBtn').addEventListener('click', dcbiImportar);
+  // Escotilla de escape: si el intérprete leyó mal, el asistente de columnas
+  // sigue disponible sin tener que volver a subir el archivo.
+  $('#dcbiManualBtn').addEventListener('click', () => { dcbiModo = 'mapeo'; dcbiRenderMapeo(); });
+}
+
+// Paso 2: mapeo de columnas + preview. Se arranca del mapeo guardado en la
+// cuenta si existe (asi la segunda importación del mismo banco es un click), y
+// si no del autodetectado por el server.
+function dcbiRenderMapeo() {
+  dcbiModo = 'mapeo';
+  const d  = dcbiAnalisis;
+  const m  = { ...d.mapeo_sugerido, ...(d.mapeo_guardado || {}) };
+  const hs = d.encabezados || [];
+
+  const optsCol = (sel, incluirNinguna = true) =>
+    (incluirNinguna ? `<option value="">— Ninguna —</option>` : '') +
+    hs.map((h, i) => `<option value="${i}"${Number(sel) === i ? ' selected' : ''}>${i + 1}. ${esc(h || '(sin título)')}</option>`).join('');
+
+  const cuenta = (dcbmCuentas.length ? dcbmCuentas : dcbItems).find((c) => c.id === dcbiCuentaId);
+  const medios = dcbmMedios.length ? dcbmMediosValidos(cuenta) : [];
+
+  const modoDebCred = m.col_debito != null || m.col_credito != null;
+
+  $('#dcbiBody').innerHTML = `
+    ${d.aviso ? `
+      <div style="background:color-mix(in srgb, var(--surface) 90%, #000);
+                  border-left:3px solid var(--warn);border-radius:8px;
+                  padding:11px 14px;margin-bottom:12px;font-size:.84rem;line-height:1.5">
+        ${esc(d.aviso)}
+      </div>` : ''}
+
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <span class="badge badge-info">${esc(String(d.formato).toUpperCase())}</span>
+      <span style="font-size:.85rem;color:var(--muted)">
+        ${fmtNum(d.filas_datos)} fila(s) de datos · encabezado detectado en la fila ${d.mapeo_sugerido.fila_encabezado}
+      </span>
+      ${d.mapeo_guardado ? '<span class="badge badge-success">Mapeo guardado de esta cuenta</span>' : ''}
+    </div>
+
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:10px;margin-bottom:18px">
+      <table style="font-size:.78rem;white-space:nowrap;margin:0">
+        <thead>
+          <tr>${hs.map((h, i) => `<th style="padding:6px 10px">${i + 1}. ${esc(h || '')}</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          ${(d.filas_muestra || []).slice(0, 6).map((f) => `
+            <tr>${hs.map((_, i) => `<td style="padding:5px 10px">${esc(f[i] ?? '')}</td>`).join('')}</tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label for="dcbiColFecha">Fecha *</label>
+        <select id="dcbiColFecha">${optsCol(m.col_fecha, false)}</select>
+      </div>
+      <div class="form-group">
+        <label for="dcbiFormatoFecha">Formato de fecha</label>
+        <select id="dcbiFormatoFecha">
+          <option value="dmy"${m.formato_fecha === 'dmy' ? ' selected' : ''}>Día/Mes/Año</option>
+          <option value="mdy"${m.formato_fecha === 'mdy' ? ' selected' : ''}>Mes/Día/Año</option>
+          <option value="ymd"${m.formato_fecha === 'ymd' ? ' selected' : ''}>Año-Mes-Día</option>
+          <option value="auto"${m.formato_fecha === 'auto' ? ' selected' : ''}>Detectar</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="dcbiDecimal">Separador decimal</label>
+        <select id="dcbiDecimal">
+          <option value="auto"${m.decimal === 'auto' ? ' selected' : ''}>Detectar</option>
+          <option value="coma"${m.decimal === 'coma' ? ' selected' : ''}>Coma (1.234,56)</option>
+          <option value="punto"${m.decimal === 'punto' ? ' selected' : ''}>Punto (1,234.56)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>¿Cómo viene el importe?</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="dcbiModoChips">
+        <button type="button" class="filter-chip${modoDebCred ? ' active' : ''}" data-modo="debcred">Débito y crédito separados</button>
+        <button type="button" class="filter-chip${modoDebCred ? '' : ' active'}" data-modo="unico">Una columna con signo</button>
+      </div>
+    </div>
+
+    <div class="form-row" id="dcbiModoDebCred" ${modoDebCred ? '' : 'hidden'}>
+      <div class="form-group">
+        <label for="dcbiColDebito">Columna Débito (salidas)</label>
+        <select id="dcbiColDebito">${optsCol(m.col_debito)}</select>
+      </div>
+      <div class="form-group">
+        <label for="dcbiColCredito">Columna Crédito (entradas)</label>
+        <select id="dcbiColCredito">${optsCol(m.col_credito)}</select>
+      </div>
+    </div>
+
+    <div class="form-row" id="dcbiModoUnico" ${modoDebCred ? 'hidden' : ''}>
+      <div class="form-group">
+        <label for="dcbiColImporte">Columna Importe</label>
+        <select id="dcbiColImporte">${optsCol(m.col_importe)}</select>
+      </div>
+      <div class="form-group">
+        <label class="toggle-switch" style="margin-top:24px">
+          <input type="checkbox" id="dcbiInvertir"${m.invertir_signo ? ' checked' : ''}>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Invertir signo</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label for="dcbiColDescripcion">Descripción</label>
+        <select id="dcbiColDescripcion">${optsCol(m.col_descripcion)}</select>
+      </div>
+      <div class="form-group">
+        <label for="dcbiColReferencia">Referencia</label>
+        <select id="dcbiColReferencia">${optsCol(m.col_referencia)}</select>
+      </div>
+      <div class="form-group">
+        <label for="dcbiColSaldo">Saldo</label>
+        <select id="dcbiColSaldo">${optsCol(m.col_saldo)}</select>
+      </div>
+    </div>
+
+    <div class="form-row form-row-3">
+      <div class="form-group">
+        <label for="dcbiColContraparte">Contraparte</label>
+        <select id="dcbiColContraparte">${optsCol(m.col_contraparte)}</select>
+      </div>
+      <div class="form-group">
+        <label for="dcbiColFechaValor">Fecha valor</label>
+        <select id="dcbiColFechaValor">${optsCol(m.col_fecha_valor)}</select>
+      </div>
+      <div class="form-group">
+        <label for="dcbiMedio">Medio por defecto</label>
+        <select id="dcbiMedio">
+          <option value="">— Sin medio —</option>
+          ${medios.map((x) => `<option value="${esc(x.valor)}"${m.medio_default === x.valor ? ' selected' : ''}>${esc(x.texto)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="toggle-switch">
+        <input type="checkbox" id="dcbiGuardarMapeo" checked>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Recordar este mapeo para la cuenta</span>
+        <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+          — la próxima importación de esta cuenta arranca con las columnas ya elegidas
+        </span>
+      </label>
+    </div>
+
+    <div id="dcbiStatus" style="font-size:.82rem;color:var(--muted);min-height:1.2em;margin-top:8px"></div>
+  `;
+
+  $('#dcbiModoChips').addEventListener('click', (ev) => {
+    const b = ev.target.closest('.filter-chip');
+    if (!b) return;
+    const debcred = b.dataset.modo === 'debcred';
+    document.querySelectorAll('#dcbiModoChips .filter-chip').forEach((x) =>
+      x.classList.toggle('active', x === b));
+    $('#dcbiModoDebCred').hidden = !debcred;
+    $('#dcbiModoUnico').hidden   = debcred;
+  });
+
+  const footer = document.querySelector('#modalRoot .modal-footer');
+  footer.innerHTML = `
+    <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+    <button class="btn btn-ghost"   id="dcbiVolverBtn">← Cambiar archivo</button>
+    <button class="btn btn-primary" id="dcbiImportarBtn">Importar movimientos</button>
+  `;
+  $('#dcbiVolverBtn').addEventListener('click', () => abrirImportadorDcb(dcbiCuentaId));
+  $('#dcbiImportarBtn').addEventListener('click', dcbiImportar);
+}
+
+function dcbiLeerMapeo() {
+  const val = (id) => {
+    const v = $(id)?.value;
+    return v === '' || v == null ? null : Number(v);
+  };
+  const debcred = !$('#dcbiModoDebCred').hidden;
+  return {
+    fila_encabezado: dcbiAnalisis.mapeo_sugerido.fila_encabezado,
+    col_fecha:       val('#dcbiColFecha'),
+    col_fecha_valor: val('#dcbiColFechaValor'),
+    col_descripcion: val('#dcbiColDescripcion'),
+    col_referencia:  val('#dcbiColReferencia'),
+    col_contraparte: val('#dcbiColContraparte'),
+    col_saldo:       val('#dcbiColSaldo'),
+    col_debito:      debcred ? val('#dcbiColDebito')  : null,
+    col_credito:     debcred ? val('#dcbiColCredito') : null,
+    col_importe:     debcred ? null : val('#dcbiColImporte'),
+    formato_fecha:   $('#dcbiFormatoFecha').value,
+    decimal:         $('#dcbiDecimal').value,
+    medio_default:   $('#dcbiMedio').value || null,
+    invertir_signo:  !!$('#dcbiInvertir')?.checked,
+  };
+}
+
+async function dcbiImportar() {
+  const status = $('#dcbiStatus');
+  const btn    = $('#dcbiImportarBtn');
+
+  const fd = new FormData();
+  fd.append('archivo', dcbiArchivo);
+  fd.append('cuenta', String(dcbiCuentaId));
+  fd.append('modo', dcbiModo);
+
+  if (dcbiModo === 'interprete') {
+    // El server revalida la detección con el archivo que llega, así que
+    // alcanza con decirle qué intérprete usar.
+    fd.append('interprete', dcbiAnalisis?.interprete?.clave || '');
+  } else {
+    const mapeo = dcbiLeerMapeo();
+    if (mapeo.col_fecha == null) {
+      status.style.color = 'var(--danger)';
+      status.textContent = 'Elegí cuál es la columna de fecha.';
+      return;
+    }
+    if (mapeo.col_importe == null && mapeo.col_debito == null && mapeo.col_credito == null) {
+      status.style.color = 'var(--danger)';
+      status.textContent = 'Elegí de dónde sale el importe.';
+      return;
+    }
+    fd.append('mapeo', JSON.stringify(mapeo));
+    if ($('#dcbiGuardarMapeo')?.checked) fd.append('guardar_mapeo', '1');
+  }
+
+  btn.disabled = true;
+  status.style.color = 'var(--muted)';
+  status.textContent = 'Importando…';
+
+  try {
+    const r   = await fetch(`${DCBI_API}?action=importar`, { method: 'POST', credentials: 'same-origin', body: fd });
+    const res = await r.json();
+    if (!res.ok) {
+      status.style.color = 'var(--danger)';
+      status.textContent = res.error || 'No se pudo importar';
+      btn.disabled = false;
+      return;
+    }
+    dcbiRenderResultado(res.data);
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = 'Error de red al importar';
+    btn.disabled = false;
+  }
+}
+
+function dcbiRenderResultado(d) {
+  const stat = (label, valor, color) => `
+    <div style="flex:1 1 140px;background:color-mix(in srgb, var(--surface) 90%, #000);
+                border-radius:12px;padding:14px 16px;text-align:center">
+      <div style="font-size:1.6rem;font-weight:700;color:${color || 'inherit'}">${fmtNum(valor)}</div>
+      <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:4px">${esc(label)}</div>
+    </div>
+  `;
+
+  $('#dcbiBody').innerHTML = `
+    <div style="text-align:center;padding:10px 0 18px">
+      <div style="font-size:2.4rem">${d.insertados > 0 ? '✅' : 'ℹ️'}</div>
+      <div style="font-size:1rem;font-weight:600;margin-top:6px">${esc(d.mensaje || '')}</div>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      ${stat('Importados',  d.insertados,  '#86efac')}
+      ${stat('Ya existían', d.omitidos,    'var(--muted)')}
+      ${stat('Descartados', d.descartados, 'var(--muted)')}
+    </div>
+    ${d.saldo_actualizado ? `
+      <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;
+                  padding:12px 14px;font-size:.85rem;margin-bottom:12px">
+        Saldo de la cuenta actualizado a
+        <strong>${esc(dcbFmtMoney(d.saldo_actualizado.saldo, 'P'))}</strong>
+        al ${esc(d.saldo_actualizado.fecha)}.
+      </div>` : ''}
+    ${(d.avisos || []).map((a) => `
+      <div style="background:color-mix(in srgb, var(--surface) 90%, #000);
+                  border-left:3px solid var(--muted);border-radius:8px;
+                  padding:10px 14px;margin-bottom:10px;font-size:.83rem;line-height:1.5">
+        ${esc(a)}
+      </div>`).join('')}
+    ${d.descartados > 0 ? `
+      <div style="font-size:.82rem;color:var(--muted);line-height:1.5;margin-bottom:12px">
+        Las filas descartadas son las que no tenían fecha o importe interpretable
+        (subtotales, encabezados repetidos, pies de página).${
+          d.modo === 'mapeo' ? ' Si te parecen muchas, revisá el mapeo de columnas.' : ''}
+      </div>` : ''}
+    ${(d.errores || []).length ? `
+      <div class="form-group">
+        <label>Filas con error</label>
+        <div style="max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;font-size:.78rem">
+          ${d.errores.map((e) => `<div>Fila ${esc(String(e.fila))}: ${esc(e.error)}</div>`).join('')}
+        </div>
+      </div>` : ''}
+  `;
+
+  const footer = document.querySelector('#modalRoot .modal-footer');
+  footer.innerHTML = `
+    <button class="btn btn-ghost"   id="dcbiOtroBtn">Importar otro archivo</button>
+    <button class="btn btn-primary" data-act="close">Listo</button>
+  `;
+  $('#dcbiOtroBtn').addEventListener('click', () => abrirImportadorDcb(dcbiCuentaId));
+
+  // Refrescar la vista de fondo para que los movimientos nuevos aparezcan.
+  if (document.getElementById('dcbmTbody')) cargarDcbm();
+  if (document.getElementById('dcbTbody'))  cargarDcb();
 }
 
 // ------------------------- Vista: Datarocket (landing) -------------------------
@@ -44120,11 +46530,11 @@ async function sincOnCambioOrigen() {
       selT.innerHTML = '<option value="">No hay tablas en el origen</option>';
       return;
     }
+    // Sin cantidad de filas a proposito: el endpoint ya no la devuelve porque
+    // leer las stats de cada tabla trababa la carga del combo (ver
+    // herramientas_sincronizador_tables.php).
     selT.innerHTML = '<option value="">— Elegí una tabla —</option>' +
-      tablas.map((t) => {
-        const filas = (t.filas_aprox != null) ? ` (~${fmtNum(t.filas_aprox)} filas)` : '';
-        return `<option value="${esc(t.nombre)}">${esc(t.nombre)}${filas}</option>`;
-      }).join('');
+      tablas.map((t) => `<option value="${esc(t.nombre)}">${esc(t.nombre)}</option>`).join('');
     selT.disabled = false;
     selT.onchange = () => {
       btn.disabled = !selT.value;
