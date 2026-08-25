@@ -740,6 +740,7 @@ const ROUTE_PERMS = {
   '/datarocket_etiquetas':     { perm:   'datarocket.etiquetas.consultar' },
   '/datarocket_embudos':       { perm:   'datarocket.embudos.consultar' },
   '/datarocket_oportunidades':  { perm:   'datarocket.oportunidades.consultar' },
+  '/datarocket_redes_sociales': { perm:   'datarocket.redes_sociales.consultar' },
 
   '/datainfra':                { prefix: 'datainfra.' },
   '/datainfradominios':        { perm:   'datainfra.dominios.consultar' },
@@ -25769,7 +25770,8 @@ route('/datarocket', async (mount) => {
     <!-- Orden de tarjetas fijado por el usuario (no alfabetico): sigue el flujo
          CRM "quien" (Prospectos, Oportunidades) -> "que paso" (Interacciones) ->
          "pipeline" (Embudos, Etapas) -> "insumos de mensajeria" (Listas,
-         Etiquetas, Plantillas). NO reordenar a alfabetico sin acuerdo. -->
+         Etiquetas, Plantillas) -> "canales de publicacion" (Redes sociales).
+         NO reordenar a alfabetico sin acuerdo. -->
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketprospectos'">
         <span class="tile-icon">👥</span>
@@ -25805,6 +25807,11 @@ route('/datarocket', async (mount) => {
         <span class="tile-icon">📄</span>
         <span class="tile-title">Plantillas</span>
         <span class="tile-desc">Plantillas reutilizables para los envíos Datarocket: remitente, asunto, cuerpo, formato y adjunto por proyecto.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_redes_sociales'">
+        <span class="tile-icon">📱</span>
+        <span class="tile-title">Redes sociales</span>
+        <span class="tile-desc">Cuentas de redes sociales de cada proyecto con sus credenciales, tokens y vínculo con Postiz para automatizar las publicaciones.</span>
       </button>
     </div>
   `;
