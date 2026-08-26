@@ -17984,8 +17984,10 @@ let dcaFiltroCuentaId     = null;
 let dcaFiltroCuentaNombre = '';
 let dcaBuscadorTimer      = null;
 
-let dcaEditandoId         = null;
-let dcaEditandoEmpresaId  = null;  // empresa objetivo del modal alta/edición
+// No hay estado de "asiento en edición": por integridad contable un asiento no
+// se modifica ni se borra nunca — se revierte con Anular, que da de alta el
+// contra-asiento. El endpoint responde 405 a PUT/DELETE.
+let dcaEditandoEmpresaId  = null;  // empresa objetivo del modal de alta
 let dcaLineas             = [];    // [{cuenta_id, debe, haber, descripcion}]
 let dcaCuentasImputables  = [];    // solo imputables+activas — de la empresa cacheada
 let dcaTodasCuentas       = [];    // árbol completo (picker) — de la empresa cacheada
@@ -18081,12 +18083,14 @@ route('/datacount_asientos', async (mount) => {
       <button type="button" data-action="ver" role="menuitem">
         <i class="fa-solid fa-eye"></i><span>Ver detalle</span>
       </button>
-      <div class="ctx-menu-sep"></div>
       <!-- Los asientos no se pueden editar ni eliminar (integridad contable):
-           en su lugar se crea un asiento inverso con "Anular". -->
+           en su lugar se crea un asiento inverso con "Anular", que tiene su
+           propio permiso datacount.asientos.anular. -->
+      ${hasPermission('datacount.asientos.anular') ? `
+      <div class="ctx-menu-sep"></div>
       <button type="button" data-action="anular" class="ctx-menu-danger" role="menuitem">
         <i class="fa-solid fa-ban"></i><span>Anular</span>
-      </button>
+      </button>` : ''}
     </div>
   `;
 
@@ -18382,7 +18386,7 @@ function dcaAbrirModalAlta(tituloText, empresaObj) {
 
   $('#dcaAgregarLineaBtn').addEventListener('click', dcaAgregarLinea);
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))   { closeModal(); dcaEditandoId = null; dcaEditandoEmpresaId = null; dcaLineas = []; }
+    if (ev.target.closest('[data-act="close"]'))   { closeModal(); dcaEditandoEmpresaId = null; dcaLineas = []; }
     if (ev.target.closest('[data-act="guardar"]')) guardarAsientoDca();
   });
 
@@ -18413,7 +18417,6 @@ async function abrirNuevoAsientoDca() {
     toast('No hay cuentas imputables activas para esta empresa. Revisá el plan de cuentas.', { error: true });
     return;
   }
-  dcaEditandoId        = null;
   dcaEditandoEmpresaId = empresaId;
   dcaLineas = [
     { cuenta_id: '', debe: '', haber: '', descripcion: '' },
@@ -18530,15 +18533,9 @@ async function guardarAsientoDca() {
 
   const body = { empresa: dcaEditandoEmpresaId, fecha, descripcion, detalle };
   try {
-    if (dcaEditandoId) {
-      await apiSend(`${DCA_API}?id=${dcaEditandoId}`, 'PUT', body);
-      toast('Asiento actualizado');
-    } else {
-      await apiSend(DCA_API, 'POST', body);
-      toast('Asiento creado');
-    }
+    await apiSend(DCA_API, 'POST', body);
+    toast('Asiento creado');
     closeModal();
-    dcaEditandoId        = null;
     dcaEditandoEmpresaId = null;
     dcaLineas = [];
     // Invalidar cache local del plan de cuentas: los saldos cambian.
@@ -18596,8 +18593,16 @@ window.dcaCambiarTab = dcaCambiarTab;
 // seleccionado. Reusa dcPagoTipoVisor() para decidir iframe/img/fallback.
 // Upload contra api/datacount_asientos_adjuntos.php (multipart), borrado
 // contra el mismo endpoint con DELETE.
+//
+// Los dos botones de escritura estan gateados por permiso propio (el endpoint
+// exige los mismos slugs, esto es solo UX): "+ Subir archivo" pide
+// `datacount.asientos.agregar_adjunto` y el FAB de papelera
+// `datacount.asientos.quitar_adjunto`. Sin ninguno de los dos la pestaña queda
+// de solo lectura (lista + visor + abrir en pantalla completa / nueva pestaña).
 function dcaRenderAdjuntosTabla(adjuntos, asientoId) {
   const filas = adjuntos || [];
+  const puedeAgregar = hasPermission('datacount.asientos.agregar_adjunto');
+  const puedeQuitar  = hasPermission('datacount.asientos.quitar_adjunto');
   const idxSel = Math.min(dcaAdjSelIdx, Math.max(0, filas.length - 1));
   const items = filas.length ? filas.map((a, i) => `
     <div class="dcp-adj-item${i === idxSel ? ' active' : ''}"
@@ -18614,16 +18619,21 @@ function dcaRenderAdjuntosTabla(adjuntos, asientoId) {
       <div class="dcp-adj-list-col">
         <div class="dcp-adj-list" id="dcaAdjList">
           ${items}
+          ${puedeAgregar ? `
           <input type="file" id="dcaAdjInput" style="display:none">
           <button type="button" class="btn btn-primary dcp-adj-subir-btn" id="dcaAdjSubirBtn">
             <i class="fa-solid fa-plus"></i> Subir archivo
           </button>
-          <div id="dcaAdjStatus" style="font-size:.78rem;color:var(--muted);margin-top:2px"></div>
+          <div id="dcaAdjStatus" style="font-size:.78rem;color:var(--muted);margin-top:2px"></div>` : ''}
         </div>
       </div>
       <div class="dcp-adj-viewer" id="dcaAdjViewer">
         <div class="dcp-adj-viewer-content" id="dcaAdjViewerContent">
-          ${filas.length ? '' : `<div class="dcp-adj-empty">Subí un archivo desde la lista para verlo acá.</div>`}
+          ${filas.length ? '' : `<div class="dcp-adj-empty">${
+            puedeAgregar
+              ? 'Subí un archivo desde la lista para verlo acá.'
+              : 'Este asiento no tiene adjuntos.'
+          }</div>`}
         </div>
         <div class="dcp-adj-fab-bar" id="dcaAdjFab" ${filas.length ? '' : 'hidden'}>
           <button type="button" class="dcp-adj-fab" data-dca-adj-fab="full" title="Abrir en pantalla completa">
@@ -18632,9 +18642,10 @@ function dcaRenderAdjuntosTabla(adjuntos, asientoId) {
           <button type="button" class="dcp-adj-fab" data-dca-adj-fab="tab" title="Abrir en nueva pestaña">
             <i class="fa-solid fa-up-right-from-square"></i>
           </button>
+          ${puedeQuitar ? `
           <button type="button" class="dcp-adj-fab dcp-adj-fab-danger" data-dca-adj-fab="del" title="Eliminar adjunto">
             <i class="fa-solid fa-trash"></i>
-          </button>
+          </button>` : ''}
         </div>
       </div>
     </div>
@@ -18820,9 +18831,10 @@ async function abrirDetalleAsientoDca(id) {
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost"  data-act="close">Cerrar</button>
+          ${hasPermission('datacount.asientos.anular') ? `
           <button class="btn btn-danger" data-act="anular">
             <i class="fa-solid fa-ban"></i> Anular
-          </button>
+          </button>` : ''}
         </div>
       </div>
     `);
@@ -33221,6 +33233,1143 @@ async function eliminarOp(id) {
       ? `Oportunidad eliminada (${r.interacciones} interacci${r.interacciones === 1 ? 'ón' : 'ones'}).`
       : 'Oportunidad eliminada');
     await cargarOp();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datarocket > Redes sociales (ABM) -------------------------
+// Cuentas de redes sociales de los proyectos del grupo. Cada fila es UNA cuenta
+// (la pagina de Facebook de Databox, el canal de YouTube de tal producto), con
+// su perfil, sus credenciales OAuth, el token de acceso con su vencimiento y el
+// vinculo con Postiz — que es quien ejecuta las publicaciones.
+//
+// El modelo (una sola tabla para todas las redes, catalogo de plataformas en
+// `estados` en vez de un ENUM, secretos cifrados con encriptar()/desencriptar())
+// esta justificado en la migracion:
+// cloud/sql/migrations/20260824_1300_datarocket_redes_sociales_modulo.sql
+//
+// SECRETOS: el LISTADO devuelve los cuatro campos cifrados como '***' — el
+// endpoint no vuelca todos los tokens del grupo en cada pintada de la tabla. El
+// valor en claro sale unicamente del GET por id, asi que Consultar y Editar
+// arrancan pidiendo la ficha completa en vez de reusar la fila que ya esta en
+// `drrsItems`. Si se reusara la fila, el modal de edicion mostraria '***' y al
+// guardar escribiria ese literal encriptado sobre el token real.
+const DRRS_API = 'api/datarocket_redes_sociales.php';
+
+// Emoji por plataforma para la columna del listado. Las claves son los `valor`
+// de `estados.datarocket_red_social_plataforma`, que a su vez son los
+// identificadores de proveedor de Postiz. Una plataforma agregada a mano desde
+// el Editor de estados cae al 🌐 por defecto: el ABM no se rompe, solo pierde
+// el icono.
+const DRRS_PLATAFORMA_EMOJI = {
+  'facebook': '📘', 'instagram': '📷', 'instagram-standalone': '📷',
+  'x': '✖️', 'linkedin': '💼', 'linkedin-page': '💼', 'threads': '🧵',
+  'youtube': '▶️', 'tiktok': '🎵', 'pinterest': '📌', 'reddit': '👽',
+  'telegram': '✈️', 'discord': '🎮', 'slack': '💬', 'mastodon': '🐘',
+  'bluesky': '🦋', 'farcaster': '🟪', 'lemmy': '🐭', 'nostr': '🟣',
+  'vk': '🔵', 'dribbble': '🏀', 'wordpress': '📝', 'otra': '🌐',
+};
+
+// Ciclo de vida del vinculo con Postiz (ver la migracion). 'expirada' y 'error'
+// son los dos estados que reclaman intervencion, asi que van en rojo.
+const DRRS_POSTIZ_BADGE = {
+  pendiente:    'badge-warn',
+  vinculada:    'badge-success',
+  expirada:     'badge-danger',
+  error:        'badge-danger',
+  desvinculada: 'badge-muted',
+};
+
+const drrsFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', plataforma: '', postiz: '', activa: '',
+  limite: 100, order_by: 'id', dir: 'desc',
+};
+const drrsFiltros = { ...drrsFiltrosDefaults };
+
+let drrsItems           = [];
+let drrsEditandoId      = null;
+let drrsBuscadorTimer   = null;
+let drrsFiltrosSnapshot = null;
+let drrsLookupsCache    = null;
+let drrsLookupsPromesa  = null;
+// Ficha completa (secretos en claro) del registro que esta abierto en el modal
+// de Consultar. La guardamos para que las acciones de copiado del menu
+// contextual del footer no tengan que volver a pedirla.
+let drrsDetalleActual   = null;
+
+// Catalogos del formulario y del modal de filtros: proyectos internos +
+// los tres campos de `estados`. Se piden una sola vez por vida de la pagina;
+// son pocas filas y cambian muy rara vez.
+async function drrsCargarLookups() {
+  if (drrsLookupsCache) return drrsLookupsCache;
+  if (drrsLookupsPromesa) return drrsLookupsPromesa;
+  drrsLookupsPromesa = (async () => {
+    const d = await apiGet(`${DRRS_API}?lookups=1`);
+    drrsLookupsCache = {
+      proyectos:      d.proyectos      || [],
+      plataformas:    d.plataformas    || [],
+      tipos_cuenta:   d.tipos_cuenta   || [],
+      postiz_estados: d.postiz_estados || [],
+    };
+    return drrsLookupsCache;
+  })();
+  try { return await drrsLookupsPromesa; }
+  finally { drrsLookupsPromesa = null; }
+}
+
+// Texto amigable de un valor de catalogo. Si el valor no esta en `estados`
+// (plataforma vieja, catalogo editado) devuelve el valor crudo en vez de un
+// guion: perder el dato seria peor que mostrarlo sin traducir.
+function drrsTextoDe(coleccion, valor, fallback = '—') {
+  if (!valor) return fallback;
+  const x = (drrsLookupsCache?.[coleccion] || []).find((e) => e.valor === valor);
+  return x ? x.texto : String(valor);
+}
+
+// Mirror JS de drrsSlugify() (cloud/api/datarocket_redes_sociales.php).
+// Autocompleta el input `slug` mientras el operador tipea el nombre.
+function drrsSlugify(s) {
+  if (!s) return '';
+  const pares = { 'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+                  'à':'a','è':'e','ì':'i','ò':'o','ù':'u',
+                  'ä':'a','ë':'e','ï':'i','ö':'o','ü':'u',
+                  'Á':'a','É':'e','Í':'i','Ó':'o','Ú':'u',
+                  'ñ':'n','Ñ':'n','ç':'c','Ç':'c' };
+  let out = String(s).trim();
+  out = out.replace(/[áéíóúàèìòùäëïöüÁÉÍÓÚñÑçÇ]/g, (c) => pares[c] || c);
+  out = out.toLowerCase();
+  out = out.replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, '');
+  return out.slice(0, 60);
+}
+
+function drrsPlataformaBadge(r) {
+  const emoji = DRRS_PLATAFORMA_EMOJI[r.plataforma] || '🌐';
+  const texto = r.plataforma_texto || drrsTextoDe('plataformas', r.plataforma, '—');
+  return `<span class="badge badge-info">${emoji} ${esc(texto)}</span>`;
+}
+
+function drrsPostizBadge(valor) {
+  const cls = DRRS_POSTIZ_BADGE[valor] || 'badge-info';
+  return `<span class="badge ${cls}">${esc(drrsTextoDe('postiz_estados', valor))}</span>`;
+}
+
+function drrsActivaBadge(v) {
+  return Number(v) === 1
+    ? `<span class="badge badge-success">Activa</span>`
+    : `<span class="badge badge-danger">Inactiva</span>`;
+}
+
+// Estado del token de acceso. `token_expira` NULL significa "el token no vence"
+// (app passwords de Bluesky, bot tokens de Telegram) y NO "se desconoce" — de
+// ahi el texto explicito en vez de un guion. Los vencidos y los que vencen esta
+// semana son los que hay que reconectar en Postiz, asi que se pintan aparte.
+function drrsTokenBadge(r) {
+  if (!r.token_expira) return `<span class="badge badge-muted">Sin vencimiento</span>`;
+  const d = new Date(String(r.token_expira).replace(' ', 'T'));
+  if (isNaN(d)) return esc(String(r.token_expira));
+  const dias  = Math.floor((d.getTime() - Date.now()) / 86400000);
+  const fecha = fmtFechaSola(r.token_expira);
+  if (dias < 0)   return `<span class="badge badge-danger"  title="Venció el ${esc(fecha)}">Vencido</span>`;
+  if (dias <= 7)  return `<span class="badge badge-warn"    title="Vence el ${esc(fecha)}">Vence en ${dias} d</span>`;
+  return `<span class="badge badge-success" title="Vence el ${esc(fecha)}">${esc(fecha)}</span>`;
+}
+
+// 'YYYY-MM-DD HH:MM:SS' (DB) -> 'YYYY-MM-DDTHH:MM' (input datetime-local).
+function drrsADatetimeLocal(v) {
+  if (!v) return '';
+  return String(v).replace(' ', 'T').slice(0, 16);
+}
+
+// Ficha completa con los secretos en claro. Es el unico GET que los descifra.
+async function drrsObtener(id) {
+  return await apiGet(`${DRRS_API}?id=${id}`);
+}
+
+async function drrsCopiar(valor, etiqueta) {
+  if (!valor) { toast(`Esta cuenta no tiene ${etiqueta}`, { error: true }); return; }
+  try {
+    await navigator.clipboard.writeText(String(valor));
+    toast(`${etiqueta} copiado`);
+  } catch {
+    toast('No se pudo copiar al portapapeles', { error: true });
+  }
+}
+
+route('/datarocket_redes_sociales', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📱</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las redes sociales son las cuentas que el grupo administra en cada plataforma
+            (páginas, perfiles, canales y bots) para los proyectos internos. Cada una guarda
+            su perfil, sus credenciales, el token de acceso con su vencimiento y el vínculo
+            con Postiz, que es quien ejecuta las publicaciones.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drrsStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="drrsStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value" id="drrsStatActivas">—</span></div>
+        <div class="stat-card"><span class="stat-label">Vinculadas a Postiz</span><span class="stat-value green" id="drrsStatVinculadas">—</span></div>
+        <div class="stat-card"><span class="stat-label">Plataformas</span><span class="stat-value" id="drrsStatPlataformas">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drrsSearch"
+                   placeholder="🔍 Buscar nombre, slug, usuario, URL o correo…">
+            <button class="search-clear" id="drrsSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drrsFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drrsFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drrsRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drrsNuevoBtn">+ Nueva cuenta</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <!-- Proyecto va inmediatamente despues de Codigo: el listado se lee por
+               proyecto. No es ordenable porque DRRS_ORDENES (el allowlist de
+               columnas del endpoint) no la incluye.
+               Sin backticks en este comentario: vive dentro de un template
+               literal y cerrarian el string. -->
+          <thead id="drrsThead">
+            <tr>
+              ${thOrdenable('id',            'Código',     'width:80px')}
+              <th style="width:150px">Proyecto</th>
+              ${thOrdenable('plataforma',    'Plataforma', 'width:180px')}
+              ${thOrdenable('nombre',        'Nombre')}
+              ${thOrdenable('usuario',       'Usuario',    'width:150px')}
+              <th style="width:160px">Token</th>
+              ${thOrdenable('postiz_estado', 'Postiz',     'width:120px')}
+              ${thOrdenable('activa',        'Estado',     'width:100px')}
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drrsTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="drrsCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="abrir-url" role="menuitem">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i><span>Abrir perfil</span>
+      </button>
+      <button type="button" data-action="copiar-token" role="menuitem">
+        <i class="fa-solid fa-key"></i><span>Copiar token de acceso</span>
+      </button>
+      <button type="button" data-action="activa" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Desactivar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Menú contextual del modal Consultar (acciones extra del recurso) -->
+    <div id="drrsConsultaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="abrir-url" role="menuitem">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i><span>Abrir perfil</span>
+      </button>
+      <button type="button" data-action="copiar-slug" role="menuitem">
+        <i class="fa-solid fa-hashtag"></i><span>Copiar slug</span>
+      </button>
+      <button type="button" data-action="copiar-cuenta" role="menuitem">
+        <i class="fa-solid fa-id-card"></i><span>Copiar ID de cuenta</span>
+      </button>
+      <button type="button" data-action="copiar-token" role="menuitem">
+        <i class="fa-solid fa-key"></i><span>Copiar token de acceso</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDrrsBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrrs()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrrs()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrrsCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDrrs('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fDrrsProyecto" onchange="onFiltroDrrs('proyecto', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Plataforma</label>
+            <select id="fDrrsPlataforma" onchange="onFiltroDrrs('plataforma', this.value)">
+              <option value="">— Todas —</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Estado en Postiz</label>
+            <div id="fDrrsPostizChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-group">
+            <label>Estado del registro</label>
+            <div id="fDrrsActivaChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-activa="">Todas</button>
+              <button type="button" class="filter-chip" data-activa="1">Activa</button>
+              <button type="button" class="filter-chip" data-activa="0">Inactiva</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrrsLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDrrs('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrrsOrden" onchange="onFiltroDrrs('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="plataforma">Plataforma</option>
+                <option value="usuario">Usuario</option>
+                <option value="postiz_estado">Estado en Postiz</option>
+                <option value="activa">Estado</option>
+                <option value="fecha_creacion">Fecha de alta</option>
+                <option value="fecha_modificacion">Última modificación</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrrsDir" onchange="onFiltroDrrs('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrrs()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrrs()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrrs()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#drrsSearch');
+  const clr = $('#drrsSearchClear');
+  inp.value = drrsFiltros.q;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drrsFiltros.q = inp.value.trim();
+    clearTimeout(drrsBuscadorTimer);
+    drrsBuscadorTimer = setTimeout(cargarDrrs, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; drrsFiltros.q = ''; cargarDrrs();
+  });
+
+  $('#drrsFiltrosBtn').addEventListener('click', abrirModalFiltrosDrrs);
+  $('#drrsRefrescarBtn').addEventListener('click', cargarDrrs);
+  $('#drrsNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrrs(null));
+
+  activarSortEnThead($('#drrsThead'), drrsFiltros, () => cargarDrrs());
+
+  $('#drrsCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    const r = drrsItems.find((x) => x.id === data.id);
+    const a = b.dataset.action;
+    if (a === 'consultar') abrirConsultaDrrs(data.id);
+    if (a === 'editar')    abrirAltaEdicionDrrs(data.id);
+    if (a === 'eliminar')  eliminarDrrs(data.id);
+    if (a === 'activa')    drrsToggleActiva(data.id);
+    if (a === 'abrir-url') {
+      if (r?.url) window.open(r.url, '_blank', 'noopener');
+      else toast('Esta cuenta no tiene URL de perfil cargada', { error: true });
+    }
+    // El listado trae el token enmascarado ('***'), asi que copiarlo obliga a
+    // pedir la ficha por id — que es el unico GET que lo descifra.
+    if (a === 'copiar-token') {
+      try {
+        const ficha = await drrsObtener(data.id);
+        await drrsCopiar(ficha.access_token, 'El token de acceso');
+      } catch (err) { toast(err.message, { error: true }); }
+    }
+  });
+
+  $('#drrsTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      drrsAbrirMenu(r.right - 220, r.bottom + 4, id);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDrrs(Number(tr.dataset.id));
+  });
+  $('#drrsTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    drrsAbrirMenu(ev.clientX, ev.clientY, Number(tr.dataset.id));
+  });
+
+  // Acciones extra del modal Consultar. Viven en un menú propio porque el
+  // footer de Consultar sólo admite Cerrar + Editar (ABM.md).
+  $('#drrsConsultaCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    const d = drrsDetalleActual;
+    if (!d) return;
+    const a = b.dataset.action;
+    if (a === 'abrir-url') {
+      if (d.url) window.open(d.url, '_blank', 'noopener');
+      else toast('Esta cuenta no tiene URL de perfil cargada', { error: true });
+    }
+    if (a === 'copiar-slug')   await drrsCopiar(d.slug,              'El slug');
+    if (a === 'copiar-cuenta') await drrsCopiar(d.cuenta_externa_id, 'El ID de cuenta');
+    if (a === 'copiar-token')  await drrsCopiar(d.access_token,      'El token de acceso');
+  });
+
+  await drrsCargarLookups();
+  const L = drrsLookupsCache || {};
+
+  const selProy = $('#fDrrsProyecto');
+  if (selProy) {
+    selProy.innerHTML = `<option value="">— Todos —</option>` +
+      (L.proyectos || []).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+  }
+
+  // La plataforma va como <select> y no como chips: el catalogo trae 23 redes y
+  // una fila de chips ocuparia mas alto que el resto del modal junto.
+  const selPlat = $('#fDrrsPlataforma');
+  if (selPlat) {
+    selPlat.innerHTML = `<option value="">— Todas —</option>` +
+      (L.plataformas || []).map((p) =>
+        `<option value="${esc(p.valor)}">${DRRS_PLATAFORMA_EMOJI[p.valor] || '🌐'} ${esc(p.texto)}</option>`).join('');
+  }
+
+  const chipsPostiz = $('#fDrrsPostizChips');
+  if (chipsPostiz) {
+    chipsPostiz.innerHTML =
+      `<button type="button" class="filter-chip" data-postiz="">Todos</button>` +
+      (L.postiz_estados || []).map((e) =>
+        `<button type="button" class="filter-chip" data-postiz="${esc(e.valor)}">${esc(e.texto)}</button>`).join('');
+    chipsPostiz.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drrsFiltros.postiz = b.dataset.postiz || '';
+      drrsSincronizarChipsPostiz();
+      drrsActualizarBadgeFiltros();
+      cargarDrrs();
+    });
+  }
+
+  const chipsAct = $('#fDrrsActivaChips');
+  if (chipsAct) {
+    chipsAct.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drrsFiltros.activa = b.dataset.activa || '';
+      drrsSincronizarChipsActiva();
+      drrsActualizarBadgeFiltros();
+      cargarDrrs();
+    });
+  }
+
+  drrsActualizarBadgeFiltros();
+  await cargarDrrs();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Redes sociales');
+
+// El label del toggle Activar/Desactivar depende del estado de la fila, asi que
+// se resuelve al abrir el menu (regla del menu contextual en ABM.md).
+function drrsAbrirMenu(x, y, id) {
+  const r   = drrsItems.find((c) => c.id === id);
+  const lbl = $('#drrsCtxMenu')?.querySelector('[data-action="activa"] [data-label]');
+  if (lbl) lbl.textContent = Number(r?.activa) === 1 ? 'Desactivar' : 'Activar';
+  abrirCtxMenu($('#drrsCtxMenu'), x, y, { id });
+}
+
+async function cargarDrrs() {
+  const tbody = $('#drrsTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  // `codigo` no viaja al server (el endpoint no lo acepta): se filtra en
+  // cliente sobre lo que ya vino, igual que el resto de los ABMs.
+  const qs = new URLSearchParams();
+  if (drrsFiltros.q)            qs.set('q',          drrsFiltros.q);
+  if (drrsFiltros.proyecto)     qs.set('proyecto',   drrsFiltros.proyecto);
+  if (drrsFiltros.plataforma)   qs.set('plataforma', drrsFiltros.plataforma);
+  if (drrsFiltros.postiz)       qs.set('postiz',     drrsFiltros.postiz);
+  if (drrsFiltros.activa !== '') qs.set('activa',    drrsFiltros.activa);
+  qs.set('limite', drrsFiltros.limite);
+  qs.set('orden',  drrsFiltros.order_by);
+  qs.set('dir',    drrsFiltros.dir);
+
+  try {
+    const data = await apiGet(DRRS_API + '?' + qs.toString());
+    drrsItems = data.items || [];
+    const s = data.stats || {};
+    $('#drrsStatTotal').textContent       = fmtNum(s.total       ?? drrsItems.length);
+    $('#drrsStatActivas').textContent     = fmtNum(s.activas     ?? 0);
+    $('#drrsStatVinculadas').textContent  = fmtNum(s.vinculadas  ?? 0);
+    $('#drrsStatPlataformas').textContent = fmtNum(s.plataformas ?? 0);
+    actualizarSortIndicadores($('#drrsThead'), drrsFiltros);
+    renderDrrs();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderDrrs() {
+  const tbody = $('#drrsTbody');
+  if (!tbody) return;
+  if (!drrsItems.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin cuentas de redes sociales registradas.</td></tr>`;
+    return;
+  }
+
+  let filas = drrsItems;
+  if (drrsFiltros.codigo) {
+    const cod = Number(drrsFiltros.codigo);
+    filas = filas.filter((r) => r.id === cod);
+  }
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((r) => `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${r.id}</code></td>
+      <td>${esc(r.proyecto_nombre || (r.proyecto_id ? `#${r.proyecto_id}` : '—'))}</td>
+      <td>${drrsPlataformaBadge(r)}</td>
+      <td>
+        <div style="font-weight:600">${esc(r.nombre || '—')}</div>
+        <div style="color:var(--muted);font-size:.75rem"><code>${esc(r.slug || '')}</code></div>
+      </td>
+      <td style="font-family:monospace;font-size:.8rem">${esc(r.usuario || '—')}</td>
+      <td>${drrsTokenBadge(r)}</td>
+      <td>${drrsPostizBadge(r.postiz_estado)}</td>
+      <td>${drrsActivaBadge(r.activa)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDrrs() {
+  drrsFiltrosSnapshot = { ...drrsFiltros };
+  $('#fDrrsCodigo').value     = drrsFiltros.codigo     || '';
+  $('#fDrrsProyecto').value   = drrsFiltros.proyecto   || '';
+  $('#fDrrsPlataforma').value = drrsFiltros.plataforma || '';
+  $('#fDrrsLimite').value     = drrsFiltros.limite     || 100;
+  $('#fDrrsOrden').value      = drrsFiltros.order_by   || 'id';
+  $('#fDrrsDir').value        = drrsFiltros.dir        || 'desc';
+  drrsSincronizarChipsPostiz();
+  drrsSincronizarChipsActiva();
+  document.getElementById('filtrosDrrsBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDrrs = abrirModalFiltrosDrrs;
+
+function cerrarModalFiltrosDrrs() {
+  document.getElementById('filtrosDrrsBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDrrs = cerrarModalFiltrosDrrs;
+
+function cancelarFiltrosDrrs() {
+  if (drrsFiltrosSnapshot) {
+    Object.assign(drrsFiltros, drrsFiltrosSnapshot);
+    drrsActualizarBadgeFiltros();
+    cargarDrrs();
+  }
+  cerrarModalFiltrosDrrs();
+}
+window.cancelarFiltrosDrrs = cancelarFiltrosDrrs;
+
+function limpiarFiltrosDrrs() {
+  // La búsqueda rápida vive en la toolbar, no en el modal: `Limpiar` resetea los
+  // filtros del modal y deja el texto tipeado como está.
+  const q = drrsFiltros.q;
+  Object.assign(drrsFiltros, drrsFiltrosDefaults, { q });
+  $('#fDrrsCodigo').value     = '';
+  $('#fDrrsProyecto').value   = '';
+  $('#fDrrsPlataforma').value = '';
+  $('#fDrrsLimite').value     = 100;
+  $('#fDrrsOrden').value      = 'id';
+  $('#fDrrsDir').value        = 'desc';
+  drrsSincronizarChipsPostiz();
+  drrsSincronizarChipsActiva();
+  drrsActualizarBadgeFiltros();
+  cargarDrrs();
+}
+window.limpiarFiltrosDrrs = limpiarFiltrosDrrs;
+
+function onFiltroDrrs(campo, valor) {
+  if (campo === 'codigo')     drrsFiltros.codigo     = (valor || '').trim();
+  if (campo === 'proyecto')   drrsFiltros.proyecto   = valor || '';
+  if (campo === 'plataforma') drrsFiltros.plataforma = valor || '';
+  if (campo === 'limite')     drrsFiltros.limite     = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'order_by')   drrsFiltros.order_by   = valor || 'id';
+  if (campo === 'dir')        drrsFiltros.dir        = valor || 'desc';
+  drrsActualizarBadgeFiltros();
+  cargarDrrs();
+}
+window.onFiltroDrrs = onFiltroDrrs;
+
+function drrsSincronizarChipsPostiz() {
+  document.querySelectorAll('#fDrrsPostizChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.postiz || '') === (drrsFiltros.postiz || ''));
+  });
+}
+
+function drrsSincronizarChipsActiva() {
+  document.querySelectorAll('#fDrrsActivaChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.activa || '') === (drrsFiltros.activa || ''));
+  });
+}
+
+function drrsActualizarBadgeFiltros() {
+  let n = 0;
+  if (drrsFiltros.codigo)                 n++;
+  if (drrsFiltros.proyecto)               n++;
+  if (drrsFiltros.plataforma)             n++;
+  if (drrsFiltros.postiz)                 n++;
+  if (drrsFiltros.activa !== '')          n++;
+  if (Number(drrsFiltros.limite) !== 100) n++;
+  if (drrsFiltros.order_by !== 'id')      n++;
+  if (drrsFiltros.dir      !== 'desc')    n++;
+  const badge = $('#drrsFiltrosBadge');
+  const btn   = $('#drrsFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) { badge.style.display = ''; badge.textContent = n; btn.classList.add('active'); }
+  else       { badge.style.display = 'none'; btn.classList.remove('active'); }
+}
+
+function drrsCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-drrs-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.drrsTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-drrs-tab]').forEach((p) => {
+    p.hidden = p.dataset.drrsTab !== tab;
+  });
+}
+window.drrsCambiarTab = drrsCambiarTab;
+
+// Mostrar / ocultar un input de secreto del formulario.
+function drrsToggleVer(inputId, iconId) {
+  const inp = document.getElementById(inputId);
+  const ico = document.getElementById(iconId);
+  if (!inp || !ico) return;
+  const ver = inp.type === 'password';
+  inp.type      = ver ? 'text' : 'password';
+  ico.className = ver ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+}
+window.drrsToggleVer = drrsToggleVer;
+
+// Mostrar / ocultar un secreto en el modal de Consultar. El valor en claro
+// viaja en `data-real` (ya escapado al renderizar).
+function drrsConsultaVer(spanId) {
+  const el = document.getElementById(spanId);
+  if (!el) return;
+  const real = el.dataset.real || '';
+  el.textContent = el.textContent.startsWith('•') ? real : '••••••••••••';
+}
+window.drrsConsultaVer = drrsConsultaVer;
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDrrs(id) {
+  drrsEditandoId = id;
+  const editando = !!id;
+
+  await drrsCargarLookups();
+  const L = drrsLookupsCache || {};
+
+  // En edicion la ficha se pide por id: el listado trae los secretos como
+  // '***' y guardar el formulario con ese literal encriptaria '***' sobre el
+  // token real.
+  let r = null;
+  if (editando) {
+    try { r = await drrsObtener(id); }
+    catch (err) { toast(err.message, { error: true }); return; }
+  }
+
+  const optsProy = `<option value="">— Sin proyecto —</option>` +
+    (L.proyectos || []).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+  const optsPlat = `<option value="">— Elegir —</option>` +
+    (L.plataformas || []).map((p) =>
+      `<option value="${esc(p.valor)}">${DRRS_PLATAFORMA_EMOJI[p.valor] || '🌐'} ${esc(p.texto)}</option>`).join('');
+  const optsTipo = `<option value="">— Sin especificar —</option>` +
+    (L.tipos_cuenta || []).map((t) => `<option value="${esc(t.valor)}">${esc(t.texto)}</option>`).join('');
+  const optsPostiz = (L.postiz_estados || []).map((e) =>
+    `<option value="${esc(e.valor)}">${esc(e.texto)}</option>`).join('');
+
+  // Campo de secreto: input type=password + botón de ojo. La leyenda de
+  // "dejalo vacío para conservar el actual" sólo aplica en edición.
+  const secreto = (inputId, iconId, label, ayuda) => `
+    <div class="form-group">
+      <label for="${inputId}">${label}
+        ${ayuda ? `<span style="color:var(--muted);font-weight:normal;font-size:.85em">— ${ayuda}</span>` : ''}
+      </label>
+      <div style="display:flex;gap:8px">
+        <input type="password" id="${inputId}" autocomplete="new-password"
+               style="flex:1;font-family:monospace;font-size:.85rem">
+        <button type="button" class="btn btn-ghost btn-icon" title="Ver"
+                onclick="drrsToggleVer('${inputId}','${iconId}')"><i class="fa-solid fa-eye" id="${iconId}"></i></button>
+      </div>
+    </div>
+  `;
+  const conservar = editando ? 'dejalo vacío para conservar el actual' : '';
+
+  openModal(`
+    <div class="modal" style="max-width:680px">
+      <div class="modal-header">
+        <div class="modal-title">${editando ? 'Editar cuenta' : 'Nueva cuenta'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-drrs-tab="general"
+                  onclick="drrsCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-drrs-tab="credenciales"
+                  onclick="drrsCambiarTab('credenciales')"><i class="fa-solid fa-key"></i> Credenciales</button>
+          <button type="button" class="modal-tab" role="tab" data-drrs-tab="postiz"
+                  onclick="drrsCambiarTab('postiz')"><i class="fa-solid fa-paper-plane"></i> Postiz</button>
+        </div>
+
+        <div class="modal-tabpanel" data-drrs-tab="general" role="tabpanel">
+          <div class="form-group">
+            <label for="drrsNombre">Nombre *</label>
+            <input type="text" id="drrsNombre" maxlength="150" autocomplete="off"
+                   placeholder="Ej: Databox | Instagram">
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label for="drrsPlataforma">Plataforma *</label>
+              <select id="drrsPlataforma">${optsPlat}</select>
+            </div>
+            <div class="form-group">
+              <label for="drrsTipoCuenta">Tipo de cuenta</label>
+              <select id="drrsTipoCuenta">${optsTipo}</select>
+            </div>
+            <div class="form-group">
+              <label for="drrsProyecto">Proyecto</label>
+              <select id="drrsProyecto">${optsProy}</select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="drrsSlug">Slug
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — identificador estable, único en todo el sistema; es lo que referencian los jobs de publicación
+              </span>
+            </label>
+            <input type="text" id="drrsSlug" maxlength="60" autocomplete="off"
+                   style="font-family:monospace" placeholder="databox-instagram">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="drrsUsuario">Usuario / handle</label>
+              <input type="text" id="drrsUsuario" maxlength="150" autocomplete="off" placeholder="@databox">
+            </div>
+            <div class="form-group">
+              <label for="drrsCuentaExterna">ID en la plataforma</label>
+              <input type="text" id="drrsCuentaExterna" maxlength="120" autocomplete="off"
+                     style="font-family:monospace" placeholder="page id / channel id / chat id">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="drrsUrl">URL del perfil</label>
+            <input type="url" id="drrsUrl" maxlength="500" autocomplete="off" placeholder="https://instagram.com/databox">
+          </div>
+          <div class="form-group">
+            <label for="drrsCorreo">Correo asociado</label>
+            <input type="email" id="drrsCorreo" maxlength="150" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="drrsObservaciones">Observaciones</label>
+            <textarea id="drrsObservaciones" rows="3" maxlength="5000"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="toggle-switch">
+              <input type="checkbox" id="drrsActiva">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Activa</span>
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — al desactivarla deja de ofrecerse para publicar
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drrs-tab="credenciales" role="tabpanel" hidden>
+          <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:.82rem;color:var(--muted)">
+            Los cuatro secretos se guardan cifrados en la base con la cifra reversible del grupo
+            (la misma que usa Accesos), no como hash: el operador tiene que poder volver a leerlos.
+          </div>
+          ${secreto('drrsContrasena', 'drrsContrasenaIcon', 'Contraseña de la cuenta', conservar)}
+          <div class="form-group">
+            <label for="drrsAppId">App ID / Client ID</label>
+            <input type="text" id="drrsAppId" maxlength="255" autocomplete="off" style="font-family:monospace;font-size:.85rem">
+          </div>
+          ${secreto('drrsAppSecret',    'drrsAppSecretIcon',    'App Secret / Client Secret', conservar)}
+          ${secreto('drrsAccessToken',  'drrsAccessTokenIcon',  'Access token',              conservar)}
+          ${secreto('drrsRefreshToken', 'drrsRefreshTokenIcon', 'Refresh token',             conservar)}
+          <div class="form-group">
+            <label for="drrsTokenExpira">Vencimiento del token
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — vacío = el token no vence (app passwords, bot tokens)
+              </span>
+            </label>
+            <input type="datetime-local" id="drrsTokenExpira">
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drrs-tab="postiz" role="tabpanel" hidden>
+          <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:.82rem;color:var(--muted)">
+            Postiz es quien ejecuta las publicaciones: tiene una <em>integration</em> por cuenta conectada.
+            Estos campos son la carga manual de ese vínculo — el <em>integration id</em> se copia de Postiz
+            después de conectar la cuenta allá. La API key de Postiz no va acá: es por organización y vive
+            en Herramientas &rsaquo; Editor de parámetros.
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="drrsPostizId">Integration ID</label>
+              <input type="text" id="drrsPostizId" maxlength="64" autocomplete="off" style="font-family:monospace;font-size:.85rem">
+            </div>
+            <div class="form-group">
+              <label for="drrsPostizEstado">Estado</label>
+              <select id="drrsPostizEstado">${optsPostiz}</select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="drrsPostizSync">Última sincronización</label>
+            <input type="datetime-local" id="drrsPostizSync">
+          </div>
+          <div class="form-group">
+            <label for="drrsDatosExtra">Datos extra (JSON)
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — lo que cada plataforma pide de más: subreddit, instancia de Mastodon, chat_id…
+              </span>
+            </label>
+            <textarea id="drrsDatosExtra" rows="5" style="font-family:monospace;font-size:.82rem"
+                      placeholder='{"chat_id": "-1001234567890"}'></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  if (editando && r) {
+    $('#drrsNombre').value        = r.nombre        || '';
+    $('#drrsPlataforma').value    = r.plataforma    || '';
+    $('#drrsTipoCuenta').value    = r.tipo_cuenta   || '';
+    $('#drrsProyecto').value      = r.proyecto_id != null ? String(r.proyecto_id) : '';
+    $('#drrsSlug').value          = r.slug          || '';
+    $('#drrsUsuario').value       = r.usuario       || '';
+    $('#drrsCuentaExterna').value = r.cuenta_externa_id || '';
+    $('#drrsUrl').value           = r.url           || '';
+    $('#drrsCorreo').value        = r.correo        || '';
+    $('#drrsObservaciones').value = r.observaciones || '';
+    $('#drrsActiva').checked      = Number(r.activa) === 1;
+    $('#drrsContrasena').value    = r.contrasena    || '';
+    $('#drrsAppId').value         = r.app_id        || '';
+    $('#drrsAppSecret').value     = r.app_secret    || '';
+    $('#drrsAccessToken').value   = r.access_token  || '';
+    $('#drrsRefreshToken').value  = r.refresh_token || '';
+    $('#drrsTokenExpira').value   = drrsADatetimeLocal(r.token_expira);
+    $('#drrsPostizId').value      = r.postiz_integration_id || '';
+    $('#drrsPostizEstado').value  = r.postiz_estado || 'pendiente';
+    $('#drrsPostizSync').value    = drrsADatetimeLocal(r.postiz_sync);
+    $('#drrsDatosExtra').value    = r.datos_extra   || '';
+  } else {
+    $('#drrsActiva').checked     = true;
+    $('#drrsPostizEstado').value = 'pendiente';
+    // En el alta el slug se autocompleta desde el nombre mientras se tipea;
+    // deja de hacerlo en cuanto el operador lo edita a mano. En edición no se
+    // toca nunca: es un identificador estable y re-derivarlo rompería las
+    // referencias externas que el slug justamente evita.
+    const inpNom  = $('#drrsNombre');
+    const inpSlug = $('#drrsSlug');
+    inpSlug.addEventListener('input', () => { inpSlug.dataset.manual = '1'; });
+    inpNom.addEventListener('input', () => {
+      if (inpSlug.dataset.manual === '1') return;
+      inpSlug.value = drrsSlugify(inpNom.value);
+    });
+  }
+
+  setTimeout(() => $('#drrsNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDrrs();
+  });
+}
+
+async function guardarDrrs() {
+  const nombre     = $('#drrsNombre').value.trim();
+  const plataforma = $('#drrsPlataforma').value;
+  if (!nombre)     { toast('El nombre es obligatorio', { error: true }); return; }
+  if (!plataforma) { toast('La plataforma es obligatoria', { error: true }); return; }
+
+  const slug = $('#drrsSlug').value.trim().toLowerCase() || drrsSlugify(nombre);
+  if (!slug) { toast('No se pudo derivar un slug del nombre — cargalo a mano', { error: true }); return; }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+    toast('El slug sólo admite minúsculas, dígitos y guiones (kebab-case)', { error: true });
+    return;
+  }
+
+  // El JSON se valida acá además de en el server: es más barato avisar antes de
+  // perder el resto del formulario en un 400.
+  const datosExtra = $('#drrsDatosExtra').value.trim();
+  if (datosExtra) {
+    try { JSON.parse(datosExtra); }
+    catch { toast('Los datos extra tienen que ser un JSON válido', { error: true }); return; }
+  }
+
+  const body = {
+    nombre,
+    plataforma,
+    slug,
+    tipo_cuenta:           $('#drrsTipoCuenta').value    || '',
+    proyecto_id:           $('#drrsProyecto').value      || null,
+    usuario:               $('#drrsUsuario').value.trim(),
+    cuenta_externa_id:     $('#drrsCuentaExterna').value.trim(),
+    url:                   $('#drrsUrl').value.trim(),
+    correo:                $('#drrsCorreo').value.trim(),
+    observaciones:         $('#drrsObservaciones').value.trim(),
+    activa:                $('#drrsActiva').checked ? 1 : 0,
+    app_id:                $('#drrsAppId').value.trim(),
+    token_expira:          $('#drrsTokenExpira').value   || '',
+    postiz_integration_id: $('#drrsPostizId').value.trim(),
+    postiz_estado:         $('#drrsPostizEstado').value  || 'pendiente',
+    postiz_sync:           $('#drrsPostizSync').value    || '',
+    datos_extra:           datosExtra,
+  };
+
+  // Los secretos sólo viajan si hay algo escrito: mandarlos vacíos en un PUT
+  // los borraría (el endpoint interpreta "campo ausente o vacío" como
+  // "conservá el guardado").
+  const secretos = {
+    contrasena:    $('#drrsContrasena').value,
+    app_secret:    $('#drrsAppSecret').value,
+    access_token:  $('#drrsAccessToken').value,
+    refresh_token: $('#drrsRefreshToken').value,
+  };
+  Object.entries(secretos).forEach(([k, v]) => { if (v) body[k] = v; });
+
+  try {
+    if (drrsEditandoId) {
+      await apiSend(`${DRRS_API}?id=${drrsEditandoId}`, 'PUT', body);
+      toast('Cuenta actualizada');
+    } else {
+      await apiSend(DRRS_API, 'POST', body);
+      toast('Cuenta creada');
+    }
+    closeModal();
+    drrsEditandoId = null;
+    await cargarDrrs();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+async function abrirConsultaDrrs(id) {
+  let r;
+  try { r = await drrsObtener(id); }
+  catch (err) { toast(err.message, { error: true }); return; }
+  drrsDetalleActual = r;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem;word-break:break-word">${valor}</div>
+    </div>
+  `;
+  const txt = (v) => esc(v != null && v !== '' ? String(v) : '—');
+
+  // Secreto oculto detrás de un ojo. `data-real` lleva el valor en claro (que
+  // en este modal ya vino descifrado del endpoint).
+  const secretoCard = (label, valor, spanId) => card(label,
+    valor
+      ? `<span id="${spanId}" data-real="${esc(valor)}" style="font-family:monospace;font-size:.82rem">••••••••••••</span>
+         <button type="button" class="btn-icon-sm" style="margin-left:8px" title="Ver / ocultar"
+                 onclick="drrsConsultaVer('${spanId}')"><i class="fa-solid fa-eye"></i></button>`
+      : '<span style="color:var(--muted)">— sin cargar —</span>',
+    'full');
+
+  // El JSON se re-indenta para que se pueda leer; si no parsea se muestra crudo
+  // (puede haber quedado cargado antes de que el endpoint lo validara).
+  let extraHtml = '<span style="color:var(--muted)">—</span>';
+  if (r.datos_extra) {
+    let pretty = r.datos_extra;
+    try { pretty = JSON.stringify(JSON.parse(r.datos_extra), null, 2); } catch {}
+    extraHtml = `<pre style="margin:0;white-space:pre-wrap;font-size:.8rem">${esc(pretty)}</pre>`;
+  }
+
+  const urlHtml = r.url
+    ? `<a href="${esc(r.url)}" target="_blank" rel="noopener" style="color:var(--primary)">${esc(r.url)}</a>`
+    : '—';
+
+  openModal(`
+    <div class="modal" style="max-width:680px">
+      <div class="modal-header">
+        <div class="modal-title">
+          ${DRRS_PLATAFORMA_EMOJI[r.plataforma] || '🌐'}
+          <span class="modal-subtitle">${esc(r.nombre || `#${r.id}`)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-drrs-tab="general"
+                  onclick="drrsCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-drrs-tab="credenciales"
+                  onclick="drrsCambiarTab('credenciales')"><i class="fa-solid fa-key"></i> Credenciales</button>
+          <button type="button" class="modal-tab" role="tab" data-drrs-tab="postiz"
+                  onclick="drrsCambiarTab('postiz')"><i class="fa-solid fa-paper-plane"></i> Postiz</button>
+        </div>
+
+        <div class="modal-tabpanel" data-drrs-tab="general" role="tabpanel">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Código',            `<code>${r.id}</code>`)}
+            ${card('Estado',            drrsActivaBadge(r.activa))}
+            ${card('Nombre',            txt(r.nombre), 'full')}
+            ${card('Plataforma',        drrsPlataformaBadge(r))}
+            ${card('Tipo de cuenta',    esc(drrsTextoDe('tipos_cuenta', r.tipo_cuenta)))}
+            ${card('Proyecto',          txt(r.proyecto_nombre || (r.proyecto_id ? `#${r.proyecto_id}` : null)))}
+            ${card('Slug',              `<code style="font-size:.82rem">${esc(r.slug || '—')}</code>`)}
+            ${card('Usuario / handle',  `<span style="font-family:monospace">${txt(r.usuario)}</span>`)}
+            ${card('ID de cuenta',      `<span style="font-family:monospace;font-size:.82rem">${txt(r.cuenta_externa_id)}</span>`)}
+            ${card('URL del perfil',    urlHtml, 'full')}
+            ${card('Correo asociado',   txt(r.correo))}
+            ${card('Alta',              esc(fmtFechaAnio(r.fecha_creacion)))}
+            ${card('Última modificación', esc(fmtFechaAnio(r.fecha_modificacion)))}
+            ${card('Observaciones',     `<div style="white-space:pre-wrap;font-size:.85rem">${txt(r.observaciones)}</div>`, 'full')}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drrs-tab="credenciales" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${secretoCard('Contraseña de la cuenta', r.contrasena,    'drrsConsPass')}
+            ${card('App ID / Client ID', `<span style="font-family:monospace;font-size:.82rem">${txt(r.app_id)}</span>`, 'full')}
+            ${secretoCard('App Secret',   r.app_secret,    'drrsConsSecret')}
+            ${secretoCard('Access token', r.access_token,  'drrsConsAccess')}
+            ${secretoCard('Refresh token', r.refresh_token, 'drrsConsRefresh')}
+            ${card('Vencimiento del token', drrsTokenBadge(r), 'full')}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drrs-tab="postiz" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Estado',         drrsPostizBadge(r.postiz_estado))}
+            ${card('Integration ID', `<span style="font-family:monospace;font-size:.82rem">${txt(r.postiz_integration_id)}</span>`)}
+            ${card('Última sincronización', r.postiz_sync ? esc(fmtFechaAnio(r.postiz_sync)) : '<span style="color:var(--muted)">Nunca</span>', 'full')}
+            ${card('Datos extra',    extraHtml, 'full')}
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-icon" title="Más acciones" data-act="menu-consulta">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrrs(id); }
+    const men = ev.target.closest('[data-act="menu-consulta"]');
+    if (men) {
+      ev.stopPropagation();
+      const rect = men.getBoundingClientRect();
+      abrirCtxMenu($('#drrsConsultaCtxMenu'), rect.left, rect.top - 160, { id });
+    }
+  });
+}
+
+async function drrsToggleActiva(id) {
+  const r = drrsItems.find((x) => x.id === id);
+  if (!r) return;
+  const nueva = Number(r.activa) === 1 ? 0 : 1;
+  try {
+    await apiSend(`${DRRS_API}?id=${id}`, 'PUT', { activa: nueva });
+    toast(nueva === 1 ? 'Cuenta activada' : 'Cuenta desactivada');
+    await cargarDrrs();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDrrs(id) {
+  const r = drrsItems.find((x) => x.id === id);
+  if (!r) return;
+  const ok = await confirmar({
+    title:       'Eliminar cuenta',
+    message:     `¿Eliminás la cuenta "${r.nombre || '#' + r.id}"? Se borran también sus credenciales y tokens guardados.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DRRS_API}?id=${id}`, 'DELETE');
+    toast('Cuenta eliminada');
+    await cargarDrrs();
   } catch (err) {
     toast(err.message, { error: true });
   }

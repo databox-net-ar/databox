@@ -1,6 +1,6 @@
 <?php
 // api/datacount_asientos.php
-// Asientos contables Datacount (CRUD). Lee/escribe sobre las tablas
+// Asientos contables Datacount. Lee/escribe sobre las tablas
 // `datacount_asientos` + `datacount_asientos_detalles` — mismo esquema que
 // `repo.asientos` / `repo.asiento_detalles`. Cada asiento se asocia a una
 // empresa (`empresa_id`) y la numeracion `numero` es autoincrementable por
@@ -12,15 +12,27 @@
 //   GET    api/datacount_asientos.php?id=N
 //                                       -> asiento individual con su detalle
 //   POST   api/datacount_asientos.php     -> alta (JSON body con `empresa` y `detalle` array)
-//   PUT    api/datacount_asientos.php?id=N
-//                                       -> modificacion (reemplaza el detalle completo)
-//   DELETE api/datacount_asientos.php?id=N
-//                                       -> baja (CASCADE borra el detalle)
+//   POST   api/datacount_asientos.php?id=N&anular=1
+//                                       -> contra-asiento del #id (debe/haber invertidos)
+//
+// NO es un ABM completo: por integridad contable un asiento no se edita ni se
+// elimina nunca. `PUT` y `DELETE` responden 405 — la unica forma de revertir
+// un asiento es anularlo, que deja el original intacto y agrega el inverso.
+// Por eso no se usa `requirePermCrud()` (que asumiria los 4 verbos) sino un
+// `requirePermission()` explicito por rama:
+//
+//   GET                 -> `datacount.asientos.consultar`
+//   POST                -> `datacount.asientos.agregar`
+//   POST ?anular=1      -> `datacount.asientos.anular`
+//
+// `datacount.asientos.editar` y `.eliminar` fueron dados de baja del catalogo
+// (ver 20260825_1300_datacount_asientos_anular_y_baja_editar_eliminar.sql): no
+// quedaba ningun verbo que pudieran autorizar.
 //
 // Validacion: total DEBE = total HABER (tolerancia 0.01), 2+ lineas, todas
 // las cuentas deben ser imputables, activas y pertenecer a la empresa del
-// asiento. Al guardar/eliminar, recalcula el `saldo` de las cuentas
-// afectadas (deudora: debe-haber; acreedora: haber-debe).
+// asiento. Al dar de alta, recalcula el `saldo` de las cuentas afectadas
+// (deudora: debe-haber; acreedora: haber-debe).
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
@@ -39,30 +51,34 @@ const DCA_COLS = 'id, empresa_id, numero, fecha, descripcion, total, created_at'
 const DCA_ADJ_S3_PREFIX = 'datacount/asientos/';
 
 try {
-    requirePermCrud('datacount.asientos');
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
     if ($method === 'GET' && $id > 0) {
+        requirePermission('datacount.asientos.consultar');
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
+        requirePermission('datacount.asientos.consultar');
         handleList($pdo, $_GET);
     } elseif ($method === 'POST' && !empty($_GET['anular']) && $id > 0) {
         // POST /?id=N&anular=1 crea un asiento inverso al #id (mismas lineas,
-        // debe/haber invertidos). Reusa el permiso `.agregar` del recurso
-        // porque efectivamente esta dando de alta un asiento nuevo.
+        // debe/haber invertidos). Tiene permiso propio (`.anular`) y no el
+        // `.agregar` del recurso: es la unica via de "deshacer" un asiento, asi
+        // que se puede dar de alta sin poder revertir, y viceversa.
+        requirePermission('datacount.asientos.anular');
         handleAnular($pdo, $id);
     } elseif ($method === 'POST') {
-        handleSave($pdo, readJsonBody(), null);
-    } elseif ($method === 'PUT') {
-        if ($id <= 0) jsonError('Falta id', 400);
-        handleSave($pdo, readJsonBody(), $id);
-    } elseif ($method === 'DELETE') {
-        if ($id <= 0) jsonError('Falta id', 400);
-        handleDelete($pdo, $id);
+        requirePermission('datacount.asientos.agregar');
+        handleAlta($pdo, readJsonBody());
     } else {
-        jsonError('Metodo no soportado', 405);
+        // PUT / DELETE caen aca a proposito: un asiento no se modifica ni se
+        // borra (integridad contable). Se revierte con ?anular=1.
+        jsonError(
+            'Metodo no soportado: los asientos no se editan ni se eliminan. '
+            . 'Para revertir uno usar POST ?id=N&anular=1, que crea el contra-asiento.',
+            405
+        );
     }
 } catch (Throwable $e) {
     jsonError($e->getMessage(), 500);
@@ -219,7 +235,9 @@ function handleGetOne(PDO $pdo, int $id): void {
     ]);
 }
 
-function handleSave(PDO $pdo, array $body, ?int $id): void {
+// Alta de un asiento. No hay contraparte de edicion: el endpoint no expone
+// `PUT` (ver el docblock de arriba), asi que esto siempre inserta.
+function handleAlta(PDO $pdo, array $body): void {
     $fecha       = trim((string)($body['fecha'] ?? ''));
     $descripcion = trim((string)($body['descripcion'] ?? ''));
     $detalle     = $body['detalle'] ?? [];
@@ -233,22 +251,12 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
         jsonError('Se requieren al menos 2 lineas.', 400);
     }
 
-    // Determinar empresa objetivo: en alta viene en el body (obligatoria);
-    // en edicion se preserva la del asiento (no se puede reasignar aca).
-    if ($id) {
-        $stE = $pdo->prepare('SELECT empresa_id FROM datacount_asientos WHERE id = :id LIMIT 1');
-        $stE->execute([':id' => $id]);
-        $prev = $stE->fetch();
-        if (!$prev) jsonError('Asiento no encontrado', 404);
-        $empresaId = (int)$prev['empresa_id'];
-    } else {
-        if ($empresaIn <= 0) jsonError('La empresa es obligatoria.', 400);
-        // Validar que exista.
-        $stChk = $pdo->prepare('SELECT id FROM datacount_empresas WHERE id = :id LIMIT 1');
-        $stChk->execute([':id' => $empresaIn]);
-        if (!$stChk->fetch()) jsonError('Empresa no encontrada.', 400);
-        $empresaId = $empresaIn;
-    }
+    // La empresa viene en el body y es obligatoria.
+    if ($empresaIn <= 0) jsonError('La empresa es obligatoria.', 400);
+    $stChk = $pdo->prepare('SELECT id FROM datacount_empresas WHERE id = :id LIMIT 1');
+    $stChk->execute([':id' => $empresaIn]);
+    if (!$stChk->fetch()) jsonError('Empresa no encontrada.', 400);
+    $empresaId = $empresaIn;
 
     // Normalizar / validar cada linea.
     $lineas     = [];
@@ -314,39 +322,23 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
     $total = $totDebe; // == totHaber
 
     $pdo->beginTransaction();
-    $oldCuentaIds = [];
     try {
-        if ($id) {
-            // Guardar cuentas viejas para recalcular saldos aunque cambie el detalle.
-            $stOld = $pdo->prepare('SELECT DISTINCT cuenta_id FROM datacount_asientos_detalles WHERE asiento_id = :id');
-            $stOld->execute([':id' => $id]);
-            $oldCuentaIds = $stOld->fetchAll(PDO::FETCH_COLUMN);
-
-            $upd = $pdo->prepare(
-                'UPDATE datacount_asientos SET fecha = :f, descripcion = :d, total = :t WHERE id = :id'
-            );
-            $upd->execute([':f' => $fecha, ':d' => $descripcion, ':t' => $total, ':id' => $id]);
-            $pdo->prepare('DELETE FROM datacount_asientos_detalles WHERE asiento_id = :id')
-                ->execute([':id' => $id]);
-            $asientoId = $id;
-        } else {
-            // Numero autoincrementable a nivel de aplicacion, por empresa:
-            // MAX(numero)+1 dentro de la empresa.
-            $stMax = $pdo->prepare(
-                'SELECT COALESCE(MAX(numero),0) + 1 FROM datacount_asientos WHERE empresa_id = :e'
-            );
-            $stMax->execute([':e' => $empresaId]);
-            $next = (int)$stMax->fetchColumn();
-            $ins = $pdo->prepare(
-                'INSERT INTO datacount_asientos (empresa_id, numero, fecha, descripcion, total)
-                 VALUES (:e, :n, :f, :d, :t)'
-            );
-            $ins->execute([
-                ':e' => $empresaId, ':n' => $next, ':f' => $fecha,
-                ':d' => $descripcion, ':t' => $total,
-            ]);
-            $asientoId = (int)$pdo->lastInsertId();
-        }
+        // Numero autoincrementable a nivel de aplicacion, por empresa:
+        // MAX(numero)+1 dentro de la empresa.
+        $stMax = $pdo->prepare(
+            'SELECT COALESCE(MAX(numero),0) + 1 FROM datacount_asientos WHERE empresa_id = :e'
+        );
+        $stMax->execute([':e' => $empresaId]);
+        $next = (int)$stMax->fetchColumn();
+        $ins = $pdo->prepare(
+            'INSERT INTO datacount_asientos (empresa_id, numero, fecha, descripcion, total)
+             VALUES (:e, :n, :f, :d, :t)'
+        );
+        $ins->execute([
+            ':e' => $empresaId, ':n' => $next, ':f' => $fecha,
+            ':d' => $descripcion, ':t' => $total,
+        ]);
+        $asientoId = (int)$pdo->lastInsertId();
 
         $insD = $pdo->prepare(
             'INSERT INTO datacount_asientos_detalles (asiento_id, cuenta_id, debe, haber, descripcion, orden)
@@ -369,13 +361,10 @@ function handleSave(PDO $pdo, array $body, ?int $id): void {
         throw $e;
     }
 
-    // Recalcular saldo de cuentas afectadas (nuevas + viejas si hubo edicion).
-    $todasIds = array_values(array_unique(array_merge($idsUnicos, array_map('intval', $oldCuentaIds))));
-    recalcularSaldoCuentas($pdo, $todasIds);
+    recalcularSaldoCuentas($pdo, $idsUnicos);
 
     registrarSuceso($pdo, 'datacount_asientos', 'info',
-        ($id ? 'Modificacion' : 'Alta') .
-        " asiento #{$asientoId} — empresa {$empresaId} — {$descripcion} — total {$total}");
+        "Alta asiento #{$asientoId} — empresa {$empresaId} — {$descripcion} — total {$total}");
 
     handleGetOne($pdo, $asientoId);
 }
@@ -414,7 +403,7 @@ function handleAnular(PDO $pdo, int $origenId): void {
     $cuentasAfectadas = [];
     $pdo->beginTransaction();
     try {
-        // Numero autoincrementable por empresa (mismo criterio que handleSave).
+        // Numero autoincrementable por empresa (mismo criterio que handleAlta).
         $stMax = $pdo->prepare(
             'SELECT COALESCE(MAX(numero),0) + 1 FROM datacount_asientos WHERE empresa_id = :e'
         );
@@ -464,28 +453,6 @@ function handleAnular(PDO $pdo, int $origenId): void {
         "Anulacion asiento #{$origenId} (N°{$numOrig}) — se creo asiento #{$nuevoId} (N°{$nextNum}) con debe/haber invertidos");
 
     handleGetOne($pdo, $nuevoId);
-}
-
-function handleDelete(PDO $pdo, int $id): void {
-    $st = $pdo->prepare('SELECT numero, descripcion FROM datacount_asientos WHERE id = :id LIMIT 1');
-    $st->execute([':id' => $id]);
-    $prev = $st->fetch();
-    if (!$prev) jsonError('Asiento no encontrado', 404);
-
-    // Capturar cuentas afectadas antes del CASCADE.
-    $stCta = $pdo->prepare('SELECT DISTINCT cuenta_id FROM datacount_asientos_detalles WHERE asiento_id = :id');
-    $stCta->execute([':id' => $id]);
-    $delCuentaIds = array_map('intval', $stCta->fetchAll(PDO::FETCH_COLUMN));
-
-    $sd = $pdo->prepare('DELETE FROM datacount_asientos WHERE id = :id');
-    $sd->execute([':id' => $id]);
-
-    recalcularSaldoCuentas($pdo, $delCuentaIds);
-
-    registrarSuceso($pdo, 'datacount_asientos', 'info',
-        "Baja asiento #{$id} — N.{$prev['numero']} {$prev['descripcion']}");
-
-    jsonOk(['id' => $id]);
 }
 
 // ----------------------------------------------------------------------------

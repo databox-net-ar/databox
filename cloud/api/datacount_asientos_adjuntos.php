@@ -11,10 +11,13 @@
 //
 // Respuesta: {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 //
-// Permisos: se pide `datacount.asientos.editar` para ambos verbos — modificar
-// los adjuntos de un asiento es una edicion sobre el asiento mismo (no un ABM
-// aparte), asi que reusamos el permiso del recurso padre en vez de crear uno
-// propio (mismo patron que `datacount_pagos_adjuntos.php`).
+// Permisos: cada verbo tiene el suyo, con la nomenclatura de los permisos ya
+// existentes de Asientos (ver 20260825_1200_permisos_datacount_asientos_adjuntos.sql):
+//   POST   -> `datacount.asientos.agregar_adjunto`
+//   DELETE -> `datacount.asientos.quitar_adjunto`
+// Son permisos propios y no `datacount.asientos.editar` (como hace todavia
+// `datacount_pagos_adjuntos.php`) para poder separar quien edita el asiento de
+// quien administra su documentacion respaldatoria.
 //
 // Convencion de key S3: `datacount/asientos/<uuid>.<ext>`. `uuid` es el mismo
 // string aleatorio que se guarda en `datacount_asientos_adjuntos.uuid` y en la
@@ -39,15 +42,17 @@ const DCAA_S3_PREFIX   = 'datacount/asientos/';
 const DCAA_MAX_SIZE_MB = 20;
 
 try {
-    requirePermission('datacount.asientos.editar');
+    requireAuth();
     $pdo    = db();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'POST') {
+        requirePermission('datacount.asientos.agregar_adjunto');
         $asientoId = isset($_GET['asiento']) ? (int)$_GET['asiento'] : 0;
         if ($asientoId <= 0) jsonError('Falta asiento', 400);
         handleUploadDcAsientoAdjunto($pdo, $asientoId);
     } elseif ($method === 'DELETE') {
+        requirePermission('datacount.asientos.quitar_adjunto');
         $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
         if ($id <= 0) jsonError('Falta id', 400);
         handleDeleteDcAsientoAdjunto($pdo, $id);
