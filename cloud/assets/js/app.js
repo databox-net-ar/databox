@@ -13526,6 +13526,18 @@ const DC_COMP_IVA_ALICUOTAS = ['0', '2.5', '5', '10.5', '21', '27'];
 // del microservicio (1 = Productos).
 const DC_COMP_CONCEPTOS = { '1': 'Productos', '2': 'Servicios', '3': 'Productos + Servicios' };
 
+// Traduccion entre el enum `datacount_clientes.condicion` (db/schema.sql) y los
+// codigos del catalogo `datacount_comprobante_condicion` de la tabla `estados`
+// (CF / RM / RI / RE), que es lo que guarda `datacount_comprobantes.condicion`.
+// 'no_responsable' y 'no_categorizado' no tienen equivalente en el catalogo:
+// para esos casos el picker deja el <select> como estaba y avisa por toast.
+const DC_COMP_COND_DESDE_CLIENTE = {
+  responsable_inscripto: 'RI',
+  monotributista:        'RM',
+  exento:                'RE',
+  consumidor_final:      'CF',
+};
+
 // Defaults precargados al abrir "Nuevo comprobante": fecha de emision = hoy,
 // fecha de vencimiento = hoy + 7 dias, condicion IVA = Consumidor Final ('CF').
 // Devolvemos strings YYYY-MM-DD en zona horaria local (no UTC —
@@ -13584,14 +13596,17 @@ async function abrirAltaEdicionDcComp(id) {
   } else {
     $('#modalRoot .modal-body').innerHTML = formDcCompHtml(comp || defaults);
     dcCompRecalcularTotales();
+    dcCompPintarVinculoCliente();
   }
 
   $('#modalRoot').addEventListener('click', async (ev) => {
     const a = ev.target.closest('[data-act]');
     if (!a) return;
-    if (a.dataset.act === 'close')       closeModal();
-    if (a.dataset.act === 'guardar')     await guardarDcComp(id, a);
-    if (a.dataset.act === 'add-line')    dcCompAgregarLinea();
+    if (a.dataset.act === 'close')          closeModal();
+    if (a.dataset.act === 'guardar')        await guardarDcComp(id, a);
+    if (a.dataset.act === 'add-line')       dcCompAgregarLinea();
+    if (a.dataset.act === 'elegir-cliente') dcCompAbrirPickerCliente();
+    if (a.dataset.act === 'quitar-cliente') dcCompDesvincularCliente();
     if (a.dataset.act === 'del-line') {
       const tr = a.closest('tr[data-line]');
       if (tr) { tr.remove(); dcCompRecalcularTotales(); }
@@ -13734,7 +13749,21 @@ function formDcCompHtml(c) {
       </div>
 
       <!-- Sección: Cliente -->
-      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:8px">Cliente</div>
+      <!-- Los datos del cliente se pueden tipear a mano o traerse del catálogo
+           datacount_clientes con el botón "Elegir de clientes" (picker en
+           dcCompAbrirPickerCliente). El id del cliente elegido queda en el
+           hidden #dcClienteId y se persiste en datacount_comprobantes.cliente.
+           El botón sólo se pinta si el usuario tiene permiso de consulta sobre
+           el ABM de clientes — si no, el endpoint devolvería 403. -->
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px">
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Cliente</div>
+        ${hasPermission('datacount.clientes.consultar') ? `
+          <button type="button" class="btn btn-secondary btn-sm" data-act="elegir-cliente">
+            <i class="fa-solid fa-address-book"></i> Elegir de clientes
+          </button>` : ''}
+      </div>
+      <input type="hidden" id="dcClienteId" value="${v('cliente')}">
+      <div id="dcClienteVinculo" style="display:none;font-size:.8rem;color:var(--muted);margin:-2px 0 2px"></div>
       <div class="form-group">
         <label>Razón social</label>
         <input type="text" id="dcRazon" maxlength="250" value="${v('razon')}" placeholder="Razón social del cliente">
@@ -13871,6 +13900,275 @@ function dcCompRecalcularTotales() {
   setTxt('dcTotTotal', neto + iva);
 }
 
+// ---- Picker de clientes (modal secundario del alta/edición) ----
+// Mismo patrón que el picker de cuentas del ABM de asientos: se implementa como
+// modal aparte (NO usa openModal, que cerraría el modal de comprobante que está
+// por debajo), con su propio nodo `#dcCompClientePickerRoot` y z-index mayor
+// que el `.modal-backdrop` base.
+//
+// El listado sale del mismo endpoint del ABM de clientes
+// (api/datacount_clientes.php), así que respeta el permiso
+// `datacount.clientes.consultar` y la búsqueda insensible a mayúsculas/acentos
+// que ya hace el LIKE sobre utf8mb4_general_ci. La selección se confirma con
+// "Aceptar" (o doble click en la fila) — recién ahí se pisan los campos.
+
+let dcCompClientePickerItems    = [];
+let dcCompClientePickerSelId    = 0;
+let dcCompClientePickerBusqueda = '';
+let dcCompClientePickerTimer    = null;
+let dcCompClientePickerReq      = 0;   // guard anti carrera entre búsquedas
+
+const DCCOMP_CLIENTE_PICKER_LIMITE = 100;
+
+function dcCompCerrarPickerCliente() {
+  clearTimeout(dcCompClientePickerTimer);
+  const p = $('#dcCompClientePickerRoot');
+  if (p) { p.classList.remove('open'); setTimeout(() => p.remove(), 150); }
+}
+
+function dcCompAbrirPickerCliente() {
+  dcCompCerrarPickerCliente();
+  dcCompClientePickerItems    = [];
+  dcCompClientePickerBusqueda = '';
+  // Arrancamos con el cliente ya vinculado preseleccionado (si lo hay), para
+  // que reabrir el picker sobre un comprobante existente muestre dónde está
+  // parado en vez de empezar en blanco.
+  dcCompClientePickerSelId = Number($('#dcClienteId')?.value) || 0;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'dcCompClientePickerRoot';
+  wrap.style.zIndex = '160';
+  wrap.innerHTML = `
+    <div class="modal" style="width:min(92vw,820px);max-width:820px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fa-solid fa-address-book"></i> Seleccionar cliente</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+        <input type="search" id="dcCompClientePickerSearch" class="search-input"
+               style="width:100%;box-sizing:border-box"
+               placeholder="🔍 Buscar nombre, razón, CUIT, correo, celular o domicilio…">
+      </div>
+      <div id="dcCompClientePickerLista"
+           style="overflow-y:auto;flex:1;min-height:260px;background:var(--bg)"></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="aceptar" id="dcCompClientePickerOk" disabled>Aceptar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  wrap.addEventListener('click', (ev) => {
+    if (ev.target === wrap) { dcCompCerrarPickerCliente(); return; }
+    if (ev.target.closest('[data-act="close"]'))   { dcCompCerrarPickerCliente(); return; }
+    if (ev.target.closest('[data-act="aceptar"]')) { dcCompConfirmarPickerCliente(); return; }
+
+    const tr = ev.target.closest('tr[data-cliente-id]');
+    if (tr) {
+      dcCompClientePickerSelId = Number(tr.dataset.clienteId) || 0;
+      // Mutamos el resaltado en vez de re-renderizar: si el click reemplazara
+      // las <tr>, el segundo click de un doble click caería sobre un nodo
+      // nuevo y el navegador no dispararía `dblclick` sobre la fila.
+      dcCompMarcarSeleccionPickerCliente();
+    }
+  });
+
+  // Doble click = elegir y aceptar de una.
+  wrap.addEventListener('dblclick', (ev) => {
+    const tr = ev.target.closest('tr[data-cliente-id]');
+    if (!tr) return;
+    dcCompClientePickerSelId = Number(tr.dataset.clienteId) || 0;
+    dcCompConfirmarPickerCliente();
+  });
+
+  $('#dcCompClientePickerSearch').addEventListener('input', (ev) => {
+    dcCompClientePickerBusqueda = ev.target.value.trim();
+    clearTimeout(dcCompClientePickerTimer);
+    dcCompClientePickerTimer = setTimeout(dcCompCargarPickerClientes, 250);
+  });
+
+  dcCompCargarPickerClientes();
+  setTimeout(() => $('#dcCompClientePickerSearch')?.focus(), 50);
+}
+
+async function dcCompCargarPickerClientes() {
+  const cont = $('#dcCompClientePickerLista');
+  if (!cont) return;
+  cont.innerHTML = `<div style="text-align:center;padding:28px"><div class="spin"></div></div>`;
+
+  const qs = new URLSearchParams();
+  if (dcCompClientePickerBusqueda) qs.set('q', dcCompClientePickerBusqueda);
+  qs.set('limite', String(DCCOMP_CLIENTE_PICKER_LIMITE));
+  qs.set('orden', 'nombre');
+  qs.set('dir', 'asc');
+
+  const req = ++dcCompClientePickerReq;
+  try {
+    const data = await apiGet(DCCL_API + '?' + qs.toString());
+    if (req !== dcCompClientePickerReq) return;   // llegó tarde: ya hay otra búsqueda en curso
+    dcCompClientePickerItems = data.items || [];
+    dcCompRenderPickerClientes();
+  } catch (e) {
+    if (req !== dcCompClientePickerReq) return;
+    cont.innerHTML = `<div class="table-empty" style="padding:28px">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function dcCompRenderPickerClientes() {
+  const cont = $('#dcCompClientePickerLista');
+  if (!cont) return;
+
+  const items = dcCompClientePickerItems;
+  if (!items.length) {
+    cont.innerHTML = `<div class="table-empty" style="padding:28px">${
+      dcCompClientePickerBusqueda
+        ? `Sin resultados para "${esc(dcCompClientePickerBusqueda)}".`
+        : 'Sin clientes registrados.'
+    }</div>`;
+  } else {
+    const filas = items.map((c) => {
+      const contacto = c.correo || c.celular || '—';
+      return `
+        <tr data-cliente-id="${esc(c.id)}" style="cursor:pointer">
+          <td data-chk style="width:34px;text-align:center"></td>
+          <td data-nom>${esc(c.nombre)}</td>
+          <td>${c.razon ? esc(c.razon) : '<span style="color:var(--muted)">—</span>'}</td>
+          <td>${dceCondicionBadge(c.condicion)}</td>
+          <td style="font-family:monospace;font-size:.82rem">${esc(dceFmtCuit(c.cuit))}</td>
+          <td style="font-size:.82rem;color:var(--muted)">${esc(contacto)}</td>
+        </tr>`;
+    }).join('');
+
+    // Aviso cuando el listado viene topeado por el límite: sin esto el operador
+    // podría creer que el cliente que busca no existe.
+    const tope = items.length >= DCCOMP_CLIENTE_PICKER_LIMITE
+      ? `<div style="padding:8px 14px;font-size:.78rem;color:var(--muted);border-top:1px solid var(--border)">
+           Mostrando los primeros ${DCCOMP_CLIENTE_PICKER_LIMITE} clientes — refiná la búsqueda para ver el resto.
+         </div>`
+      : '';
+
+    cont.innerHTML = `
+      <div class="table-card" style="border:0;border-radius:0;box-shadow:none">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:34px"></th>
+              <th>Nombre</th>
+              <th>Razón social</th>
+              <th style="width:170px">Condición</th>
+              <th style="width:130px">CUIT</th>
+              <th style="width:180px">Contacto</th>
+            </tr>
+          </thead>
+          <tbody>${filas}</tbody>
+        </table>
+      </div>
+      ${tope}`;
+  }
+
+  dcCompMarcarSeleccionPickerCliente();
+}
+
+// Resalta la fila del cliente seleccionado y habilita/deshabilita "Aceptar".
+// Sólo muta atributos de nodos ya pintados — nunca reemplaza las <tr>.
+function dcCompMarcarSeleccionPickerCliente() {
+  const cont = $('#dcCompClientePickerLista');
+  if (!cont) return;
+  cont.querySelectorAll('tr[data-cliente-id]').forEach((tr) => {
+    const sel = Number(tr.dataset.clienteId) === dcCompClientePickerSelId;
+    tr.style.background = sel ? 'rgba(59,130,246,.18)' : '';
+    const chk = tr.querySelector('[data-chk]');
+    if (chk) chk.innerHTML = sel ? '<i class="fa-solid fa-check" style="color:#93c5fd"></i>' : '';
+    const nom = tr.querySelector('[data-nom]');
+    if (nom) nom.style.fontWeight = sel ? '600' : '400';
+  });
+  const ok = $('#dcCompClientePickerOk');
+  if (ok) ok.disabled = !dcCompClientePickerItems.some((c) => Number(c.id) === dcCompClientePickerSelId);
+}
+
+function dcCompConfirmarPickerCliente() {
+  const cli = dcCompClientePickerItems.find((c) => Number(c.id) === dcCompClientePickerSelId);
+  if (!cli) return;
+  dcCompAplicarCliente(cli);
+  dcCompCerrarPickerCliente();
+}
+
+// Vuelca el cliente elegido sobre el bloque "Cliente" del comprobante. Pisa los
+// seis campos completos — incluso con vacío si el cliente no tiene el dato —
+// para que lo que quede cargado sea exactamente el cliente elegido y no una
+// mezcla con lo que hubiera antes. El único campo que puede quedar sin tocar es
+// la condición frente al IVA, cuando el enum del cliente no tiene equivalente
+// en el catálogo `datacount_comprobante_condicion` (ver DC_COMP_COND_DESDE_CLIENTE).
+function dcCompAplicarCliente(cli) {
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ''; };
+
+  set('dcClienteId', cli.id);
+  set('dcRazon',     cli.razon || cli.nombre);
+  set('dcDomicilio', cli.domicilio);
+  set('dcCorreo',    cli.correo);
+  set('dcCelular',   cli.celular);
+  // El CUIT se guarda en `datacount_comprobantes.cuit` sin separadores, igual
+  // que en `datacount_clientes.cuit` (el job de AFIP hace su propio strip).
+  set('dcCuit',      cli.cuit);
+
+  const cond   = DC_COMP_COND_DESDE_CLIENTE[cli.condicion] || '';
+  const existe = (dcCompCondicionesCatalogo || []).some((o) => String(o.valor) === cond);
+  const mapeoOk = Boolean(cond && existe);
+  if (mapeoOk) set('dcCondicion', cond);
+
+  dcCompPintarVinculoCliente(cli.nombre);
+
+  // Un solo toast: dos seguidos se pisan entre sí (el toast es un único nodo
+  // compartido), y el aviso de la condición sin mapear es justo el que no se
+  // puede perder. Va como error para que dure los 10 s en vez de 2,4 s.
+  if (mapeoOk) {
+    toast(`Datos de "${cli.nombre}" aplicados al comprobante.`);
+  } else {
+    const label = DCE_CONDICION_MAP[cli.condicion]?.label || cli.condicion || 'sin dato';
+    toast(`Datos de "${cli.nombre}" aplicados, pero su condición fiscal (${label}) no tiene equivalente en el catálogo del comprobante — revisá el campo.`, { error: true });
+  }
+}
+
+function dcCompDesvincularCliente() {
+  const el = document.getElementById('dcClienteId');
+  if (el) el.value = '';
+  dcCompPintarVinculoCliente();
+}
+
+// Pinta la línea "Vinculado a …" debajo del encabezado de la sección Cliente.
+// En edición sólo tenemos el id (`datacount_comprobantes.cliente`), así que si
+// el nombre no vino con la selección lo resolvemos con un GET puntual al ABM de
+// clientes. Si el usuario no tiene permiso o el cliente fue borrado, se queda
+// mostrando el id pelado.
+async function dcCompPintarVinculoCliente(nombre) {
+  const cont = document.getElementById('dcClienteVinculo');
+  if (!cont) return;
+  const id = Number(document.getElementById('dcClienteId')?.value) || 0;
+  if (!id) { cont.style.display = 'none'; cont.innerHTML = ''; return; }
+
+  const pintar = (txt) => {
+    cont.style.display = '';
+    cont.innerHTML = `
+      <i class="fa-solid fa-link" style="font-size:.72rem"></i>
+      Vinculado a <strong style="color:var(--text)">${esc(txt)}</strong>
+      <button type="button" class="btn-icon-sm" data-act="quitar-cliente"
+              title="Desvincular cliente" style="color:var(--danger);vertical-align:middle">×</button>`;
+  };
+
+  pintar(nombre || `#${id}`);
+  if (nombre || !hasPermission('datacount.clientes.consultar')) return;
+
+  try {
+    const c = await apiGet(`${DCCL_API}?id=${id}`);
+    // El modal pudo cerrarse o cambiar de cliente mientras resolvíamos.
+    if (Number(document.getElementById('dcClienteId')?.value) !== id) return;
+    if (c?.nombre) pintar(c.nombre);
+  } catch { /* sin permiso o cliente borrado: queda el id pelado */ }
+}
+
 async function guardarDcComp(id, btn) {
   const err = $('#dcError');
   err.style.display = 'none';
@@ -13884,9 +14182,13 @@ async function guardarDcComp(id, btn) {
   }));
 
   // Solo mandamos los campos que el modal expone. Los que quedan fuera
-  // (tipo/fiscal/punto/serie/estado/cliente/caenro/caevto/caeres/autorizado/
+  // (tipo/fiscal/punto/serie/estado/caenro/caevto/caeres/autorizado/
   // asociado/contrato/medio/comentarios) los rellena el sistema y el PUT
   // partial-update del backend deja intactas sus columnas al no recibirlas.
+  //
+  // `cliente` sale del hidden #dcClienteId, que el form inicializa con el valor
+  // que ya tenía el comprobante y sólo cambia al elegir/desvincular desde el
+  // picker — así el PUT no pisa el vínculo existente al editar otros campos.
   const payload = {
     talonario:     $('#dcTalonario').value,
     proyecto:      $('#dcProyecto').value,
@@ -13894,6 +14196,7 @@ async function guardarDcComp(id, btn) {
     emision:       $('#dcEmision').value || null,
     vencimiento:   $('#dcVencimiento').value || null,
     concepto:      $('#dcConcepto').value || null,
+    cliente:       $('#dcClienteId').value || null,
     razon:         $('#dcRazon').value.trim(),
     condicion:     $('#dcCondicion').value.trim(),
     cuit:          $('#dcCuit').value.trim(),
@@ -35432,6 +35735,19 @@ const EVO_MSG_FORMATO_MAP = {
   video:     'Video',
   audio:     'Audio',
   ubicacion: 'Ubicación',
+  contacto:  'Contacto',
+};
+// Que espera el campo `adjunto` en cada formato. No es cosmetico: el mismo
+// input recibe una URL, un par "lat,lon" o un JSON de vCard segun el formato
+// elegido, y sin la pista no hay forma de adivinarlo desde el modal.
+// Ver el switch de evolutionApiEnviar() en cloud/api/lib/mensajes_enviar.php.
+const EVO_MSG_ADJUNTO_HINT = {
+  texto:     '— no se usa en formato Texto',
+  imagen:    '— URL de la imagen',
+  video:     '— URL del video',
+  audio:     '— URL del audio (sale como nota de voz)',
+  ubicacion: '— "latitud,longitud" (ej. -31.5375,-68.5364)',
+  contacto:  '— JSON de la tarjeta: {"fullName":"…","wuid":"549…"}',
 };
 // Alineado con las filas seedeadas en `estados` (campo=evolution_mensaje_prioridad).
 // La columna evolution_mensajes.prioridad es tinyint(1..5): 5 = mayor prioridad
@@ -36196,8 +36512,13 @@ async function abrirAltaEvoMsg(opciones = {}) {
         // el select para que sea evidente (mejor que dejar un default fantasma).
         const formatoLegacy = { T: 'texto', I: 'imagen', V: 'video', A: 'audio', U: 'ubicacion' };
         setVal('evoFormato', formatoLegacy[p.formato] ?? p.formato);
+        evoMsgActualizarAdjuntoHint();
       });
     }
+
+    // El significado de `adjunto` depende del formato (URL / "lat,lon" / JSON
+    // de vCard), asi que el hint del label sigue al select.
+    $('#evoFormato')?.addEventListener('change', evoMsgActualizarAdjuntoHint);
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -36208,6 +36529,15 @@ async function abrirAltaEvoMsg(opciones = {}) {
     if (a.dataset.act === 'close')   closeModal();
     if (a.dataset.act === 'guardar') await guardarEvoMsg(a);
   });
+}
+
+// Reescribe la pista del label de `adjunto` segun el formato elegido. El
+// formato vacio ("—") cae al texto de `texto`: el backend aplica ese default.
+function evoMsgActualizarAdjuntoHint() {
+  const el = $('#evoAdjuntoHint');
+  if (!el) return;
+  const f = $('#evoFormato')?.value || 'texto';
+  el.textContent = EVO_MSG_ADJUNTO_HINT[f] ?? '';
 }
 
 function formEvoMsgHtml(rawM, lookups) {
@@ -36306,6 +36636,7 @@ function formEvoMsgHtml(rawM, lookups) {
         <option value="video"     ${sel('formato','video')}>Video</option>
         <option value="audio"     ${sel('formato','audio')}>Audio</option>
         <option value="ubicacion" ${sel('formato','ubicacion')}>Ubicación</option>
+        <option value="contacto"  ${sel('formato','contacto')}>Contacto</option>
       </select>
     </div>
     <div class="form-group">
@@ -36313,7 +36644,7 @@ function formEvoMsgHtml(rawM, lookups) {
       <textarea id="evoCuerpo" rows="8" style="font-family:monospace">${v('cuerpo')}</textarea>
     </div>
     <div class="form-group">
-      <label>Adjunto (URL/ruta)</label>
+      <label>Adjunto <span id="evoAdjuntoHint" style="font-weight:400;color:var(--muted)">${EVO_MSG_ADJUNTO_HINT[m.formato] ?? EVO_MSG_ADJUNTO_HINT.texto}</span></label>
       <input type="text" id="evoAdjunto" maxlength="500" value="${v('adjunto')}" style="font-family:monospace">
     </div>
     <div class="form-row">

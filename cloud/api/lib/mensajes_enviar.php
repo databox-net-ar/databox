@@ -358,6 +358,44 @@ function evolutionApiEnviar(
                 'delay'     => EVOLUTION_DELAY_MS,
             ];
             break;
+        // Tarjeta de contacto (vCard). El destinatario la agenda con un
+        // toque, sin copiar el numero a mano.
+        //
+        // `adjunto` viaja como JSON con los campos de la tarjeta — a
+        // diferencia de los otros formatos, que llevan una sola URL, acá
+        // hacen falta varios datos y un separador posicional (estilo
+        // "lat,lon") seria fragil con nombres que pueden traer comas.
+        //
+        //   {"fullName":"...", "wuid":"5491133445566",
+        //    "phoneNumber":"+54 9 11 3344-5566",
+        //    "organization":"...", "email":"...", "url":"..."}
+        //
+        // Obligatorios: `fullName` y `wuid` (el numero en E.164 sin `+`,
+        // que es lo que WhatsApp usa para vincular el contacto). El resto
+        // se omite si viene vacio: Evolution escribe una linea vacia en la
+        // vCard si se le manda un campo en blanco.
+        case 'contacto':
+            $c = json_decode($adjunto, true);
+            if (!is_array($c)) $c = [];
+
+            $wuid = preg_replace('/\D+/', '', (string) ($c['wuid'] ?? ''));
+            $tarjeta = [
+                'fullName'    => (string) ($c['fullName'] ?? ($cuerpo !== '' ? $cuerpo : 'Contacto')),
+                'wuid'        => $wuid,
+                'phoneNumber' => (string) ($c['phoneNumber'] ?? ('+' . $wuid)),
+            ];
+            foreach (['organization', 'email', 'url'] as $opt) {
+                $v = trim((string) ($c[$opt] ?? ''));
+                if ($v !== '') $tarjeta[$opt] = $v;
+            }
+
+            $url = EVOLUTION_ENDPOINT . '/message/sendContact/' . $slug;
+            $payload = [
+                'number'  => $destino,
+                'contact' => [$tarjeta],
+                'delay'   => EVOLUTION_DELAY_MS,
+            ];
+            break;
         case 'texto':
         default:
             $url = EVOLUTION_ENDPOINT . '/message/sendText/' . $slug;

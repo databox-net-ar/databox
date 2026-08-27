@@ -81,8 +81,8 @@ constante `EVO_MSG_SANITIZERS`):
 | `destinatario`   | string(255)  | No          | Nombre humano del destinatario.                                           |
 | `prioridad`      | int (1–5)    | No          | Default `3` (Media). `5` = Muy Alta (sale primero), `1` = Muy Baja.       |
 | `asunto`         | string(255)  | No          | WhatsApp no tiene subject; el sender lo antepone en negrita al cuerpo.    |
-| `formato`        | string(20)   | No          | Default `'texto'`. Otros: `'imagen'`, `'video'`, `'audio'`, `'ubicacion'`.|
-| `adjunto`        | string(500)  | No          | URL/path del adjunto cuando `formato` != `'texto'`.                       |
+| `formato`        | string(20)   | No          | Default `'texto'`. Otros: `'imagen'`, `'video'`, `'audio'`, `'ubicacion'`, `'contacto'`. Ver la tabla de abajo. |
+| `adjunto`        | string(500)  | No          | Qué lleva depende del `formato` — ver la tabla de abajo.                  |
 | `tags`           | string(255)  | No          | Etiquetas libres para segmentación / búsqueda.                            |
 | `fecha`          | datetime     | No          | `YYYY-MM-DD HH:MM[:SS]`. Default: `NOW()` en `America/Argentina/Buenos_Aires`. |
 | `encolado`       | datetime     | No          | Default: mismo valor que `fecha`.                                         |
@@ -98,6 +98,86 @@ sobrescriben con los de la plantilla — el body ya no necesita mandarlos, y si
 los manda, se ignoran. Excepción: los campos que la plantilla tiene vacíos no
 sobrescriben, así que `remite` del body sirve como fallback si la plantilla no
 lo definió.
+
+### Formatos
+
+Cada `formato` sale por un endpoint distinto de Evolution API y le da un
+significado distinto a `adjunto` (ver el switch de `evolutionApiEnviar()` en
+[cloud/api/lib/mensajes_enviar.php](../../../cloud/api/lib/mensajes_enviar.php)):
+
+| `formato`    | Endpoint de Evolution | `adjunto`              | `cuerpo`                     |
+|--------------|-----------------------|------------------------|------------------------------|
+| `texto`      | `sendText`            | — (no se usa)          | el texto del mensaje         |
+| `imagen`     | `sendMedia`           | URL de la imagen       | caption (pie de foto)        |
+| `video`      | `sendMedia`           | URL del video          | caption                      |
+| `audio`      | `sendWhatsAppAudio`   | URL del audio          | se ignora                    |
+| `ubicacion`  | `sendLocation`        | `"latitud,longitud"`   | nombre del lugar             |
+| `contacto`   | `sendContact`         | JSON de la vCard       | fallback de `fullName`       |
+
+Notas:
+
+- **`audio` sale siempre como nota de voz** (PTT), no como archivo adjunto:
+  `sendWhatsAppAudio` es el endpoint de voice note. No hay forma de mandar un
+  mp3 como archivo descargable.
+- **`imagen` y `video` mandan un `fileName` fijo** (`imagen.jpg` / `video.mp4`)
+  sin mirar la extensión real de la URL.
+- `cuerpo` es obligatorio en **todos** los formatos, incluso donde el sender lo
+  descarta (`audio`) o no lo manda (`contacto`).
+- No están soportados: documentos (PDF, Excel), stickers, botones/listas
+  interactivas, encuestas ni reacciones.
+
+### Formato `contacto` (tarjeta / vCard)
+
+Manda una tarjeta de contacto que el destinatario agenda con un toque, sin
+copiar el número a mano. Los datos van en `adjunto` **como JSON** — a
+diferencia del resto de los formatos, que llevan una sola URL:
+
+```json
+{
+  "fullName":     "Americo Alvarez",
+  "wuid":         "5492645101498",
+  "phoneNumber":  "+54 9 264 510-1498",
+  "organization": "Lider Distribuidora",
+  "email":        "contacto@ejemplo.com",
+  "url":          "liderdistribuidora.dex.net.ar"
+}
+```
+
+| Campo          | Obligatorio | Notas                                                                 |
+|----------------|-------------|-----------------------------------------------------------------------|
+| `fullName`     | Sí          | Nombre que se ve en la tarjeta. Si falta, se usa `cuerpo`.            |
+| `wuid`         | Sí          | Número en E.164 **sin `+`**. Es con lo que WhatsApp vincula el contacto. |
+| `phoneNumber`  | No          | Cómo se muestra el número. Default: `+` + `wuid`.                     |
+| `organization` | No          | Empresa. Se omite de la vCard si viene vacío.                         |
+| `email`        | No          | Se omite si viene vacío.                                              |
+| `url`          | No          | Sitio web. Se omite si viene vacío.                                   |
+
+`cuerpo` sigue siendo **obligatorio** (lo son los 5 campos de siempre, en todos
+los formatos), pero **no viaja a WhatsApp**: la tarjeta no admite texto
+acompañante. Poné ahí el nombre del contacto — el sender lo usa como fallback
+de `fullName` cuando el JSON no lo trae. Si querés acompañar la tarjeta con un
+mensaje, encolá dos mensajes.
+
+> **Ojo con el largo**: `adjunto` es `VARCHAR(500)` y el sanitizador **trunca**
+> (no rechaza). Un JSON de tarjeta más largo que eso se corta a la mitad,
+> `json_decode` falla y sale una tarjeta vacía sin error visible. Una tarjeta
+> típica ronda los 200 caracteres; si cargás `organization` + `url` largos,
+> medí antes.
+
+```bash
+curl -X POST https://api.databox.net.ar/v4/evolution/mensajes \
+  -H "Authorization: Bearer $APIKEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proyecto_slug": "dex",
+    "canal_slug":    "dex-liderdistribuidora",
+    "remite":        "5492645101498",
+    "destino":       "5491199887766",
+    "formato":       "contacto",
+    "cuerpo":        "Americo Alvarez",
+    "adjunto":       "{\"fullName\":\"Americo Alvarez\",\"wuid\":\"5492645101498\",\"phoneNumber\":\"+54 9 264 510-1498\",\"organization\":\"Lider Distribuidora\",\"url\":\"liderdistribuidora.dex.net.ar\"}"
+  }'
+```
 
 ### Aplicación de plantilla
 
