@@ -2140,7 +2140,7 @@ CREATE TABLE `datarocket_oportunidades`  (
 -- Envio masivo: el eslabon entre la lista (a quien), la plantilla (que) y el
 -- canal (por donde). Los ABMs de mensajes (`aws_mensajes`,
 -- `evolution_mensajes`, `telegram_mensajes`) encolan de a UNO; la campana es
--- el registro que el job expansor convierte en N filas de cola.
+-- el registro que el job encolador convierte en N filas de cola.
 --
 -- Creada por la migracion 20260828_1000_datarocket_campanas_modulo.sql, que
 -- reemplaza a la legacy `datarocketcampanas` (definida mas abajo, sin medio ni
@@ -2214,7 +2214,7 @@ CREATE TABLE `datarocket_campanas`  (
 -- `evolution_mensajes` o `telegram_mensajes` segun `datarocket_campanas.medio`).
 -- Sin FK por el mismo motivo que `canal_id`, y porque las colas se purgan.
 --
--- El UNIQUE (campana_id, prospecto_id) es lo que hace reanudable al expansor:
+-- El UNIQUE (campana_id, prospecto_id) es lo que hace reanudable al encolador:
 -- correrlo dos veces sobre la misma campana no duplica destinatarios.
 DROP TABLE IF EXISTS `datarocket_campanas_mensajes`;
 CREATE TABLE `datarocket_campanas_mensajes`  (

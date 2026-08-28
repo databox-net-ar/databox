@@ -27237,27 +27237,31 @@ window.drLiCambiarTab = drLiCambiarTab;
 // puertas de entrada que existen: el editor de suscriptos de esta misma lista y
 // el combo de listas de la ficha del prospecto.
 //
-// OJO al leer el total: el historial arranca con la migración 20260828_2000 y no
-// se pudo backfillear (la tabla puente no guarda fecha de alta). Una lista con
-// 5.000 suscriptos y 3 altas registradas no creció 3 — creció 3 desde entonces.
-// Por eso la vista vacía lo dice con todas las letras en vez de mostrar un cero
-// que se leería como "nunca entró nadie".
+// OJO al leer el total: las filas `preexistente` son el backfill de las
+// suscripciones que ya existían cuando se creó el historial, y su fecha sale de
+// la tabla puente — que para casi todas es la marca de la carga inicial, no la
+// fecha real de suscripción. Sirven para responder "está desde antes de esto";
+// no sirven para leer una tendencia. El chip propio existe para poder sacarlas
+// de la vista de un click.
 let drLiAltasEstado = null;
 
-// Espeja el catálogo `datarocket_lista_alta_motivo` de la tabla `estados`. Hoy
-// tiene un solo valor porque hay un solo motivo con escritor; los dos orígenes
-// manuales se distinguen por `origen`, no por motivo. Cuando entre un alta no
-// manual, alcanza con sembrarla en `estados` y agregarla acá para el color.
+// Espeja el catálogo `datarocket_lista_alta_motivo` de la tabla `estados`. El
+// texto visible viene del servidor (`motivo_texto`); esto sólo define el color y
+// el rótulo de respaldo. Las dos puertas manuales comparten motivo y se
+// distinguen por `origen`; cuando entre un alta no manual (link de suscripción,
+// importador), alcanza con sembrarla en `estados` y agregarla acá.
 const DRLI_ALTA_MOTIVOS = [
-  { valor: 'manual', texto: 'Alta manual', badge: 'badge-muted' },
+  { valor: 'manual',       texto: 'Alta manual',              badge: 'badge-muted' },
+  { valor: 'preexistente', texto: 'Suscripción preexistente', badge: 'badge-info'  },
 ];
 const DRLI_ALTA_BADGE = Object.fromEntries(DRLI_ALTA_MOTIVOS.map((m) => [m.valor, m.badge]));
 
-// Las dos puertas de entrada, en prosa. El `origen` crudo es un string técnico
+// Los orígenes conocidos, en prosa. El `origen` crudo es un string técnico
 // ('abm/datarocketlistas'): mostrarlo tal cual obliga al operador a traducirlo.
 const DRLI_ALTA_ORIGENES = {
   'abm/datarocketlistas':     'editor de suscriptos',
   'abm/datarocketprospectos': 'ficha del prospecto',
+  'backfill/20260828_2100':   'carga inicial del historial',
 };
 
 function renderAltasDrLiHtml() {
@@ -27326,7 +27330,7 @@ async function cargarAltasDrLi() {
   if (!items.length) {
     tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${
       (data.total || 0) === 0
-        ? 'Sin altas registradas. El historial arranca en agosto de 2026: los suscriptos anteriores no tienen fecha de alta.'
+        ? 'Esta lista no tiene ninguna alta registrada.'
         : 'Sin resultados con el filtro actual.'
     }</td></tr>`;
     return;
@@ -27334,12 +27338,17 @@ async function cargarAltasDrLi() {
 
   tbody.innerHTML = items.map((a) => {
     const cls = DRLI_ALTA_BADGE[a.motivo] || 'badge-info';
-    // Quién la hizo y por qué puerta. El usuario puede faltar (alta escrita sin
-    // sesión); la puerta, si aparece un origen nuevo que este mapa no conoce, se
-    // muestra cruda antes que desaparecer.
+    // Quién la hizo y por qué puerta. El usuario falta en las altas sin sesión
+    // (el backfill, y cualquier automatismo futuro), así que no se puede rotular
+    // "Manual" a ciegas. Un origen que este mapa no conoce se muestra crudo
+    // antes que desaparecer.
     const puerta = a.origen ? (DRLI_ALTA_ORIGENES[a.origen] || a.origen) : null;
-    let origen = a.usuario_nombre ? `Manual — ${esc(a.usuario_nombre)}` : 'Manual';
-    if (puerta) origen += ` <span style="color:var(--muted)">(${esc(puerta)})</span>`;
+    const quien  = a.usuario_nombre ? esc(a.usuario_nombre) : null;
+    let origen;
+    if (quien && puerta)  origen = `${quien} <span style="color:var(--muted)">(${esc(puerta)})</span>`;
+    else if (quien)       origen = quien;
+    else if (puerta)      origen = `<span style="color:var(--muted)">${esc(puerta)}</span>`;
+    else                  origen = '<span style="color:var(--muted)">Sin origen registrado</span>';
     const detalle = a.detalle ? ` <span style="color:var(--muted)">(${esc(a.detalle)})</span>` : '';
     return `
       <tr>
@@ -36289,11 +36298,11 @@ async function eliminarDrrs(id) {
 // La campaña es el eslabón entre lo que Datarocket ya tenía suelto: la lista
 // (a quién), la plantilla (qué) y el canal (por dónde). Los ABMs de mensajes
 // (AWS / Evolution / Telegram) encolan de a uno; la campaña es el registro que
-// el job expansor convierte en N filas de cola.
+// el job encolador convierte en N filas de cola.
 //
 // El padrón de destinatarios vive en `datarocket_campanas_mensajes` y este ABM
 // lo muestra SOLO en lectura, en la pestaña Destinatarios del modal de
-// Consultar. Lo escribe el expansor (`jobs/datarocket_campanas_expandir.php`),
+// Consultar. Lo escribe el encolador (`jobs/datarocket_campanas_expandir.php`),
 // que todavía no existe: hasta entonces el padrón se ve vacío, que es lo
 // correcto — no hay nada que inventar ahí.
 const DRCA_API = 'api/datarocket_campanas.php';
@@ -36306,7 +36315,7 @@ const DRCA_MEDIO_EMOJI = { correo: '✉️', whatsapp: '💬', telegram: '✈️
 const DRCA_ESTADO_BADGE = {
   borrador:    'badge-muted',
   programada:  'badge-info',
-  expandiendo: 'badge-warn',
+  encolando:   'badge-warn',
   enviando:    'badge-warn',
   pausada:     'badge-warn',
   completada:  'badge-success',
@@ -36327,7 +36336,7 @@ const DRCA_PADRON_BADGE = {
 // Estados en los que la campaña ya arrancó: el endpoint rechaza cambiarle medio,
 // canal, lista o plantilla (espeja DRCA_ESTADOS_ARRANCADOS del PHP). El
 // formulario deshabilita esos campos en vez de dejar que el PUT devuelva 409.
-const DRCA_ESTADOS_ARRANCADOS = ['expandiendo', 'enviando', 'completada'];
+const DRCA_ESTADOS_ARRANCADOS = ['encolando', 'enviando', 'completada'];
 
 const drcaFiltrosDefaults = {
   q: '', codigo: '', proyecto: '', medio: '', estado: '', lista: '',
@@ -36356,7 +36365,7 @@ let drcaPadronResultado = '';
 let drcaTplCargada      = false;
 let drcaListaCargada    = false;
 // Chip "Sin dato" de la pestaña Lista: los suscriptos que hoy quedarían
-// omitidos al expandir porque no tienen el dato de contacto del medio.
+// omitidos al encolar porque no tienen el dato de contacto del medio.
 let drcaListaSinDato    = false;
 let drcaListaTimer      = null;
 
@@ -36527,16 +36536,16 @@ function drcaResultadoBadge(m) {
   return `<span class="badge ${cls}">${esc(texto)}</span>${baja}`;
 }
 
-// Barra de progreso enviados/total. Con `total` en 0 la campaña todavía no se
-// expandió, así que muestra el alcance estimado de la lista en vez de un 0/0
+// Barra de progreso enviados/total. Con `total` en 0 la campaña todavía no
+// encoló nada, así que muestra el alcance estimado de la lista en vez de un 0/0
 // que se lee como "no tiene a quién mandarle".
 function drcaProgresoHtml(r) {
   const total = Number(r.total) || 0;
   if (total === 0) {
     const est = Number(r.lista_suscriptos) || 0;
     return est > 0
-      ? `<span style="color:var(--muted);font-size:.78rem">Sin expandir · ~${fmtNum(est)}</span>`
-      : `<span style="color:var(--muted);font-size:.78rem">Sin expandir</span>`;
+      ? `<span style="color:var(--muted);font-size:.78rem">Sin encolar · ~${fmtNum(est)}</span>`
+      : `<span style="color:var(--muted);font-size:.78rem">Sin encolar</span>`;
   }
   const env = Number(r.enviados) || 0;
   const pct = Math.min(100, Math.round((env / total) * 100));
@@ -36642,16 +36651,16 @@ route('/datarocket_campanas', async (mount) => {
         <i class="fa-solid fa-list-check"></i><span>Ver destinatarios</span>
       </button>
       <button type="button" data-action="ejecutar" role="menuitem">
-        <i class="fa-solid fa-bolt"></i><span data-label>Ejecutar ahora</span>
+        <i class="fa-solid fa-bolt"></i><span data-label>Iniciar</span>
       </button>
-      <button type="button" data-action="iniciar" role="menuitem">
-        <i class="fa-solid fa-paper-plane"></i><span>Programar para ya</span>
+      <button type="button" data-action="programar" role="menuitem">
+        <i class="fa-solid fa-clock"></i><span>Programar</span>
       </button>
       <button type="button" data-action="pausar" role="menuitem">
         <i class="fa-solid fa-pause"></i><span data-label>Pausar</span>
       </button>
       <button type="button" data-action="cancelar" role="menuitem">
-        <i class="fa-solid fa-ban"></i><span>Cancelar campaña</span>
+        <i class="fa-solid fa-ban"></i><span>Cancelar</span>
       </button>
       <button type="button" data-action="recalcular" role="menuitem">
         <i class="fa-solid fa-calculator"></i><span>Recalcular contadores</span>
@@ -36792,7 +36801,7 @@ route('/datarocket_campanas', async (mount) => {
     if (a === 'editar')        abrirAltaEdicionDrca(data.id);
     if (a === 'eliminar')      eliminarDrca(data.id);
     if (a === 'ejecutar')      drcaEjecutar(data.id);
-    if (a === 'iniciar')       drcaIniciar(data.id);
+    if (a === 'programar')     drcaProgramar(data.id);
     if (a === 'pausar')        drcaTogglePausa(data.id);
     if (a === 'cancelar')      drcaCancelar(data.id);
     if (a === 'recalcular')    drcaRecalcular(data.id);
@@ -36904,24 +36913,25 @@ function drcaAbrirMenu(x, y, id) {
   const menu = $('#drcaCtxMenu');
 
   const btnEjec  = menu?.querySelector('[data-action="ejecutar"]');
-  const btnIni   = menu?.querySelector('[data-action="iniciar"]');
+  const btnProg  = menu?.querySelector('[data-action="programar"]');
   const btnPausa = menu?.querySelector('[data-action="pausar"]');
   const btnCanc  = menu?.querySelector('[data-action="cancelar"]');
   const btnRec   = menu?.querySelector('[data-action="recalcular"]');
   const btnDest  = menu?.querySelector('[data-action="destinatarios"]');
 
   // Las dos formas de largar una campaña, y por qué están las dos:
-  //   Ejecutar ahora    -> corre el expansor acá mismo, con consola en vivo.
-  //                        Es el camino cuando querés verlo pasar.
-  //   Programar para ya -> sólo la deja lista y el cron la levanta. Es el
-  //                        camino desatendido, y el que sirve cuando la campaña
-  //                        es grande y no querés tener el navegador abierto.
-  // "Programar para ya" aplica sólo desde borrador o programada: no tiene
-  // sentido re-programar algo que ya arrancó.
+  //   Iniciar   -> corre el encolador acá mismo, con consola en vivo, sin
+  //                importar qué fecha tenga cargada. Es el camino cuando
+  //                querés que salga ahora y verlo pasar.
+  //   Programar -> no corre nada: la deja en 'programada' con SU fecha y el
+  //                cron la levanta cuando esa hora llegue. Es el camino
+  //                desatendido, y el único que respeta la fecha del formulario.
+  // "Programar" aplica sólo desde borrador o programada: no tiene sentido
+  // re-agendar algo que ya arrancó.
   const lanzable = ['borrador', 'programada'].includes(est);
-  if (btnIni) btnIni.style.display = lanzable ? '' : 'none';
+  if (btnProg) btnProg.style.display = lanzable ? '' : 'none';
 
-  // "Ejecutar ahora" suma un tercer caso: 'enviando' con pendientes, que es la
+  // "Iniciar" suma un tercer caso: 'enviando' con pendientes, que es la
   // reanudación. Una campaña que no entró entera en una corrida termina así, y
   // el propio log le dice al operador "volvé a ejecutar para continuar" — hasta
   // que esto existió, ese mensaje mentía porque el botón estaba oculto.
@@ -36931,7 +36941,7 @@ function drcaAbrirMenu(x, y, id) {
     const reanudable = est === 'enviando' && (Number(r?.pendientes) || 0) > 0;
     btnEjec.style.display = (lanzable || reanudable) ? '' : 'none';
     const lblEjec = btnEjec.querySelector('[data-label]');
-    if (lblEjec) lblEjec.textContent = reanudable ? 'Continuar encolado' : 'Ejecutar ahora';
+    if (lblEjec) lblEjec.textContent = reanudable ? 'Continuar encolado' : 'Iniciar';
   }
 
   if (btnPausa) {
@@ -36939,7 +36949,7 @@ function drcaAbrirMenu(x, y, id) {
     if (lbl) lbl.textContent = est === 'pausada' ? 'Reanudar' : 'Pausar';
     // Sólo tiene sentido sobre una campaña viva: en borrador no arrancó y en
     // completada/cancelada ya terminó.
-    btnPausa.style.display = ['programada', 'expandiendo', 'enviando', 'pausada'].includes(est) ? '' : 'none';
+    btnPausa.style.display = ['programada', 'encolando', 'enviando', 'pausada'].includes(est) ? '' : 'none';
   }
   if (btnCanc) {
     btnCanc.style.display = ['completada', 'cancelada'].includes(est) ? 'none' : '';
@@ -37176,7 +37186,7 @@ async function abrirAltaEdicionDrca(id, clonarDe = null) {
         ${arrancada ? `
         <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:.82rem;color:var(--muted)">
           Esta campaña ya arrancó: el medio, el canal, la lista y la plantilla quedan
-          bloqueados. El padrón ya expandido apunta a esa configuración y cambiarla
+          bloqueados. El padrón ya encolado apunta a esa configuración y cambiarla
           dejaría el registro mintiendo sobre lo que se mandó. Si necesitás otra
           combinación, cancelá esta campaña y creá una nueva.
         </div>` : ''}
@@ -37209,7 +37219,7 @@ async function abrirAltaEdicionDrca(id, clonarDe = null) {
         <div class="form-group">
           <label for="drcaSlug">Slug
             <span style="color:var(--muted);font-weight:normal;font-size:.85em">
-              — identificador estable, único en todo el sistema; es lo que referencia el expansor
+              — identificador estable, único en todo el sistema; es lo que referencia el encolador
             </span>
           </label>
           <input type="text" id="drcaSlug" maxlength="60" autocomplete="off"
@@ -37410,7 +37420,7 @@ async function abrirAltaEdicionDrca(id, clonarDe = null) {
 }
 
 // Alcance estimado = suscriptos de la lista elegida. Es una estimación y se
-// dice así: el expansor va a descartar a los que no tengan dato de contacto
+// dice así: el encolador va a descartar a los que no tengan dato de contacto
 // para el medio, y ese recorte recién se conoce cuando corre.
 function drcaActualizarAlcance() {
   const sel = $('#drcaLista');
@@ -37445,7 +37455,7 @@ async function guardarDrca() {
 
   const estado     = $('#drcaEstado').value || 'borrador';
   const programada = $('#drcaProgramada').value || '';
-  // El expansor levanta por (estado='programada', programada <= NOW()): sin
+  // El encolador levanta por (estado='programada', programada <= NOW()): sin
   // fecha la campaña quedaría invisible para él, esperando para siempre.
   if (estado === 'programada' && !programada) {
     fallar('Una campaña programada necesita fecha y hora de programación');
@@ -37525,7 +37535,7 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
       <div class="modal-body">
         ${/* El orden cuenta la campaña de punta a punta: qué es (General), qué
               sale (Plantilla), a quién le sale HOY (Lista), a quién le salió de
-              verdad cuando se expandió (Destinatarios) y cómo le fue
+              verdad cuando se encoló (Destinatarios) y cómo le fue
               (Estadísticas). Las dos del medio miran el presente; las dos
               últimas, la foto congelada del padrón. */''}
         <div class="modal-tabs" role="tablist">
@@ -37703,7 +37713,7 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
   await drcaCargarPadron(id);
 }
 
-// Padrón de la campaña. Es SOLO lectura: lo escribe el job expansor. Mientras
+// Padrón de la campaña. Es SOLO lectura: lo escribe el job encolador. Mientras
 // ese job no exista, esta tabla se ve vacía en toda campaña — es el estado
 // correcto, no un error de carga, y el mensaje vacío lo dice.
 async function drcaCargarPadron(id) {
@@ -37776,7 +37786,7 @@ async function drcaCargarPadron(id) {
   if (!items.length) {
     tbody.innerHTML = `<tr><td colspan="6" class="table-empty">${
       (data.total || 0) === 0
-        ? 'Esta campaña todavía no se expandió: el padrón se genera cuando corre el envío.'
+        ? 'Esta campaña todavía no encoló nada: el padrón se genera cuando corre el envío.'
         : 'Sin resultados con el filtro actual.'
     }</td></tr>`;
     return;
@@ -37904,10 +37914,10 @@ async function drcaCargarPlantilla(id) {
 
 // ---- Pestaña Lista ----
 // A quién le va a llegar. Es la foto de la lista HOY, no el padrón: el padrón
-// (pestaña Destinatarios) es la foto congelada al momento de expandir, y entre
+// (pestaña Destinatarios) es la foto congelada al momento de encolar, y entre
 // una y otra puede haber gente que entró o salió de la lista.
 //
-// La columna Destino muestra el dato de contacto que el expansor va a resolver
+// La columna Destino muestra el dato de contacto que el encolador va a resolver
 // para el medio de la campaña, con la misma expresión que usa él. Los que
 // aparecen "Sin dato" son exactamente los que van a quedar omitidos: por eso el
 // chip, que es la razón práctica de mirar esta pestaña antes de lanzar.
@@ -37989,7 +37999,7 @@ async function drcaCargarLista(id) {
     chips.innerHTML =
       `<button type="button" class="filter-chip${drcaListaSinDato ? '' : ' active'}" data-sd="0">Todos (${fmtNum(d.total_lista || 0)})</button>` +
       ((d.sin_dato || 0) > 0
-        ? `<button type="button" class="filter-chip${drcaListaSinDato ? ' active' : ''}" data-sd="1" title="No tienen el dato de contacto que necesita el medio de la campaña: al expandir quedan omitidos">Sin dato (${fmtNum(d.sin_dato)})</button>`
+        ? `<button type="button" class="filter-chip${drcaListaSinDato ? ' active' : ''}" data-sd="1" title="No tienen el dato de contacto que necesita el medio de la campaña: al encolar quedan omitidos">Sin dato (${fmtNum(d.sin_dato)})</button>`
         : '') +
       `<span style="font-size:.75rem;color:var(--muted);align-self:center;margin-left:4px">${fmtNum(conDato)} con destino resuelto</span>`;
     chips.onclick = (ev) => {
@@ -38032,8 +38042,8 @@ async function drcaCargarLista(id) {
   `).join('');
 }
 
-// ---- Ejecutar ahora (consola en vivo) ----
-// Corre el expansor contra el servidor y muestra el progreso línea por línea.
+// ---- Iniciar (consola en vivo) ----
+// Corre el encolador contra el servidor y muestra el progreso línea por línea.
 // El transporte es SSE, igual que el Sincronizador de tablas: EventSource manda
 // GET con cookies same-origin, así que la auth por cookie funciona sin tocar
 // nada. El trabajo real está en cloud/api/lib/datarocket_campanas_expandir.php.
@@ -38072,11 +38082,13 @@ async function drcaEjecutar(id) {
 
   const est = Number(r.lista_suscriptos) || 0;
   const ok = await confirmar({
-    title:       'Ejecutar campaña ahora',
-    message:     `Se va a armar el padrón de "${r.nombre || '#' + r.id}" y a encolar los mensajes` +
-                 (est > 0 ? ` para los ${fmtNum(est)} prospectos suscriptos` : '') +
-                 `. Los mensajes salen a medida que el motor de ${r.medio_texto || r.medio} los despacha. ¿Seguimos?`,
-    confirmText: 'Ejecutar',
+    title:       'Iniciar la campaña',
+    message:     `Se va a armar el padrón de "${r.nombre || '#' + r.id}" y a encolar los mensajes ahora mismo` +
+                 (est > 0 ? `, para los ${fmtNum(est)} prospectos suscriptos` : '') +
+                 `. Los mensajes salen a medida que el motor de ${r.medio_texto || r.medio} los despacha.` +
+                 (r.programada ? ' La fecha de programación que tenga cargada se ignora.' : '') +
+                 ' ¿Seguimos?',
+    confirmText: 'Iniciar',
     danger:      true,
   });
   if (!ok) return;
@@ -38144,31 +38156,39 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---- Acciones de ciclo de vida ----
-// Larga la campaña. El endpoint valida que esté completa (lista, canal,
-// plantilla y al menos un suscripto) y la deja en el estado que el expansor
-// busca; el envío real lo hace el job en su próxima corrida. Va con confirmación
-// porque es la única acción del módulo que termina en mensajes a terceros.
-async function drcaIniciar(id) {
+// Agenda la campaña para su fecha. NO la larga: la deja en 'programada' y el
+// cron la levanta cuando `programada` llegue. El endpoint revalida todo (fecha,
+// lista, canal, plantilla y al menos un suscripto).
+//
+// La fecha se chequea acá antes de abrir el diálogo para no pasearlo al
+// operador por una confirmación que el servidor va a rechazar igual. El 409 del
+// endpoint sigue estando: esta guarda es comodidad, no la regla.
+async function drcaProgramar(id) {
   const r = drcaItems.find((x) => x.id === id);
   if (!r) return;
 
+  if (!r.programada) {
+    toast('La campaña no tiene fecha de programación. Cargala en la edición antes de programarla.', { error: true });
+    return;
+  }
+
   // El alcance sale del contador denormalizado de la lista, así que se muestra
   // como estimación. El número autoritativo lo cuenta el endpoint sobre la
-  // tabla puente antes de dejar largar.
+  // tabla puente antes de dejar agendar.
   const est = Number(r.lista_suscriptos) || 0;
   const ok = await confirmar({
-    title:       'Programar la campaña para ya',
-    message:     `Se va a marcar "${r.nombre || '#' + r.id}" para que salga en la próxima corrida del cron` +
+    title:       'Programar la campaña',
+    message:     `"${r.nombre || '#' + r.id}" va a quedar programada para el ${fmtFechaAnio(r.programada)}` +
                  (est > 0 ? `, a los ${fmtNum(est)} prospectos suscriptos a "${r.lista_nombre || 'la lista'}"` : '') +
-                 '. Si querés verla correr ahora mismo, usá "Ejecutar ahora" en su lugar.',
+                 '. El cron la levanta sola a esa hora. Si querés largarla ahora mismo, usá "Iniciar" en su lugar.',
     confirmText: 'Programar',
     danger:      true,
   });
   if (!ok) return;
 
   try {
-    await apiSend(`${DRCA_API}?id=${id}&action=iniciar`, 'POST', {});
-    toast('Campaña programada — la levanta el cron en la próxima corrida');
+    await apiSend(`${DRCA_API}?id=${id}&action=programar`, 'POST', {});
+    toast(`Campaña programada para el ${fmtFechaAnio(r.programada)}`);
     await cargarDrca();
   } catch (err) {
     toast(err.message, { error: true });
@@ -38194,7 +38214,7 @@ async function drcaCancelar(id) {
   const ok = await confirmar({
     title:       'Cancelar campaña',
     message:     `¿Cancelás la campaña "${r.nombre || '#' + r.id}"? Los destinatarios que todavía no se encolaron no van a recibir nada. Los mensajes que ya están en la cola del canal se envían igual.`,
-    confirmText: 'Cancelar campaña',
+    confirmText: 'Cancelar',
     danger:      true,
   });
   if (!ok) return;
@@ -38207,7 +38227,7 @@ async function drcaCancelar(id) {
   }
 }
 
-// Recomputa los 5 contadores desde el padrón. Hace falta cuando el expansor se
+// Recomputa los 5 contadores desde el padrón. Hace falta cuando el encolador se
 // cortó a mitad de una corrida y los denormalizados quedaron atrasados.
 async function drcaRecalcular(id) {
   try {

@@ -4,7 +4,7 @@
 // ("esta lista x esta plantilla por este canal") en N mensajes encolados.
 //
 // Lo usan dos callers, y por eso vive en una lib y no adentro de un endpoint:
-//   - cloud/api/datarocket_campanas_ejecutar.php  (boton "Ejecutar ahora", SSE)
+//   - cloud/api/datarocket_campanas_ejecutar.php  (boton "Iniciar", SSE)
 //   - cloud/jobs/datarocket_campanas_expandir.php (cron, camino programado)
 //
 // DOS FASES
@@ -44,6 +44,10 @@ require_once __DIR__ . '/telegram_mensajes.php';
 // alguien de una lista sin dejar rastro no es aceptable. Los dos callers ya lo
 // incluian, pero la lib no puede depender de que lo hagan.
 require_once __DIR__ . '/sucesos.php';
+// La unica puerta de entrada y salida de las listas. El motor NO borra de
+// `datarocket_prospectos_listas` por su cuenta: la baja por rebote sigue las
+// mismas reglas que la que hace un operador a mano.
+require_once __DIR__ . '/datarocket_listas_suscripciones.php';
 
 // Cuantos mensajes se encolan por vuelta del loop de la fase 2. No es un limite
 // de throughput sino el tamano del SELECT: mas grande = menos round-trips, pero
@@ -95,7 +99,7 @@ function drcaValidarLanzable(PDO $pdo, array $c): int {
     // ofrecia 'borrador'/'programada', asi que nadie volvia a encolar sus
     // pendientes nunca.
     //
-    // 'expandiendo' NO entra: es el candado que toma una corrida en curso. Dejar
+    // 'encolando' NO entra: es el candado que toma una corrida en curso. Dejar
     // pasar ese estado seria permitir que dos procesos encolen el mismo padron a
     // la vez. 'pausada' y 'cancelada' tampoco: son decisiones del operador que
     // no se pisan solas -- para volver de ahi esta el boton Reanudar.
@@ -396,7 +400,7 @@ function drcaEncolarPendientes(PDO $pdo, array $c, callable $log, float $deadlin
 // ----------------------------------------------------------------------------
 
 /**
- * Corre la campana entera: valida, expande el padron, encola y deja el estado
+ * Corre la campana entera: valida, arma el padron, encola y deja el estado
  * al dia. `$log` recibe una linea por hito para que el caller la muestre (SSE
  * en el panel, anotarLog() en el cron).
  *
@@ -411,10 +415,10 @@ function drcaCampanaEjecutar(PDO $pdo, int $id, callable $log, array $opts = [])
     $suscriptos = drcaValidarLanzable($pdo, $c);
     $log("Lista #{$c['lista_id']}: {$suscriptos} prospectos suscriptos.");
 
-    // 'expandiendo' es el candado: el cron no levanta campanas en ese estado, asi
+    // 'encolando' es el candado: el cron no levanta campanas en ese estado, asi
     // que una corrida manual y una del cron no se pisan sobre el mismo padron.
     $pdo->prepare("UPDATE datarocket_campanas
-                      SET estado = 'expandiendo', iniciada = COALESCE(iniciada, NOW())
+                      SET estado = 'encolando', iniciada = COALESCE(iniciada, NOW())
                     WHERE id = :id")->execute([':id' => $id]);
 
     try {
@@ -425,7 +429,7 @@ function drcaCampanaEjecutar(PDO $pdo, int $id, callable $log, array $opts = [])
         $p2 = drcaEncolarPendientes($pdo, $c, $log, $deadline);
     } catch (Throwable $e) {
         // Si algo revienta a mitad, la campana no puede quedar clavada en
-        // 'expandiendo' o el cron nunca la vuelve a mirar.
+        // 'encolando' o el cron nunca la vuelve a mirar.
         $pdo->prepare("UPDATE datarocket_campanas SET estado = 'pausada' WHERE id = :id")
             ->execute([':id' => $id]);
         throw $e;
@@ -524,6 +528,14 @@ function drcaSincronizarResultado(PDO $pdo, int $campanaId): int {
  * Se borra SOLO de la lista de esta campana. Un prospecto puede estar en varias
  * y el rebote lo probamos contra una sola direccion en un solo envio; sacarlo
  * de todas seria extrapolar mas de lo que el evento dice.
+ *
+ * EL BORRADO NO SE HACE ACA
+ * -------------------------
+ * Lo hace drListaDesuscribir(), la unica puerta de salida de las listas. Este
+ * motor no tiene una forma propia de desuscribir: usa la misma que el ABM, con
+ * el mismo historial y el mismo recuento del denormalizado. Lo unico que agrega
+ * es lo que solo el sabe — a que direccion se mando de verdad, que subtipo de
+ * evento llego y que mensaje lo causo — y eso viaja en `por_prospecto`.
  */
 function drcaBajasPorRebote(PDO $pdo, array $c): int {
     $listaId = $c['lista_id'] !== null ? (int) $c['lista_id'] : 0;
@@ -564,64 +576,51 @@ function drcaBajasPorRebote(PDO $pdo, array $c): int {
 
     $ids       = array_map(fn($f) => (int) $f['id'],           $filas);
     $prospecto = array_map(fn($f) => (int) $f['prospecto_id'], $filas);
+    $phIds     = implode(',', array_fill(0, count($ids), '?'));
 
-    $phIds  = implode(',', array_fill(0, count($ids), '?'));
-    $phProsp = implode(',', array_fill(0, count($prospecto), '?'));
-
-    // Estampa y borrado tienen que ser atomicos, pero PDO no anida
-    // transacciones: si un caller ya abrio una, beginTransaction() tira
-    // "There is already an active transaction". Se toma la transaccion solo si
-    // no hay una en curso; si la hay, la atomicidad ya la garantiza el caller.
+    // Estampa y baja tienen que ser atomicas, pero PDO no anida transacciones:
+    // si un caller ya abrio una, beginTransaction() tira "There is already an
+    // active transaction". Se toma la transaccion solo si no hay una en curso;
+    // si la hay, la atomicidad ya la garantiza el caller. La puerta hace el
+    // mismo chequeo y se engancha a esta.
     $propia = !$pdo->inTransaction();
     if ($propia) $pdo->beginTransaction();
     try {
-        // Estampar ANTES de borrar: si el DELETE falla, el rollback deja las dos
-        // cosas sin hacer; si estampáramos despues y fallara, tendriamos bajas
-        // sin rastro.
+        // Estampar ANTES de dar de baja: si la baja falla, el rollback deja las
+        // dos cosas sin hacer; si estampáramos despues y fallara, tendriamos
+        // bajas sin rastro en el padron.
         $up = $pdo->prepare("UPDATE datarocket_campanas_mensajes
                                 SET baja_lista = NOW()
                               WHERE id IN ({$phIds})");
         $up->execute($ids);
 
-        // El historial va ANTES del DELETE y es el registro que importa: vive
-        // fuera del padron, asi que sobrevive al borrado de la campana (su FK
-        // es ON DELETE SET NULL). Sin esto, borrar la campana borraria la razon
-        // por la que estas personas ya no estan en la lista.
-        $ins = $pdo->prepare("
-            INSERT INTO datarocket_listas_bajas
-                (lista_id, prospecto_id, destino, motivo, detalle, origen,
-                 campana_id, mensaje_id, fecha)
-            VALUES (?, ?, ?, ?, ?, 'cron/datarocket_campanas', ?, ?, NOW())
-        ");
+        // Lo que la puerta no puede saber y este motor si: el destino REAL al
+        // que se mando (que puede no ser el correo que el prospecto tiene hoy,
+        // y en WhatsApp/Telegram no es un correo en absoluto), el subtipo del
+        // evento de SES y el mensaje que lo causo.
+        $porProspecto = [];
         foreach ($filas as $f) {
-            $ins->execute([
-                $listaId,
-                (int) $f['prospecto_id'],
-                $f['destino'],
-                // El motivo usa el vocabulario de `datarocket_lista_baja_motivo`,
-                // que para el rebote dice 'rebotado' (siempre duro: el blando no
-                // llega hasta aca).
-                (string) $f['resultado'] === 'spam' ? 'spam' : 'rebotado',
-                $f['subtipo'] !== null ? mb_substr((string) $f['subtipo'], 0, 255) : null,
-                (int) $c['id'],
-                $f['mensaje_id'] !== null ? (int) $f['mensaje_id'] : null,
-            ]);
+            $porProspecto[(int) $f['prospecto_id']] = [
+                'destino'    => $f['destino'],
+                // Vocabulario de `datarocket_lista_baja_motivo`. Para el rebote
+                // dice 'rebotado' (siempre duro: el blando no llega hasta aca).
+                'motivo'     => (string) $f['resultado'] === 'spam' ? 'spam' : 'rebotado',
+                'detalle'    => $f['subtipo'],
+                'mensaje_id' => $f['mensaje_id'],
+            ];
         }
 
-        $del = $pdo->prepare("DELETE FROM datarocket_prospectos_listas
-                               WHERE lista_id = ?
-                                 AND prospecto_id IN ({$phProsp})");
-        $del->execute(array_merge([$listaId], $prospecto));
-        $bajas = $del->rowCount();
-
-        // El contador denormalizado de la lista queda al dia en el acto: si no,
-        // el ABM de listas sigue mostrando el numero viejo hasta que alguien
-        // corra el recalculo global.
-        $pdo->prepare("UPDATE datarocket_listas dl
-                          SET dl.suscriptos = (SELECT COUNT(*)
-                                                 FROM datarocket_prospectos_listas dpl
-                                                WHERE dpl.lista_id = dl.id)
-                        WHERE dl.id = ?")->execute([$listaId]);
+        // El historial lo escribe la puerta, ANTES de borrar de la puente, y es
+        // el registro que importa: vive fuera del padron, asi que sobrevive al
+        // borrado de la campana (su FK es ON DELETE SET NULL). Sin esto, borrar
+        // la campana borraria la razon por la que estas personas ya no estan en
+        // la lista.
+        $bajas = drListaDesuscribir($pdo, $listaId, $prospecto, [
+            'motivo'        => 'rebotado',
+            'origen'        => 'cron/datarocket_campanas',
+            'campana_id'    => (int) $c['id'],
+            'por_prospecto' => $porProspecto,
+        ]);
 
         if ($propia) $pdo->commit();
     } catch (Throwable $e) {
@@ -732,7 +731,7 @@ function drcaCampanaReconciliar(PDO $pdo, int $id): array {
 
     // Solo movemos el estado desde los estados "en marcha": si el operador
     // pauso o cancelo la campana mientras corriamos, no le pisamos la decision.
-    $enMarcha = ['expandiendo', 'enviando'];
+    $enMarcha = ['encolando', 'enviando'];
     if (in_array((string) $c['estado'], $enMarcha, true)) {
         $nuevo = $cerrada ? 'completada' : 'enviando';
         $pdo->prepare('UPDATE datarocket_campanas

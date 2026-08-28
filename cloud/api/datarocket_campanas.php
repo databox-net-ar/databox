@@ -15,11 +15,12 @@
 //   GET    api/datarocket_campanas.php?lookups=1[&medio=..&proyecto=..]
 //                                                 -> catalogos para los <select>
 //   POST   api/datarocket_campanas.php             -> alta (JSON body)
-//   POST   api/datarocket_campanas.php?id=N&action=iniciar
-//                                                 -> larga la campana: valida que
-//                                                    este completa y la deja lista
-//                                                    para el expansor. Requiere
-//                                                    `datarocket.campanas.editar`.
+//   POST   api/datarocket_campanas.php?id=N&action=programar
+//                                                 -> agenda la campana: valida que
+//                                                    este completa y CON fecha, y la
+//                                                    pasa a 'programada' para que el
+//                                                    cron la levante a esa hora.
+//                                                    Requiere `datarocket.campanas.editar`.
 //   POST   api/datarocket_campanas.php?id=N&action=recalcular
 //                                                 -> recomputa los contadores
 //                                                    desde el padron. Requiere
@@ -27,9 +28,9 @@
 //   PUT    api/datarocket_campanas.php?id=N        -> modificacion (JSON body)
 //   DELETE api/datarocket_campanas.php?id=N        -> baja
 //
-// ALCANCE: este endpoint NO expande ni encola. Eso vive en la lib
+// ALCANCE: este endpoint NO arma el padron ni encola. Eso vive en la lib
 // `lib/datarocket_campanas_expandir.php`, que disparan el endpoint SSE
-// `datarocket_campanas_ejecutar.php` (boton "Ejecutar ahora") y el cron
+// `datarocket_campanas_ejecutar.php` (boton "Iniciar") y el cron
 // `jobs/datarocket_campanas_expandir.php` (camino programado). Aca solo se
 // consume drcaCampanaReconciliar(), para ?action=recalcular.
 //
@@ -39,7 +40,7 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/sucesos.php';
 // El motor de las campanas. Aca se usa solo drcaCampanaReconciliar() (para
-// ?action=recalcular); la expansion y el encolado los dispara el endpoint SSE
+// ?action=recalcular); el armado del padron y el encolado los dispara el SSE
 // datarocket_campanas_ejecutar.php y el job del cron.
 require_once __DIR__ . '/lib/datarocket_campanas_expandir.php';
 
@@ -68,8 +69,8 @@ const DRCA_CAMPO_RESULTADO_PADRON = 'datarocket_campana_mensaje_resultado';
 
 // Estados en los que la campana ya arranco y por lo tanto su configuracion
 // (lista, plantilla, canal, medio) deja de ser editable: cambiarla a mitad de
-// camino dejaria el padron ya expandido apuntando a otra cosa.
-const DRCA_ESTADOS_ARRANCADOS = ['expandiendo', 'enviando', 'completada'];
+// camino dejaria el padron ya encolado apuntando a otra cosa.
+const DRCA_ESTADOS_ARRANCADOS = ['encolando', 'enviando', 'completada'];
 
 // Traduccion medio legible -> letra legacy de `datarocket_plantillas.medio`
 // (varchar(1) heredado: 'C' correo, 'W' whatsapp). Telegram todavia no tiene
@@ -90,7 +91,7 @@ const DRCA_CANALES_POR_MEDIO = [
 // lib/datarocket_campanas_expandir.php — se duplica en vez de requerir la lib
 // porque esa arrastra los tres libs de mensajes (~1400 lineas) y aca solo se
 // necesita la expresion. Si una cambia, cambiar la otra: el punto de esa
-// pestaña es mostrar exactamente el destino que va a resolver el expansor,
+// pestaña es mostrar exactamente el destino que va a resolver el encolador,
 // incluido el hueco de quien no tiene el dato cargado.
 //
 // Va arriba y no al lado de su handler porque las `const` de nivel de archivo
@@ -108,7 +109,7 @@ try {
     $id     = isset($_GET['id']) ? (int) $_GET['id'] : 0;
     $action = (string) ($_GET['action'] ?? '');
 
-    // "recalcular" e "iniciar" son modificaciones sobre una campana existente,
+    // "recalcular" y "programar" son modificaciones sobre una campana existente,
     // asi que se rigen por .editar y no por el .agregar que requirePermCrud le
     // daria al POST.
     if ($method === 'POST' && $action === 'recalcular') {
@@ -117,10 +118,10 @@ try {
         handleRecalcularCampana($pdo, $id);
         return;
     }
-    if ($method === 'POST' && $action === 'iniciar') {
+    if ($method === 'POST' && $action === 'programar') {
         requirePermission('datarocket.campanas.editar');
         if ($id <= 0) jsonError('Falta id', 400);
-        handleIniciarCampana($pdo, $id);
+        handleProgramarCampana($pdo, $id);
         return;
     }
 
@@ -234,7 +235,7 @@ function drcaValidarSlugUnico(PDO $pdo, string $slug, int $excluirId = 0): void 
 
 // Valida que un valor exista en el catalogo `estados` del campo dado. Evita que
 // un POST a mano meta un `medio` o un `estado` que despues ningun combo sabe
-// pintar y que el expansor no sabria interpretar.
+// pintar y que el encolador no sabria interpretar.
 function drcaValidarCatalogo(PDO $pdo, string $campo, string $valor, string $etiqueta): void {
     $st = $pdo->prepare('SELECT 1 FROM estados WHERE campo = :c AND valor = :v LIMIT 1');
     $st->execute([':c' => $campo, ':v' => $valor]);
@@ -472,7 +473,7 @@ function handleListCampanas(PDO $pdo, array $q): void {
     $s = $pdo->query('
         SELECT COUNT(*)                                                          AS total,
                SUM(CASE WHEN estado = \'programada\' THEN 1 ELSE 0 END)          AS programadas,
-               SUM(CASE WHEN estado IN (\'expandiendo\',\'enviando\') THEN 1 ELSE 0 END) AS en_curso,
+               SUM(CASE WHEN estado IN (\'encolando\',\'enviando\') THEN 1 ELSE 0 END)   AS en_curso,
                COALESCE(SUM(enviados), 0)                                        AS enviados
           FROM ' . DRCA_TABLA
     )->fetch();
@@ -499,7 +500,7 @@ function handleGetOneCampana(PDO $pdo, int $id): void {
 
 // Padron de la campana: quien esta en la lista de destinatarios, con que
 // destino resuelto y en que estado quedo. Solo lectura — lo escribe el job
-// expansor. Devuelve tambien el conteo por estado, que es lo que alimenta los
+// encolador. Devuelve tambien el conteo por estado, que es lo que alimenta los
 // chips de filtro del modal.
 function handlePadronCampana(PDO $pdo, int $id, array $q): void {
     $st = $pdo->prepare('SELECT id FROM ' . DRCA_TABLA . ' WHERE id = :id LIMIT 1');
@@ -679,7 +680,7 @@ function handlePlantillaCampana(PDO $pdo, int $id): void {
 /**
  * Suscriptos de la lista de la campaña, con el destino que les tocaria segun el
  * medio. Es la foto de la lista HOY — no el padron, que es la foto congelada al
- * momento de expandir y vive en `?mensajes=1`.
+ * momento de encolar y vive en `?mensajes=1`.
  *
  *   GET api/datarocket_campanas.php?id=N&lista=1&q=texto&limite=100&sin_dato=1
  *   -> {ok:true, data:{lista:{...}|null, total_lista:N, total:M, sin_dato:K, items:[...]}}
@@ -745,7 +746,7 @@ function handleListaCampana(PDO $pdo, int $id, array $q): void {
         }
         $where[] = '(' . implode(' OR ', $ors) . ')';
     }
-    // Chip "Sin dato": los que hoy quedarian omitidos al expandir. Es la razon
+    // Chip "Sin dato": los que hoy quedarian omitidos al encolar. Es la razon
     // practica de mirar esta pestaña antes de lanzar.
     if ($sinDato) $where[] = "{$destinoSql} IS NULL";
 
@@ -924,7 +925,7 @@ function handleCreateCampana(PDO $pdo, array $body): void {
     drcaValidarCoherencia($pdo, $p);
 
     // Una campana recien creada nunca arranca sola: `iniciada`, `completada` y
-    // los contadores quedan en su default. Los escribe el expansor.
+    // los contadores quedan en su default. Los escribe el encolador.
     $st = $pdo->prepare(
         'INSERT INTO ' . DRCA_TABLA . '
             (proyecto_id, nombre, slug, descripcion, asunto, medio, canal_id, lista_id,
@@ -975,7 +976,7 @@ function handleUpdateCampana(PDO $pdo, int $id, array $body): void {
     ];
 
     // Una campana ya arrancada no puede cambiar de configuracion: el padron
-    // expandido quedaria apuntando a otra lista / plantilla / canal que el que
+    // encolado quedaria apuntando a otra lista / plantilla / canal que el que
     // realmente se uso. Cambiar de estado (pausar, cancelar) SI se permite.
     if (in_array((string) $prev['estado'], DRCA_ESTADOS_ARRANCADOS, true)) {
         foreach (['medio', 'canal_id', 'lista_id', 'plantilla_id'] as $campo) {
@@ -995,6 +996,25 @@ function handleUpdateCampana(PDO $pdo, int $id, array $body): void {
     }
 
     drcaValidarCoherencia($pdo, $f);
+
+    // 'programada' SIN fecha no existe: el cron levanta por (estado='programada'
+    // AND programada <= NOW()), asi que una campana en ese estado y sin fecha
+    // queda invisible para el, esperando para siempre. El formulario ya lo
+    // valida, pero la regla es del recurso y no de la pantalla — sin esto, un
+    // PUT que solo mande {estado:'programada'} la deja muerta en silencio.
+    //
+    // La fecha efectiva es la del body si vino, y si no la que ya estaba
+    // guardada: cambiar solo el estado sobre una campana que YA tiene fecha es
+    // legitimo y no tiene por que reenviarla.
+    $estadoFinal = array_key_exists('estado', $body) && $p['estado'] !== ''
+        ? (string) $p['estado']
+        : (string) $prev['estado'];
+    $fechaFinal = array_key_exists('programada', $body)
+        ? $p['programada']
+        : ($prev['programada'] ?? null);
+    if ($estadoFinal === 'programada' && ($fechaFinal === null || (string) $fechaFinal === '')) {
+        jsonError('Una campaña programada necesita fecha y hora de programación.', 409);
+    }
 
     // Update parcial: solo se tocan las claves presentes en el body.
     $sets   = [];
@@ -1039,9 +1059,9 @@ function handleDeleteCampana(PDO $pdo, int $id): void {
     $prev = $st->fetch();
     if (!$prev) jsonError('Campaña no encontrada', 404);
 
-    // Una campana en pleno envio no se borra: el expansor la tiene tomada y
+    // Una campana en pleno envio no se borra: el encolador la tiene tomada y
     // quedarian filas de cola huerfanas apuntando a una campana inexistente.
-    if (in_array((string) $prev['estado'], ['expandiendo', 'enviando'], true)) {
+    if (in_array((string) $prev['estado'], ['encolando', 'enviando'], true)) {
         jsonError('La campaña está en curso. Pausala o cancelala antes de eliminarla.', 409);
     }
 
@@ -1058,14 +1078,35 @@ function handleDeleteCampana(PDO $pdo, int $id): void {
     jsonOk(['id' => $id, 'padron_eliminado' => $padron]);
 }
 
-// Larga la campana. NO envia ni expande nada: valida que este completa y la
-// deja en el estado que el expansor busca — 'programada' con `programada` =
-// ahora, que es la condicion de su barrido (estado='programada' AND
-// programada <= NOW()). El envio real lo hace el job en su proxima corrida.
+// Agenda la campana. NO envia, NO encola y NO la larga: valida que este
+// completa y la pasa a 'programada', dejando intacta SU fecha. El cron la
+// levanta cuando esa fecha llegue (su barrido es estado='programada' AND
+// programada <= NOW()).
 //
-// Que se valida antes de largar, y por que cada cosa:
+// LA FECHA ES DEL OPERADOR, NO DE ESTA FUNCION
+// --------------------------------------------
+// Antes esto hacia `programada = NOW()` y la campana salia en la corrida
+// siguiente: "Programar para ya". Eso convertia el campo `programada` del
+// formulario en decorativo — cargabas una fecha para manana, apretabas
+// Programar y salia al toque, pisando lo que habias puesto. Ahora la accion
+// respeta la fecha cargada y EXIGE que exista; para largar en el momento esta
+// el boton Iniciar, que corre el encolador en vivo.
+//
+// Una fecha en el pasado se acepta a proposito: `programada <= NOW()` ya es
+// verdadera, asi que el cron la toma en la proxima corrida. Es la forma de
+// decir "que salga ya, pero desatendido".
+//
+// `iniciada` tampoco se sella mas aca. Con la semantica vieja coincidian el
+// "dio la orden" y el "arranco"; ahora pueden separarse dias, y estamparla al
+// programar dejaria la columna mintiendo sobre cuando empezo la campana. La
+// sella el encolador cuando toma el candado, con COALESCE para no pisarse a si
+// mismo entre corridas (ver drcaCampanaEjecutar en la lib).
+//
+// Que se valida antes de agendar, y por que cada cosa:
 //   - estado: solo desde 'borrador' o 'programada'. Una campana en curso ya
 //     esta largada y una completada/cancelada terminaria pisando su padron.
+//   - fecha: sin `programada` la campana quedaria invisible para el cron,
+//     esperando para siempre. Es la regla que el estado 'programada' significa.
 //   - lista: sin lista no hay a quien.
 //   - canal: sin canal no hay por donde.
 //   - plantilla: sin plantilla no hay que mandar. Vale tambien para Telegram,
@@ -1074,7 +1115,7 @@ function handleDeleteCampana(PDO $pdo, int $id): void {
 //   - suscriptos: se cuentan sobre la tabla puente y NO sobre el contador
 //     denormalizado `datarocket_listas.suscriptos`, que puede estar atrasado.
 //     Bloquear un envio por un contador viejo seria peor que la consulta de mas.
-function handleIniciarCampana(PDO $pdo, int $id): void {
+function handleProgramarCampana(PDO $pdo, int $id): void {
     $st = $pdo->prepare('SELECT ' . DRCA_COLS . ' FROM ' . DRCA_TABLA . ' WHERE id = :id LIMIT 1');
     $st->execute([':id' => $id]);
     $c = $st->fetch();
@@ -1082,7 +1123,11 @@ function handleIniciarCampana(PDO $pdo, int $id): void {
 
     $estado = (string) $c['estado'];
     if (!in_array($estado, ['borrador', 'programada'], true)) {
-        jsonError("La campaña está en estado \"{$estado}\": solo se pueden iniciar las que están en borrador o programadas.", 409);
+        jsonError("La campaña está en estado \"{$estado}\": solo se pueden programar las que están en borrador o programadas.", 409);
+    }
+
+    if ($c['programada'] === null || (string) $c['programada'] === '') {
+        jsonError('No se puede programar: la campaña no tiene fecha y hora de programación. Cargala en la edición y volvé a intentar.', 409);
     }
 
     $faltan = [];
@@ -1090,28 +1135,23 @@ function handleIniciarCampana(PDO $pdo, int $id): void {
     if ($c['canal_id']     === null) $faltan[] = 'el canal de salida';
     if ($c['plantilla_id'] === null) $faltan[] = 'la plantilla';
     if ($faltan) {
-        jsonError('No se puede iniciar: falta ' . implode(', ', $faltan) . '.', 409);
+        jsonError('No se puede programar: falta ' . implode(', ', $faltan) . '.', 409);
     }
 
     $sc = $pdo->prepare('SELECT COUNT(*) FROM datarocket_prospectos_listas WHERE lista_id = :l');
     $sc->execute([':l' => (int) $c['lista_id']]);
     $suscriptos = (int) $sc->fetchColumn();
     if ($suscriptos === 0) {
-        jsonError('No se puede iniciar: la lista no tiene prospectos suscriptos.', 409);
+        jsonError('No se puede programar: la lista no tiene prospectos suscriptos.', 409);
     }
 
-    // `iniciada` se sella aca y no en el expansor: es el momento en que el
-    // operador dio la orden, que es el dato que se quiere auditar. El expansor
-    // marcara `completada` cuando no queden pendientes en el padron.
-    $up = $pdo->prepare(
-        'UPDATE ' . DRCA_TABLA . "
-            SET estado = 'programada', programada = NOW(), iniciada = NOW()
-          WHERE id = :id"
-    );
+    // Solo el estado. `programada` queda como la dejo el operador.
+    $up = $pdo->prepare('UPDATE ' . DRCA_TABLA . " SET estado = 'programada' WHERE id = :id");
     $up->execute([':id' => $id]);
 
     registrarSuceso($pdo, 'datarocket_campanas', 'info',
-        "Inicio de campaña #{$id} — \"{$c['nombre']}\" ({$c['medio']}, {$suscriptos} suscriptos en la lista)");
+        "Campaña #{$id} programada — \"{$c['nombre']}\" ({$c['medio']}, {$suscriptos} suscriptos en la lista)"
+        . " para el {$c['programada']}");
 
     handleGetOneCampana($pdo, $id);
 }

@@ -16,6 +16,9 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
+// La unica puerta de entrada y salida de las listas. Este endpoint NO escribe
+// `datarocket_prospectos_listas` por su cuenta.
+require_once __DIR__ . '/lib/datarocket_listas_suscripciones.php';
 
 const DR_LI_COLS = "id, proyecto_id, nombre, slug, descripcion, suscriptos";
 
@@ -292,17 +295,12 @@ function drLiIdsUnicos(mixed $v): array {
 //   Body: {agregar:[ids], quitar:[ids]}
 //   -> {ok:true, data:{agregados:N, quitados:M, suscriptos:T}}
 //
-// Idempotente: el alta usa INSERT IGNORE contra la PK compuesta y la baja un
-// DELETE por id, asi que repetir la misma llamada deja el mismo estado. Los
-// ids inexistentes se descartan solos — el alta los filtra con un JOIN contra
-// `datarocket_prospectos` (no confiamos en que reviente la FK) y la baja
-// simplemente no matchea ninguna fila.
-//
-// Las dos operaciones dejan historial (`datarocket_listas_altas` y
-// `datarocket_listas_bajas`), y los dos INSERT van ANTES de tocar la puente
-// para poder apoyarse en ella: la puente es la que sabe quien estaba y quien no,
-// o sea quien cambio de verdad. Eso mantiene la idempotencia tambien del log —
-// la segunda corrida de la misma llamada no registra nada.
+// El trabajo lo hacen drListaSuscribir() / drListaDesuscribir(), la unica puerta
+// (lib/datarocket_listas_suscripciones.php). Aca solo se valida el request. Todo
+// lo demas — historial, descarte de ids inexistentes, recuento del
+// denormalizado, idempotencia — es regla de la puerta y vale igual para los
+// otros dos callers (la ficha del prospecto y la baja por rebote del motor de
+// campanas).
 function handleSuscriptosGuardar(PDO $pdo, int $id, array $in): void {
     $existe = $pdo->prepare('SELECT id FROM datarocket_listas WHERE id = :id');
     $existe->execute([':id' => $id]);
@@ -322,93 +320,21 @@ function handleSuscriptosGuardar(PDO $pdo, int $id, array $in): void {
     $agregados = 0;
     $quitados  = 0;
 
-    // `sub` es el id de usuario en el JWT (ver computePermisosUsuario). 0 -> NULL
-    // para no dejar un id inexistente en el historial. Se resuelve una sola vez:
-    // lo usan los dos bloques (altas y bajas) y decodificar el token dos veces
-    // por request no aporta nada.
-    $uid = (int) (currentAuth()['sub'] ?? 0);
-    $uid = $uid > 0 ? $uid : null;
+    // `sub` es el id de usuario en el JWT (ver computePermisosUsuario). La
+    // puerta convierte 0 en NULL para no dejar un id inexistente en el historial.
+    $ctx = [
+        'motivo'     => DR_LISTA_ALTA_MOTIVO_MANUAL,
+        'origen'     => 'abm/datarocketlistas',
+        'usuario_id' => (int) (currentAuth()['sub'] ?? 0),
+    ];
 
+    // Las dos operaciones van en una transaccion sola: el editor las manda
+    // juntas y el operador las vive como un unico "guardar". La puerta detecta
+    // que ya hay una transaccion abierta y se engancha en vez de abrir la suya.
     $pdo->beginTransaction();
     try {
-        if ($quitar) {
-            $ph = implode(',', array_fill(0, count($quitar), '?'));
-
-            // Historial ANTES de borrar: una vez ejecutado el DELETE no queda
-            // de donde sacar el `destino` ni a quien se quito. Sin este registro
-            // la estadistica de bajas contaria solo las automaticas por rebote y
-            // diria "perdimos 3 suscriptos" cuando alguien saco 200 a mano.
-            //
-            // El INSERT ... SELECT se apoya en la propia tabla puente, asi que
-            // solo registra a los que REALMENTE estaban suscriptos: pedir la
-            // baja de alguien que no estaba en la lista no inventa un renglon
-            // de historial.
-            $st = $pdo->prepare("
-                INSERT INTO datarocket_listas_bajas
-                    (lista_id, prospecto_id, destino, motivo, origen, usuario_id, fecha)
-                SELECT dpl.lista_id, dpl.prospecto_id, NULLIF(TRIM(p.correo), ''),
-                       'manual', 'abm/datarocketlistas', ?, NOW()
-                  FROM datarocket_prospectos_listas dpl
-                  JOIN datarocket_prospectos p ON p.id = dpl.prospecto_id
-                 WHERE dpl.lista_id = ? AND dpl.prospecto_id IN ({$ph})
-            ");
-            $st->execute(array_merge([$uid, $id], $quitar));
-
-            $st = $pdo->prepare("
-                DELETE FROM datarocket_prospectos_listas
-                 WHERE lista_id = ? AND prospecto_id IN ({$ph})
-            ");
-            $st->execute(array_merge([$id], $quitar));
-            $quitados = $st->rowCount();
-        }
-
-        if ($agregar) {
-            $ph = implode(',', array_fill(0, count($agregar), '?'));
-
-            // Historial ANTES de insertar, espejo del bloque de bajas. El
-            // `NOT EXISTS` contra la puente es lo que hace que solo se registre
-            // a quien REALMENTE entra: sin el, volver a guardar el editor con
-            // la misma seleccion inventaria un alta por cada suscripto que ya
-            // estaba. El INSERT IGNORE de abajo no duplica la suscripcion, pero
-            // el log si duplicaria el evento — y es un log, no se puede limpiar
-            // despues.
-            //
-            // El JOIN contra `datarocket_prospectos` cumple la misma funcion que
-            // en el INSERT de abajo: descarta ids inexistentes antes de tocar la
-            // FK, y de paso trae el correo del momento para `destino`.
-            $st = $pdo->prepare("
-                INSERT INTO datarocket_listas_altas
-                    (lista_id, prospecto_id, destino, motivo, origen, usuario_id, fecha)
-                SELECT ?, p.id, NULLIF(TRIM(p.correo), ''),
-                       'manual', 'abm/datarocketlistas', ?, NOW()
-                  FROM datarocket_prospectos p
-                 WHERE p.id IN ({$ph})
-                   AND NOT EXISTS (SELECT 1
-                                     FROM datarocket_prospectos_listas dpl
-                                    WHERE dpl.lista_id = ? AND dpl.prospecto_id = p.id)
-            ");
-            $st->execute(array_merge([$id, $uid], $agregar, [$id]));
-
-            $st = $pdo->prepare("
-                INSERT IGNORE INTO datarocket_prospectos_listas (prospecto_id, lista_id)
-                SELECT p.id, ? FROM datarocket_prospectos p WHERE p.id IN ({$ph})
-            ");
-            $st->execute(array_merge([$id], $agregar));
-            $agregados = $st->rowCount();
-        }
-
-        // El denormalizado se recalcula para esta lista sola (el recalculo
-        // global es otra herramienta). Sin esto el listado del ABM sigue
-        // mostrando el contador viejo hasta la proxima corrida.
-        $st = $pdo->prepare("
-            UPDATE datarocket_listas dl
-               SET dl.suscriptos = (SELECT COUNT(*)
-                                      FROM datarocket_prospectos_listas dpl
-                                     WHERE dpl.lista_id = dl.id)
-             WHERE dl.id = :id
-        ");
-        $st->execute([':id' => $id]);
-
+        if ($quitar)  $quitados  = drListaDesuscribir($pdo, $id, $quitar,  $ctx);
+        if ($agregar) $agregados = drListaSuscribir($pdo, $id, $agregar, $ctx);
         $pdo->commit();
     } catch (Throwable $e) {
         $pdo->rollBack();

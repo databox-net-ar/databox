@@ -16,10 +16,19 @@
 // combo de listas en la ficha del prospecto) y eso escribe su propio renglon;
 // no se agregan ni se corrigen desde aca.
 //
-// OJO AL LEER LOS NUMEROS: el historial arranca el dia que se aplico la
-// migracion 20260828_2000 y no se pudo backfillear (la puente
-// `datarocket_prospectos_listas` no guarda fecha). Una lista con 5.000
-// suscriptos y 3 altas registradas no crecio 3: crecio 3 desde entonces.
+// OJO AL LEER LOS NUMEROS: hay dos clases de renglon y no significan lo mismo.
+//
+//   motivo = 'preexistente' -> backfill (migracion 20260828_2100). Toda
+//     suscripcion que ya existia cuando se creo el historial. La FECHA sale de
+//     `datarocket_prospectos_listas.fecha_creacion`, que en la mayoria de los
+//     casos es la marca de la carga inicial de la tabla y no la fecha real de
+//     suscripcion. Sirve para "¿desde cuando esta X en la lista?" con un
+//     "desde antes de esto"; NO sirve para hacer una serie temporal.
+//   cualquier otro motivo -> alta registrada de verdad, con su fecha real.
+//
+// Por eso `stats` devuelve la serie POR MOTIVO y no un total mensual plano: un
+// grafico que sume las dos clases muestra un pico ficticio en el mes del
+// backfill.
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 

@@ -14,7 +14,7 @@
  *      bajas de lista que correspondan.
  *
  * El trabajo real vive en cloud/api/lib/datarocket_campanas_expandir.php, que
- * comparte con el endpoint del botón "Ejecutar ahora" del panel. Este archivo
+ * comparte con el endpoint del botón "Iniciar" del panel. Este archivo
  * es sólo la SELECCIÓN (qué campaña toca en qué corrida) — misma división que
  * aws_mensajes_enviar.php.
  *
@@ -74,7 +74,7 @@ try {
     //      borrador/programada. La campaña quedaba clavada para siempre con
     //      parte del padrón sin despachar.
     //
-    // 'expandiendo' queda EXCLUIDO a propósito: es el candado que toma una
+    // 'encolando' queda EXCLUIDO a propósito: es el candado que toma una
     // corrida manual desde el panel. Si el operador está ejecutando la campaña
     // a mano, el cron no se mete en el mismo padrón.
     //
@@ -167,7 +167,7 @@ try {
     $bajasTotal = 0;
     foreach ($tardias as $cid) {
         // Reconciliar una 'completada' no le mueve el estado: el bloque que
-        // avanza estados sólo actúa sobre 'expandiendo'/'enviando'. Acá se la
+        // avanza estados sólo actúa sobre 'encolando'/'enviando'. Acá se la
         // llama por su efecto sobre el padrón (resultado + bajas).
         $r = drcaCampanaReconciliar($pdo, (int) $cid);
         if (($r['bajas'] ?? 0) > 0) $bajasTotal += (int) $r['bajas'];

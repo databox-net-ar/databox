@@ -55,6 +55,9 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/prospectos_normalizar.php';
 require_once __DIR__ . '/lib/datarocket_etiquetas_uso.php';
+// La unica puerta de entrada y salida de las listas. Este endpoint NO escribe
+// `datarocket_prospectos_listas` por su cuenta.
+require_once __DIR__ . '/lib/datarocket_listas_suscripciones.php';
 
 const DR_CT_COLS = "id, uuid, tipo, nombre,
                     empresa_nombre, empresa_rubro, empresa_actividad, empresa_cargo,
@@ -896,16 +899,17 @@ function sanitizeListaIds(mixed $raw): array {
 }
 
 // Deja la puente `datarocket_prospectos_listas` con exactamente `$listaIds`
-// para `$prospectoId`. Estrategia "full replace" (DELETE + INSERT IGNORE) —
-// es suficiente porque el volumen por prospecto es chico (decenas). Los ids
-// inexistentes en `datarocket_listas` se descartan antes de insertar para no
-// violar la FK.
+// para `$prospectoId`.
 //
-// El diff contra el estado actual NO es para ahorrar escrituras (el full
-// replace sigue igual): es para el historial. Un "guardar" de la ficha que no
-// toco las listas igual pasa por el DELETE + INSERT de todas, asi que sin
-// diffear cada guardado registraria un alta por lista que el prospecto ya
-// tenia, y el log terminaria contando guardados en vez de suscripciones.
+// Ya NO es un full replace. La suscripcion se toca solo a traves de la unica
+// puerta (lib/datarocket_listas_suscripciones.php), y la puerta trabaja por
+// lista: hay que decirle que cambio, no reescribirle todo. Ese diff ademas es lo
+// que evita que cada guardado de la ficha registre un alta por lista que el
+// prospecto ya tenia — el log contaria guardados en vez de suscripciones.
+//
+// Ojo con la orientacion: la puerta es (una lista, N prospectos) y aca tenemos
+// (un prospecto, N listas), asi que se la llama una vez por lista. El volumen
+// por prospecto es de decenas, no es un problema.
 function syncListas(PDO $pdo, int $prospectoId, array $listaIds): void {
     // Estado actual ANTES de tocar nada: es lo unico que distingue un cambio
     // real de un guardado que no movio nada.
@@ -913,74 +917,28 @@ function syncListas(PDO $pdo, int $prospectoId, array $listaIds): void {
     $act->execute([':cid' => $prospectoId]);
     $actuales = array_map('intval', $act->fetchAll(PDO::FETCH_COLUMN));
 
-    // Validamos los ids contra `datarocket_listas` para no depender de que la
-    // capa cliente haya elegido de la lista real (defensa en profundidad). El
-    // diff va contra los validos, no contra lo que mando el cliente: un id
-    // inexistente no es un alta, es basura descartada.
-    $validIds = [];
-    if ($listaIds) {
-        $ph  = implode(',', array_fill(0, count($listaIds), '?'));
-        $val = $pdo->prepare("SELECT id FROM datarocket_listas WHERE id IN ({$ph})");
-        $val->execute($listaIds);
-        $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
-    }
+    // El diff va contra los ids que MANDO el cliente, sin validarlos aca: la
+    // puerta descarta sola las listas inexistentes (misma regla para todos los
+    // callers). Lo unico que hace falta es normalizar a enteros para que el
+    // array_diff compare peras con peras.
+    $pedidas = array_values(array_unique(array_map('intval', $listaIds)));
 
-    $altas = array_values(array_diff($validIds, $actuales));
-    $bajas = array_values(array_diff($actuales, $validIds));
-    if ($altas || $bajas) {
-        registrarCambioListasProspecto($pdo, $prospectoId, $altas, $bajas);
-    }
-
-    $del = $pdo->prepare('DELETE FROM datarocket_prospectos_listas WHERE prospecto_id = :cid');
-    $del->execute([':cid' => $prospectoId]);
-    if (!$validIds) return;
-    $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_prospectos_listas
-                          (prospecto_id, lista_id) VALUES (:cid, :lid)');
-    foreach ($validIds as $lid) {
-        $ins->execute([':cid' => $prospectoId, ':lid' => $lid]);
-    }
-}
-
-/**
- * Escribe en los historiales de lista (`datarocket_listas_altas` /
- * `datarocket_listas_bajas`) las suscripciones que cambiaron al guardar la
- * ficha de un prospecto.
- *
- * Esta es la SEGUNDA puerta de entrada a las listas: la otra es el editor de
- * suscriptos del ABM de Listas (`datarocketlistas.php`, handleSuscriptosGuardar).
- * Las dos tienen que escribir el mismo historial o el log miente por omision —
- * que es exactamente el problema que las dos tablas existen para resolver.
- *
- * Corre dentro de la transaccion del caller (POST y PUT ya abren una), asi que
- * si el guardado falla el historial se va con el rollback.
- *
- * `destino` guarda el correo del prospecto AL MOMENTO del cambio, igual que en
- * el otro escritor: si despues se corrige, el historial sigue diciendo con que
- * dato entro o salio.
- */
-function registrarCambioListasProspecto(PDO $pdo, int $prospectoId, array $altas, array $bajas): void {
-    $st = $pdo->prepare('SELECT correo FROM datarocket_prospectos WHERE id = :id');
-    $st->execute([':id' => $prospectoId]);
-    $correo  = trim((string) ($st->fetchColumn() ?: ''));
-    $destino = $correo !== '' ? $correo : null;
+    $altas = array_values(array_diff($pedidas,  $actuales));
+    $bajas = array_values(array_diff($actuales, $pedidas));
+    if (!$altas && !$bajas) return;
 
     // `sub` es el id de usuario en el JWT (ver computePermisosUsuario).
-    // 0 -> NULL para no dejar un id inexistente en el historial.
-    $uid = (int) (currentAuth()['sub'] ?? 0);
-    $uid = $uid > 0 ? $uid : null;
+    $ctx = [
+        'motivo'     => DR_LISTA_ALTA_MOTIVO_MANUAL,
+        'origen'     => 'abm/datarocketprospectos',
+        'usuario_id' => (int) (currentAuth()['sub'] ?? 0),
+    ];
 
-    // Mismo shape en las dos tablas salvo el nombre; se arma una sola vez.
-    $sql = "INSERT INTO %s
-                (lista_id, prospecto_id, destino, motivo, origen, usuario_id, fecha)
-            VALUES (:lid, :pid, :dest, 'manual', 'abm/datarocketprospectos', :uid, NOW())";
-
-    foreach ([['datarocket_listas_altas', $altas], ['datarocket_listas_bajas', $bajas]] as [$tabla, $ids]) {
-        if (!$ids) continue;
-        $ins = $pdo->prepare(sprintf($sql, $tabla));
-        foreach ($ids as $lid) {
-            $ins->execute([':lid' => $lid, ':pid' => $prospectoId, ':dest' => $destino, ':uid' => $uid]);
-        }
-    }
+    // Corre dentro de la transaccion del caller (POST y PUT ya abren una), asi
+    // que si el guardado falla las suscripciones y su historial se van con el
+    // rollback. La puerta lo detecta y no intenta abrir otra.
+    foreach ($altas as $lid) drListaSuscribir($pdo, $lid, [$prospectoId], $ctx);
+    foreach ($bajas as $lid) drListaDesuscribir($pdo, $lid, [$prospectoId], $ctx);
 }
 
 // ----------------------------------------------------------------------------
