@@ -113,6 +113,25 @@ abstract class InterpreteBanco {
         return ['verificado' => false, 'nota' => 'Sin calibrar contra un export real.'];
     }
 
+    /**
+     * Le avisa al interprete a QUE CUENTA se va a importar, antes de
+     * `interpretar()`. No-op por defecto.
+     *
+     * Existe por los extractos que traen VARIAS cuentas en un mismo archivo. El
+     * resumen de Brubank es el caso: un solo PDF con la caja de ahorro en pesos
+     * y la caja de ahorro en dolares, una atras de la otra, con sus propias
+     * tablas de movimientos y hasta con numeros de referencia repetidos entre
+     * las dos. Sin saber la cuenta destino, el interprete devolveria los
+     * movimientos de las dos y el importador cargaria los dolares como pesos.
+     *
+     * Es un gancho OPCIONAL a proposito: los interpretes de archivos de una
+     * sola cuenta (San Juan, Supervielle, MercadoPago, Naranja X) no lo
+     * sobrescriben y siguen funcionando exactamente igual que antes.
+     */
+    public function conCuenta(array $cuenta): void {
+        // no-op
+    }
+
     // ------------------------------------------------------------------
     // Helpers compartidos
     // ------------------------------------------------------------------

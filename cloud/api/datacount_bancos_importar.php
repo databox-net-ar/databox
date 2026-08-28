@@ -1,6 +1,6 @@
 <?php
 // api/datacount_bancos_importar.php
-// Datacount > Bancos: importacion de extractos (CSV / TSV / XLSX).
+// Datacount > Bancos: importacion de extractos (CSV / TSV / XLSX / PDF).
 //
 // Flujo en dos pasos, ambos multipart y ambos con el archivo adjunto:
 //
@@ -304,6 +304,10 @@ function handleAnalizarExtracto(PDO $pdo, array $cuenta, array $datos): void {
     if ($interprete !== null) {
         $obj = dcbInterprete($interprete['clave']);
         if ($obj !== null) {
+            // Los extractos que traen varias cuentas en un mismo archivo (el
+            // PDF de Brubank es uno) necesitan saber a cual se va a importar
+            // para quedarse solo con esos movimientos. Para el resto es no-op.
+            $obj->conCuenta($cuenta);
             $r = $obj->interpretar($filas, $datos['formato']);
             $interprete['calibracion'] = $obj->calibracion();
             $interprete['avisos']      = $r->avisos;
@@ -314,7 +318,16 @@ function handleAnalizarExtracto(PDO $pdo, array $cuenta, array $datos): void {
             );
             // Reconoció el encabezado pero no pudo leer nada: mejor mandar al
             // mapeo manual que ofrecer un import vacío.
+            //
+            // Los avisos del intérprete se arrastran al aviso general porque
+            // acá se descarta `$interprete` — y con él `$interprete['avisos']`,
+            // que es donde vive la explicación de POR QUE no leyó nada. Sin
+            // esto, el caso "subiste el resumen en dólares a la cuenta en
+            // pesos" llegaba al front como un genérico "no pudo leer
+            // movimientos" y el usuario no tenía forma de saber qué corregir.
             if (!$r->movimientos) {
+                $aviso      = trim(($aviso ? $aviso . ' ' : '')
+                            . implode(' ', $r->avisos)) ?: null;
                 $aviso      = ($aviso ? $aviso . ' ' : '')
                             . 'El intérprete reconoció el formato pero no pudo leer movimientos.';
                 $interprete = null;
@@ -395,6 +408,10 @@ function dcbiLeerConInterprete(array $cuenta, array $datos): array {
                 . '. Volvé a analizarlo.', 409);
     }
 
+    // Misma razon que en el analisis: el interprete tiene que saber a que
+    // cuenta se importa antes de leer. No-op salvo para los formatos
+    // multi-cuenta.
+    $obj->conCuenta($cuenta);
     $r = $obj->interpretar($datos['filas'], $datos['formato']);
 
     // El interprete puede asignar un medio que no aplique al tipo de esta

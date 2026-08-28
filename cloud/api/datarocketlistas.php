@@ -6,8 +6,11 @@
 // 20260821_1000_datarocket_listas_agregar_slug.sql).
 //   GET    api/datarocketlistas.php          -> listado con filtros (query string)
 //   GET    api/datarocketlistas.php?id=N     -> registro individual
+//   GET    api/datarocketlistas.php?id=N&suscriptos=1     -> prospectos suscriptos a la lista
+//   GET    api/datarocketlistas.php?candidatos=1&q=&lista=N -> prospectos NO suscriptos (typeahead del editor)
 //   POST   api/datarocketlistas.php          -> alta (JSON body)
 //   PUT    api/datarocketlistas.php?id=N     -> modificacion (JSON body)
+//   PUT    api/datarocketlistas.php?id=N&suscriptos=1     -> alta/baja de suscripciones {agregar:[], quitar:[]}
 //   DELETE api/datarocketlistas.php?id=N     -> baja
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'} (STACK.md sec. 10).
 
@@ -15,6 +18,11 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 
 const DR_LI_COLS = "id, proyecto_id, nombre, slug, descripcion, suscriptos";
+
+// Columnas del prospecto que devuelve `?suscriptos=1`. Es lo justo para
+// identificar y contactar al suscripto en la pestaña del modal de consulta —
+// el detalle completo vive en el ABM de prospectos.
+const DR_LI_SUS_COLS = "p.id, p.tipo, p.nombre, p.correo, p.celular, p.whatsapp";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -24,12 +32,19 @@ try {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
-    if ($method === 'GET' && $id > 0) {
+    if ($method === 'GET' && isset($_GET['candidatos'])) {
+        handleCandidatos($pdo, $_GET);
+    } elseif ($method === 'GET' && $id > 0 && isset($_GET['suscriptos'])) {
+        handleSuscriptos($pdo, $id, $_GET);
+    } elseif ($method === 'GET' && $id > 0) {
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
         handleList($pdo, $_GET);
     } elseif ($method === 'POST') {
         handleCreate($pdo, readJsonBody());
+    } elseif ($method === 'PUT' && isset($_GET['suscriptos'])) {
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleSuscriptosGuardar($pdo, $id, readJsonBody());
     } elseif ($method === 'PUT') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleUpdate($pdo, $id, readJsonBody());
@@ -114,6 +129,241 @@ function handleGetOne(PDO $pdo, int $id): void {
     $row = $stmt->fetch();
     if (!$row) jsonError('Lista no encontrada', 404);
     jsonOk($row);
+}
+
+// ----------------------------------------------------------------------------
+// Suscriptos de una lista (pestaña "Suscriptos" del modal de consulta)
+// ----------------------------------------------------------------------------
+
+// Prospectos suscriptos a la lista `$id`, via la puente
+// `datarocket_prospectos_listas` (PK compuesta prospecto_id + lista_id, FKs
+// con CASCADE — no hay huerfanos que descartar).
+//
+//   GET api/datarocketlistas.php?id=N&suscriptos=1&q=texto&limite=100
+//   -> {ok:true, data:{total_lista:N, total:M, items:[...]}}
+//
+// `total_lista` es la cuenta cruda de suscriptos y `total` la cuenta con el
+// buscador aplicado (iguales si `q` viene vacio). La UI las usa para aclarar
+// cuanto recorta el limite. Se cuenta contra la puente en vez de leer el
+// denormalizado `datarocket_listas.suscriptos`, que puede estar desfasado
+// hasta que corra el recalculo.
+//
+// Vive en este endpoint y no en `datarocketprospectos.php?lista_id=N` a
+// proposito: aquel exige permiso `datarocket.prospectos.consultar`, y quien
+// consulta una lista tiene que poder ver quien esta adentro con su propio
+// permiso `datarocket.listas.consultar` (el que ya valido requirePermCrud).
+function handleSuscriptos(PDO $pdo, int $id, array $q): void {
+    $existe = $pdo->prepare('SELECT id FROM datarocket_listas WHERE id = :id');
+    $existe->execute([':id' => $id]);
+    if (!$existe->fetch()) jsonError('Lista no encontrada', 404);
+
+    $search = trim((string)($q['q'] ?? ''));
+    $limite = isset($q['limite']) ? (int)$q['limite'] : 100;
+    if ($limite < 1)    $limite = 1;
+    if ($limite > 1000) $limite = 1000;
+
+    $where  = ['dpl.lista_id = :lista_id'];
+    $params = [':lista_id' => $id];
+
+    if ($search !== '') {
+        // LIKE sobre utf8mb4_general_ci: la collation ya pliega caja y
+        // acentos, asi que "jose" matchea "José" sin normalizar en PHP.
+        // Mismos campos propios del prospecto que el buscador rapido del ABM
+        // de prospectos (sin los EXISTS de listas/etiquetas, que aca no
+        // aportan: la lista ya esta fijada por `lista_id`).
+        $where[] = drLiWhereBusquedaProspecto($search, $params, 's');
+    }
+
+    $sqlWhere = 'WHERE ' . implode(' AND ', $where);
+
+    // Cuenta cruda: entra directo por `idx_dcl_lista` sin tocar prospectos.
+    $st = $pdo->prepare('SELECT COUNT(*) FROM datarocket_prospectos_listas WHERE lista_id = :id');
+    $st->execute([':id' => $id]);
+    $totalLista = (int)$st->fetchColumn();
+
+    if ($search === '') {
+        $total = $totalLista;
+    } else {
+        $st = $pdo->prepare("
+            SELECT COUNT(*)
+              FROM datarocket_prospectos_listas dpl
+              JOIN datarocket_prospectos p ON p.id = dpl.prospecto_id
+            {$sqlWhere}
+        ");
+        $st->execute($params);
+        $total = (int)$st->fetchColumn();
+    }
+
+    // Orden alfabetico: la pestaña se lee como un directorio, y con el limite
+    // recortando siempre devuelve el mismo tramo (el desempate por id evita
+    // que dos homonimos se intercambien entre corridas).
+    $stmt = $pdo->prepare("
+        SELECT " . DR_LI_SUS_COLS . ", dpl.fecha_creacion
+          FROM datarocket_prospectos_listas dpl
+          JOIN datarocket_prospectos p ON p.id = dpl.prospecto_id
+        {$sqlWhere}
+        ORDER BY p.nombre ASC, p.id ASC
+        LIMIT {$limite}
+    ");
+    $stmt->execute($params);
+
+    jsonOk([
+        'total_lista' => $totalLista,
+        'total'       => $total,
+        'items'       => $stmt->fetchAll(),
+    ]);
+}
+
+// Predicado de busqueda de prospectos compartido por `?suscriptos=1` y
+// `?candidatos=1`, para que el operador encuentre lo mismo escribiendo en la
+// tabla de suscriptos que en el buscador de "agregar". Devuelve el SQL y
+// carga los binds en `$params` por referencia.
+function drLiWhereBusquedaProspecto(string $search, array &$params, string $pre): string {
+    $like = "%{$search}%";
+    $campos = ['nombre', 'empresa_nombre', 'persona_nombre', 'correo',
+               'telefono', 'celular', 'whatsapp', 'persona_dni', 'uuid'];
+    $ors = [];
+    foreach ($campos as $i => $campo) {
+        $k = ":{$pre}{$i}";
+        $ors[] = "p.{$campo} LIKE {$k}";
+        $params[$k] = $like;
+    }
+    return '(' . implode(' OR ', $ors) . ')';
+}
+
+// Prospectos que NO estan suscriptos a la lista `?lista=N`, para el typeahead
+// de "Agregar prospectos" del modal de alta/edicion. Con `lista=0` (alta, la
+// lista todavia no existe) no excluye nada.
+//
+//   GET api/datarocketlistas.php?candidatos=1&q=texto&lista=N
+//   -> {ok:true, data:{items:[...]}}
+//
+// Pide `datarocket.listas.editar` y no el `.consultar` que ya valido
+// requirePermCrud para los GET: esto busca sobre TODO el padron de
+// prospectos, no sobre los de una lista, y solo lo usa el editor.
+function handleCandidatos(PDO $pdo, array $q): void {
+    requirePermission('datarocket.listas.editar');
+
+    $search = trim((string)($q['q'] ?? ''));
+    // Sin texto no hay sugerencias: devolver "los primeros N prospectos" no le
+    // sirve a nadie y son 150k filas para ordenar.
+    if ($search === '') { jsonOk(['items' => []]); return; }
+
+    $listaId = isset($q['lista']) ? (int)$q['lista'] : 0;
+    $limite  = isset($q['limite']) ? (int)$q['limite'] : 10;
+    if ($limite < 1)  $limite = 1;
+    if ($limite > 25) $limite = 25;
+
+    $params = [];
+    $where  = [drLiWhereBusquedaProspecto($search, $params, 'c')];
+
+    if ($listaId > 0) {
+        $where[] = 'NOT EXISTS (SELECT 1 FROM datarocket_prospectos_listas dpl
+                                 WHERE dpl.lista_id = :lista_id AND dpl.prospecto_id = p.id)';
+        $params[':lista_id'] = $listaId;
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT " . DR_LI_SUS_COLS . "
+          FROM datarocket_prospectos p
+         WHERE " . implode(' AND ', $where) . "
+         ORDER BY p.nombre ASC, p.id ASC
+         LIMIT {$limite}
+    ");
+    $stmt->execute($params);
+    jsonOk(['items' => $stmt->fetchAll()]);
+}
+
+// Normaliza una lista de ids que llega del cliente: enteros positivos, sin
+// repetidos, sin basura.
+function drLiIdsUnicos(mixed $v): array {
+    if (!is_array($v)) return [];
+    $out = [];
+    foreach ($v as $x) {
+        $n = (int)$x;
+        if ($n > 0) $out[$n] = true;
+    }
+    return array_keys($out);
+}
+
+// Aplica las altas y bajas de suscripcion que junto el editor.
+//
+//   PUT api/datarocketlistas.php?id=N&suscriptos=1
+//   Body: {agregar:[ids], quitar:[ids]}
+//   -> {ok:true, data:{agregados:N, quitados:M, suscriptos:T}}
+//
+// Idempotente: el alta usa INSERT IGNORE contra la PK compuesta y la baja un
+// DELETE por id, asi que repetir la misma llamada deja el mismo estado. Los
+// ids inexistentes se descartan solos — el alta los filtra con un JOIN contra
+// `datarocket_prospectos` (no confiamos en que reviente la FK) y la baja
+// simplemente no matchea ninguna fila.
+function handleSuscriptosGuardar(PDO $pdo, int $id, array $in): void {
+    $existe = $pdo->prepare('SELECT id FROM datarocket_listas WHERE id = :id');
+    $existe->execute([':id' => $id]);
+    if (!$existe->fetch()) jsonError('Lista no encontrada', 404);
+
+    $agregar = drLiIdsUnicos($in['agregar'] ?? null);
+    // Si un id viene en las dos, gana el alta: es lo que el operador ve en
+    // pantalla (la fila queda listada, no tachada).
+    $quitar  = array_values(array_diff(drLiIdsUnicos($in['quitar'] ?? null), $agregar));
+
+    // Tope por llamada. El editor manda de a uno o dos; un lote gigante viene
+    // de un cliente propio y merece partirse para no clavar la transaccion.
+    if (count($agregar) > 5000 || count($quitar) > 5000) {
+        jsonError('Demasiadas suscripciones en una sola llamada (maximo 5000 por operacion).', 400);
+    }
+
+    $agregados = 0;
+    $quitados  = 0;
+
+    $pdo->beginTransaction();
+    try {
+        if ($quitar) {
+            $ph = implode(',', array_fill(0, count($quitar), '?'));
+            $st = $pdo->prepare("
+                DELETE FROM datarocket_prospectos_listas
+                 WHERE lista_id = ? AND prospecto_id IN ({$ph})
+            ");
+            $st->execute(array_merge([$id], $quitar));
+            $quitados = $st->rowCount();
+        }
+
+        if ($agregar) {
+            $ph = implode(',', array_fill(0, count($agregar), '?'));
+            $st = $pdo->prepare("
+                INSERT IGNORE INTO datarocket_prospectos_listas (prospecto_id, lista_id)
+                SELECT p.id, ? FROM datarocket_prospectos p WHERE p.id IN ({$ph})
+            ");
+            $st->execute(array_merge([$id], $agregar));
+            $agregados = $st->rowCount();
+        }
+
+        // El denormalizado se recalcula para esta lista sola (el recalculo
+        // global es otra herramienta). Sin esto el listado del ABM sigue
+        // mostrando el contador viejo hasta la proxima corrida.
+        $st = $pdo->prepare("
+            UPDATE datarocket_listas dl
+               SET dl.suscriptos = (SELECT COUNT(*)
+                                      FROM datarocket_prospectos_listas dpl
+                                     WHERE dpl.lista_id = dl.id)
+             WHERE dl.id = :id
+        ");
+        $st->execute([':id' => $id]);
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+
+    $st = $pdo->prepare('SELECT suscriptos FROM datarocket_listas WHERE id = :id');
+    $st->execute([':id' => $id]);
+
+    jsonOk([
+        'agregados'  => $agregados,
+        'quitados'   => $quitados,
+        'suscriptos' => (int)$st->fetchColumn(),
+    ]);
 }
 
 // ----------------------------------------------------------------------------

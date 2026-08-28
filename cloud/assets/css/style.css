@@ -1072,3 +1072,59 @@ tbody tr.row-clickable { cursor: pointer; }
 .dcp-magia-footer   { display: flex; justify-content: flex-end; gap: 8px;
                       padding: 10px 16px; border-top: 1px solid var(--border); }
 
+
+/* 32. Datarocket > Listas > Consultar — pestaña "Suscriptos"
+   La tabla puede traer hasta 1000 filas. Sin acotarla, el modal entero
+   (`.modal` tiene max-height:90vh + overflow-y:auto) se vuelve un scroll
+   larguisimo que se lleva puesto el buscador y la barra de pestañas. Con el
+   scroll adentro del card, tabs / buscador / linea de resumen quedan siempre
+   a la vista y el thead se congela arriba. */
+.drli-sus-table-card          { max-height: 46vh; overflow: auto; }
+.drli-sus-table-card thead tr { background: var(--bg); position: sticky; top: 0; z-index: 1; }
+/* Seis columnas adentro de un modal: se recorta el padding y el cuerpo baja
+   medio punto para que nombre y correo entren sin partirse en varias lineas. */
+.drli-sus-table-card th,
+.drli-sus-table-card td       { padding: 8px 10px; }
+.drli-sus-table-card td       { font-size: .82rem; }
+.drli-sus-mono                { font-family: monospace; font-size: .78rem; word-break: break-all; }
+
+/* ---- Modo editor de la pestaña (alta / edicion) ---- */
+/* Resultados del buscador de altas: lista inline debajo del input. Inline y no
+   dropdown flotante porque `.modal` crea containing-block con su `transform` y
+   un position:fixed adentro necesita portal + reflow (ver attachChipsPicker). */
+.drli-sus-add-res       { border: 1px solid var(--border); border-radius: var(--radius);
+                          background: var(--bg); max-height: 220px; overflow-y: auto;
+                          margin-top: 6px; }
+.drli-sus-add-msg       { padding: 10px 12px; font-size: .82rem; color: var(--muted); }
+.drli-sus-add-item      { display: flex; align-items: center; gap: 10px; width: 100%;
+                          padding: 8px 12px; background: none; border: 0;
+                          border-bottom: 1px solid var(--border); cursor: pointer;
+                          font-family: inherit; font-size: .85rem; color: var(--text);
+                          text-align: left; transition: background .12s; }
+.drli-sus-add-item:last-child { border-bottom: none; }
+.drli-sus-add-item:hover      { background: var(--row-hover); }
+.drli-sus-add-nombre    { font-weight: 600; flex: 1; min-width: 0;
+                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drli-sus-add-dato      { font-family: monospace; font-size: .75rem; color: var(--muted);
+                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                          max-width: 40%; }
+.drli-sus-add-mas       { color: var(--primary); font-weight: 700; font-size: 1.1rem;
+                          line-height: 1; }
+
+/* Filas pendientes de guardar: alta en verde de marca, baja tachada y apagada. */
+.drli-sus-table-card tr.drli-sus-alta td { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.drli-sus-table-card tr.drli-sus-baja td { opacity: .45; text-decoration: line-through; }
+/* El boton de deshacer tiene que quedar clickeable y legible. */
+.drli-sus-table-card tr.drli-sus-baja td:last-child { opacity: 1; text-decoration: none; }
+.drli-sus-badge         { display: inline-block; margin-left: 6px; padding: 1px 7px;
+                          border-radius: 999px; font-size: .62rem; font-weight: 700;
+                          text-transform: uppercase; letter-spacing: .04em;
+                          background: color-mix(in srgb, var(--primary) 28%, transparent);
+                          border: 1px solid color-mix(in srgb, var(--primary) 50%, transparent);
+                          color: var(--text); vertical-align: middle; }
+
+/* Contador de cambios sin guardar sobre el rotulo de la pestaña Suscriptos. */
+.drli-sus-tab-badge     { min-width: 18px; padding: 0 5px; border-radius: 999px;
+                          background: var(--warn); color: #fff;
+                          font-size: .68rem; font-weight: 700; line-height: 18px;
+                          text-align: center; }

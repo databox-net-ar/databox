@@ -12651,6 +12651,9 @@ route('/datacount_comprobantes', async (mount) => {
           <select id="dcCompEmpresaSel" style="min-width:200px" title="Empresa">
             <option value="">— Cargando empresas… —</option>
           </select>
+          <select id="dcCompTalonarioSel" style="min-width:200px" title="Talonario">
+            <option value="">— Todos los talonarios —</option>
+          </select>
           <div class="search-wrap">
             <input type="search" class="search-input" id="dcCompSearch"
                    placeholder="🔍 Buscar razón, CUIT, correo o CAE…">
@@ -12740,8 +12743,8 @@ route('/datacount_comprobantes', async (mount) => {
           <button class="btn btn-ghost" onclick="cancelarFiltrosDcComp()" title="Cerrar">✕</button>
         </div>
         <div class="modal-body">
-          <!-- Fila 1: Código / Proyecto / Talonario (Empresa vive en la toolbar) -->
-          <div class="form-row form-row-3">
+          <!-- Fila 1: Código / Proyecto (Empresa y Talonario viven en la toolbar) -->
+          <div class="form-row">
             <div class="form-group">
               <label>Código</label>
               <input type="number" id="fDcCompCodigo" min="1" placeholder="ID …" oninput="onFiltroDcComp('codigo', this.value)">
@@ -12749,12 +12752,6 @@ route('/datacount_comprobantes', async (mount) => {
             <div class="form-group">
               <label>Proyecto</label>
               <select id="fDcCompProyecto" onchange="onFiltroDcComp('proyecto', this.value)">
-                <option value="">Todos</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Talonario</label>
-              <select id="fDcCompTalonario" onchange="onFiltroDcComp('talonario', this.value)">
                 <option value="">Todos</option>
               </select>
             </div>
@@ -12984,7 +12981,20 @@ route('/datacount_comprobantes', async (mount) => {
   selEmp.addEventListener('change', (ev) => {
     dcSetEmpresaId(ev.target.value);
     dcCompFiltros.empresa = ev.target.value;
+    // Los talonarios son por empresa: el que estuviera elegido ya no aplica,
+    // asi que el selector vuelve a "Todos" con los de la empresa nueva.
+    dcCompFiltros.talonario = '';
+    dcCompPintarSelectTalonarioToolbar();
     cargarDcComp();
+  });
+
+  // Selector de talonario: acompaña al de empresa y arranca en "Todos los
+  // talonarios" de esa empresa. Se puebla desde los lookups (que traen la
+  // empresa de cada talonario), asi que puede quedar vacio hasta que llegue
+  // ese fetch — dcCompPintarSelectsLookups lo repinta al resolverse.
+  dcCompPintarSelectTalonarioToolbar();
+  $('#dcCompTalonarioSel').addEventListener('change', (ev) => {
+    onFiltroDcComp('talonario', ev.target.value);
   });
 
   refrescarBadgeFiltrosDcComp();
@@ -13030,8 +13040,31 @@ function dcCompPintarSelectsLookups() {
       items.map((r) => `<option value="${esc(r.id)}">${esc(r.nombre)}</option>`).join('');
     sel.value = cur;
   };
-  pintar('fDcCompTalonario', lk.talonarios, 'Todos');
-  pintar('fDcCompProyecto',  lk.proyectos,  'Todos');
+  pintar('fDcCompProyecto', lk.proyectos, 'Todos');
+  // El talonario no vive en el modal sino en la toolbar (al lado de Empresa),
+  // y depende de los mismos lookups: se repinta cuando estos llegan.
+  dcCompPintarSelectTalonarioToolbar();
+}
+
+// Puebla el <select> de talonario de la toolbar con los talonarios de la
+// empresa seleccionada. El valor vacio ("Todos los talonarios") es el default
+// y no filtra nada, asi que el listado sigue mostrando toda la empresa.
+// Si el talonario que venia elegido (dcCompFiltros persiste entre navegaciones)
+// no pertenece a la empresa actual, se descarta y volvemos a "Todos".
+function dcCompPintarSelectTalonarioToolbar() {
+  const sel = document.getElementById('dcCompTalonarioSel');
+  if (!sel) return;
+  const empresaId = String(dcCompFiltros.empresa || '');
+  const items = (dcCompLookups?.talonarios || []).filter(
+    (t) => empresaId === '' || String(t.empresa ?? '') === empresaId,
+  );
+  const actual = String(dcCompFiltros.talonario || '');
+  const valido = actual !== '' && items.some((t) => String(t.id) === actual);
+  if (actual !== '' && !valido) dcCompFiltros.talonario = '';
+  sel.innerHTML =
+    `<option value="">— Todos los talonarios —</option>` +
+    items.map((t) => `<option value="${esc(t.id)}">${esc(t.nombre)}</option>`).join('');
+  sel.value = valido ? actual : '';
 }
 
 async function cargarDcComp() {
@@ -13141,9 +13174,9 @@ function refrescarBadgeFiltrosDcComp() {
   if (!btn || !badge) return;
   let count = 0;
   for (const k of Object.keys(dcCompFiltrosDefaults)) {
-    // `q` (buscador rápido) y `empresa` (selector de empresa) viven en la
+    // `q` (buscador rápido), `empresa` y `talonario` (selectores) viven en la
     // toolbar, no en el modal — no cuentan como filtros para el badge.
-    if (k === 'q' || k === 'empresa') continue;
+    if (k === 'q' || k === 'empresa' || k === 'talonario') continue;
     if (String(dcCompFiltros[k]) !== String(dcCompFiltrosDefaults[k])) count++;
   }
   if (count > 0) { btn.classList.add('active'); badge.textContent = String(count); badge.style.display = ''; }
@@ -13153,7 +13186,6 @@ function refrescarBadgeFiltrosDcComp() {
 function sincronizarControlesFiltrosDcComp() {
   const f = dcCompFiltros;
   $('#fDcCompCodigo').value     = f.codigo;
-  $('#fDcCompTalonario').value  = f.talonario;
   $('#fDcCompProyecto').value   = f.proyecto;
   $('#fDcCompTipo').value       = f.tipo;
   $('#fDcCompPunto').value      = f.punto;
@@ -13204,9 +13236,10 @@ function cerrarModalFiltrosDcComp() {
 function cancelarFiltrosDcComp() {
   if (dcCompFiltrosSnapshot) {
     Object.assign(dcCompFiltros, dcCompFiltrosSnapshot);
-    // La empresa la maneja la toolbar; siempre reflejar el valor actual del
-    // selector, no el del snapshot.
-    dcCompFiltros.empresa = $('#dcCompEmpresaSel')?.value || '';
+    // Empresa y talonario los maneja la toolbar; siempre reflejar el valor
+    // actual de esos selectores, no el del snapshot.
+    dcCompFiltros.empresa   = $('#dcCompEmpresaSel')?.value   || '';
+    dcCompFiltros.talonario = $('#dcCompTalonarioSel')?.value || '';
     refrescarBadgeFiltrosDcComp();
     cargarDcComp();
   }
@@ -13215,8 +13248,9 @@ function cancelarFiltrosDcComp() {
 
 function limpiarFiltrosDcComp() {
   Object.assign(dcCompFiltros, dcCompFiltrosDefaults);
-  dcCompFiltros.q       = $('#dcCompSearch')?.value.trim() || '';
-  dcCompFiltros.empresa = $('#dcCompEmpresaSel')?.value    || '';
+  dcCompFiltros.q         = $('#dcCompSearch')?.value.trim()  || '';
+  dcCompFiltros.empresa   = $('#dcCompEmpresaSel')?.value     || '';
+  dcCompFiltros.talonario = $('#dcCompTalonarioSel')?.value   || '';
   sincronizarControlesFiltrosDcComp();
   refrescarBadgeFiltrosDcComp();
   cargarDcComp();
@@ -25087,8 +25121,8 @@ async function dcbCopiar(valor, etiqueta) {
 
 // ------------------- Vista: Datacount > Bancos > Movimientos -------------------
 // El extracto de una cuenta de fondos. La mayoria de las filas entra por
-// importacion del resumen del homebanking (CSV / XLSX); el alta manual cubre lo
-// que el extracto no trae.
+// importacion del resumen del homebanking (CSV / XLSX / PDF); el alta manual
+// cubre lo que el extracto no trae.
 //
 // Un movimiento NO es lo mismo que una orden de pago: `datacount_pagos` es el
 // documento comercial (a quien le pago, contra que comprobante) y esto es el
@@ -25191,7 +25225,7 @@ route('/datacount_bancos_movimientos', async (mount) => {
       ${dcbHeaderHtml('movimientos', '🔁', `
         Los movimientos son cada entrada y salida de dinero de una cuenta de fondos, tal
         como los informa el extracto del banco o de la billetera. Se cargan importando el
-        resumen del mes (CSV o XLSX); las filas repetidas se detectan solas, así que
+        resumen del mes (CSV, XLSX o PDF); las filas repetidas se detectan solas, así que
         reimportar un archivo no duplica nada.
       `)}
 
@@ -25225,10 +25259,9 @@ route('/datacount_bancos_movimientos', async (mount) => {
           </button>
         </div>
         <div class="toolbar-right">
-          <button class="btn btn-ghost" id="dcbmImportarBtn">
+          <button class="btn btn-primary" id="dcbmImportarBtn">
             <i class="fa-solid fa-file-import"></i> Importar extracto
           </button>
-          <button class="btn btn-primary" id="dcbmNuevoBtn">+ Nuevo movimiento</button>
         </div>
       </div>
 
@@ -25423,7 +25456,6 @@ route('/datacount_bancos_movimientos', async (mount) => {
 
   $('#dcbmFiltrosBtn').addEventListener('click', abrirModalFiltrosDcbm);
   $('#dcbmRefrescarBtn').addEventListener('click', cargarDcbm);
-  $('#dcbmNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcbm(null));
   $('#dcbmImportarBtn').addEventListener('click', () => abrirImportadorDcb(dcbGetCuentaId()));
 
   ['Tipo', 'Conc', 'Origen'].forEach((grupo) => {
@@ -25989,9 +26021,11 @@ function abrirImportadorDcb(cuentaId) {
       <div class="modal-body" id="dcbiBody">
         <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;
                     padding:12px 14px;margin-bottom:16px;font-size:.85rem;color:var(--muted);line-height:1.5">
-          Subí el resumen del mes tal como lo exporta el homebanking (CSV, TSV o XLSX).
+          Subí el resumen del mes tal como lo exporta el homebanking (CSV, TSV, XLSX o PDF).
           Se detectan solas las columnas y las filas que ya estén importadas se omiten,
           así que podés reimportar el mismo archivo sin duplicar nada.
+          El PDF tiene que ser el que descarga el banco: si es un escaneo o una foto
+          no tiene texto adentro y no se puede leer.
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -26003,7 +26037,7 @@ function abrirImportadorDcb(cuentaId) {
           </div>
           <div class="form-group">
             <label for="dcbiFile">Archivo</label>
-            <input type="file" id="dcbiFile" accept=".csv,.tsv,.txt,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+            <input type="file" id="dcbiFile" accept=".csv,.tsv,.txt,.xlsx,.pdf,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
           </div>
         </div>
         <div id="dcbiStatus" style="font-size:.82rem;color:var(--muted);min-height:1.2em;margin-top:8px"></div>
@@ -26895,9 +26929,53 @@ window.cancelarFiltrosDrLi    = cancelarFiltrosDrLi;
 window.limpiarFiltrosDrLi     = limpiarFiltrosDrLi;
 window.cerrarModalFiltrosDrLi = cerrarModalFiltrosDrLi;
 
+// Estado de la pestaña "Suscriptos", compartido por el modal de consulta y el
+// de alta/edicion (nunca hay dos abiertos a la vez: openModal reemplaza el
+// anterior). Vive fuera del modal porque el buscador es debounced: cuando el
+// timer dispara necesita saber sobre que lista esta filtrando y con que
+// limite, y el modal puede haberse cerrado en el medio
+// (`cargarSuscriptosDrLi` sale si el DOM ya no esta).
+//
+// En modo `editable` la pestaña no escribe en la DB al toque: junta las altas
+// en `agregar` (Map id -> prospecto, para poder pintar la fila sin ir al
+// servidor) y las bajas en `quitar` (Set de ids). Las dos se mandan recien al
+// apretar Guardar, para respetar el contrato Guardar/Cancelar del modal.
+let drLiSusEstado = null;
+let drLiSusTimer  = null;
+let drLiSusAddTimer = null;
+
+function drLiSusNuevoEstado(listaId, editable) {
+  return {
+    listaId, editable,
+    q: '', limite: 100, cargado: false, seq: 0,
+    agregar: new Map(), quitar: new Set(),
+  };
+}
+
+const drLiSusHayPendientes = () =>
+  !!drLiSusEstado && (drLiSusEstado.agregar.size > 0 || drLiSusEstado.quitar.size > 0);
+
+// Contador de cambios sin guardar sobre el rotulo de la pestaña. Es el aviso
+// de que hay trabajo pendiente antes de apretar Cancelar: el modal descarta
+// sin preguntar, igual que con el resto de los campos del formulario.
+function refrescarBadgeSuscriptosDrLi() {
+  const tab = $('#modalRoot .modal-tab[data-drli-tab="suscriptos"] .drli-sus-tab-badge');
+  if (!tab) return;
+  const n = (drLiSusEstado?.agregar.size || 0) + (drLiSusEstado?.quitar.size || 0);
+  tab.textContent   = n ? String(n) : '';
+  tab.style.display = n ? '' : 'none';
+}
+
 async function abrirConsultarDrLi(id) {
+  drLiSusEstado = drLiSusNuevoEstado(id, false);
+  clearTimeout(drLiSusTimer);
+  clearTimeout(drLiSusAddTimer);
+
+  // Mas ancho que el resto de los modales de consulta: la pestaña Suscriptos
+  // mete una tabla de 6 columnas y a 800px el nombre partia en tres lineas y
+  // la fecha se salia del card.
   openModal(`
-    <div class="modal" style="width:80vw;max-width:800px">
+    <div class="modal" style="width:90vw;max-width:1000px">
       <div class="modal-header">
         <div class="modal-title">Lista Datarocket <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
@@ -26919,11 +26997,47 @@ async function abrirConsultarDrLi(id) {
       apiGet(`api/datarocketlistas.php?id=${id}`),
       drLiCargarProyectos(),
     ]);
-    $('#modalRoot .modal-body').innerHTML = renderConsultaDrLi(l, proyectos);
+    $('#modalRoot .modal-body').innerHTML = `
+      <div class="modal-tabs" role="tablist">
+        <button type="button" class="modal-tab active" role="tab"
+                data-drli-tab="general" onclick="drLiCambiarTab('general')">
+          <i class="fa-solid fa-circle-info"></i> General
+        </button>
+        <button type="button" class="modal-tab" role="tab"
+                data-drli-tab="suscriptos" onclick="drLiCambiarTab('suscriptos')">
+          <i class="fa-solid fa-users"></i> Suscriptos
+        </button>
+      </div>
+
+      <div class="modal-tabpanel" data-drli-tab="general" role="tabpanel">
+        ${renderConsultaDrLi(l, proyectos)}
+      </div>
+
+      <div class="modal-tabpanel" data-drli-tab="suscriptos" role="tabpanel" hidden>
+        ${renderSuscriptosDrLiHtml()}
+      </div>
+    `;
+    bindSuscriptosDrLi();
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
 }
+
+function drLiCambiarTab(tab) {
+  $$('#modalRoot .modal-tab[data-drli-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.drliTab === tab);
+  });
+  $$('#modalRoot .modal-tabpanel[data-drli-tab]').forEach((p) => {
+    p.hidden = p.dataset.drliTab !== tab;
+  });
+  // Carga diferida: los suscriptos de una lista pueden ser decenas de miles,
+  // asi que la consulta recien sale cuando el operador entra a la pestaña.
+  if (tab === 'suscriptos' && drLiSusEstado && !drLiSusEstado.cargado) {
+    drLiSusEstado.cargado = true;
+    cargarSuscriptosDrLi();
+  }
+}
+window.drLiCambiarTab = drLiCambiarTab;
 
 function renderConsultaDrLi(l, proyectos = []) {
   const card = (label, value, full = false) => {
@@ -26971,10 +27085,356 @@ function renderConsultaDrLi(l, proyectos = []) {
   `;
 }
 
+// Cantidad de columnas de la tabla de suscriptos — 6 en consulta, 7 en el
+// editor (se suma "Acciones"). Se usa en los colspan de spinner / vacio.
+const drLiSusCols = () => (drLiSusEstado?.editable ? 7 : 6);
+
+// Pestaña "Suscriptos": buscador + selector de limite + tabla. Se pinta vacia
+// (con el spinner puesto) y la llena `cargarSuscriptosDrLi()` cuando el
+// operador entra a la pestaña por primera vez.
+//
+// En modo editor se le agrega arriba el buscador de prospectos a suscribir y
+// una columna de acciones por fila para dar de baja.
+function renderSuscriptosDrLiHtml({ editable = false } = {}) {
+  const limites = [25, 50, 100, 250, 500, 1000];
+
+  // Buscador de altas. Los resultados se pintan inline debajo del input (y no
+  // en un dropdown flotante) porque `.modal` crea un containing-block con su
+  // `transform` y cualquier position:fixed adentro necesita portal + reflow;
+  // inline no tiene ese problema y aca hay lugar de sobra.
+  const altas = !editable ? '' : `
+    <div class="form-group" style="margin-bottom:0">
+      <label for="drLiSusAddInput">
+        Agregar prospectos
+        <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+          — buscá por nombre, correo o teléfono y elegí de las sugerencias
+        </span>
+      </label>
+      <input type="text" id="drLiSusAddInput" autocomplete="off"
+             placeholder="Escribí para buscar un prospecto…">
+      <div id="drLiSusAddResultados" class="drli-sus-add-res" hidden></div>
+    </div>`;
+
+  return `
+    ${altas}
+
+    <div class="toolbar" style="margin-bottom:0">
+      <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+        <div class="search-wrap">
+          <input type="search" class="search-input" id="drLiSusSearch"
+                 placeholder="🔍 Buscar nombre, correo o teléfono…" autocomplete="off">
+          <button class="search-clear" id="drLiSusSearchClear" style="display:none">×</button>
+        </div>
+        <button class="btn btn-ghost btn-icon" id="drLiSusRefrescarBtn" title="Refrescar">
+          <i class="fa-solid fa-rotate"></i>
+        </button>
+      </div>
+      <div class="toolbar-right" style="gap:8px;align-items:center">
+        <label for="drLiSusLimite" style="font-size:.8rem;color:var(--muted)">Límite</label>
+        <select id="drLiSusLimite" style="width:auto">
+          ${limites.map((n) => `<option value="${n}" ${n === 100 ? 'selected' : ''}>${n}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div id="drLiSusResumen" style="font-size:.8rem;color:var(--muted)">&nbsp;</div>
+
+    <div class="table-card drli-sus-table-card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:80px">Código</th>
+            <th style="width:44px;text-align:center">Tipo</th>
+            <th>Nombre</th>
+            <th>Correo</th>
+            <th style="width:130px">Celular</th>
+            <th style="width:120px">Suscripto</th>
+            ${editable ? '<th style="width:70px;text-align:center">Acciones</th>' : ''}
+          </tr>
+        </thead>
+        <tbody id="drLiSusTbody">
+          <tr><td colspan="${editable ? 7 : 6}" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function bindSuscriptosDrLi() {
+  const inp = $('#modalRoot #drLiSusSearch');
+  const clr = $('#modalRoot #drLiSusSearchClear');
+  const sel = $('#modalRoot #drLiSusLimite');
+  if (!inp || !clr || !sel) return;
+
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drLiSusEstado.q = inp.value.trim();
+    clearTimeout(drLiSusTimer);
+    drLiSusTimer = setTimeout(() => cargarSuscriptosDrLi(), 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    drLiSusEstado.q = '';
+    clearTimeout(drLiSusTimer);
+    cargarSuscriptosDrLi();
+  });
+  sel.addEventListener('change', () => {
+    drLiSusEstado.limite = Number(sel.value) || 100;
+    cargarSuscriptosDrLi();
+  });
+  $('#modalRoot #drLiSusRefrescarBtn').addEventListener('click', () => cargarSuscriptosDrLi());
+
+  if (!drLiSusEstado.editable) return;
+
+  // ---- Modo editor: buscador de altas y acciones por fila ----
+  const add = $('#modalRoot #drLiSusAddInput');
+  add.addEventListener('input', () => {
+    clearTimeout(drLiSusAddTimer);
+    drLiSusAddTimer = setTimeout(() => buscarCandidatosDrLi(add.value.trim()), 250);
+  });
+  // Enter no debe mandar el formulario del modal: aca elige la primera
+  // sugerencia, que es lo que espera quien viene tipeando.
+  add.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    $('#modalRoot #drLiSusAddResultados')?.querySelector('[data-cand]')?.click();
+  });
+
+  $('#modalRoot #drLiSusAddResultados').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-cand]');
+    if (!b) return;
+    agregarSuscriptoDrLi(JSON.parse(b.dataset.cand));
+  });
+
+  $('#modalRoot #drLiSusTbody').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-sus-act]');
+    if (!b) return;
+    const pid = Number(b.dataset.id);
+    if (b.dataset.susAct === 'quitar')   quitarSuscriptoDrLi(pid);
+    if (b.dataset.susAct === 'deshacer') deshacerQuitarDrLi(pid);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Modo editor de la pestaña Suscriptos
+// ---------------------------------------------------------------------------
+
+// Typeahead de prospectos NO suscriptos. En el alta la lista todavia no
+// existe (`listaId` null): el endpoint recibe `lista=0` y no excluye a nadie.
+async function buscarCandidatosDrLi(texto) {
+  const cont = $('#modalRoot #drLiSusAddResultados');
+  if (!cont || !drLiSusEstado) return;
+
+  if (texto === '') { cont.hidden = true; cont.innerHTML = ''; return; }
+
+  cont.hidden = false;
+  cont.innerHTML = `<div class="drli-sus-add-msg">Buscando…</div>`;
+
+  const qs = new URLSearchParams({
+    candidatos: '1', q: texto, lista: drLiSusEstado.listaId || 0,
+  });
+  try {
+    const data = await apiGet('api/datarocketlistas.php?' + qs.toString());
+    if (!$('#modalRoot #drLiSusAddResultados') || $('#modalRoot #drLiSusAddInput')?.value.trim() !== texto) return;
+    // Los que ya estan en la tanda pendiente se descartan del lado del
+    // cliente: el endpoint solo sabe de los que estan suscriptos en la DB.
+    const libres = (data.items || []).filter((p) => !drLiSusEstado.agregar.has(Number(p.id)));
+    if (!libres.length) {
+      cont.innerHTML = `<div class="drli-sus-add-msg">Sin prospectos para agregar con ese texto.</div>`;
+      return;
+    }
+    cont.innerHTML = libres.map((p) => `
+      <button type="button" class="drli-sus-add-item" data-cand="${esc(JSON.stringify(p))}">
+        ${drPrTipoIcon(p.tipo)}
+        <span class="drli-sus-add-nombre">${esc(p.nombre || ('#' + p.id))}</span>
+        <span class="drli-sus-add-dato">${esc(p.correo || p.celular || p.whatsapp || '—')}</span>
+        <span class="drli-sus-add-mas">+</span>
+      </button>
+    `).join('');
+  } catch (e) {
+    if (!$('#modalRoot #drLiSusAddResultados')) return;
+    cont.innerHTML = `<div class="drli-sus-add-msg">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function agregarSuscriptoDrLi(p) {
+  const pid = Number(p.id);
+  // Si estaba marcado para baja, agregarlo de nuevo es simplemente desmarcar
+  // esa baja — no hay que anotarlo como alta.
+  if (drLiSusEstado.quitar.has(pid)) drLiSusEstado.quitar.delete(pid);
+  else drLiSusEstado.agregar.set(pid, p);
+
+  const add = $('#modalRoot #drLiSusAddInput');
+  if (add) { add.value = ''; add.focus(); }
+  clearTimeout(drLiSusAddTimer);
+  const cont = $('#modalRoot #drLiSusAddResultados');
+  if (cont) { cont.hidden = true; cont.innerHTML = ''; }
+
+  cargarSuscriptosDrLi();
+}
+
+function quitarSuscriptoDrLi(pid) {
+  // Quitar algo que todavia no se guardo es descartar el alta pendiente, no
+  // anotar una baja de algo que en la DB no existe.
+  if (drLiSusEstado.agregar.has(pid)) drLiSusEstado.agregar.delete(pid);
+  else drLiSusEstado.quitar.add(pid);
+  pintarSuscriptosDrLi(drLiSusEstado.ultimaData || { items: [], total: 0, total_lista: 0 }, drLiSusEstado.q);
+}
+
+function deshacerQuitarDrLi(pid) {
+  drLiSusEstado.quitar.delete(pid);
+  pintarSuscriptosDrLi(drLiSusEstado.ultimaData || { items: [], total: 0, total_lista: 0 }, drLiSusEstado.q);
+}
+
+// Manda las altas y bajas juntadas por el editor. `listaId` se pasa aparte
+// porque en el alta recien se conoce despues del POST que crea la lista.
+async function guardarSuscripcionesDrLi(listaId) {
+  if (!drLiSusHayPendientes()) return null;
+  const r = await apiSend(`api/datarocketlistas.php?id=${listaId}&suscriptos=1`, 'PUT', {
+    agregar: [...drLiSusEstado.agregar.keys()],
+    quitar:  [...drLiSusEstado.quitar],
+  });
+  drLiSusEstado.agregar.clear();
+  drLiSusEstado.quitar.clear();
+  return r;
+}
+
+async function cargarSuscriptosDrLi() {
+  const tbody = $('#modalRoot #drLiSusTbody');
+  // El modal pudo cerrarse mientras corria el debounce del buscador.
+  if (!tbody || !drLiSusEstado) return;
+
+  const { listaId, q, limite } = drLiSusEstado;
+
+  // Alta: la lista todavia no existe, asi que no hay suscriptos que traer —
+  // solo se pintan los pendientes que junto el picker.
+  if (!listaId) {
+    pintarSuscriptosDrLi({ items: [], total: 0, total_lista: 0 }, q);
+    return;
+  }
+
+  tbody.innerHTML = `<tr><td colspan="${drLiSusCols()}" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  // Numero de corrida: dos consultas seguidas (tipear y despues cambiar el
+  // limite) pueden volver desordenadas y la vieja pisaria a la nueva. Solo
+  // pinta la ultima que salio.
+  const seq = ++drLiSusEstado.seq;
+  const qs  = new URLSearchParams({ id: listaId, suscriptos: '1', limite });
+  if (q !== '') qs.set('q', q);
+
+  const vigente = () => $('#modalRoot #drLiSusTbody') && drLiSusEstado?.seq === seq;
+
+  try {
+    const data = await apiGet('api/datarocketlistas.php?' + qs.toString());
+    if (!vigente()) return;
+    pintarSuscriptosDrLi(data, q);
+  } catch (e) {
+    if (!vigente()) return;
+    $('#modalRoot #drLiSusTbody').innerHTML = `<tr><td colspan="${drLiSusCols()}" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    $('#modalRoot #drLiSusResumen').innerHTML = '&nbsp;';
+  }
+}
+
+function pintarSuscriptosDrLi(data, q) {
+  const items = data.items || [];
+  const tbody = $('#modalRoot #drLiSusTbody');
+  const res   = $('#modalRoot #drLiSusResumen');
+  const ed    = !!drLiSusEstado?.editable;
+
+  // La ultima respuesta se guarda para poder repintar cuando cambia solo el
+  // estado local (marcar una baja, deshacerla) sin volver a pedir la pagina.
+  drLiSusEstado.ultimaData = data;
+
+  // Altas pendientes: van arriba de todo y solo si matchean el buscador de la
+  // tabla, para que filtrar no las deje colgadas fuera de contexto.
+  const filtroLocal = (p) => {
+    if (q === '') return true;
+    const t = q.toLowerCase();
+    return ['nombre', 'correo', 'celular', 'whatsapp']
+      .some((k) => String(p[k] ?? '').toLowerCase().includes(t));
+  };
+  const pendientes = ed
+    ? [...drLiSusEstado.agregar.values()]
+        .filter(filtroLocal)
+        .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es'))
+    : [];
+
+  // Linea de resumen: cuantos se estan viendo de cuantos matchean, y —cuando
+  // hay busqueda activa— sobre cuantos suscriptos tiene la lista en total.
+  const total    = data.total ?? 0;
+  const visibles = items.length + pendientes.length;
+  let resumen;
+  if (total === 0 && !pendientes.length) {
+    resumen = q ? `Sin coincidencias entre los ${fmtNum(data.total_lista ?? 0)} suscriptos.`
+                : 'La lista no tiene suscriptos.';
+  } else {
+    resumen = `Mostrando ${fmtNum(visibles)} de ${fmtNum(total + drLiSusEstado.agregar.size)}`
+            + (q ? ` coincidencias · ${fmtNum(data.total_lista ?? 0)} suscriptos en total` : ' suscriptos');
+    resumen += '.';
+  }
+  if (ed && drLiSusHayPendientes()) {
+    const partes = [];
+    if (drLiSusEstado.agregar.size) partes.push(`+${fmtNum(drLiSusEstado.agregar.size)} para agregar`);
+    if (drLiSusEstado.quitar.size)  partes.push(`−${fmtNum(drLiSusEstado.quitar.size)} para quitar`);
+    resumen += ` · ${partes.join(' y ')}, se aplican al guardar.`;
+  }
+  res.textContent = resumen;
+  if (ed) refrescarBadgeSuscriptosDrLi();
+
+  if (!items.length && !pendientes.length) {
+    const msg = q ? 'Ningún suscripto coincide con la búsqueda.'
+                  : (ed ? 'Sin suscriptos. Buscá prospectos arriba para agregarlos.' : 'Sin suscriptos.');
+    tbody.innerHTML = `<tr><td colspan="${drLiSusCols()}" class="table-empty">${msg}</td></tr>`;
+    return;
+  }
+
+  // El buscador tambien matchea `whatsapp`, asi que se usa de respaldo del
+  // celular: si no, una fila encontrada por whatsapp mostraba un telefono
+  // vacio y no se veia por que habia entrado al resultado.
+  const fila = (p, { nuevo = false } = {}) => {
+    const pid    = Number(p.id);
+    const baja   = ed && drLiSusEstado.quitar.has(pid);
+    const accion = !ed ? '' : `
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          ${baja
+            ? `<button type="button" class="btn-icon-sm" title="Deshacer la baja" data-sus-act="deshacer" data-id="${pid}">
+                 <i class="fa-solid fa-rotate-left"></i>
+               </button>`
+            : `<button type="button" class="btn-icon-sm" title="${nuevo ? 'Descartar' : 'Quitar de la lista'}" data-sus-act="quitar" data-id="${pid}">
+                 <i class="fa-solid fa-trash"></i>
+               </button>`}
+        </div>
+      </td>`;
+    const cls = baja ? ' class="drli-sus-baja"' : (nuevo ? ' class="drli-sus-alta"' : '');
+    return `
+    <tr${cls}>
+      <td class="td-id">#${esc(pid)}</td>
+      <td style="text-align:center">${drPrTipoIcon(p.tipo)}</td>
+      <td class="td-nombre">${esc(p.nombre || '—')}${nuevo ? ' <span class="drli-sus-badge">nuevo</span>' : ''}</td>
+      <td class="drli-sus-mono">${esc(p.correo || '—')}</td>
+      <td class="drli-sus-mono" style="white-space:nowrap">${esc(p.celular || p.whatsapp || '—')}</td>
+      <td style="color:var(--muted);white-space:nowrap">${nuevo ? '—' : fmtFechaSola(p.fecha_creacion)}</td>
+      ${accion}
+    </tr>`;
+  };
+
+  tbody.innerHTML = pendientes.map((p) => fila(p, { nuevo: true })).join('')
+                  + items.map((p) => fila(p)).join('');
+}
+
 async function abrirAltaEdicionDrLi(id) {
   const esEdicion = id != null;
+  // En el alta `listaId` es null: la pestaña Suscriptos no tiene a quien
+  // consultar todavia y solo junta altas pendientes, que se aplican despues
+  // del POST que crea la lista (ver guardarDrLi).
+  drLiSusEstado = drLiSusNuevoEstado(esEdicion ? id : null, true);
+  clearTimeout(drLiSusTimer);
+  clearTimeout(drLiSusAddTimer);
+
   openModal(`
-    <div class="modal" style="width:80vw;max-width:700px">
+    <div class="modal" style="width:90vw;max-width:1000px">
       <div class="modal-header">
         <div class="modal-title">${esEdicion ? `Editar lista <span class="modal-subtitle">#${id}</span>` : 'Nueva lista'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
@@ -26992,8 +27452,29 @@ async function abrirAltaEdicionDrLi(id) {
       esEdicion ? apiGet(`api/datarocketlistas.php?id=${id}`) : Promise.resolve({}),
       drLiCargarProyectos(),
     ]);
-    $('#modalRoot .modal-body').innerHTML = formDrLiHtml(l, proyectos);
+    $('#modalRoot .modal-body').innerHTML = `
+      <div class="modal-tabs" role="tablist">
+        <button type="button" class="modal-tab active" role="tab"
+                data-drli-tab="general" onclick="drLiCambiarTab('general')">
+          <i class="fa-solid fa-circle-info"></i> General
+        </button>
+        <button type="button" class="modal-tab" role="tab"
+                data-drli-tab="suscriptos" onclick="drLiCambiarTab('suscriptos')">
+          <i class="fa-solid fa-users"></i> Suscriptos
+          <span class="drli-sus-tab-badge" style="display:none"></span>
+        </button>
+      </div>
+
+      <div class="modal-tabpanel" data-drli-tab="general" role="tabpanel">
+        ${formDrLiHtml(l, proyectos)}
+      </div>
+
+      <div class="modal-tabpanel" data-drli-tab="suscriptos" role="tabpanel" hidden>
+        ${renderSuscriptosDrLiHtml({ editable: true })}
+      </div>
+    `;
     bindAutoSlugDrLi();
+    bindSuscriptosDrLi();
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -27067,8 +27548,8 @@ function drliSlugify(s) {
 // Si el slug ya tenia valor (edicion) o el operador lo escribio explicito, no
 // lo pisamos. Mismo patron que el ABM de embudos (`dremSlugify`).
 function bindAutoSlugDrLi() {
-  const slugInp   = $('#drlSlug');
-  const nombreInp = $('#drlNombre');
+  const slugInp   = $('#modalRoot #drlSlug');
+  const nombreInp = $('#modalRoot #drlNombre');
   if (!slugInp || !nombreInp) return;
   let slugManual = slugInp.value.trim() !== '';
   slugInp.addEventListener('input', () => { slugManual = slugInp.value.trim() !== ''; });
@@ -27078,57 +27559,89 @@ function bindAutoSlugDrLi() {
 }
 
 async function guardarDrLi(id, btn) {
-  const err = $('#drlFormError');
+  const err = $('#modalRoot #drlFormError');
   err.style.display = 'none';
 
-  const nombre = $('#drlNombre').value.trim();
-  if (nombre === '') {
-    err.textContent = 'El nombre es obligatorio.';
+  // Los campos obligatorios viven en la pestaña General: si el operador
+  // apreto Guardar parado en Suscriptos, hay que traerlo de vuelta o el
+  // mensaje de error y el foco caen en un panel oculto.
+  const invalidar = (sel, msg) => {
+    drLiCambiarTab('general');
+    err.textContent = msg;
     err.style.display = '';
-    $('#drlNombre').classList.add('input-invalid');
-    $('#drlNombre').focus();
+    const campo = $('#modalRoot ' + sel);
+    campo.classList.add('input-invalid');
+    campo.focus();
+  };
+
+  const nombre = $('#modalRoot #drlNombre').value.trim();
+  if (nombre === '') {
+    invalidar('#drlNombre', 'El nombre es obligatorio.');
     return;
   }
 
   // Si el operador nunca tocó el slug y el nombre llegó por pegado (sin evento
   // `input`), el fallback de derivarlo acá cubre ese caso.
-  const slug = ($('#drlSlug').value.trim() || drliSlugify(nombre)).toLowerCase();
+  const slug = ($('#modalRoot #drlSlug').value.trim() || drliSlugify(nombre)).toLowerCase();
   if (slug === '') {
-    err.textContent = 'El slug es obligatorio.';
-    err.style.display = '';
-    $('#drlSlug').classList.add('input-invalid');
-    $('#drlSlug').focus();
+    invalidar('#drlSlug', 'El slug es obligatorio.');
     return;
   }
   if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
-    err.textContent = 'El slug solo admite minúsculas, dígitos y guiones (kebab-case).';
-    err.style.display = '';
-    $('#drlSlug').classList.add('input-invalid');
-    $('#drlSlug').focus();
+    invalidar('#drlSlug', 'El slug solo admite minúsculas, dígitos y guiones (kebab-case).');
     return;
   }
 
   const payload = {
     nombre,
     slug,
-    proyecto_id: $('#drlProyecto').value,
-    descripcion: $('#drlDescripcion').value,
+    proyecto_id: $('#modalRoot #drlProyecto').value,
+    descripcion: $('#modalRoot #drlDescripcion').value,
   };
 
   btn.disabled = true;
   try {
+    // Primero la lista y despues las suscripciones: en el alta el id recien
+    // se conoce cuando el POST vuelve.
+    let listaId = id;
+    let base;
     if (id == null) {
-      await apiSend('api/datarocketlistas.php', 'POST', payload);
-      toast('Lista creada.');
+      const creada = await apiSend('api/datarocketlistas.php', 'POST', payload);
+      listaId = creada.id;
+      base = 'Lista creada';
     } else {
       await apiSend(`api/datarocketlistas.php?id=${id}`, 'PUT', payload);
-      toast('Lista actualizada.');
+      base = 'Lista actualizada';
     }
+
+    // Las suscripciones van en una segunda llamada. Si esta falla, la lista ya
+    // quedo guardada: se avisa y el modal queda abierto con los pendientes
+    // intactos para reintentar, en vez de perderlos.
+    let susMsg = '';
+    try {
+      const r = await guardarSuscripcionesDrLi(listaId);
+      if (r) {
+        const partes = [];
+        if (r.agregados) partes.push(`${fmtNum(r.agregados)} suscripto(s) agregado(s)`);
+        if (r.quitados)  partes.push(`${fmtNum(r.quitados)} quitado(s)`);
+        if (partes.length) susMsg = ' ' + partes.join(', ') + '.';
+      }
+    } catch (e) {
+      toast(`${base}, pero las suscripciones no se pudieron guardar: ${e.message}`, { error: true });
+      // El id ya existe: seguir editando esa lista, no creando una nueva.
+      drLiSusEstado.listaId = listaId;
+      btn.disabled = false;
+      cargarDrLi();
+      return;
+    }
+
+    toast(`${base}.${susMsg}`);
     closeModal();
     cargarDrLi();
   } catch (e) {
     err.textContent = e.message;
     err.style.display = '';
+    drLiCambiarTab('general');
     btn.disabled = false;
   }
 }

@@ -1,9 +1,14 @@
 <?php
 // api/lib/planilla.php
-// Lector de planillas (CSV / TSV / XLSX) para el importador de extractos de
-// Datacount > Bancos. Devuelve siempre una matriz de strings — la
+// Lector de planillas (CSV / TSV / XLSX / PDF) para el importador de extractos
+// de Datacount > Bancos. Devuelve siempre una matriz de strings — la
 // interpretacion de cada columna (que es fecha, que es importe) la hace el
 // mapeo por cuenta, no este archivo.
+//
+// El PDF lo resuelve pdf.php, que reconstruye la tabla por coordenadas y
+// devuelve la misma matriz de strings que el CSV. Vive en su propio archivo
+// porque no comparte nada con estos lectores: un PDF no tiene filas ni celdas,
+// hay que deducirlas de donde cae cada glifo en la pagina.
 //
 // POR QUE UN LECTOR PROPIO
 // ------------------------
@@ -52,8 +57,21 @@ function planillaLeer(string $ruta, string $nombreOriginal): array {
     // al reves) es un error de usuario habitual y no vale la pena rebotarlo.
     $esZip = str_starts_with($raw, "PK\x03\x04");
 
+    if (str_starts_with($raw, '%PDF-')) {
+        require_once __DIR__ . '/pdf.php';
+        return ['filas' => pdfLeerFilas($raw), 'formato' => 'pdf'];
+    }
     if ($esZip) {
         return ['filas' => planillaLeerXlsx($raw), 'formato' => 'xlsx'];
+    }
+    if ($ext === 'pdf') {
+        // Extension .pdf pero sin la firma: casi siempre es un archivo cortado
+        // por una descarga a medias, o un HTML de error que el homebanking
+        // sirvio con nombre de PDF.
+        throw new RuntimeException(
+            'El archivo tiene extensión .pdf pero no es un PDF válido. '
+            . 'Volvé a descargarlo del homebanking.'
+        );
     }
     if ($ext === 'xlsx' || $ext === 'xls') {
         // .xls binario (BIFF, Excel 97-2003) no es ZIP y no lo soportamos.
