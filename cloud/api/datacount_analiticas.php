@@ -8,7 +8,7 @@
 // serie ya agregada en formato listo para pintar (evita mover miles de
 // filas al navegador).
 //
-//   GET api/datacount_analiticas.php?action=<facturas|notas|pagos>
+//   GET api/datacount_analiticas.php?action=pagos
 //                                    &empresa=<id>          (requerido)
 //                                    &rango=all|12|24|36|year  (default: all)
 //                                    &anio=YYYY             (solo con rango=year)
@@ -19,6 +19,18 @@
 //          rango: { modo: 'all'|'ultimos'|'year', desde: 'YYYY-MM',
 //                   hasta: 'YYYY-MM', meses?: N },
 //          anios: [YYYY, ...] }
+//
+//   GET api/datacount_analiticas.php?action=facturacion  (mismos filtros)
+//     -> { serie: [{ mes: 'YYYY-MM', facturado: N, notas: N, neto: N,
+//                    cant_facturas: N, cant_notas: N }, ...],
+//          resumen: { facturado_rango, notas_rango, neto_rango,
+//                     cant_facturas_rango, cant_notas_rango, incidencia_pct|null,
+//                     facturado, notas, neto, cant_facturas, cant_notas,
+//                     primero, ultimo, meses, meses_con_datos,
+//                     mes_mayor_incidencia: {mes, incidencia_pct, notas}|null,
+//                     sin_fecha_facturas_cant, sin_fecha_facturas_total,
+//                     sin_fecha_notas_cant, sin_fecha_notas_total },
+//          rango: { ... }, anios: [...] }
 //
 //   GET api/datacount_analiticas.php?action=resultados   (mismos filtros)
 //     -> { serie: [{ mes: 'YYYY-MM', ingresos: N, egresos: N, resultado: N,
@@ -53,21 +65,23 @@
 //          anios: [...] }
 //
 // Fuentes:
-//   - facturas / notas: `datacount_comprobantes`, filtradas por
-//     estado='3' (Autorizado por AFIP) y por prefijo de tipo:
-//       * facturas -> tipo LIKE 'F%'  (FA, FB, FC, FM)
-//       * notas    -> tipo LIKE 'N%'  (NA, NB, NC, NM)
+//   - facturacion: `datacount_comprobantes` filtrados por estado='3'
+//     (Autorizado por AFIP) y separados por prefijo de tipo:
+//       * facturas          -> tipo LIKE 'F%'  (FA, FB, FC, FM)
+//       * notas de credito  -> tipo LIKE 'N%'  (NA, NB, NC, NM)
+//     Por cada mes devuelve lo facturado bruto, lo emitido en notas y el neto
+//     entre ambos. Sin piso historico: muestra todo lo cargado.
 //   - pagos: `datacount_pagos`, sin filtro de estado (todas las ordenes
 //     registradas suman). Se suma la columna `valor` (monto en pesos, con
 //     la conversion dolar ya aplicada por convencion del ABM:
 //     valor = monto * cotizacion). La cotizacion para pagos en dolares
 //     se backfillea desde `dolarhoy_cotizaciones` y `valor` se recalcula
 //     via migraciones 20260802_1400_... y 20260802_1500_...
-//   - resultados: cruce mes a mes de las dos anteriores. Ingresos = misma
-//     definicion que la pestana "Facturas" (comprobantes autorizados con
-//     tipo LIKE 'F%'); egresos = misma definicion que "Ordenes de pago".
-//     Las notas de credito NO se restan: la pestana replica exactamente lo
-//     que muestran las pestanas de origen.
+//   - resultados: cruce mes a mes de las dos anteriores. Ingresos =
+//     comprobantes autorizados con tipo LIKE 'F%'; egresos = misma definicion
+//     que "Ordenes de pago". Las notas de credito NO se restan: a diferencia
+//     de `facturacion`, esta pestana mide el flujo bruto emitido contra el
+//     pagado.
 //     Piso historico: solo cuenta lo emitido desde 2025-01 (ver
 //     DCA_CRUCE_MES_MIN). Los registros sin fecha de emision quedan
 //     fuera de los totales — no se pueden ubicar respecto del piso — y solo
@@ -129,11 +143,8 @@ try {
     }
 
     switch ($action) {
-        case 'facturas':
-            handleComprobantesPorTipo($pdo, $_GET, 'F%');
-            break;
-        case 'notas':
-            handleComprobantesPorTipo($pdo, $_GET, 'N%');
+        case 'facturacion':
+            handleFacturacion($pdo, $_GET);
             break;
         case 'pagos':
             handlePagos($pdo, $_GET);
@@ -149,46 +160,6 @@ try {
     }
 } catch (Throwable $e) {
     jsonError($e->getMessage(), 500);
-}
-
-// ----------------------------------------------------------------------------
-// Handler comun para facturas y notas de credito (`datacount_comprobantes`).
-// ----------------------------------------------------------------------------
-//
-// Se cuentan SOLO los comprobantes autorizados por AFIP (estado = '3'). El
-// filtro extra por prefijo de `tipo` distingue facturas (F%) de notas de
-// credito (N%). Se agrupa por mes de `emision`. Autorizados sin fecha
-// (caso raro) van al contador `sin_fecha` para no esconderlos.
-
-function handleComprobantesPorTipo(PDO $pdo, array $q, string $tipoLike): void {
-    $empresaId = (int)($q['empresa'] ?? 0);
-    if ($empresaId <= 0) {
-        jsonError('Falta parametro `empresa`.', 400);
-    }
-
-    $modo = (string)($q['rango'] ?? 'all');
-    $anio = isset($q['anio']) ? (int)$q['anio'] : 0;
-
-    $porMes = dcaComprobantesPorMes($pdo, $empresaId, $tipoLike, null);
-
-    $st = $pdo->prepare("
-        SELECT COUNT(*) AS n, SUM(COALESCE(total, 0)) AS t
-          FROM datacount_comprobantes
-         WHERE empresa = :emp
-           AND estado  = :est
-           AND tipo    LIKE :tipo
-           AND emision IS NULL
-    ");
-    $st->execute([
-        ':emp'  => $empresaId,
-        ':est'  => DCA_ESTADO_AUTORIZADO,
-        ':tipo' => $tipoLike,
-    ]);
-    $rowSf         = $st->fetch() ?: ['n' => 0, 't' => 0];
-    $sinFechaCant  = (int)($rowSf['n'] ?? 0);
-    $sinFechaTotal = (float)($rowSf['t'] ?? 0);
-
-    dcaResponderSerie($porMes, $sinFechaCant, $sinFechaTotal, $modo, $anio);
 }
 
 // ----------------------------------------------------------------------------
@@ -250,12 +221,13 @@ function handlePagos(PDO $pdo, array $q): void {
 }
 
 // ----------------------------------------------------------------------------
-// Formato de respuesta comun a las 3 pestanas.
+// Formato de respuesta de la serie generica `total` / `cantidad`.
 // ----------------------------------------------------------------------------
 //
-// Recibe el crudo por mes + los registros sin fecha (autorizados/contabilizados
-// pero sin `emision`) y devuelve la estructura completa con padding a meses
-// continuos dentro del rango pedido.
+// Recibe el crudo por mes + los registros sin fecha (contabilizados pero sin
+// `emision`) y devuelve la estructura completa con padding a meses continuos
+// dentro del rango pedido. Hoy la usa solo `pagos`; se mantiene generica porque
+// es el formato que espera el shell de pestana comun del frontend.
 
 function dcaResponderSerie(array $porMes, int $sinFechaCant, float $sinFechaTotal, string $modo, int $anio): void {
     $totalHistorico    = $sinFechaTotal;
@@ -328,6 +300,136 @@ function dcaResponderSerie(array $porMes, int $sinFechaCant, float $sinFechaTota
         'rango'   => $rangoInfo,
         'anios'   => dcaAniosDeMeses(array_keys($porMes)),
     ]);
+}
+
+// ----------------------------------------------------------------------------
+// Handler de facturacion neta (facturas menos notas de credito).
+// ----------------------------------------------------------------------------
+//
+// Combina en una sola serie las dos pestanas de comprobantes: por cada mes
+// devuelve lo facturado bruto (tipo LIKE 'F%'), lo emitido en notas de credito
+// (tipo LIKE 'N%') y el neto entre ambos, que es lo que la empresa realmente
+// facturo en el mes.
+//
+// Usa exactamente la misma definicion de origen que las acciones `facturas` y
+// `notas` — mismo filtro de estado, mismo campo de fecha y SIN piso historico —
+// para que los numeros de esta pestana cierren contra ellas: cada mes de aca es
+// la resta de los mismos dos meses de alla, y lo mismo con los totales.
+//
+// A diferencia de las acciones de cruce, los comprobantes sin fecha de emision
+// SI suman en los totales historicos (aunque no puedan entrar en la serie
+// mensual), otra vez para que el historico coincida con el de las pestanas de
+// origen, que los cuentan igual.
+
+function handleFacturacion(PDO $pdo, array $q): void {
+    $empresaId = (int)($q['empresa'] ?? 0);
+    if ($empresaId <= 0) {
+        jsonError('Falta parametro `empresa`.', 400);
+    }
+
+    $modo = (string)($q['rango'] ?? 'all');
+    $anio = isset($q['anio']) ? (int)$q['anio'] : 0;
+
+    $facPorMes = dcaComprobantesPorMes($pdo, $empresaId, 'F%', null);
+    $ncPorMes  = dcaComprobantesPorMes($pdo, $empresaId, 'N%', null);
+    $facSf     = dcaComprobantesSinFecha($pdo, $empresaId, 'F%');
+    $ncSf      = dcaComprobantesSinFecha($pdo, $empresaId, 'N%');
+
+    $facHist = $facSf['total']; $facCantHist = $facSf['cant'];
+    foreach ($facPorMes as $m) { $facHist += $m['total']; $facCantHist += $m['cantidad']; }
+    $ncHist  = $ncSf['total'];  $ncCantHist  = $ncSf['cant'];
+    foreach ($ncPorMes as $m)  { $ncHist  += $m['total']; $ncCantHist  += $m['cantidad']; }
+
+    // El eje es la union de los meses de las dos fuentes: un mes con notas de
+    // credito y sin facturacion (la factura se emitio antes) es informacion
+    // util, no un hueco que se pueda saltear.
+    $mesesUnion = array_keys($facPorMes + $ncPorMes);
+    sort($mesesUnion);
+    $primero = $mesesUnion ? $mesesUnion[0] : null;
+    $ultimo  = $mesesUnion ? $mesesUnion[count($mesesUnion) - 1] : null;
+
+    $rango     = dcaCalcularRango($primero, $ultimo, $modo, $anio);
+    $rangoInfo = $rango['info'];
+
+    $serie = [];
+    if ($rango['desde'] !== null) {
+        foreach (dcaMesesEntre($rango['desde'], $rango['hasta']) as $k) {
+            $fac = $facPorMes[$k]['total'] ?? 0.0;
+            $nc  = $ncPorMes[$k]['total']  ?? 0.0;
+            $serie[] = [
+                'mes'           => $k,
+                'facturado'     => $fac,
+                'notas'         => $nc,
+                'neto'          => $fac - $nc,
+                'cant_facturas' => $facPorMes[$k]['cantidad'] ?? 0,
+                'cant_notas'    => $ncPorMes[$k]['cantidad']  ?? 0,
+            ];
+        }
+    }
+
+    jsonOk([
+        'serie'   => $serie,
+        'resumen' => dcaResumenFacturacion($serie, $facHist, $facCantHist, $ncHist, $ncCantHist,
+                                           $primero, $ultimo, $facSf, $ncSf),
+        'rango'   => $rangoInfo,
+        'anios'   => dcaAniosDeMeses($mesesUnion),
+    ]);
+}
+
+// Bloque `resumen` de la pestana Facturacion: totales del rango, historicos, la
+// incidencia de las notas sobre lo facturado y el mes donde esa incidencia fue
+// mas alta — que es por donde conviene mirar cuando el neto se despega del bruto.
+function dcaResumenFacturacion(array $serie, float $facHist, int $facCantHist, float $ncHist, int $ncCantHist,
+                               ?string $primero, ?string $ultimo, array $facSf, array $ncSf): array {
+    $fac = 0.0; $nc = 0.0;
+    $cFac = 0;  $cNc = 0;
+    $conDatos = 0;
+    $mayor = null;
+
+    foreach ($serie as $s) {
+        $fac  += $s['facturado'];
+        $nc   += $s['notas'];
+        $cFac += $s['cant_facturas'];
+        $cNc  += $s['cant_notas'];
+
+        // Los meses de puro padding (sin una sola factura ni una sola nota) no
+        // aportan nada al resumen: ensuciarian el conteo de meses con datos.
+        if ($s['cant_facturas'] === 0 && $s['cant_notas'] === 0) continue;
+        $conDatos++;
+
+        // Incidencia = que porcion de lo facturado del mes se anulo con notas.
+        // Sin facturacion no hay base contra la cual medirla, y sin notas no hay
+        // nada que reportar (todos los meses empatarian en 0 %).
+        if ($s['facturado'] > 0 && $s['notas'] > 0) {
+            $pct = ($s['notas'] / $s['facturado']) * 100;
+            if ($mayor === null || $pct > $mayor['incidencia_pct']) {
+                $mayor = ['mes' => $s['mes'], 'incidencia_pct' => $pct, 'notas' => $s['notas']];
+            }
+        }
+    }
+
+    return [
+        'facturado_rango'          => $fac,
+        'notas_rango'              => $nc,
+        'neto_rango'               => $fac - $nc,
+        'cant_facturas_rango'      => $cFac,
+        'cant_notas_rango'         => $cNc,
+        'incidencia_pct'           => $fac > 0 ? ($nc / $fac) * 100 : null,
+        'facturado'                => $facHist,
+        'notas'                    => $ncHist,
+        'neto'                     => $facHist - $ncHist,
+        'cant_facturas'            => $facCantHist,
+        'cant_notas'               => $ncCantHist,
+        'primero'                  => $primero,
+        'ultimo'                   => $ultimo,
+        'meses'                    => count($serie),
+        'meses_con_datos'          => $conDatos,
+        'mes_mayor_incidencia'     => $mayor,
+        'sin_fecha_facturas_cant'  => $facSf['cant'],
+        'sin_fecha_facturas_total' => $facSf['total'],
+        'sin_fecha_notas_cant'     => $ncSf['cant'],
+        'sin_fecha_notas_total'    => $ncSf['total'],
+    ];
 }
 
 // ----------------------------------------------------------------------------
@@ -696,6 +798,28 @@ function dcaComprobantesPorMes(PDO $pdo, int $empresaId, string $tipoLike, ?stri
         ];
     }
     return $porMes;
+}
+
+// Comprobantes autorizados de la empresa SIN fecha de emision (caso raro). No
+// se pueden ubicar en ningun mes, asi que quedan fuera de toda serie mensual y
+// solo suman en los totales historicos de las pestanas que los reportan.
+// Devuelve ['cant' => n, 'total' => f].
+function dcaComprobantesSinFecha(PDO $pdo, int $empresaId, string $tipoLike): array {
+    $st = $pdo->prepare("
+        SELECT COUNT(*) AS n, SUM(COALESCE(total, 0)) AS t
+          FROM datacount_comprobantes
+         WHERE empresa = :emp
+           AND estado  = :est
+           AND tipo    LIKE :tipo
+           AND emision IS NULL
+    ");
+    $st->execute([
+        ':emp'  => $empresaId,
+        ':est'  => DCA_ESTADO_AUTORIZADO,
+        ':tipo' => $tipoLike,
+    ]);
+    $row = $st->fetch() ?: ['n' => 0, 't' => 0];
+    return ['cant' => (int)($row['n'] ?? 0), 'total' => (float)($row['t'] ?? 0)];
 }
 
 // Acreditaciones (= ingresos que son cobranzas) por mes de `fecha`. Ver el

@@ -53,6 +53,18 @@ const DC_TRANSICIONES_ESTADO = [
     '5' => ['4'],       // Aprobado    -> Anulado (unica salida; el nro ya se emitio)
 ];
 
+// Reversion: letra de la factura -> letra de la nota de credito que la anula.
+// Espeja DCC_TIPO_A_AFIP / DCC_TIPOS_NC de lib/datacount_comprobantes_autorizar.php.
+// AFIP exige que la NC sea de la MISMA letra que el comprobante asociado, asi
+// que este mapa es tambien el gate de que talonarios se ofrecen en el modal.
+// Solo hay entradas para facturas: una NC (o un presupuesto/remito) no se revierte.
+const DC_REVERSION_NC_POR_FACTURA = [
+    'FA' => 'NA',   // Factura A -> Nota de Credito A
+    'FB' => 'NB',   // Factura B -> Nota de Credito B
+    'FC' => 'NC',   // Factura C -> Nota de Credito C
+    'FM' => 'NM',   // Factura M -> Nota de Credito M
+];
+
 header('Content-Type: application/json; charset=utf-8');
 
 try {
@@ -85,6 +97,9 @@ try {
 
     if ($method === 'GET' && ($_GET['lookups'] ?? '') !== '') {
         handleLookups($pdo);
+    } elseif ($method === 'GET' && $action === 'reversion') {
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleReversionOpciones($pdo, $id);
     } elseif ($method === 'GET' && $id > 0) {
         handleGetOne($pdo, $id);
     } elseif ($method === 'GET') {
@@ -92,6 +107,9 @@ try {
     } elseif ($method === 'POST' && $action === 'clonar') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleClonar($pdo, $id);
+    } elseif ($method === 'POST' && $action === 'revertir') {
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleRevertir($pdo, $id, readJsonBody());
     } elseif ($method === 'POST') {
         handleCreate($pdo, readJsonBody());
     } elseif ($method === 'PUT' && $action === 'estado') {
@@ -698,6 +716,270 @@ function handleClonar(PDO $pdo, int $id): void {
     }
 
     jsonOk(['id' => $nuevoId], 201);
+}
+
+// ----------------------------------------------------------------------------
+// Reversion (nota de credito que anula una factura autorizada)
+// ----------------------------------------------------------------------------
+//
+// "Revertir" un comprobante NO cambia el comprobante: una factura con CAE es
+// inmutable ante AFIP. Lo que la anula es una nota de credito por el mismo
+// importe, apuntando a ella via `asociado` -- de ahi saca dccAutAutorizar() el
+// `cbtes_asoc` obligatorio al pedirle el CAE a la NC (ver
+// lib/datacount_comprobantes_autorizar.php).
+//
+// El flujo son dos requests:
+//   GET  ?id=N&action=reversion  -> que talonarios de NC se pueden usar
+//   POST ?id=N&action=revertir   -> crea la NC en 'Preparacion' ('1')
+// Ambas resuelven la compatibilidad con las MISMAS funciones, asi el <select>
+// del modal y la validacion del alta no pueden divergir.
+
+// Carga el comprobante a revertir y valida que sea reversible: tiene que
+// existir, estar Autorizado ('3', o sea con CAE) y ser una factura. Trae de
+// paso los nombres de talonario/empresa para el resumen del modal.
+// Cierra la request con 404/409 si no cumple.
+function dcRevCargarOrigen(PDO $pdo, int $id): array {
+    $st = $pdo->prepare("
+        SELECT c.id, c.talonario, c.proyecto, c.empresa, c.tipo, c.punto, c.serie,
+               c.fiscal, c.caenro, c.caevto, c.emision, c.concepto, c.contrato,
+               c.cliente, c.razon, c.condicion, c.cuit, c.domicilio, c.correo,
+               c.celular, c.neto, c.iva, c.total, c.medio, c.estado,
+               t.nombre AS talonario_nombre,
+               e.nombre AS empresa_nombre
+          FROM datacount_comprobantes c
+          LEFT JOIN datacount_talonarios t ON t.id = c.talonario
+          LEFT JOIN datacount_empresas   e ON e.id = c.empresa
+         WHERE c.id = :id
+         LIMIT 1
+    ");
+    $st->execute([':id' => $id]);
+    $src = $st->fetch();
+    if (!$src) jsonError('Comprobante no encontrado', 404);
+    if ((string)($src['estado'] ?? '') !== '3') {
+        jsonError('Solo se revierten comprobantes en estado Autorizado', 409);
+    }
+    $tipo = strtoupper(trim((string)($src['tipo'] ?? '')));
+    if (!isset(DC_REVERSION_NC_POR_FACTURA[$tipo])) {
+        jsonError("Solo se revierten facturas (FA/FB/FC/FM); este comprobante es de tipo '{$tipo}'", 409);
+    }
+    return $src;
+}
+
+// Talonarios de nota de credito que PUEDEN usarse para revertir $src:
+//   - la letra que exige AFIP para el `cbtes_asoc` (FA->NA, FB->NB, ...),
+//   - la misma empresa emisora (el CUIT del emisor sale de `datacount_empresas`),
+//   - talonario fiscal y habilitado (`estado = 1`).
+// Se marcan `recomendado` los del mismo proyecto y punto de venta que la
+// factura original -- el que el operador va a querer casi siempre -- y quedan
+// primeros en la lista. El punto NO filtra: AFIP admite emitir la NC desde otro
+// punto de venta (el original viaja igual dentro de `cbtes_asoc`).
+function dcRevTalonariosCompatibles(PDO $pdo, array $src): array {
+    $tipoNc  = DC_REVERSION_NC_POR_FACTURA[strtoupper(trim((string)$src['tipo']))];
+    $empresa = $src['empresa'] === null ? null : (int)$src['empresa'];
+
+    $sql = "SELECT id, proyecto, empresa, tipo, punto, fiscal,
+                   COALESCE(NULLIF(TRIM(nombre), ''), CONCAT('#', id)) AS nombre
+              FROM datacount_talonarios
+             WHERE tipo = :tipo
+               AND fiscal = '1'
+               AND estado = 1";
+    $params = [':tipo' => $tipoNc];
+    if ($empresa !== null) {
+        $sql .= ' AND empresa = :empresa';
+        $params[':empresa'] = $empresa;
+    }
+    $sql .= ' ORDER BY nombre ASC, id ASC';
+    $st = $pdo->prepare($sql);
+    $st->execute($params);
+
+    $proyecto = $src['proyecto'] === null ? null : (int)$src['proyecto'];
+    $punto    = $src['punto']    === null ? null : (int)$src['punto'];
+    $rows = array_map(function (array $r) use ($proyecto, $punto): array {
+        $rp = $r['proyecto'] === null ? null : (int)$r['proyecto'];
+        $tp = $r['punto']    === null ? null : (int)$r['punto'];
+        return [
+            'id'          => (int)$r['id'],
+            'nombre'      => (string)$r['nombre'],
+            'proyecto'    => $rp,
+            'empresa'     => $r['empresa'] === null ? null : (int)$r['empresa'],
+            'tipo'        => (string)$r['tipo'],
+            'punto'       => $tp,
+            'fiscal'      => (string)($r['fiscal'] ?? ''),
+            'recomendado' => $rp !== null && $rp === $proyecto && $tp !== null && $tp === $punto,
+        ];
+    }, $st->fetchAll());
+
+    // Recomendados primero; dentro de cada grupo se respeta el orden alfabetico
+    // que ya trajo el ORDER BY.
+    usort($rows, fn($a, $b) => ($b['recomendado'] <=> $a['recomendado']) ?: strcmp($a['nombre'], $b['nombre']));
+    return $rows;
+}
+
+// Notas de credito ya emitidas contra este comprobante (se ignoran las
+// Rechazadas '0' y las Anuladas '4', que no acreditan nada). El modal las
+// muestra como advertencia para que el operador no revierta dos veces.
+function dcRevReversionesExistentes(PDO $pdo, int $id): array {
+    $inNc = "'" . implode("','", array_values(DC_REVERSION_NC_POR_FACTURA)) . "'";
+    $st = $pdo->prepare("
+        SELECT id, tipo, punto, serie, total, estado
+          FROM datacount_comprobantes
+         WHERE asociado = :id
+           AND tipo IN ({$inNc})
+           AND COALESCE(estado, '') NOT IN ('0', '4')
+      ORDER BY id ASC
+    ");
+    $st->execute([':id' => $id]);
+    return $st->fetchAll();
+}
+
+// GET ?id=N&action=reversion -> todo lo que necesita el modal de Reversion:
+// resumen del comprobante original, talonarios de NC usables y las reversiones
+// que ya se le hicieron.
+function handleReversionOpciones(PDO $pdo, int $id): void {
+    $src = dcRevCargarOrigen($pdo, $id);
+    jsonOk([
+        'comprobante' => [
+            'id'               => (int)$src['id'],
+            'tipo'             => (string)($src['tipo'] ?? ''),
+            'punto'            => $src['punto'] === null ? null : (int)$src['punto'],
+            'serie'            => $src['serie'] === null ? null : (int)$src['serie'],
+            'emision'          => $src['emision'],
+            'razon'            => $src['razon'],
+            'cuit'             => $src['cuit'],
+            'total'            => $src['total'],
+            'caenro'           => $src['caenro'],
+            'talonario_nombre' => $src['talonario_nombre'],
+            'empresa_nombre'   => $src['empresa_nombre'],
+        ],
+        'tipo_nc'     => DC_REVERSION_NC_POR_FACTURA[strtoupper(trim((string)$src['tipo']))],
+        'talonarios'  => dcRevTalonariosCompatibles($pdo, $src),
+        'reversiones' => dcRevReversionesExistentes($pdo, $id),
+    ]);
+}
+
+// POST ?id=N&action=revertir  body {talonario: T}
+// Crea la nota de credito que revierte la factura autorizada #N:
+//   - nace en 'Preparacion' ('1') como cualquier comprobante nuevo, para que el
+//     operador la revise antes de mandarla a AFIP (Pendiente -> Autorizar),
+//   - lleva `asociado = N`, de donde sale el `cbtes_asoc` al pedir el CAE,
+//   - copia cliente, importes y renglones tal cual: los importes de una NC van
+//     en POSITIVO, el signo lo da el CbteTipo de AFIP,
+//   - toma tipo/punto/fiscal/proyecto/empresa del talonario elegido, igual que
+//     handleCreate() con un alta normal.
+// La factura original no se toca: ya tiene CAE y su estado '3' es terminal.
+function handleRevertir(PDO $pdo, int $id, array $in): void {
+    $src   = dcRevCargarOrigen($pdo, $id);
+    $talId = isset($in['talonario']) ? (int)$in['talonario'] : 0;
+    if ($talId <= 0) jsonError('Falta el talonario de nota de credito', 400);
+
+    // Misma lista que alimenta el <select> del modal: si el talonario no esta
+    // ahi, no sirve para esta reversion (letra, empresa o habilitacion).
+    $tal = null;
+    foreach (dcRevTalonariosCompatibles($pdo, $src) as $t) {
+        if ($t['id'] === $talId) { $tal = $t; break; }
+    }
+    if ($tal === null) {
+        jsonError('El talonario elegido no sirve para revertir este comprobante', 409);
+    }
+
+    $renglones = $pdo->prepare(
+        'SELECT orden, cantidad, articulo, detalle, iva, unitario, monto, estado
+           FROM datacount_comprobantes_renglones
+          WHERE comprobante = :id
+          ORDER BY orden ASC, id ASC'
+    );
+    $renglones->execute([':id' => $id]);
+    $lineas = $renglones->fetchAll();
+
+    $ahora      = new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires'));
+    $registrado = $ahora->format('Y-m-d H:i:s');
+    $hoy        = $ahora->format('Y-m-d');
+
+    // Linea de trazabilidad impresa en la NC: numero AFIP y CAE de la factura
+    // que se esta revirtiendo. Es lo que hace legible el vinculo para el cliente
+    // (`asociado` solo lo ve el sistema).
+    $refNumero = str_pad((string)($src['punto'] ?? 0), 4, '0', STR_PAD_LEFT) . '-' .
+                 str_pad((string)($src['serie'] ?? 0), 8, '0', STR_PAD_LEFT);
+    $observaciones = "Reversión del comprobante {$src['tipo']} {$refNumero}";
+    if (trim((string)($src['caenro'] ?? '')) !== '') {
+        $observaciones .= " (CAE {$src['caenro']})";
+    }
+    $observaciones .= '.';
+
+    $proyecto = $tal['proyecto'] ?? ($src['proyecto'] === null ? null : (int)$src['proyecto']);
+    $empresa  = $tal['empresa']  ?? ($src['empresa']  === null ? null : (int)$src['empresa']);
+
+    $pdo->beginTransaction();
+    try {
+        $ins = $pdo->prepare("
+            INSERT INTO datacount_comprobantes
+                (uuid, talonario, proyecto, empresa, tipo, punto, serie, fiscal,
+                 caenro, caevto, caeres, emision, vencimiento, concepto,
+                 asociado, contrato, cliente, razon, condicion, cuit, domicilio,
+                 correo, celular, neto, iva, total, observaciones, comentarios,
+                 medio, registrado, autorizado, estado)
+            VALUES
+                (:uuid, :talonario, :proyecto, :empresa, :tipo, :punto, NULL, :fiscal,
+                 NULL, NULL, NULL, :emision, :vencimiento, :concepto,
+                 :asociado, :contrato, :cliente, :razon, :condicion, :cuit, :domicilio,
+                 :correo, :celular, :neto, :iva, :total, :observaciones, NULL,
+                 :medio, :registrado, NULL, '1')
+        ");
+        $ins->execute([
+            ':uuid'          => substr(bin2hex(random_bytes(8)), 0, 10),
+            ':talonario'     => $talId,
+            ':proyecto'      => $proyecto,
+            ':empresa'       => $empresa,
+            ':tipo'          => $tal['tipo'],
+            ':punto'         => $tal['punto'],
+            ':fiscal'        => $tal['fiscal'],
+            ':emision'       => $hoy,
+            ':vencimiento'   => $hoy,
+            ':concepto'      => $src['concepto'],
+            ':asociado'      => $id,
+            ':contrato'      => $src['contrato'],
+            ':cliente'       => $src['cliente'],
+            ':razon'         => $src['razon'],
+            ':condicion'     => $src['condicion'],
+            ':cuit'          => $src['cuit'],
+            ':domicilio'     => $src['domicilio'],
+            ':correo'        => $src['correo'],
+            ':celular'       => $src['celular'],
+            ':neto'          => $src['neto'],
+            ':iva'           => $src['iva'],
+            ':total'         => $src['total'],
+            ':observaciones' => $observaciones,
+            ':medio'         => $src['medio'],
+            ':registrado'    => $registrado,
+        ]);
+        $nuevoId = (int)$pdo->lastInsertId();
+
+        if ($lineas) {
+            insertarRenglones($pdo, $nuevoId, array_map(fn($r) => [
+                'orden'    => (int)$r['orden'],
+                'cantidad' => $r['cantidad'],
+                'articulo' => $r['articulo'] === null ? null : (int)$r['articulo'],
+                'detalle'  => $r['detalle'],
+                'iva'      => $r['iva'],
+                'unitario' => $r['unitario'],
+                'monto'    => $r['monto'],
+                'estado'   => $r['estado'],
+            ], $lineas));
+        }
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $e;
+    }
+
+    try {
+        registrarSuceso($pdo, 'panel/datacount_comprobantes.revertir', 'info',
+            "cbte#{$id} ({$src['tipo']} {$refNumero}) revertido con NC #{$nuevoId} " .
+            "({$tal['tipo']}, talonario#{$talId})");
+    } catch (Throwable $_) { /* no romper el flujo */ }
+
+    jsonOk(['id' => $nuevoId, 'talonario' => $talId, 'tipo' => $tal['tipo']], 201);
 }
 
 // Autoriza manualmente UN comprobante contra AFIP (accion "Autorizar" del

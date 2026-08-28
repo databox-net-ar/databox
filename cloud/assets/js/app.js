@@ -10880,8 +10880,9 @@ route('/datacount', async (mount) => {
 //
 // Pestañas (config-driven — agregar una nueva es sumar una entrada en DCA_TABS
 // y una acción en el PHP; el resto del scaffolding es común):
-//   - facturas:   `datacount_comprobantes` autorizados, tipo LIKE 'F%'.
-//   - notas:      `datacount_comprobantes` autorizados, tipo LIKE 'N%'.
+//   - facturacion: `datacount_comprobantes` autorizados, facturas (tipo LIKE
+//                 'F%') menos notas de crédito (tipo LIKE 'N%'), en una sola
+//                 barra por mes. Es la vista por defecto del módulo.
 //   - pagos:      `datacount_pagos` contabilizados.
 //   - resultados: cruce mes a mes de facturas (ingresos) contra órdenes de
 //                 pago (egresos).
@@ -10895,36 +10896,22 @@ route('/datacount', async (mount) => {
 // tiene su render de stats + tabla. El shell de rango/año lo comparten con el
 // resto.
 //
+// `facturacion` grafica una sola barra por mes (`chartSimple` dice de qué clave
+// de la serie sale y con qué color), pero tiene shell propio porque su serie no
+// es la genérica `total`/`cantidad` y su tooltip abre el neto en sus dos partes.
+//
 // Los gráficos son SVG plano (sin librerías, coherente con "sin build step").
 
 // Config estático por pestaña. `key` se usa como prefijo de IDs y como nombre
 // de acción del endpoint (el PHP dispatcher espera exactamente estos valores).
 const DCA_TABS = [
   {
-    key: 'facturas',
-    label: 'Facturas',
-    icon: 'fa-file-invoice-dollar',
-    tituloChart: 'Facturación mensual autorizada por AFIP',
-    unidadSing: 'factura',
-    unidadPlur: 'facturas',
-    statLabelTotalRango: 'Facturado en el rango',
-    statLabelCantRango:  'Facturas del rango',
-    statLabelTotalHist:  'Facturado histórico',
-    statLabelCantHist:   'Facturas históricas',
-    sinFechaMsg: 'factura(s) autorizada(s) sin fecha de emisión',
-  },
-  {
-    key: 'notas',
-    label: 'Notas de crédito',
-    icon: 'fa-file-invoice',
-    tituloChart: 'Notas de crédito mensuales autorizadas por AFIP',
-    unidadSing: 'nota de crédito',
-    unidadPlur: 'notas de crédito',
-    statLabelTotalRango: 'Notas de crédito en el rango',
-    statLabelCantRango:  'Cantidad en el rango',
-    statLabelTotalHist:  'Notas de crédito histórico',
-    statLabelCantHist:   'Cantidad histórica',
-    sinFechaMsg: 'nota(s) de crédito autorizada(s) sin fecha de emisión',
+    key: 'facturacion',
+    label: 'Facturación',
+    icon: 'fa-receipt',
+    tipo: 'facturacion',
+    tituloChart: 'Facturación mensual neta de notas de crédito',
+    chartSimple: { key: 'neto', color: 'var(--primary)' },
   },
   {
     key: 'pagos',
@@ -11077,9 +11064,7 @@ route('/datacount_analiticas', async (mount) => {
         const inner = document.getElementById(`dca_${cfg.key}_ChartInner`);
         const tip   = document.getElementById(`dca_${cfg.key}_Tooltip`);
         if (chart && inner) {
-          inner.innerHTML = cfg.chartComparativa
-            ? dcaRenderBarChartComparativa(st.ultimaData.serie, chart.clientWidth, cfg.chartComparativa)
-            : dcaRenderBarChart(st.ultimaData.serie, chart.clientWidth);
+          inner.innerHTML = dcaRenderChartDeTab(cfg, st.ultimaData.serie, chart.clientWidth);
         }
         if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
       }, 150);
@@ -11120,7 +11105,8 @@ async function dcaRenderTab(panel, cfg) {
     return;
   }
 
-  // Las pestañas de cruce (dos series) tienen cada una su propio shell.
+  // Las pestañas de dos series tienen cada una su propio shell.
+  if (cfg.tipo === 'facturacion')  return dcaRenderTabFacturacion(panel, cfg);
   if (cfg.tipo === 'comparativa')  return dcaRenderTabResultados(panel, cfg);
   if (cfg.tipo === 'consistencia') return dcaRenderTabConsistencia(panel, cfg);
 
@@ -11285,6 +11271,15 @@ async function dcaCargarTabData(cfg) {
   }
 }
 
+// Elige el renderer que le corresponde a una pestaña. Lo usa el handler de
+// resize, que redibuja el gráfico activo sea cual sea, y las pestañas cuyo
+// gráfico no es el de una sola serie.
+function dcaRenderChartDeTab(cfg, serie, ancho) {
+  if (cfg.chartSimple)      return dcaRenderBarChartSerie(serie, ancho, cfg.chartSimple);
+  if (cfg.chartComparativa) return dcaRenderBarChartComparativa(serie, ancho, cfg.chartComparativa);
+  return dcaRenderBarChart(serie, ancho);
+}
+
 // Barras verticales en SVG plano. Devuelve un string HTML con el <svg>
 // dimensionado al ancho recibido (o 800 como fallback). El alto es fijo
 // (320px). Cada barra lleva data-mes/data-total/data-cant + class .dca-bar
@@ -11367,6 +11362,223 @@ function dcaNiceMax(v) {
   else if (norm <= 5)   nice = 5;
   else                  nice = 10;
   return nice * base;
+}
+
+// -------------------- Pestaña: Analíticas > Facturación --------------------
+//
+// Una barra por mes con lo que la empresa facturó NETO: las facturas
+// autorizadas por AFIP menos las notas de crédito que las anulan. El desglose
+// (bruto, notas, neto) queda en el tooltip y en las stat-cards.
+//
+// No tiene piso histórico, a diferencia de Resultados y Consistencia: muestra
+// todo lo cargado.
+
+async function dcaRenderTabFacturacion(panel, cfg) {
+  const p  = `dca_${cfg.key}_`;
+  const st = dcaState[cfg.key];
+
+  panel.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px">
+      <div class="toolbar-left" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.85rem;color:var(--muted)">Rango:</label>
+        <div id="${p}RangoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button type="button" class="filter-chip" data-val="all">Histórico completo</button>
+          <button type="button" class="filter-chip" data-val="12">Últimos 12 meses</button>
+          <button type="button" class="filter-chip" data-val="24">Últimos 24 meses</button>
+          <button type="button" class="filter-chip" data-val="36">Últimos 36 meses</button>
+          <button type="button" class="filter-chip" data-val="year">Año…</button>
+        </div>
+        <select id="${p}AnioSel" style="min-width:110px;display:none" title="Año">
+          <option value="">—</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-card"><span class="stat-label">Facturado bruto del rango</span><span class="stat-value blue" id="${p}StatBruto">—</span></div>
+      <div class="stat-card"><span class="stat-label">Notas de crédito del rango</span><span class="stat-value red" id="${p}StatNotas">—</span></div>
+      <div class="stat-card"><span class="stat-label">Facturación neta del rango</span><span class="stat-value green" id="${p}StatNeto">—</span></div>
+      <div class="stat-card"><span class="stat-label">Facturación neta histórica</span><span class="stat-value" id="${p}StatNetoHist">—</span></div>
+    </div>
+
+    <div class="table-card" style="padding:16px 20px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div style="font-weight:600;font-size:.95rem">${esc(cfg.tituloChart)}</div>
+        <div id="${p}Subtitulo" style="font-size:.8rem;color:var(--muted)">—</div>
+      </div>
+      <div id="${p}Chart" style="width:100%;min-height:320px;position:relative">
+        <div id="${p}ChartInner">
+          <div style="text-align:center;padding:80px 0"><div class="spin"></div></div>
+        </div>
+        <div id="${p}Tooltip" hidden
+             style="position:absolute;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow-lg);font-size:.82rem;pointer-events:none;z-index:5;white-space:nowrap;transform:translate(-50%,-100%);margin-top:-8px;line-height:1.35"></div>
+      </div>
+      <div id="${p}Notas" style="margin-top:8px;font-size:.78rem;color:var(--muted)"></div>
+    </div>
+  `;
+
+  dcaWirearRangoChips(panel, p, st, () => dcaCargarFacturacionData(cfg));
+
+  // El bloque de notas de crédito sólo aparece cuando el mes tuvo alguna: la
+  // mayoría no tiene, y un "-$ 0,00" fijo sería ruido en todos los tooltips.
+  dcaWirearTooltipComparativa(p, cfg, (s) => `
+    <div style="font-weight:600;margin-bottom:2px">${esc(dcaMesLabel(s.mes))}</div>
+    <div style="color:var(--info)">Facturado: <strong>$ ${dcaFmtMoney(s.facturado)}</strong></div>
+    <div style="color:var(--muted);font-size:.75rem">${fmtNum(s.cant_facturas)} factura(s)</div>
+    ${Number(s.notas) > 0 ? `
+      <div style="margin-top:3px;color:var(--danger)">Notas de crédito: <strong>-$ ${dcaFmtMoney(s.notas)}</strong></div>
+      <div style="color:var(--muted);font-size:.75rem">${fmtNum(s.cant_notas)} nota(s) de crédito</div>
+    ` : `
+      <div style="margin-top:3px;color:var(--muted);font-size:.75rem">Sin notas de crédito</div>
+    `}
+    <div style="margin-top:3px;padding-top:3px;border-top:1px solid var(--border);color:${dcaColorResultado(s.neto)};font-weight:700">Neto: ${dcaFmtMoneySigno(s.neto)}</div>
+  `);
+
+  await dcaCargarFacturacionData(cfg);
+}
+
+async function dcaCargarFacturacionData(cfg) {
+  const p      = `dca_${cfg.key}_`;
+  const st     = dcaState[cfg.key];
+  const chart  = document.getElementById(`${p}Chart`);
+  const cont   = document.getElementById(`${p}ChartInner`);
+  const subtit = document.getElementById(`${p}Subtitulo`);
+  const notas  = document.getElementById(`${p}Notas`);
+  const tip    = document.getElementById(`${p}Tooltip`);
+  if (!cont) return;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) return;
+
+  if (tip) { tip.hidden = true; tip.dataset.mes = ''; }
+
+  cont.innerHTML = `<div style="text-align:center;padding:80px 0"><div class="spin"></div></div>`;
+
+  const qs = new URLSearchParams();
+  qs.set('action',  cfg.key);
+  qs.set('empresa', String(empresaId));
+  qs.set('rango',   st.rango);
+  if (st.rango === 'year' && st.anio) qs.set('anio', String(st.anio));
+
+  try {
+    const data = await apiGet('api/datacount_analiticas.php?' + qs.toString());
+    st.ultimaData = data;
+
+    dcaPoblarSelectorAnios(p, st, data.anios);
+
+    const r = data.resumen || {};
+    document.getElementById(`${p}StatBruto`).textContent = '$ '  + dcaFmtMoney(r.facturado_rango ?? 0);
+    document.getElementById(`${p}StatNotas`).textContent = '-$ ' + dcaFmtMoney(r.notas_rango ?? 0);
+    const elNeto = document.getElementById(`${p}StatNeto`);
+    elNeto.textContent = dcaFmtMoneySigno(r.neto_rango ?? 0);
+    elNeto.style.color = dcaColorResultado(r.neto_rango ?? 0);
+    document.getElementById(`${p}StatNetoHist`).textContent = dcaFmtMoneySigno(r.neto ?? 0);
+
+    // Subtítulo con la ventana efectiva (mismo criterio que el resto).
+    if (data.rango && data.rango.desde && data.rango.hasta) {
+      const modoTxt = data.rango.modo === 'year'
+        ? `Año ${data.rango.desde.slice(0, 4)}`
+        : (data.rango.modo === 'ultimos'
+            ? `Últimos ${data.rango.meses} meses`
+            : 'Histórico completo');
+      subtit.textContent = `${modoTxt} · ${dcaMesLabel(data.rango.desde)} → ${dcaMesLabel(data.rango.hasta)}`;
+    } else {
+      subtit.textContent = 'Sin registros con fecha de emisión.';
+    }
+
+    // Notas al pie: cuánto pesan las notas de crédito sobre lo facturado, el
+    // mes donde más pesaron y los comprobantes que no entran en la serie.
+    const avisos = [];
+    if (r.incidencia_pct !== null && r.incidencia_pct !== undefined) {
+      avisos.push(`Las notas de crédito representan el <strong>${dcaFmtPct(r.incidencia_pct)}</strong> de lo facturado en el rango (${fmtNum(r.cant_notas_rango ?? 0)} sobre ${fmtNum(r.cant_facturas_rango ?? 0)} facturas)`);
+    }
+    if (r.mes_mayor_incidencia) {
+      avisos.push(`Mayor incidencia: <strong>${esc(dcaMesLabel(r.mes_mayor_incidencia.mes))}</strong> (${dcaFmtPct(r.mes_mayor_incidencia.incidencia_pct)}, $ ${dcaFmtMoney(r.mes_mayor_incidencia.notas)})`);
+    }
+    let notasHtml = avisos.length ? avisos.join(' &nbsp;·&nbsp; ') : '';
+    const sinFecha = (r.sin_fecha_facturas_cant ?? 0) + (r.sin_fecha_notas_cant ?? 0);
+    if (sinFecha > 0) {
+      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> ${fmtNum(r.sin_fecha_facturas_cant ?? 0)} factura(s) y ${fmtNum(r.sin_fecha_notas_cant ?? 0)} nota(s) de crédito sin fecha de emisión: no entran en la serie mensual, pero sí en los totales históricos.`;
+    }
+    notas.innerHTML = notasHtml;
+
+    if (!data.serie || !data.serie.length) {
+      cont.innerHTML = `<div class="table-empty" style="text-align:center;padding:60px 20px;color:var(--muted)">Sin datos para el rango elegido.</div>`;
+      return;
+    }
+    cont.innerHTML = dcaRenderChartDeTab(cfg, data.serie, chart.clientWidth);
+  } catch (e) {
+    cont.innerHTML = `<div class="table-empty" style="text-align:center;padding:40px 20px;color:var(--danger)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// Una barra por mes, en SVG plano. Mismo layout y mismo ancho de barra que
+// `dcaRenderBarChart` (para que las pestañas se lean igual); lo que cambia es
+// que el valor sale de la clave que indica `opts` en vez de `total`, y que
+// la zona clickeable lleva `data-mes` + `data-topfrac` para anclar el tooltip
+// —igual que el gráfico agrupado— en vez de traer los valores en atributos: el
+// contenido lo arma el handler a partir de la serie cacheada, que tiene el
+// desglose completo del mes.
+function dcaRenderBarChartSerie(serie, anchoDisponible, opts) {
+  const o = Object.assign({ key: 'neto', color: 'var(--primary)' }, opts || {});
+
+  const W = Math.max(320, Math.floor(anchoDisponible || 800));
+  const H = 320;
+  const PAD = { top: 20, right: 16, bottom: 44, left: 76 };
+  const plotW = W - PAD.left - PAD.right;
+  const plotH = H - PAD.top - PAD.bottom;
+
+  // Un mes con más notas de crédito que facturas deja el neto en negativo. Se
+  // dibuja como barra vacía (mismo criterio que el gráfico agrupado: el eje no
+  // baja de cero) y el número real se lee en el tooltip y en las stat-cards.
+  const valorDe = (s) => Math.max(0, Number(s[o.key]) || 0);
+
+  const maxVal = serie.reduce((m, s) => Math.max(m, valorDe(s)), 0);
+  const yMax = dcaNiceMax(maxVal);
+
+  const yTicks = 5;
+  const gridLines = [];
+  const yLabels   = [];
+  for (let i = 0; i <= yTicks; i++) {
+    const val = (yMax / yTicks) * i;
+    const y   = PAD.top + plotH - (plotH * i / yTicks);
+    gridLines.push(`<line x1="${PAD.left}" y1="${y.toFixed(1)}" x2="${(PAD.left + plotW).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="1" ${i === 0 ? '' : 'stroke-dasharray="2,3"'}/>`);
+    yLabels.push(`<text x="${PAD.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)" font-family="inherit">$ ${dcaFmtMoneyCompacto(val)}</text>`);
+  }
+
+  const n      = serie.length;
+  const bandW  = plotW / n;
+  const barW   = Math.max(2, Math.min(48, bandW * 0.7));
+  const barGap = (bandW - barW) / 2;
+  const stepX  = Math.max(1, Math.ceil(n / 14));
+
+  const bars  = [];
+  const xLabs = [];
+  serie.forEach((s, i) => {
+    const v = valorDe(s);
+    const h = yMax > 0 ? (plotH * v / yMax) : 0;
+    const x = PAD.left + i * bandW + barGap;
+    const y = PAD.top + plotH - h;
+
+    bars.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${o.color}" opacity="${v > 0 ? '.92' : '0'}"/>`);
+
+    const topFrac = plotH > 0 ? (plotH - h) / plotH : 1;
+    bars.push(`<rect class="dca-bar" x="${(PAD.left + i * bandW).toFixed(1)}" y="${PAD.top}" width="${bandW.toFixed(1)}" height="${plotH}" fill="transparent" style="cursor:pointer" data-mes="${esc(s.mes)}" data-topfrac="${topFrac.toFixed(4)}"/>`);
+
+    if (i % stepX === 0 || i === n - 1) {
+      const cx = x + barW / 2;
+      xLabs.push(`<text x="${cx.toFixed(1)}" y="${(PAD.top + plotH + 14).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">${esc(dcaMesLabel(s.mes))}</text>`);
+    }
+  });
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block">
+      ${gridLines.join('')}
+      ${yLabels.join('')}
+      ${bars.join('')}
+      ${xLabs.join('')}
+    </svg>
+  `;
 }
 
 // --------------------- Pestaña: Analíticas > Resultados ---------------------
@@ -12325,10 +12537,11 @@ function dcCompEsEditable(estado) {
 const DCCOMP_ACCIONES_POR_ESTADO = {
   '1': ['marcar-pendiente', 'marcar-anulado', 'editar', 'eliminar'],
   '2': ['autorizar', 'aprobar', 'marcar-preparacion', 'marcar-anulado', 'eliminar'],
-  // Autorizado: solo se puede imprimir (vista previa + window.print). El resto
-  // de las acciones (editar/eliminar/transicion) queda inhabilitado porque el
-  // comprobante ya obtuvo CAE y es inmutable.
-  '3': ['imprimir'],
+  // Autorizado: imprimir (vista previa + window.print) y revertir. El resto de
+  // las acciones (editar/eliminar/transicion) queda inhabilitado porque el
+  // comprobante ya obtuvo CAE y es inmutable — por eso mismo "anularlo" se hace
+  // emitiendo una nota de credito asociada, que es lo que arma `reversion`.
+  '3': ['imprimir', 'reversion'],
   '0': [],
   '4': ['marcar-preparacion', 'eliminar'],
   // Aprobado (no fiscal, con correlativo local ya asignado): imprimir y
@@ -12336,6 +12549,14 @@ const DCCOMP_ACCIONES_POR_ESTADO = {
   // porque el numero ya se emitio.
   '5': ['imprimir', 'marcar-anulado'],
 };
+
+// Tipos que admiten Reversion: solo las facturas, porque AFIP exige que la nota
+// de credito sea de la misma letra que el comprobante asociado. Espeja
+// DC_REVERSION_NC_POR_FACTURA del backend (cloud/api/datacount_comprobantes.php).
+// Hace falta el gate por tipo ademas del gate por estado porque en '3'
+// Autorizado conviven facturas con notas de credito y con comprobantes no
+// fiscales viejos (FX/PX) que el endpoint rechaza.
+const DCCOMP_TIPOS_REVERTIBLES = ['FA', 'FB', 'FC', 'FM'];
 
 // Aplica el gate del menu contextual: consultar y clonar siempre visibles,
 // el resto segun DCCOMP_ACCIONES_POR_ESTADO. Tambien esconde los separadores
@@ -12345,15 +12566,20 @@ const DCCOMP_ACCIONES_POR_ESTADO = {
 // `fiscal` decide, en estado Pendiente, cual de las dos acciones de cierre
 // mostrar: fiscal='1' => Autorizar (AFIP), fiscal <> '1' => Aprobar (local).
 // Nunca se muestran las dos en simultaneo — son mutuamente excluyentes.
-function dcCompAplicarGateEstado(estado, fiscal) {
+//
+// `tipo` decide, en estado Autorizado, si se ofrece Reversion (solo facturas).
+function dcCompAplicarGateEstado(estado, fiscal, tipo) {
   const menu = document.getElementById('dcCompCtxMenu');
   if (!menu) return;
   const permitidas0 = DCCOMP_ACCIONES_POR_ESTADO[String(estado ?? '')] || [];
   const esFiscal    = String(fiscal ?? '') === '1';
-  // Filtrado por fiscal para la accion de cierre (Pendiente -> terminal).
+  const tipoUp      = String(tipo ?? '').trim().toUpperCase();
+  // Filtrado por fiscal para la accion de cierre (Pendiente -> terminal) y por
+  // tipo para la reversion.
   const permitidas = permitidas0.filter((a) => {
     if (a === 'autorizar') return esFiscal;
     if (a === 'aprobar')   return !esFiscal;
+    if (a === 'reversion') return esFiscal && DCCOMP_TIPOS_REVERTIBLES.includes(tipoUp);
     return true;
   });
   const siempreVisibles = ['consultar', 'clonar'];
@@ -12476,6 +12702,9 @@ route('/datacount_comprobantes', async (mount) => {
       </button>
       <button type="button" data-action="clonar" role="menuitem">
         <i class="fa-solid fa-clone"></i><span>Clonar</span>
+      </button>
+      <button type="button" data-action="reversion" role="menuitem">
+        <i class="fa-solid fa-rotate-left"></i><span>Reversión</span>
       </button>
       <button type="button" data-action="autorizar" role="menuitem">
         <i class="fa-solid fa-file-signature"></i><span>Autorizar</span>
@@ -12697,6 +12926,7 @@ route('/datacount_comprobantes', async (mount) => {
     if (b.dataset.action === 'consultar')          abrirConsultarDcComp(data.id);
     if (b.dataset.action === 'imprimir')           imprimirDcComp(data.id);
     if (b.dataset.action === 'clonar')             clonarDcComp(data.id);
+    if (b.dataset.action === 'reversion')          abrirReversionDcComp(data.id);
     if (b.dataset.action === 'autorizar')          autorizarDcComp(data.id);
     if (b.dataset.action === 'aprobar')            aprobarDcComp(data.id);
     if (b.dataset.action === 'editar')             abrirAltaEdicionDcComp(data.id);
@@ -12716,7 +12946,7 @@ route('/datacount_comprobantes', async (mount) => {
       const tr = ham.closest('tr[data-id]');
       const id = Number(ham.dataset.id);
       const r  = ham.getBoundingClientRect();
-      dcCompAplicarGateEstado(tr?.dataset.estado, tr?.dataset.fiscal);
+      dcCompAplicarGateEstado(tr?.dataset.estado, tr?.dataset.fiscal, tr?.dataset.tipo);
       abrirCtxMenu($('#dcCompCtxMenu'), r.right - 190, r.bottom + 4, { id, estado: tr?.dataset.estado });
       return;
     }
@@ -12728,7 +12958,7 @@ route('/datacount_comprobantes', async (mount) => {
     const tr = ev.target.closest('tr[data-id]');
     if (!tr) return;
     ev.preventDefault();
-    dcCompAplicarGateEstado(tr.dataset.estado, tr.dataset.fiscal);
+    dcCompAplicarGateEstado(tr.dataset.estado, tr.dataset.fiscal, tr.dataset.tipo);
     abrirCtxMenu($('#dcCompCtxMenu'), ev.clientX, ev.clientY, { id: Number(tr.dataset.id), estado: tr.dataset.estado });
   });
 
@@ -12860,7 +13090,8 @@ function pintarTablaDcComp(rows) {
     return;
   }
   tbody.innerHTML = rows.map((c) => `
-    <tr data-id="${c.id}" data-estado="${esc(c.estado ?? '')}" data-fiscal="${esc(c.fiscal ?? '')}" class="row-clickable">
+    <tr data-id="${c.id}" data-estado="${esc(c.estado ?? '')}" data-fiscal="${esc(c.fiscal ?? '')}"
+        data-tipo="${esc(c.tipo ?? '')}" class="row-clickable">
       <td class="td-id">#${esc(c.id)}</td>
       <td>${esc(dcCompFmtTalonario(c.talonario_nombre, c.serie))}</td>
       <td>${esc(c.emision || '—')}</td>
@@ -14258,6 +14489,162 @@ async function clonarDcComp(id) {
     cargarDcComp();
   } catch (e) {
     toast(e.message, { error: true });
+  }
+}
+
+// ---- Modal de Reversión (nota de crédito) ----
+// Se abre desde el menú contextual sobre un comprobante Autorizado. Una factura
+// con CAE es inmutable, así que "anularla" es emitir una nota de crédito por el
+// mismo importe apuntando a ella. Lo único que hay que elegir es CON QUÉ
+// talonario de NC se emite; el resto (cliente, importes, renglones) lo copia el
+// backend de la factura original.
+//
+// Qué talonarios son válidos lo decide el backend (GET ?action=reversion) —
+// misma letra que exige AFIP para el `cbtes_asoc`, misma empresa emisora,
+// talonario fiscal y habilitado—; acá sólo se pintan. El POST vuelve a validar
+// contra la misma lista, así que un <select> desactualizado no puede colar un
+// talonario incompatible.
+async function abrirReversionDcComp(id) {
+  openModal(`
+    <div class="modal" style="max-width:620px">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-rotate-left"></i> Reversión
+          <span class="modal-subtitle">#${id}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="revertir" disabled>Generar nota de crédito</button>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) { closeModal(); return; }
+    const btn = ev.target.closest('[data-act="revertir"]');
+    if (btn) confirmarReversionDcComp(id, btn);
+  });
+
+  try {
+    const d = await apiGet(`api/datacount_comprobantes.php?id=${id}&action=reversion`);
+    // El operador pudo cerrar el modal mientras resolvíamos.
+    const body = document.querySelector('#modalRoot .modal-body');
+    if (!body) return;
+    body.innerHTML = renderReversionDcComp(d);
+    // Sin talonarios usables no hay nada que generar: el botón queda apagado y
+    // el cuerpo explica qué falta.
+    const btn = document.querySelector('#modalRoot [data-act="revertir"]');
+    if (btn) btn.disabled = !(d.talonarios || []).length;
+  } catch (e) {
+    const body = document.querySelector('#modalRoot .modal-body');
+    if (body) body.innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderReversionDcComp(d) {
+  const c   = d.comprobante || {};
+  const tal = d.talonarios  || [];
+  const rev = d.reversiones || [];
+
+  // Resumen de lo que se va a revertir: el operador tiene que poder confirmar
+  // de un vistazo que es la factura correcta antes de emitir la NC.
+  const linea = (label, valor) => `
+    <div style="font-size:.9rem;line-height:1.55;padding:3px 0">
+      <span style="color:var(--muted);font-weight:600">${esc(label)}:</span>
+      ${valor == null || valor === ''
+        ? `<span style="color:var(--muted);font-style:italic">Sin dato</span>`
+        : esc(valor)}
+    </div>`;
+
+  const resumen = `
+    <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;padding:14px 18px;margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="font-family:monospace;font-size:1.15rem;font-weight:700">${esc(c.tipo || '—')}</span>
+        <span style="font-family:monospace;font-size:1rem;color:var(--muted)">${esc(dcCompFmtComprobante(c.punto, c.serie))}</span>
+        <span style="margin-left:auto;font-family:monospace;font-size:1.15rem;font-weight:700;color:var(--primary)">
+          ${c.total != null ? '$ ' + dcCompFmtImporte(c.total) : '—'}
+        </span>
+      </div>
+      ${linea('Talonario', c.talonario_nombre)}
+      ${linea('Cliente',   c.razon)}
+      ${linea('CUIT',      c.cuit)}
+      ${linea('Emisión',   c.emision)}
+      ${linea('CAE',       c.caenro)}
+    </div>`;
+
+  const avisoRev = !rev.length ? '' : `
+    <div style="font-size:.8rem;line-height:1.5;background:color-mix(in srgb, var(--warn) 12%, transparent);
+                border:1px solid var(--warn);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px">
+      <i class="fa-solid fa-triangle-exclamation" style="color:var(--warn)"></i>
+      Este comprobante ya tiene ${rev.length === 1
+        ? 'una nota de crédito asociada'
+        : `${rev.length} notas de crédito asociadas`}:
+      ${rev.map((r) => {
+        // Una NC que todavía no se autorizó no tiene correlativo: mostrar
+        // "0004--------" confundiría, así que decimos que está sin numerar.
+        const num = r.serie != null && r.serie !== ''
+          ? dcCompFmtComprobante(r.punto, r.serie)
+          : 'sin numerar';
+        return `#${esc(r.id)} (${esc(`${r.tipo || ''} ${num}`.trim())})`;
+      }).join(', ')}.
+      Revisá que la reversión no esté hecha antes de generar otra.
+    </div>`;
+
+  // Sin talonarios compatibles el modal se convierte en un cartel explicativo:
+  // el talonario de NC hay que crearlo antes en Datacount > Talonarios.
+  if (!tal.length) {
+    return `
+      ${resumen}
+      ${avisoRev}
+      <div style="font-size:.85rem;line-height:1.55;background:color-mix(in srgb, var(--danger) 12%, transparent);
+                  border:1px solid var(--danger);border-radius:var(--radius);padding:12px 14px">
+        <i class="fa-solid fa-circle-exclamation" style="color:var(--danger)"></i>
+        No hay ningún talonario de tipo <strong>${esc(d.tipo_nc || '')}</strong> habilitado y fiscal
+        para la empresa <strong>${esc(c.empresa_nombre || '—')}</strong>.
+        AFIP exige que la nota de crédito sea de la misma letra que la factura,
+        así que primero hay que darlo de alta en
+        <a href="javascript:void(0)" onclick="closeModal();location.hash='#/datacount_talonarios'"
+           style="color:var(--primary);text-decoration:underline">Datacount &gt; Talonarios</a>.
+      </div>`;
+  }
+
+  const opciones = tal.map((t) =>
+    `<option value="${t.id}">${esc(t.nombre)}${t.recomendado ? ' — recomendado' : ''}</option>`
+  ).join('');
+
+  return `
+    ${resumen}
+    ${avisoRev}
+    <div class="form-group">
+      <label for="dcCompRevTalonario">Talonario de nota de crédito *</label>
+      <select id="dcCompRevTalonario">${opciones}</select>
+    </div>
+    <div style="font-size:.78rem;color:var(--muted);line-height:1.5;background:var(--bg);
+                border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-top:8px">
+      <i class="fa-solid fa-circle-info"></i>
+      Se creará una nota de crédito en estado <strong>Preparación</strong> con el mismo cliente,
+      los mismos renglones y el mismo importe, asociada a este comprobante.
+      Podés revisarla y recién después pasarla a Pendiente y autorizarla contra AFIP.
+      La factura original no cambia de estado: ya tiene CAE y es inmutable.
+    </div>`;
+}
+
+async function confirmarReversionDcComp(id, btn) {
+  const talonario = Number(document.getElementById('dcCompRevTalonario')?.value) || 0;
+  if (!talonario) { toast('Elegí el talonario de nota de crédito', { error: true }); return; }
+
+  btn.disabled = true;
+  try {
+    const r = await apiSend(`api/datacount_comprobantes.php?id=${id}&action=revertir`, 'POST', { talonario });
+    toast(`Nota de crédito #${r?.id ?? '?'} creada en Preparación.`);
+    closeModal();
+    cargarDcComp();
+  } catch (e) {
+    toast(e.message, { error: true });
+    btn.disabled = false;
   }
 }
 
