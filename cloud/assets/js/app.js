@@ -30745,8 +30745,17 @@ async function eliminarDrPr(id) {
 // El menu de fila ofrece Consultar / Marcar respondida / Editar / Eliminar.
 // Editar cambia el contenido (fecha, sentido, canal, asunto, mensaje) pero
 // nunca el prospecto ni la oportunidad, que son fijos desde el alta.
+// `sentido` arranca en 'entrante' y NO en '' (todos): el trabajo diario de esta
+// pantalla son las consultas que entran y hay que contestar. Las salientes son
+// casi todas automáticas — las escriben aws_mensajes / evolution_mensajes por
+// cada envío — así que con el default en "todos" el listado quedaba dominado por
+// ruido de máquina y las entrantes se perdían entre medio.
+//
+// El selector de la toolbar escribe esta misma clave: es un atajo al filtro que
+// ya existía en el modal, no un filtro nuevo. Por eso 'entrante' NO cuenta para
+// el badge de Filtros (es el valor por defecto) y "Todas" o "Salientes" sí.
 const drIntFiltrosDefaults = {
-  q: '', codigo: '', prospecto_id: '', sentido: '', canal: '', respuesta: '',
+  q: '', codigo: '', prospecto_id: '', sentido: 'entrante', canal: '', respuesta: '',
   // `asignado` filtra por el responsable de la oportunidad, no de la
   // interacción (que no tiene dueño propio). '_null' = sin asignar.
   asignado: '',
@@ -31009,6 +31018,29 @@ route('/datarocketinteracciones', async (mount) => {
 
       <div class="toolbar">
         <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <!-- Selector de sentido. Es el único filtro que sale del modal a la
+               toolbar, y se justifica porque decide QUÉ estás mirando: la
+               bandeja de entrada (default) o el registro de lo que salió.
+               Escribe drIntFiltros.sentido, la misma clave que el combo
+               "Sentido" del modal de Filtros — los dos quedan sincronizados.
+
+               La opción "Internas" va oculta a propósito: el pedido era de tres
+               opciones y las notas internas se siguen eligiendo desde el modal.
+               Existe igual como option para que, cuando el modal deje el filtro
+               en 'interna', este select pueda reflejar ese valor en vez de
+               renderizarse en blanco (un select sin option que matchee queda con
+               selectedIndex = -1).
+
+               OJO: este bloque vive dentro de un template literal de JS. Nada de
+               backticks acá adentro — cierran la string y rompen el archivo. -->
+          <select id="drIntSentidoSel" style="min-width:130px"
+                  title="Qué interacciones mostrar"
+                  onchange="onFiltroDrInt('sentido', this.value)">
+            <option value="entrante">Entrantes</option>
+            <option value="saliente">Salientes</option>
+            <option value="">Todas</option>
+            <option value="interna" style="display:none">Internas</option>
+          </select>
           <div class="search-wrap">
             <input type="search" class="search-input" id="drIntSearch"
                    placeholder="🔍 Buscar por prospecto, correo, asunto o mensaje…">
@@ -31201,6 +31233,14 @@ route('/datarocketinteracciones', async (mount) => {
 
   $('#drIntFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrInt());
   $('#drIntRefrescarBtn').addEventListener('click', () => cargarDrInt());
+
+  // El selector de sentido nace pintado con el filtro vigente y no con su
+  // `selected` del HTML: `drIntFiltros` sobrevive a la navegación, y además las
+  // tarjetas del landing de Datarocket entran a esta ruta con el filtro ya
+  // preseteado (ver verInteraccionesPendientesDr y sus pares). Sin esto, el
+  // combo mostraba "Entrantes" mientras la tabla listaba otra cosa.
+  const selSent = $('#drIntSentidoSel');
+  if (selSent) selSent.value = drIntFiltros.sentido;
 
   const inp = $('#drIntSearch');
   const clr = $('#drIntSearchClear');
@@ -31501,6 +31541,14 @@ function pintarTablaDrInt(rows) {
 function onFiltroDrInt(key, value) {
   if (['sentido', 'canal', 'respuesta', 'asignado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drIntFiltros[key] = value;
+    // `sentido` vive en dos controles a la vez (el de la toolbar y el del modal
+    // de Filtros, que puede estar abierto encima del listado). El que no
+    // disparó el cambio se pone al día acá mismo, o quedarían mostrando cosas
+    // distintas sobre el mismo filtro.
+    if (key === 'sentido') {
+      const tool = $('#drIntSentidoSel'); if (tool) tool.value = value;
+      const mod  = $('#fDrIntSentido');   if (mod)  mod.value  = value;
+    }
   } else if (['codigo', 'prospecto_id'].includes(key)) {
     const v = String(value).trim();
     drIntFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
@@ -31551,6 +31599,10 @@ async function drIntPoblarAsignados() {
 
 function sincronizarControlesFiltrosDrInt() {
   const f = drIntFiltros;
+  // El selector de sentido de la toolbar entra en esta sincronización aunque no
+  // viva en el modal: comparte la clave `sentido`, así que "Limpiar" y el
+  // arranque de la vista tienen que dejarlo en el mismo valor que el resto.
+  const tool = $('#drIntSentidoSel'); if (tool) tool.value = f.sentido;
   $('#fDrIntCodigo').value   = f.codigo;
   $('#fDrIntSentido').value  = f.sentido;
   $('#fDrIntCanal').value    = f.canal;
@@ -31577,6 +31629,10 @@ function cerrarModalFiltrosDrInt() {
 function cancelarFiltrosDrInt() {
   if (drIntFiltrosSnapshot) {
     Object.assign(drIntFiltros, drIntFiltrosSnapshot);
+    // Revertir tiene que alcanzar también al selector de la toolbar: si el
+    // operador cambió el sentido desde el modal y después apretó Cerrar, el
+    // combo de afuera se quedaba mostrando el valor descartado.
+    sincronizarControlesFiltrosDrInt();
     refrescarBadgeFiltrosDrInt();
     cargarDrInt();
   }
@@ -36630,13 +36686,14 @@ route('/datarocket_campanas', async (mount) => {
               ${thOrdenable('medio',      'Medio',      'width:130px')}
               <th style="width:170px">Lista</th>
               ${thOrdenable('programada', 'Programada', 'width:150px')}
+              ${thOrdenable('iniciada',   'Iniciada',   'width:150px')}
               <th style="width:150px">Progreso</th>
               ${thOrdenable('estado',     'Estado',     'width:120px')}
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="drcaTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -36744,6 +36801,7 @@ route('/datarocket_campanas', async (mount) => {
                 <option value="estado">Estado</option>
                 <option value="prioridad">Prioridad</option>
                 <option value="programada">Programada</option>
+                <option value="iniciada">Iniciada</option>
                 <option value="total">Destinatarios</option>
                 <option value="enviados">Enviados</option>
                 <option value="fecha_creacion">Fecha de alta</option>
@@ -36965,7 +37023,7 @@ function drcaAbrirMenu(x, y, id) {
 async function cargarDrca() {
   const tbody = $('#drcaTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   // `codigo` no viaja al server (el endpoint no lo acepta): se filtra en
   // cliente sobre lo que ya vino, igual que el resto de los ABMs.
@@ -36990,7 +37048,7 @@ async function cargarDrca() {
     actualizarSortIndicadores($('#drcaThead'), drcaFiltros);
     renderDrca();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -36998,7 +37056,7 @@ function renderDrca() {
   const tbody = $('#drcaTbody');
   if (!tbody) return;
   if (!drcaItems.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin campañas registradas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin campañas registradas.</td></tr>`;
     return;
   }
 
@@ -37008,7 +37066,7 @@ function renderDrca() {
     filas = filas.filter((r) => r.id === cod);
   }
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -37023,6 +37081,12 @@ function renderDrca() {
       <td>${drcaMedioBadge(r)}</td>
       <td>${esc(r.lista_nombre || (r.lista_id ? `#${r.lista_id}` : '—'))}</td>
       <td style="font-size:.82rem">${r.programada ? esc(fmtFechaAnio(r.programada)) : '<span style="color:var(--muted)">—</span>'}</td>
+      ${/* `iniciada` la sella el encolador cuando toma el candado, no el
+            operador al programar: es cuándo ARRANCÓ de verdad, contra la
+            Programada de al lado que es cuándo debía arrancar. La diferencia
+            entre las dos es el atraso con que la levantó el cron. En borrador
+            y en programada todavía es NULL. */''}
+      <td style="font-size:.82rem">${r.iniciada ? esc(fmtFechaAnio(r.iniciada)) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${drcaProgresoHtml(r)}</td>
       <td>${drcaEstadoBadge(r)}</td>
       <td style="text-align:center">
@@ -37500,7 +37564,47 @@ async function guardarDrca() {
 // ---- Modal Consulta ----
 // `tabInicial` permite entrar directo a Destinatarios desde el menú contextual
 // del listado, sin obligar a pasar por General.
+// Reconcilia la campaña ANTES de leerla, para que el modal abra con números de
+// este segundo y no con la foto que dejó la última corrida del cron (que pasa
+// una vez por minuto, así que lo que se ve puede tener hasta 60 s de atraso).
+//
+// Es un disparo único, al abrir. NO hay refresco periódico: mientras el modal
+// está abierto los números quedan quietos, y para actualizarlos está
+// "Recalcular contadores" del menú o volver a abrirlo.
+//
+// Dos guardas, y las dos importan:
+//
+//   - PERMISO. `action=recalcular` exige `datarocket.campanas.editar`, mientras
+//     que abrir el modal sólo exige `.consultar`. Sin este chequeo, todo usuario
+//     de sólo lectura se comería un 403 en cada apertura. Con él, ve los mismos
+//     números que dejó el cron — desactualizados como mucho un minuto, que es
+//     exactamente lo que veía antes de este cambio.
+//
+//   - SILENCIO. Si el recálculo falla, el modal abre igual con los datos que
+//     haya. Es una mejora de frescura, no un requisito para poder mirar: hacer
+//     que un error acá impida consultar la campaña sería peor que el atraso que
+//     viene a arreglar.
+//
+// Y una tercera, de costo: sin padrón no hay nada que reconciliar. Una campaña
+// en borrador o recién programada tiene `total = 0`, así que el recálculo sería
+// un round-trip y varios UPDATE para llegar a los mismos ceros — y justo el
+// borrador es el estado en el que más se abre el modal, mientras se la arma. El
+// dato sale del cache del listado, que es de donde se abre este modal siempre;
+// si por algo no está, se recalcula (mejor de más que de menos).
+//
+// Ojo con lo que esto dispara: reconciliar no es sólo recontar. Para campañas
+// de correo también sincroniza `resultado` desde SES y corre drcaBajasPorRebote(),
+// que desuscribe de la lista a los que rebotaron duro o marcaron spam. No es un
+// efecto nuevo ni exclusivo de acá — el cron hace lo mismo cada 60 s sobre toda
+// campaña en vuelo, así que abrir el modal sólo lo adelanta menos de un minuto.
 async function abrirConsultaDrca(id, tabInicial = 'general') {
+  const cache    = drcaItems.find((x) => x.id === id);
+  const hayQueVer = !cache || (Number(cache.total) || 0) > 0;
+  if (hayQueVer && hasPermission('datarocket.campanas.editar')) {
+    try { await apiSend(`${DRCA_API}?id=${id}&action=recalcular`, 'POST', {}); }
+    catch (_) { /* silencioso: el modal abre igual con lo que haya */ }
+  }
+
   let r;
   try { r = await apiGet(`${DRCA_API}?id=${id}`); }
   catch (err) { toast(err.message, { error: true }); return; }

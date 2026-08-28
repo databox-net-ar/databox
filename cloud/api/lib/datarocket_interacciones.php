@@ -48,6 +48,20 @@ const DR_INT_CANALES  = ['correo', 'whatsapp', 'telegram', 'sms', 'web',
  *                             columna es MEDIUMTEXT.
  * @param ?string $fecha       Datetime 'Y-m-d H:i:s'. Si es null se usa NOW()
  *                             en America/Argentina/Buenos_Aires.
+ * @param ?int    $proyectoId  FK a `proyectos.id` (columna agregada por la
+ *                             migracion 20260828_2300). Es el proyecto BAJO EL
+ *                             QUE SE MANDO el mensaje, congelado: las campanas
+ *                             lo exigen y se lo pasan a los tres encoladores en
+ *                             el payload, y hasta esa migracion se perdia en el
+ *                             camino — la columna Proyecto del ABM salia por
+ *                             JOIN contra la oportunidad, y los envios de
+ *                             campana no tienen oportunidad, asi que se veian
+ *                             todos con guion.
+ *
+ *                             Va ultimo y con default para no romper a ningun
+ *                             caller que llame con la firma vieja: perder el
+ *                             proyecto es peor que antes, pero tumbar el
+ *                             encolado seria mucho peor.
  */
 function registrarInteraccionMensaje(
     PDO $pdo,
@@ -56,7 +70,8 @@ function registrarInteraccionMensaje(
     ?string $canal,
     ?string $asunto,
     ?string $mensaje,
-    ?string $fecha = null
+    ?string $fecha = null,
+    ?int $proyectoId = null
 ): ?int {
     if ($prospectoId === null || $prospectoId <= 0) return null;
 
@@ -74,16 +89,22 @@ function registrarInteraccionMensaje(
     $asunto  = drIntNullableStr($asunto, 500);
     $mensaje = drIntNullableStr($mensaje, 0);
 
+    // Un 0 o un negativo no son un proyecto: se normalizan a NULL antes de
+    // llegar a la FK, que los rechazaria y — por el catch de abajo — haria
+    // desaparecer la interaccion entera en silencio.
+    if ($proyectoId !== null && $proyectoId <= 0) $proyectoId = null;
+
     try {
         $st = $pdo->prepare("
             INSERT INTO datarocket_interacciones
-                (fecha, prospecto_id, sentido, canal, asunto, mensaje)
+                (fecha, prospecto_id, proyecto_id, sentido, canal, asunto, mensaje)
             VALUES
-                (:fecha, :prospecto_id, :sentido, :canal, :asunto, :mensaje)
+                (:fecha, :prospecto_id, :proyecto_id, :sentido, :canal, :asunto, :mensaje)
         ");
         $st->execute([
             ':fecha'       => $fecha,
             ':prospecto_id' => $prospectoId,
+            ':proyecto_id' => $proyectoId,
             ':sentido'     => $sentido,
             ':canal'       => $canal,
             ':asunto'      => $asunto,

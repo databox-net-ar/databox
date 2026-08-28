@@ -185,7 +185,9 @@ function encolarEvolutionMensaje(PDO $pdo, array $datos): int {
             // lo haya cargado, y el texto real va siempre a `mensaje`.
             $p['asunto'] ?? null,
             $p['cuerpo'] ?? $p['destino'],
-            $p['fecha']
+            $p['fecha'],
+            // Ver la nota equivalente en aws_mensajes.php.
+            $p['proyecto_id'] !== null ? (int) $p['proyecto_id'] : null
         );
     }
 

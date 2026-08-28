@@ -169,7 +169,9 @@ function encolarTelegramMensaje(PDO $pdo, array $datos): int {
             // Telegram tampoco tiene asunto propio — ver evolution_mensajes.php.
             $p['asunto'] ?? null,
             $p['cuerpo'] ?? $p['destino'],
-            $p['fecha']
+            $p['fecha'],
+            // Ver la nota equivalente en aws_mensajes.php.
+            isset($p['proyecto_id']) && $p['proyecto_id'] !== null ? (int) $p['proyecto_id'] : null
         );
     }
 

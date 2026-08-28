@@ -174,7 +174,11 @@ function encolarAwsMensaje(PDO $pdo, array $datos): int {
             'correo',
             $p['asunto'] ?? $p['destino'],
             $p['cuerpo'] ?? null,
-            $p['fecha']
+            $p['fecha'],
+            // El proyecto del mensaje es el de la campana que lo genero. Sin
+            // esto la columna Proyecto del ABM de Interacciones queda en guion
+            // para todo envio de campana (ver migracion 20260828_2300).
+            $p['proyecto_id'] !== null ? (int) $p['proyecto_id'] : null
         );
     }
 

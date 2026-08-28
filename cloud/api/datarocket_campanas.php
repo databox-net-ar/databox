@@ -51,7 +51,7 @@ const DRCA_TABLA        = 'datarocket_campanas';
 const DRCA_TABLA_PADRON = 'datarocket_campanas_mensajes';
 
 const DRCA_ORDENES = ['id', 'nombre', 'medio', 'estado', 'prioridad', 'programada',
-                      'total', 'enviados', 'fecha_creacion', 'fecha_modificacion'];
+                      'iniciada', 'total', 'enviados', 'fecha_creacion', 'fecha_modificacion'];
 
 const DRCA_COLS = 'id, proyecto_id, nombre, slug, descripcion, asunto, medio, canal_id, lista_id,
                    plantilla_id, prioridad, estado, programada, iniciada, completada,

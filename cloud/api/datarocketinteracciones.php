@@ -108,8 +108,8 @@ const DR_INT_COLS = "i.id, i.fecha, i.prospecto_id, i.oportunidad_id, i.sentido,
                      p.nombre AS prospecto_nombre,
                      p.correo AS prospecto_correo,
                      o.producto AS oportunidad_producto,
-                     o.proyecto_id AS proyecto_id,
-                     pr.nombre     AS proyecto_nombre,
+                     COALESCE(i.proyecto_id, o.proyecto_id) AS proyecto_id,
+                     pr.nombre                              AS proyecto_nombre,
                      o.asignado AS asignado_id,
                      u.nombre   AS asignado_nombre";
 
@@ -122,13 +122,22 @@ const DR_INT_COLS = "i.id, i.fecha, i.prospecto_id, i.oportunidad_id, i.sentido,
 // propio — la columna `usuario_id` existio pero nunca se escribio y se dropeo
 // en la 20260817_1200.
 //
-// `proyectos` cuelga tambien de la oportunidad (`o.proyecto_id`): ni la
-// interaccion ni el prospecto tienen proyecto propio, asi que las interacciones
-// sueltas (sin `oportunidad_id`) vienen con `proyecto_nombre` NULL y el listado
-// las muestra con guion.
+// `proyectos` se resuelve por COALESCE(i.proyecto_id, o.proyecto_id), en ese
+// orden y por este motivo:
+//
+//   - `i.proyecto_id` (migracion 20260828_2300) es el proyecto con el que
+//     SALIO el mensaje, escrito por el encolador en el momento del envio. Es el
+//     dato exacto y no se mueve aunque despues cambie nada.
+//   - `o.proyecto_id` es el fallback historico, para las interacciones ligadas
+//     a una oportunidad que se cargaron antes de que la columna existiera. Sin
+//     el, esas filas perderian el proyecto que hoy si muestran.
+//
+// Una interaccion suelta (sin oportunidad) y anterior a la migracion queda con
+// los dos en NULL y el listado la muestra con guion, como hasta ahora. El
+// backfill de la 20260828_2310 recupera las que vinieron de un envio.
 const DR_INT_JOINS = "LEFT JOIN datarocket_prospectos    p  ON p.id  = i.prospecto_id
                       LEFT JOIN datarocket_oportunidades o  ON o.id  = i.oportunidad_id
-                      LEFT JOIN proyectos                pr ON pr.id = o.proyecto_id
+                      LEFT JOIN proyectos                pr ON pr.id = COALESCE(i.proyecto_id, o.proyecto_id)
                       LEFT JOIN usuarios                 u  ON u.id  = o.asignado";
 
 header('Content-Type: application/json; charset=utf-8');

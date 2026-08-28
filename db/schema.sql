@@ -238,6 +238,12 @@ CREATE TABLE `aws_eventos` (
   `sns_message_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `tipo`           varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `subtipo`        varchar(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  -- Solo para `tipo`='bounce': 1 = definitivo (da de baja de la lista), 0 =
+  -- blando, NULL = no es un bounce. Lo decide aws_evt_bounce_permanente() en el
+  -- ingestor (api/v4/aws/eventos.php) y NO se recalcula despues: no alcanza con
+  -- el `subtipo` de SES, que marca 'Transient' los dominios inexistentes.
+  -- Ver migracion 20260828_2400.
+  `permanente`     tinyint(1)   NULL DEFAULT NULL,
   `destino`        varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `raw`            mediumtext   CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   `recibido`       datetime(0)  NULL DEFAULT NULL,
@@ -1855,6 +1861,13 @@ CREATE TABLE `datarocket_interacciones`  (
   `fecha`        datetime     NOT NULL,
   `prospecto_id`  int(11)      NULL DEFAULT NULL,
   `oportunidad_id` int(11)    NULL DEFAULT NULL,
+  -- Proyecto BAJO EL QUE SALIO el mensaje (migracion 20260828_2300). Lo escribe
+  -- el encolador en el momento del envio y no se recalcula: es un registro
+  -- historico. Antes la columna Proyecto del ABM salia por JOIN contra la
+  -- oportunidad, y los envios de campana no tienen oportunidad — se veian todos
+  -- con guion aunque la campana si tenga proyecto. La lectura hoy es
+  -- COALESCE(i.proyecto_id, o.proyecto_id).
+  `proyecto_id`  int(11)      NULL DEFAULT NULL,
   `sentido`      varchar(10)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `canal`        varchar(20)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `respondida`   datetime     NULL DEFAULT NULL,
@@ -1875,7 +1888,9 @@ CREATE TABLE `datarocket_interacciones`  (
   INDEX `idx_dri_canal`(`canal`) USING BTREE,
   INDEX `idx_dri_sentido_respondida`(`sentido`, `respondida`) USING BTREE,
   INDEX `idx_dri_sentido_respondida_descartada`(`sentido`, `respondida`, `descartada`) USING BTREE,
-  CONSTRAINT `fk_dri_oportunidad` FOREIGN KEY (`oportunidad_id`) REFERENCES `datarocket_oportunidades` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT
+  INDEX `idx_dri_proyecto`(`proyecto_id`) USING BTREE,
+  CONSTRAINT `fk_dri_oportunidad` FOREIGN KEY (`oportunidad_id`) REFERENCES `datarocket_oportunidades` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT,
+  CONSTRAINT `fk_dri_proyecto` FOREIGN KEY (`proyecto_id`) REFERENCES `proyectos` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

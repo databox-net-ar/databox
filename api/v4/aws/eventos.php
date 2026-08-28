@@ -38,6 +38,10 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/sucesos.php';
+// Decide si un bounce es definitivo. Vive en _lib y no aca porque de esa
+// decision dependen las bajas automaticas de lista, y una regla asi tiene que
+// poder invocarse y probarse fuera del endpoint.
+require_once dirname(__DIR__) . '/_lib/aws_bounce.php';
 
 const AWS_EVT_ORIGEN = 'v4/aws/eventos';
 
@@ -231,6 +235,11 @@ function procesar_notificacion(PDO $pdo, array $sobre, string $rawSobre): void {
         'subtipo'        => $subtipo ?: null,
         'destino'        => $destino ?: null,
         'raw'            => (string)($sobre['Message'] ?? $rawSobre),
+        // La clasificacion "esto es definitivo" se resuelve UNA vez, aca, en el
+        // ingestor. Los consumidores (hoy la baja automatica de lista del motor
+        // de campanas) leen la columna y no reinterpretan el payload cada uno
+        // por su cuenta. NULL en todo lo que no sea un bounce.
+        'permanente'     => $tipo === 'bounce' ? (aws_evt_bounce_permanente($sesMsg) ? 1 : 0) : null,
     ]);
 
     // Actualizar aws_mensajes.resultado si aplica.
@@ -239,22 +248,26 @@ function procesar_notificacion(PDO $pdo, array $sobre, string $rawSobre): void {
     }
 }
 
+// (aws_evt_bounce_permanente() vive en api/v4/_lib/aws_bounce.php — requerido
+// arriba. Es la regla que decide las bajas automaticas de lista.)
+
 function insertar_evento(PDO $pdo, array $ev): void {
     $st = $pdo->prepare("
         INSERT IGNORE INTO aws_eventos
-            (uuid, sns_message_id, tipo, subtipo, destino, raw, recibido)
+            (uuid, sns_message_id, tipo, subtipo, destino, raw, permanente, recibido)
         VALUES
-            (:uuid, :sns, :tipo, :subtipo, :destino, :raw, :recibido)
+            (:uuid, :sns, :tipo, :subtipo, :destino, :raw, :permanente, :recibido)
     ");
     $st->execute([
-        ':uuid'     => $ev['uuid'],
-        ':sns'      => $ev['sns_message_id'],
-        ':tipo'     => $ev['tipo'],
-        ':subtipo'  => $ev['subtipo'],
-        ':destino'  => $ev['destino'],
-        ':raw'      => $ev['raw'],
-        ':recibido' => (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
-                       ->format('Y-m-d H:i:s'),
+        ':uuid'       => $ev['uuid'],
+        ':sns'        => $ev['sns_message_id'],
+        ':tipo'       => $ev['tipo'],
+        ':subtipo'    => $ev['subtipo'],
+        ':destino'    => $ev['destino'],
+        ':raw'        => $ev['raw'],
+        ':permanente' => $ev['permanente'] ?? null,
+        ':recibido'   => (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+                         ->format('Y-m-d H:i:s'),
     ]);
 }
 

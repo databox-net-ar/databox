@@ -463,7 +463,8 @@ function drcaCampanaEjecutar(PDO $pdo, int $id, callable $log, array $opts = [])
 //   spam     -> Complaint. El destinatario apreto "esto es spam". Seguir
 //               mandandole es exactamente lo que hunde la reputacion del
 //               dominio, asi que la baja no admite matices.
-//   rebotado -> SOLO si el bounce fue 'Permanent'. Ver drcaBajasPorRebote.
+//   rebotado -> SOLO si el bounce fue definitivo (`aws_eventos.permanente = 1`).
+//               Ver drcaBajasPorRebote.
 //
 // 'rechazado' (Reject) queda deliberadamente AFUERA: SES rechaza por nuestro
 // contenido (virus, dominio en lista negra), no por la casilla del otro. Dar de
@@ -507,13 +508,20 @@ function drcaSincronizarResultado(PDO $pdo, int $campanaId): int {
  *
  * REBOTE DURO vs BLANDO
  * ---------------------
- * `resultado = 'rebotado'` NO alcanza. SES manda bounceType 'Permanent' (la
- * casilla no existe) y 'Transient' (buzon lleno, servidor caido) y los dos
- * mapean al mismo 'rebotado' en aws_mensajes (ver AWS_EVT_TIPO_A_RESULTADO en
- * api/v4/aws/eventos.php). Al escribir esto prod tenia 10 Permanent y 7
- * Transient: desuscribir por los 7 seria perder la suscripcion de gente cuya
- * casilla existe y anda, solo porque estaba llena ese dia. El subtipo se cruza
- * contra `aws_eventos` por `uuid`.
+ * `resultado = 'rebotado'` NO alcanza: el buzon lleno y la casilla inexistente
+ * mapean los dos a 'rebotado' en aws_mensajes (ver AWS_EVT_TIPO_A_RESULTADO en
+ * api/v4/aws/eventos.php). Desuscribir por un buzon lleno seria perder la
+ * suscripcion de gente cuya casilla existe y anda.
+ *
+ * QUIEN DECIDE QUE ES "DURO" NO ES ESTA FUNCION. La decision se toma una sola
+ * vez, en el ingestor de eventos (aws_evt_bounce_permanente), y queda congelada
+ * en `aws_eventos.permanente`. Aca solo se lee esa columna, cruzando por `uuid`.
+ *
+ * Antes este EXISTS miraba `subtipo = 'Permanent'`, o sea que le creia a AWS y
+ * nada mas. Eso dejaba pasar los dominios inexistentes: SES los clasifica
+ * 'Transient' aunque el SMTP del otro lado conteste `550 5.4.4`, y la direccion
+ * rebotaba campana tras campana sin darse de baja nunca. El porque completo
+ * esta en aws_evt_bounce_permanente().
  *
  * El complaint ('spam') no necesita ese cruce: cualquier denuncia da de baja.
  *
@@ -543,8 +551,9 @@ function drcaBajasPorRebote(PDO $pdo, array $c): int {
 
     $ph = implode(',', array_fill(0, count(DRCA_RESULTADOS_BAJA), '?'));
 
-    // Candidatos: rebote/spam todavia sin baja estampada. El bounce 'Transient'
-    // se filtra aca — el EXISTS exige un evento 'Permanent' para el uuid.
+    // Candidatos: rebote/spam todavia sin baja estampada. El rebote blando se
+    // filtra aca — el EXISTS exige un bounce ya clasificado como definitivo
+    // (`permanente = 1`) para el uuid.
     // Se trae tambien `mensaje_id` y el subtipo del evento: los dos van al
     // historial de bajas, que tiene que poder responder "¿por que la sacamos?"
     // sin depender del padron (que se borra junto con la campana).
@@ -564,9 +573,9 @@ function drcaBajasPorRebote(PDO $pdo, array $c): int {
                 m.resultado = 'spam'
              OR EXISTS (SELECT 1
                           FROM aws_eventos ev
-                         WHERE ev.uuid    = q.uuid
-                           AND ev.tipo    = 'bounce'
-                           AND ev.subtipo = 'Permanent')
+                         WHERE ev.uuid       = q.uuid
+                           AND ev.tipo       = 'bounce'
+                           AND ev.permanente = 1)
            )
     ";
     $st = $pdo->prepare($sql);
@@ -630,11 +639,20 @@ function drcaBajasPorRebote(PDO $pdo, array $c): int {
 
     // Una baja automatica cambia la lista sin que nadie la haya tocado: tiene
     // que quedar en el log o el operador ve encoger la lista sin explicacion.
-    $detalle = array_map(fn($f) => "{$f['destino']} ({$f['resultado']})", $filas);
-    registrarSuceso($pdo, 'datarocket_campanas', 'alerta',
-        "Campaña #{$c['id']}: {$bajas} prospectos dados de baja de la lista #{$listaId}"
-        . ' por rebote duro o spam — ' . implode(', ', array_slice($detalle, 0, 20))
-        . (count($detalle) > 20 ? ' …' : ''));
+    //
+    // Solo se logea si la baja realmente ocurrio. Dos campanas a la misma lista
+    // que le pegaron al mismo destino muerto entran las dos aca: la primera lo
+    // desuscribe, la segunda encuentra que ya no estaba y la puerta devuelve 0.
+    // Esa segunda igual necesita estampar su padron (arriba) para no reintentar
+    // en cada corrida del cron, pero anunciar "0 prospectos dados de baja —
+    // fulano@dominio" es una contradiccion que el operador lee como un bug.
+    if ($bajas > 0) {
+        $detalle = array_map(fn($f) => "{$f['destino']} ({$f['resultado']})", $filas);
+        registrarSuceso($pdo, 'datarocket_campanas', 'alerta',
+            "Campaña #{$c['id']}: {$bajas} prospectos dados de baja de la lista #{$listaId}"
+            . ' por rebote duro o spam — ' . implode(', ', array_slice($detalle, 0, 20))
+            . (count($detalle) > 20 ? ' …' : ''));
+    }
 
     return $bajas;
 }
