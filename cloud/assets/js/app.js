@@ -740,6 +740,7 @@ const ROUTE_PERMS = {
   '/datarocket_etiquetas':     { perm:   'datarocket.etiquetas.consultar' },
   '/datarocket_embudos':       { perm:   'datarocket.embudos.consultar' },
   '/datarocket_oportunidades':  { perm:   'datarocket.oportunidades.consultar' },
+  '/datarocket_campanas':      { perm:   'datarocket.campanas.consultar' },
   '/datarocket_redes_sociales': { perm:   'datarocket.redes_sociales.consultar' },
 
   '/datainfra':                { prefix: 'datainfra.' },
@@ -26506,7 +26507,10 @@ route('/datarocket', async (mount) => {
     <!-- Orden de tarjetas fijado por el usuario (no alfabetico): sigue el flujo
          CRM "quien" (Prospectos, Oportunidades) -> "que paso" (Interacciones) ->
          "pipeline" (Embudos, Etapas) -> "insumos de mensajeria" (Listas,
-         Etiquetas, Plantillas) -> "canales de publicacion" (Redes sociales).
+         Etiquetas, Plantillas) -> "el envio en si" (Campanas) -> "canales de
+         publicacion" (Redes sociales).
+         Campanas va DESPUES de Plantillas porque consume los tres insumos
+         anteriores: lista + plantilla + canal.
          NO reordenar a alfabetico sin acuerdo. -->
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/datarocketprospectos'">
@@ -26543,6 +26547,11 @@ route('/datarocket', async (mount) => {
         <span class="tile-icon">📄</span>
         <span class="tile-title">Plantillas</span>
         <span class="tile-desc">Plantillas reutilizables para los envíos Datarocket: remitente, asunto, cuerpo, formato y adjunto por proyecto.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_campanas'">
+        <span class="tile-icon">📣</span>
+        <span class="tile-title">Campañas</span>
+        <span class="tile-desc">Envíos masivos: combinan lista, plantilla y canal, definen cuándo salen y llevan el padrón de qué recibió cada destinatario.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datarocket_redes_sociales'">
         <span class="tile-icon">📱</span>
@@ -27098,26 +27107,7 @@ const drLiSusCols = () => (drLiSusEstado?.editable ? 7 : 6);
 function renderSuscriptosDrLiHtml({ editable = false } = {}) {
   const limites = [25, 50, 100, 250, 500, 1000];
 
-  // Buscador de altas. Los resultados se pintan inline debajo del input (y no
-  // en un dropdown flotante) porque `.modal` crea un containing-block con su
-  // `transform` y cualquier position:fixed adentro necesita portal + reflow;
-  // inline no tiene ese problema y aca hay lugar de sobra.
-  const altas = !editable ? '' : `
-    <div class="form-group" style="margin-bottom:0">
-      <label for="drLiSusAddInput">
-        Agregar prospectos
-        <span style="color:var(--muted);font-weight:normal;font-size:.85em">
-          — buscá por nombre, correo o teléfono y elegí de las sugerencias
-        </span>
-      </label>
-      <input type="text" id="drLiSusAddInput" autocomplete="off"
-             placeholder="Escribí para buscar un prospecto…">
-      <div id="drLiSusAddResultados" class="drli-sus-add-res" hidden></div>
-    </div>`;
-
   return `
-    ${altas}
-
     <div class="toolbar" style="margin-bottom:0">
       <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
         <div class="search-wrap">
@@ -27134,6 +27124,7 @@ function renderSuscriptosDrLiHtml({ editable = false } = {}) {
         <select id="drLiSusLimite" style="width:auto">
           ${limites.map((n) => `<option value="${n}" ${n === 100 ? 'selected' : ''}>${n}</option>`).join('')}
         </select>
+        ${editable ? '<button class="btn btn-primary" id="drLiSusAddBtn">+ Agregar prospecto</button>' : ''}
       </div>
     </div>
 
@@ -27187,25 +27178,8 @@ function bindSuscriptosDrLi() {
 
   if (!drLiSusEstado.editable) return;
 
-  // ---- Modo editor: buscador de altas y acciones por fila ----
-  const add = $('#modalRoot #drLiSusAddInput');
-  add.addEventListener('input', () => {
-    clearTimeout(drLiSusAddTimer);
-    drLiSusAddTimer = setTimeout(() => buscarCandidatosDrLi(add.value.trim()), 250);
-  });
-  // Enter no debe mandar el formulario del modal: aca elige la primera
-  // sugerencia, que es lo que espera quien viene tipeando.
-  add.addEventListener('keydown', (ev) => {
-    if (ev.key !== 'Enter') return;
-    ev.preventDefault();
-    $('#modalRoot #drLiSusAddResultados')?.querySelector('[data-cand]')?.click();
-  });
-
-  $('#modalRoot #drLiSusAddResultados').addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-cand]');
-    if (!b) return;
-    agregarSuscriptoDrLi(JSON.parse(b.dataset.cand));
-  });
+  // ---- Modo editor: alta por modal y acciones por fila ----
+  $('#modalRoot #drLiSusAddBtn').addEventListener('click', () => abrirPickerProspectoDrLi());
 
   $('#modalRoot #drLiSusTbody').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-sus-act]');
@@ -27220,41 +27194,153 @@ function bindSuscriptosDrLi() {
 // Modo editor de la pestaña Suscriptos
 // ---------------------------------------------------------------------------
 
-// Typeahead de prospectos NO suscriptos. En el alta la lista todavia no
-// existe (`listaId` null): el endpoint recibe `lista=0` y no excluye a nadie.
-async function buscarCandidatosDrLi(texto) {
-  const cont = $('#modalRoot #drLiSusAddResultados');
-  if (!cont || !drLiSusEstado) return;
+// Modal apilado para elegir el prospecto a suscribir. Va como capa aparte
+// (backdrop propio con `.modal-apilado`, montado en <body>) y no con
+// openModal(), que destruiria el modal de alta/edicion que esta abajo — mismo
+// patron que el modal apilado de Datacount > Ordenes de pago.
+//
+// Un click en la fila acepta ese prospecto y cierra el picker; queda como alta
+// pendiente en la tabla de atras hasta que se apriete Guardar.
+function abrirPickerProspectoDrLi() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop modal-apilado';
+  backdrop.id = 'drLiPickerBackdrop';
+  backdrop.innerHTML = `
+    <div class="modal" style="width:90vw;max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-user-plus"></i> Agregar prospecto
+        </div>
+        <button class="btn-icon-sm" data-picker="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="search-wrap" style="width:100%">
+          <input type="search" class="search-input" id="drLiPickerSearch" style="width:100%"
+                 placeholder="🔍 Buscar por nombre, correo o teléfono…" autocomplete="off">
+          <button class="search-clear" id="drLiPickerSearchClear" style="display:none">×</button>
+        </div>
+        <div id="drLiPickerMsg" style="font-size:.8rem;color:var(--muted)">
+          Escribí para buscar entre los prospectos que todavía no están en la lista.
+        </div>
+        <div class="table-card drli-picker-table-card">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:80px">Código</th>
+                <th style="width:44px;text-align:center">Tipo</th>
+                <th>Nombre</th>
+                <th>Correo</th>
+                <th style="width:130px">Celular</th>
+              </tr>
+            </thead>
+            <tbody id="drLiPickerTbody">
+              <tr><td colspan="5" class="table-empty">Sin búsqueda todavía.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" data-picker="close">Cerrar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  requestAnimationFrame(() => backdrop.classList.add('open'));
 
-  if (texto === '') { cont.hidden = true; cont.innerHTML = ''; return; }
+  // Escape cierra solo esta capa. stopImmediatePropagation (y no
+  // stopPropagation) porque los otros listeners de Escape tambien cuelgan de
+  // `document` y stopPropagation no frena a los hermanos del mismo nodo.
+  const onKey = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.stopImmediatePropagation();
+    cerrar();
+  };
+  const cerrar = () => {
+    document.removeEventListener('keydown', onKey, true);
+    clearTimeout(drLiSusAddTimer);
+    backdrop.classList.remove('open');
+    setTimeout(() => backdrop.remove(), 200);
+  };
+  document.addEventListener('keydown', onKey, true);
 
-  cont.hidden = false;
-  cont.innerHTML = `<div class="drli-sus-add-msg">Buscando…</div>`;
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop || ev.target.closest('[data-picker="close"]')) { cerrar(); return; }
+    const tr = ev.target.closest('tr[data-cand]');
+    if (!tr) return;
+    agregarSuscriptoDrLi(JSON.parse(tr.dataset.cand));
+    cerrar();
+  });
+
+  const inp = backdrop.querySelector('#drLiPickerSearch');
+  const clr = backdrop.querySelector('#drLiPickerSearchClear');
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    clearTimeout(drLiSusAddTimer);
+    drLiSusAddTimer = setTimeout(() => buscarCandidatosDrLi(backdrop, inp.value.trim()), 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = '';
+    clr.style.display = 'none';
+    clearTimeout(drLiSusAddTimer);
+    buscarCandidatosDrLi(backdrop, '');
+  });
+  // Enter acepta el primer resultado, que es lo que espera quien viene tipeando.
+  inp.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    backdrop.querySelector('#drLiPickerTbody tr[data-cand]')?.click();
+  });
+  inp.focus();
+}
+
+// Busca prospectos NO suscriptos y los pinta en la tabla del picker. En el
+// alta la lista todavia no existe (`listaId` null): el endpoint recibe
+// `lista=0` y no excluye a nadie.
+async function buscarCandidatosDrLi(backdrop, texto) {
+  const tbody = backdrop.querySelector('#drLiPickerTbody');
+  const msg   = backdrop.querySelector('#drLiPickerMsg');
+  if (!tbody || !drLiSusEstado) return;
+
+  if (texto === '') {
+    msg.textContent   = 'Escribí para buscar entre los prospectos que todavía no están en la lista.';
+    tbody.innerHTML   = `<tr><td colspan="5" class="table-empty">Sin búsqueda todavía.</td></tr>`;
+    return;
+  }
+
+  msg.textContent = 'Buscando…';
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams({
-    candidatos: '1', q: texto, lista: drLiSusEstado.listaId || 0,
+    candidatos: '1', q: texto, lista: drLiSusEstado.listaId || 0, limite: 25,
   });
   try {
     const data = await apiGet('api/datarocketlistas.php?' + qs.toString());
-    if (!$('#modalRoot #drLiSusAddResultados') || $('#modalRoot #drLiSusAddInput')?.value.trim() !== texto) return;
+    // El picker pudo cerrarse, o el operador ya tipeo otra cosa.
+    if (!backdrop.isConnected || backdrop.querySelector('#drLiPickerSearch').value.trim() !== texto) return;
+
     // Los que ya estan en la tanda pendiente se descartan del lado del
     // cliente: el endpoint solo sabe de los que estan suscriptos en la DB.
     const libres = (data.items || []).filter((p) => !drLiSusEstado.agregar.has(Number(p.id)));
     if (!libres.length) {
-      cont.innerHTML = `<div class="drli-sus-add-msg">Sin prospectos para agregar con ese texto.</div>`;
+      msg.textContent = 'Sin prospectos para agregar con ese texto.';
+      tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Ningún prospecto coincide, o los que coinciden ya están en la lista.</td></tr>`;
       return;
     }
-    cont.innerHTML = libres.map((p) => `
-      <button type="button" class="drli-sus-add-item" data-cand="${esc(JSON.stringify(p))}">
-        ${drPrTipoIcon(p.tipo)}
-        <span class="drli-sus-add-nombre">${esc(p.nombre || ('#' + p.id))}</span>
-        <span class="drli-sus-add-dato">${esc(p.correo || p.celular || p.whatsapp || '—')}</span>
-        <span class="drli-sus-add-mas">+</span>
-      </button>
+
+    msg.textContent = `${fmtNum(libres.length)} resultado(s). Hacé clic en uno para agregarlo.`;
+    tbody.innerHTML = libres.map((p) => `
+      <tr class="row-clickable" data-cand="${esc(JSON.stringify(p))}">
+        <td class="td-id">#${esc(p.id)}</td>
+        <td style="text-align:center">${drPrTipoIcon(p.tipo)}</td>
+        <td class="td-nombre">${esc(p.nombre || '—')}</td>
+        <td class="drli-sus-mono">${esc(p.correo || '—')}</td>
+        <td class="drli-sus-mono" style="white-space:nowrap">${esc(p.celular || p.whatsapp || '—')}</td>
+      </tr>
     `).join('');
   } catch (e) {
-    if (!$('#modalRoot #drLiSusAddResultados')) return;
-    cont.innerHTML = `<div class="drli-sus-add-msg">Error: ${esc(e.message)}</div>`;
+    if (!backdrop.isConnected) return;
+    msg.textContent = '';
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -27264,13 +27350,6 @@ function agregarSuscriptoDrLi(p) {
   // esa baja — no hay que anotarlo como alta.
   if (drLiSusEstado.quitar.has(pid)) drLiSusEstado.quitar.delete(pid);
   else drLiSusEstado.agregar.set(pid, p);
-
-  const add = $('#modalRoot #drLiSusAddInput');
-  if (add) { add.value = ''; add.focus(); }
-  clearTimeout(drLiSusAddTimer);
-  const cont = $('#modalRoot #drLiSusAddResultados');
-  if (cont) { cont.hidden = true; cont.innerHTML = ''; }
-
   cargarSuscriptosDrLi();
 }
 
@@ -35573,6 +35652,1431 @@ async function eliminarDrrs(id) {
     await apiSend(`${DRRS_API}?id=${id}`, 'DELETE');
     toast('Cuenta eliminada');
     await cargarDrrs();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datarocket > Campañas (ABM) -------------------------
+// La campaña es el eslabón entre lo que Datarocket ya tenía suelto: la lista
+// (a quién), la plantilla (qué) y el canal (por dónde). Los ABMs de mensajes
+// (AWS / Evolution / Telegram) encolan de a uno; la campaña es el registro que
+// el job expansor convierte en N filas de cola.
+//
+// El padrón de destinatarios vive en `datarocket_campanas_mensajes` y este ABM
+// lo muestra SOLO en lectura, en la pestaña Destinatarios del modal de
+// Consultar. Lo escribe el expansor (`jobs/datarocket_campanas_expandir.php`),
+// que todavía no existe: hasta entonces el padrón se ve vacío, que es lo
+// correcto — no hay nada que inventar ahí.
+const DRCA_API = 'api/datarocket_campanas.php';
+
+const DRCA_MEDIO_EMOJI = { correo: '✉️', whatsapp: '💬', telegram: '✈️' };
+
+// Colores del ciclo de vida. 'pausada' va en warn porque reclama una decisión
+// del operador; 'cancelada' en muted y no en danger: cancelar es una acción
+// deliberada, no una falla.
+const DRCA_ESTADO_BADGE = {
+  borrador:    'badge-muted',
+  programada:  'badge-info',
+  expandiendo: 'badge-warn',
+  enviando:    'badge-warn',
+  pausada:     'badge-warn',
+  completada:  'badge-success',
+  cancelada:   'badge-muted',
+};
+
+// Estado del renglón del padrón. 'omitido' es warn y no danger: que un
+// prospecto quede afuera por no tener correo cargado es información, no error.
+const DRCA_PADRON_BADGE = {
+  pendiente: 'badge-muted',
+  encolado:  'badge-info',
+  enviado:   'badge-success',
+  fallido:   'badge-danger',
+  omitido:   'badge-warn',
+  cancelado: 'badge-muted',
+};
+
+// Estados en los que la campaña ya arrancó: el endpoint rechaza cambiarle medio,
+// canal, lista o plantilla (espeja DRCA_ESTADOS_ARRANCADOS del PHP). El
+// formulario deshabilita esos campos en vez de dejar que el PUT devuelva 409.
+const DRCA_ESTADOS_ARRANCADOS = ['expandiendo', 'enviando', 'completada'];
+
+const drcaFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', medio: '', estado: '', lista: '',
+  limite: 100, order_by: 'id', dir: 'desc',
+};
+const drcaFiltros = { ...drcaFiltrosDefaults };
+
+let drcaItems           = [];
+let drcaEditandoId      = null;
+let drcaBuscadorTimer   = null;
+let drcaFiltrosSnapshot = null;
+let drcaLookupsCache    = null;
+let drcaLookupsPromesa  = null;
+// Campaña abierta en el modal de Consultar + filtro de estado de su padrón.
+// Se guardan afuera del modal para que recargar la pestaña Destinatarios no
+// tenga que volver a pedir la ficha entera.
+let drcaDetalleActual   = null;
+let drcaPadronEstado    = '';
+
+// Catálogos que no dependen del medio: proyectos, los tres catálogos de
+// `estados` y las listas. Se piden una sola vez por vida de la página.
+async function drcaCargarLookups() {
+  if (drcaLookupsCache) return drcaLookupsCache;
+  if (drcaLookupsPromesa) return drcaLookupsPromesa;
+  drcaLookupsPromesa = (async () => {
+    const d = await apiGet(`${DRCA_API}?lookups=1`);
+    drcaLookupsCache = {
+      proyectos:      d.proyectos      || [],
+      medios:         d.medios         || [],
+      estados:        d.estados        || [],
+      estados_padron: d.estados_padron || [],
+      listas:         d.listas         || [],
+    };
+    return drcaLookupsCache;
+  })();
+  try { return await drcaLookupsPromesa; }
+  finally { drcaLookupsPromesa = null; }
+}
+
+// Plantillas y canales SÍ dependen del medio (y se recortan por proyecto), así
+// que no se cachean: se vuelven a pedir cada vez que el formulario cambia esos
+// dos combos. Son consultas chicas y ofrecer un canal de otro medio sería peor
+// que un request de más.
+async function drcaLookupsDeMedio(medio, proyecto) {
+  if (!medio) return { plantillas: [], canales: [], listas: [] };
+  const qs = new URLSearchParams({ lookups: '1', medio });
+  if (proyecto) qs.set('proyecto', proyecto);
+  const d = await apiGet(`${DRCA_API}?${qs.toString()}`);
+  return {
+    plantillas: d.plantillas || [],
+    canales:    d.canales    || [],
+    listas:     d.listas     || [],
+  };
+}
+
+// Texto amigable de un valor de catálogo. Si el valor no está en `estados`
+// (catálogo editado a mano) devuelve el valor crudo en vez de un guion.
+function drcaTextoDe(coleccion, valor, fallback = '—') {
+  if (!valor) return fallback;
+  const x = (drcaLookupsCache?.[coleccion] || []).find((e) => e.valor === valor);
+  return x ? x.texto : String(valor);
+}
+
+// Mirror JS de drcaSlugify() (cloud/api/datarocket_campanas.php).
+function drcaSlugify(s) {
+  if (!s) return '';
+  const pares = { 'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+                  'à':'a','è':'e','ì':'i','ò':'o','ù':'u',
+                  'ä':'a','ë':'e','ï':'i','ö':'o','ü':'u',
+                  'Á':'a','É':'e','Í':'i','Ó':'o','Ú':'u',
+                  'ñ':'n','Ñ':'n','ç':'c','Ç':'c' };
+  let out = String(s).trim();
+  out = out.replace(/[áéíóúàèìòùäëïöüÁÉÍÓÚñÑçÇ]/g, (c) => pares[c] || c);
+  out = out.toLowerCase();
+  out = out.replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, '');
+  return out.slice(0, 60);
+}
+
+function drcaMedioBadge(r) {
+  const emoji = DRCA_MEDIO_EMOJI[r.medio] || '📨';
+  const texto = r.medio_texto || drcaTextoDe('medios', r.medio);
+  return `<span class="badge badge-info">${emoji} ${esc(texto)}</span>`;
+}
+
+function drcaEstadoBadge(r) {
+  const cls   = DRCA_ESTADO_BADGE[r.estado] || 'badge-info';
+  const texto = r.estado_texto || drcaTextoDe('estados', r.estado);
+  return `<span class="badge ${cls}">${esc(texto)}</span>`;
+}
+
+function drcaPadronBadge(m) {
+  const cls   = DRCA_PADRON_BADGE[m.estado] || 'badge-info';
+  const texto = m.estado_texto || drcaTextoDe('estados_padron', m.estado);
+  return `<span class="badge ${cls}">${esc(texto)}</span>`;
+}
+
+// Barra de progreso enviados/total. Con `total` en 0 la campaña todavía no se
+// expandió, así que muestra el alcance estimado de la lista en vez de un 0/0
+// que se lee como "no tiene a quién mandarle".
+function drcaProgresoHtml(r) {
+  const total = Number(r.total) || 0;
+  if (total === 0) {
+    const est = Number(r.lista_suscriptos) || 0;
+    return est > 0
+      ? `<span style="color:var(--muted);font-size:.78rem">Sin expandir · ~${fmtNum(est)}</span>`
+      : `<span style="color:var(--muted);font-size:.78rem">Sin expandir</span>`;
+  }
+  const env = Number(r.enviados) || 0;
+  const pct = Math.min(100, Math.round((env / total) * 100));
+  const fal = Number(r.fallidos) || 0;
+  return `
+    <div style="min-width:110px">
+      <div style="height:6px;border-radius:3px;background:color-mix(in srgb, var(--surface) 70%, #000);overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:var(--primary)"></div>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:3px">
+        ${fmtNum(env)} / ${fmtNum(total)}${fal > 0 ? ` · <span style="color:var(--danger)">${fmtNum(fal)} fallidos</span>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// 'YYYY-MM-DD HH:MM:SS' (DB) -> 'YYYY-MM-DDTHH:MM' (input datetime-local).
+function drcaADatetimeLocal(v) {
+  if (!v) return '';
+  return String(v).replace(' ', 'T').slice(0, 16);
+}
+
+route('/datarocket_campanas', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">📣</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Las campañas son los envíos masivos de Datarocket: cada una combina una lista
+            de distribución, una plantilla y un canal, y define cuándo sale y con qué
+            prioridad. Al ejecutarse generan un padrón con un renglón por destinatario,
+            donde queda registrado quién recibió, quién falló y quién quedó afuera.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drcaStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="drcaStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Programadas</span><span class="stat-value" id="drcaStatProgramadas">—</span></div>
+        <div class="stat-card"><span class="stat-label">En curso</span><span class="stat-value" id="drcaStatEnCurso">—</span></div>
+        <div class="stat-card"><span class="stat-label">Mensajes enviados</span><span class="stat-value green" id="drcaStatEnviados">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drcaSearch"
+                   placeholder="🔍 Buscar nombre, slug o descripción…">
+            <button class="search-clear" id="drcaSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drcaFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drcaFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drcaRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drcaNuevoBtn">+ Nueva campaña</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <!-- Proyecto va inmediatamente despues de Codigo: el listado se lee por
+               proyecto. Lista y Progreso no son ordenables porque DRCA_ORDENES
+               (el allowlist del endpoint) no las incluye — Lista es un JOIN y
+               Progreso es derivado.
+               Sin backticks en este comentario: vive dentro de un template
+               literal y cerrarian el string. -->
+          <thead id="drcaThead">
+            <tr>
+              ${thOrdenable('id',         'Código', 'width:80px')}
+              <th style="width:140px">Proyecto</th>
+              ${thOrdenable('nombre',     'Nombre')}
+              ${thOrdenable('medio',      'Medio',      'width:130px')}
+              <th style="width:170px">Lista</th>
+              ${thOrdenable('programada', 'Programada', 'width:150px')}
+              <th style="width:150px">Progreso</th>
+              ${thOrdenable('estado',     'Estado',     'width:120px')}
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drcaTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="drcaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="destinatarios" role="menuitem">
+        <i class="fa-solid fa-list-check"></i><span>Ver destinatarios</span>
+      </button>
+      <button type="button" data-action="ejecutar" role="menuitem">
+        <i class="fa-solid fa-bolt"></i><span>Ejecutar ahora</span>
+      </button>
+      <button type="button" data-action="iniciar" role="menuitem">
+        <i class="fa-solid fa-paper-plane"></i><span>Programar para ya</span>
+      </button>
+      <button type="button" data-action="pausar" role="menuitem">
+        <i class="fa-solid fa-pause"></i><span data-label>Pausar</span>
+      </button>
+      <button type="button" data-action="cancelar" role="menuitem">
+        <i class="fa-solid fa-ban"></i><span>Cancelar campaña</span>
+      </button>
+      <button type="button" data-action="recalcular" role="menuitem">
+        <i class="fa-solid fa-calculator"></i><span>Recalcular contadores</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Menú contextual del modal Consultar (acciones extra del recurso) -->
+    <div id="drcaConsultaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="copiar-slug" role="menuitem">
+        <i class="fa-solid fa-hashtag"></i><span>Copiar slug</span>
+      </button>
+      <button type="button" data-action="ver-lista" role="menuitem">
+        <i class="fa-solid fa-address-book"></i><span>Ir a la lista</span>
+      </button>
+      <button type="button" data-action="ver-plantilla" role="menuitem">
+        <i class="fa-solid fa-file-lines"></i><span>Ir a la plantilla</span>
+      </button>
+      <button type="button" data-action="recalcular" role="menuitem">
+        <i class="fa-solid fa-calculator"></i><span>Recalcular contadores</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDrcaBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrca()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn btn-ghost" onclick="cancelarFiltrosDrca()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrcaCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDrca('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fDrcaProyecto" onchange="onFiltroDrca('proyecto', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Lista de distribución</label>
+            <select id="fDrcaLista" onchange="onFiltroDrca('lista', this.value)">
+              <option value="">— Todas —</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Medio</label>
+            <div id="fDrcaMedioChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <div id="fDrcaEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrcaLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDrca('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrcaOrden" onchange="onFiltroDrca('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="medio">Medio</option>
+                <option value="estado">Estado</option>
+                <option value="prioridad">Prioridad</option>
+                <option value="programada">Programada</option>
+                <option value="total">Destinatarios</option>
+                <option value="enviados">Enviados</option>
+                <option value="fecha_creacion">Fecha de alta</option>
+                <option value="fecha_modificacion">Última modificación</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrcaDir" onchange="onFiltroDrca('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrca()">Cerrar</button>
+          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrca()">Limpiar</button>
+          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrca()">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#drcaSearch');
+  const clr = $('#drcaSearchClear');
+  inp.value = drcaFiltros.q;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drcaFiltros.q = inp.value.trim();
+    clearTimeout(drcaBuscadorTimer);
+    drcaBuscadorTimer = setTimeout(cargarDrca, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; drcaFiltros.q = ''; cargarDrca();
+  });
+
+  $('#drcaFiltrosBtn').addEventListener('click', abrirModalFiltrosDrca);
+  $('#drcaRefrescarBtn').addEventListener('click', cargarDrca);
+  $('#drcaNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrca(null));
+
+  activarSortEnThead($('#drcaThead'), drcaFiltros, () => cargarDrca());
+
+  $('#drcaCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    const a = b.dataset.action;
+    if (a === 'consultar')     abrirConsultaDrca(data.id);
+    if (a === 'destinatarios') abrirConsultaDrca(data.id, 'padron');
+    if (a === 'editar')        abrirAltaEdicionDrca(data.id);
+    if (a === 'eliminar')      eliminarDrca(data.id);
+    if (a === 'ejecutar')      drcaEjecutar(data.id);
+    if (a === 'iniciar')       drcaIniciar(data.id);
+    if (a === 'pausar')        drcaTogglePausa(data.id);
+    if (a === 'cancelar')      drcaCancelar(data.id);
+    if (a === 'recalcular')    drcaRecalcular(data.id);
+  });
+
+  $('#drcaTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      drcaAbrirMenu(r.right - 220, r.bottom + 4, id);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDrca(Number(tr.dataset.id));
+  });
+  $('#drcaTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    drcaAbrirMenu(ev.clientX, ev.clientY, Number(tr.dataset.id));
+  });
+
+  // Acciones extra del modal Consultar. Viven en un menú propio porque el
+  // footer de Consultar sólo admite Cerrar + Editar (ABM.md).
+  $('#drcaConsultaCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    const d = drcaDetalleActual;
+    if (!d) return;
+    const a = b.dataset.action;
+    if (a === 'copiar-slug') {
+      try { await navigator.clipboard.writeText(String(d.slug || '')); toast('El slug copiado'); }
+      catch { toast('No se pudo copiar al portapapeles', { error: true }); }
+    }
+    if (a === 'ver-lista') {
+      if (d.lista_id) { closeModal(); location.hash = '#/datarocketlistas'; }
+      else toast('Esta campaña no tiene lista asignada', { error: true });
+    }
+    if (a === 'ver-plantilla') {
+      if (d.plantilla_id) { closeModal(); location.hash = '#/datarocketplantillas'; }
+      else toast('Esta campaña no tiene plantilla asignada', { error: true });
+    }
+    if (a === 'recalcular') { closeModal(); await drcaRecalcular(d.id); }
+  });
+
+  await drcaCargarLookups();
+  const L = drcaLookupsCache || {};
+
+  const selProy = $('#fDrcaProyecto');
+  if (selProy) {
+    selProy.innerHTML = `<option value="">— Todos —</option>` +
+      (L.proyectos || []).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+  }
+
+  // La lista va como <select> y no como chips: pueden ser decenas.
+  const selLista = $('#fDrcaLista');
+  if (selLista) {
+    selLista.innerHTML = `<option value="">— Todas —</option>` +
+      (L.listas || []).map((l) => `<option value="${l.id}">${esc(l.nombre)}</option>`).join('');
+  }
+
+  const chipsMedio = $('#fDrcaMedioChips');
+  if (chipsMedio) {
+    chipsMedio.innerHTML =
+      `<button type="button" class="filter-chip" data-medio="">Todos</button>` +
+      (L.medios || []).map((m) =>
+        `<button type="button" class="filter-chip" data-medio="${esc(m.valor)}">${DRCA_MEDIO_EMOJI[m.valor] || '📨'} ${esc(m.texto)}</button>`).join('');
+    chipsMedio.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drcaFiltros.medio = b.dataset.medio || '';
+      drcaSincronizarChipsMedio();
+      drcaActualizarBadgeFiltros();
+      cargarDrca();
+    });
+  }
+
+  const chipsEstado = $('#fDrcaEstadoChips');
+  if (chipsEstado) {
+    chipsEstado.innerHTML =
+      `<button type="button" class="filter-chip" data-estado="">Todos</button>` +
+      (L.estados || []).map((e) =>
+        `<button type="button" class="filter-chip" data-estado="${esc(e.valor)}">${esc(e.texto)}</button>`).join('');
+    chipsEstado.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drcaFiltros.estado = b.dataset.estado || '';
+      drcaSincronizarChipsEstado();
+      drcaActualizarBadgeFiltros();
+      cargarDrca();
+    });
+  }
+
+  drcaActualizarBadgeFiltros();
+  await cargarDrca();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Campañas');
+
+// Las acciones de ciclo de vida dependen del estado de la fila, así que el menú
+// se arma al abrirlo (regla del menú contextual en ABM.md): "Pausar" cambia de
+// etiqueta y las tres opciones se ocultan donde no aplican, en vez de dejar que
+// el endpoint rechace la operación después del click.
+function drcaAbrirMenu(x, y, id) {
+  const r    = drcaItems.find((c) => c.id === id);
+  const est  = r?.estado || '';
+  const menu = $('#drcaCtxMenu');
+
+  const btnEjec  = menu?.querySelector('[data-action="ejecutar"]');
+  const btnIni   = menu?.querySelector('[data-action="iniciar"]');
+  const btnPausa = menu?.querySelector('[data-action="pausar"]');
+  const btnCanc  = menu?.querySelector('[data-action="cancelar"]');
+  const btnRec   = menu?.querySelector('[data-action="recalcular"]');
+  const btnDest  = menu?.querySelector('[data-action="destinatarios"]');
+
+  // Las dos formas de largar una campaña, y por qué están las dos:
+  //   Ejecutar ahora    -> corre el expansor acá mismo, con consola en vivo.
+  //                        Es el camino cuando querés verlo pasar.
+  //   Programar para ya -> sólo la deja lista y el cron la levanta. Es el
+  //                        camino desatendido, y el que sirve cuando la campaña
+  //                        es grande y no querés tener el navegador abierto.
+  // Las dos aplican sólo desde borrador o programada — igual que el endpoint.
+  const lanzable = ['borrador', 'programada'].includes(est);
+  if (btnEjec) btnEjec.style.display = lanzable ? '' : 'none';
+  if (btnIni)  btnIni.style.display  = lanzable ? '' : 'none';
+
+  if (btnPausa) {
+    const lbl = btnPausa.querySelector('[data-label]');
+    if (lbl) lbl.textContent = est === 'pausada' ? 'Reanudar' : 'Pausar';
+    // Sólo tiene sentido sobre una campaña viva: en borrador no arrancó y en
+    // completada/cancelada ya terminó.
+    btnPausa.style.display = ['programada', 'expandiendo', 'enviando', 'pausada'].includes(est) ? '' : 'none';
+  }
+  if (btnCanc) {
+    btnCanc.style.display = ['completada', 'cancelada'].includes(est) ? 'none' : '';
+  }
+  // Recalcular y ver destinatarios sólo importan si hay padrón que mirar.
+  const hayPadron = (Number(r?.total) || 0) > 0;
+  if (btnRec)  btnRec.style.display  = hayPadron ? '' : 'none';
+  if (btnDest) btnDest.style.display = hayPadron ? '' : 'none';
+
+  abrirCtxMenu(menu, x, y, { id });
+}
+
+async function cargarDrca() {
+  const tbody = $('#drcaTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  // `codigo` no viaja al server (el endpoint no lo acepta): se filtra en
+  // cliente sobre lo que ya vino, igual que el resto de los ABMs.
+  const qs = new URLSearchParams();
+  if (drcaFiltros.q)        qs.set('q',        drcaFiltros.q);
+  if (drcaFiltros.proyecto) qs.set('proyecto', drcaFiltros.proyecto);
+  if (drcaFiltros.medio)    qs.set('medio',    drcaFiltros.medio);
+  if (drcaFiltros.estado)   qs.set('estado',   drcaFiltros.estado);
+  if (drcaFiltros.lista)    qs.set('lista',    drcaFiltros.lista);
+  qs.set('limite', drcaFiltros.limite);
+  qs.set('orden',  drcaFiltros.order_by);
+  qs.set('dir',    drcaFiltros.dir);
+
+  try {
+    const data = await apiGet(DRCA_API + '?' + qs.toString());
+    drcaItems = data.items || [];
+    const s = data.stats || {};
+    $('#drcaStatTotal').textContent       = fmtNum(s.total       ?? drcaItems.length);
+    $('#drcaStatProgramadas').textContent = fmtNum(s.programadas ?? 0);
+    $('#drcaStatEnCurso').textContent     = fmtNum(s.en_curso    ?? 0);
+    $('#drcaStatEnviados').textContent    = fmtNum(s.enviados    ?? 0);
+    actualizarSortIndicadores($('#drcaThead'), drcaFiltros);
+    renderDrca();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderDrca() {
+  const tbody = $('#drcaTbody');
+  if (!tbody) return;
+  if (!drcaItems.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin campañas registradas.</td></tr>`;
+    return;
+  }
+
+  let filas = drcaItems;
+  if (drcaFiltros.codigo) {
+    const cod = Number(drcaFiltros.codigo);
+    filas = filas.filter((r) => r.id === cod);
+  }
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((r) => `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${r.id}</code></td>
+      <td>${esc(r.proyecto_nombre || (r.proyecto_id ? `#${r.proyecto_id}` : '—'))}</td>
+      <td>
+        <div style="font-weight:600">${esc(r.nombre || '—')}</div>
+        <div style="color:var(--muted);font-size:.75rem"><code>${esc(r.slug || '')}</code></div>
+      </td>
+      <td>${drcaMedioBadge(r)}</td>
+      <td>${esc(r.lista_nombre || (r.lista_id ? `#${r.lista_id}` : '—'))}</td>
+      <td style="font-size:.82rem">${r.programada ? esc(fmtFechaAnio(r.programada)) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${drcaProgresoHtml(r)}</td>
+      <td>${drcaEstadoBadge(r)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDrca() {
+  drcaFiltrosSnapshot = { ...drcaFiltros };
+  $('#fDrcaCodigo').value   = drcaFiltros.codigo   || '';
+  $('#fDrcaProyecto').value = drcaFiltros.proyecto || '';
+  $('#fDrcaLista').value    = drcaFiltros.lista    || '';
+  $('#fDrcaLimite').value   = drcaFiltros.limite   || 100;
+  $('#fDrcaOrden').value    = drcaFiltros.order_by || 'id';
+  $('#fDrcaDir').value      = drcaFiltros.dir      || 'desc';
+  drcaSincronizarChipsMedio();
+  drcaSincronizarChipsEstado();
+  document.getElementById('filtrosDrcaBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDrca = abrirModalFiltrosDrca;
+
+function cerrarModalFiltrosDrca() {
+  document.getElementById('filtrosDrcaBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDrca = cerrarModalFiltrosDrca;
+
+function cancelarFiltrosDrca() {
+  if (drcaFiltrosSnapshot) {
+    Object.assign(drcaFiltros, drcaFiltrosSnapshot);
+    drcaActualizarBadgeFiltros();
+    cargarDrca();
+  }
+  cerrarModalFiltrosDrca();
+}
+window.cancelarFiltrosDrca = cancelarFiltrosDrca;
+
+function limpiarFiltrosDrca() {
+  // La búsqueda rápida vive en la toolbar, no en el modal: `Limpiar` resetea los
+  // filtros del modal y deja el texto tipeado como está.
+  const q = drcaFiltros.q;
+  Object.assign(drcaFiltros, drcaFiltrosDefaults, { q });
+  $('#fDrcaCodigo').value   = '';
+  $('#fDrcaProyecto').value = '';
+  $('#fDrcaLista').value    = '';
+  $('#fDrcaLimite').value   = 100;
+  $('#fDrcaOrden').value    = 'id';
+  $('#fDrcaDir').value      = 'desc';
+  drcaSincronizarChipsMedio();
+  drcaSincronizarChipsEstado();
+  drcaActualizarBadgeFiltros();
+  cargarDrca();
+}
+window.limpiarFiltrosDrca = limpiarFiltrosDrca;
+
+function onFiltroDrca(campo, valor) {
+  if (campo === 'codigo')   drcaFiltros.codigo   = (valor || '').trim();
+  if (campo === 'proyecto') drcaFiltros.proyecto = valor || '';
+  if (campo === 'lista')    drcaFiltros.lista    = valor || '';
+  if (campo === 'limite')   drcaFiltros.limite   = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'order_by') drcaFiltros.order_by = valor || 'id';
+  if (campo === 'dir')      drcaFiltros.dir      = valor || 'desc';
+  drcaActualizarBadgeFiltros();
+  cargarDrca();
+}
+window.onFiltroDrca = onFiltroDrca;
+
+function drcaSincronizarChipsMedio() {
+  document.querySelectorAll('#fDrcaMedioChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.medio || '') === (drcaFiltros.medio || ''));
+  });
+}
+
+function drcaSincronizarChipsEstado() {
+  document.querySelectorAll('#fDrcaEstadoChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.estado || '') === (drcaFiltros.estado || ''));
+  });
+}
+
+function drcaActualizarBadgeFiltros() {
+  let n = 0;
+  if (drcaFiltros.codigo)                 n++;
+  if (drcaFiltros.proyecto)               n++;
+  if (drcaFiltros.lista)                  n++;
+  if (drcaFiltros.medio)                  n++;
+  if (drcaFiltros.estado)                 n++;
+  if (Number(drcaFiltros.limite) !== 100) n++;
+  if (drcaFiltros.order_by !== 'id')      n++;
+  if (drcaFiltros.dir      !== 'desc')    n++;
+  const badge = $('#drcaFiltrosBadge');
+  const btn   = $('#drcaFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) { badge.style.display = ''; badge.textContent = n; btn.classList.add('active'); }
+  else       { badge.style.display = 'none'; btn.classList.remove('active'); }
+}
+
+function drcaCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-drca-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.drcaTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-drca-tab]').forEach((p) => {
+    p.hidden = p.dataset.drcaTab !== tab;
+  });
+}
+window.drcaCambiarTab = drcaCambiarTab;
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDrca(id) {
+  drcaEditandoId = id;
+  const editando = !!id;
+
+  await drcaCargarLookups();
+  const L = drcaLookupsCache || {};
+
+  let r = null;
+  if (editando) {
+    try { r = await apiGet(`${DRCA_API}?id=${id}`); }
+    catch (err) { toast(err.message, { error: true }); return; }
+  }
+
+  const arrancada = editando && DRCA_ESTADOS_ARRANCADOS.includes(r?.estado || '');
+
+  const optsProy = `<option value="">— Sin proyecto —</option>` +
+    (L.proyectos || []).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+  const optsMedio = `<option value="">— Elegir —</option>` +
+    (L.medios || []).map((m) =>
+      `<option value="${esc(m.valor)}">${DRCA_MEDIO_EMOJI[m.valor] || '📨'} ${esc(m.texto)}</option>`).join('');
+  const optsEstado = (L.estados || []).map((e) =>
+    `<option value="${esc(e.valor)}">${esc(e.texto)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:680px">
+      <div class="modal-header">
+        <div class="modal-title">${editando ? 'Editar campaña' : 'Nueva campaña'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        ${arrancada ? `
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:.82rem;color:var(--muted)">
+          Esta campaña ya arrancó: el medio, el canal, la lista y la plantilla quedan
+          bloqueados. El padrón ya expandido apunta a esa configuración y cambiarla
+          dejaría el registro mintiendo sobre lo que se mandó. Si necesitás otra
+          combinación, cancelá esta campaña y creá una nueva.
+        </div>` : ''}
+
+        <div class="form-group">
+          <label for="drcaNombre">Nombre *</label>
+          <input type="text" id="drcaNombre" maxlength="150" autocomplete="off"
+                 placeholder="Ej: Promo Navidad 2026 — clientes activos">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="drcaProyecto">Proyecto</label>
+            <select id="drcaProyecto">${optsProy}</select>
+          </div>
+          <div class="form-group">
+            <label for="drcaMedio">Medio *</label>
+            <select id="drcaMedio" ${arrancada ? 'disabled' : ''}>${optsMedio}</select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="drcaSlug">Slug
+            <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+              — identificador estable, único en todo el sistema; es lo que referencia el expansor
+            </span>
+          </label>
+          <input type="text" id="drcaSlug" maxlength="60" autocomplete="off"
+                 style="font-family:monospace" placeholder="promo-navidad-2026">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="drcaLista">Lista de distribución</label>
+            <select id="drcaLista" ${arrancada ? 'disabled' : ''}></select>
+            <div id="drcaAlcance" style="font-size:.78rem;color:var(--muted);margin-top:4px"></div>
+          </div>
+          <div class="form-group">
+            <label for="drcaPlantilla">Plantilla</label>
+            <select id="drcaPlantilla" ${arrancada ? 'disabled' : ''}></select>
+            <div id="drcaPlantillaAyuda" style="font-size:.78rem;color:var(--muted);margin-top:4px"></div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="drcaCanal">Canal de salida</label>
+          <select id="drcaCanal" ${arrancada ? 'disabled' : ''}></select>
+          <div id="drcaCanalAyuda" style="font-size:.78rem;color:var(--muted);margin-top:4px"></div>
+        </div>
+        <div class="form-row form-row-3">
+          <div class="form-group">
+            <label for="drcaEstado">Estado</label>
+            <select id="drcaEstado">${optsEstado}</select>
+          </div>
+          <div class="form-group">
+            <label for="drcaProgramada">Programada</label>
+            <input type="datetime-local" id="drcaProgramada">
+          </div>
+          <div class="form-group">
+            <label for="drcaPrioridad">Prioridad
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">— 1 a 9</span>
+            </label>
+            <input type="number" id="drcaPrioridad" min="1" max="9" value="5">
+          </div>
+        </div>
+        <div class="form-group" id="drcaAsuntoGroup">
+          <label for="drcaAsunto">Asunto del mensaje
+            <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+              — lo usan las plantillas que guardan <code>{asunto}</code> esperando recibirlo; las que ya traen asunto propio lo ignoran
+            </span>
+          </label>
+          <input type="text" id="drcaAsunto" maxlength="255" autocomplete="off"
+                 placeholder="Ej: Tu resumen de octubre ya está disponible">
+        </div>
+        <div class="form-group">
+          <label for="drcaDescripcion">Descripción
+            <span style="color:var(--muted);font-weight:normal;font-size:.85em">— nota interna, no sale en el mensaje</span>
+          </label>
+          <textarea id="drcaDescripcion" rows="2" maxlength="5000"
+                    placeholder="Qué se manda y a quién, en una línea."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="drcaObservaciones">Observaciones</label>
+          <textarea id="drcaObservaciones" rows="3" maxlength="5000"></textarea>
+        </div>
+        <div class="field-error" id="drcaFormError" style="display:none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  // Lista / plantilla / canal se repueblan cada vez que cambia medio o proyecto:
+  // las plantillas se filtran por medio y los canales viven en una tabla
+  // distinta por medio, así que un combo cacheado ofrecería opciones inválidas.
+  const repoblar = async (preLista, prePlantilla, preCanal) => {
+    const medio    = $('#drcaMedio').value;
+    const proyecto = $('#drcaProyecto').value;
+    const selLi = $('#drcaLista'), selPl = $('#drcaPlantilla'), selCa = $('#drcaCanal');
+
+    // Poblar listas desde una colección ya resuelta. El catálogo base (sin
+    // proyecto) trae todas; el recorte por proyecto lo hace el endpoint, así
+    // que no se filtra en cliente — `datarocket_listas.proyecto_id` ni siquiera
+    // viaja en el lookup.
+    const pintarListas = (listas) => {
+      selLi.innerHTML = `<option value="">— Sin lista —</option>` +
+        (listas || []).map((l) =>
+          `<option value="${l.id}" data-suscriptos="${l.suscriptos}">${esc(l.nombre)} (${fmtNum(l.suscriptos)})</option>`).join('');
+      if (preLista) selLi.value = String(preLista);
+      drcaActualizarAlcance();
+    };
+
+    if (!medio) {
+      pintarListas(L.listas);
+      selPl.innerHTML = `<option value="">— Elegí primero el medio —</option>`;
+      selCa.innerHTML = `<option value="">— Elegí primero el medio —</option>`;
+      $('#drcaPlantillaAyuda').textContent = '';
+      $('#drcaCanalAyuda').textContent     = '';
+      return;
+    }
+
+    selPl.innerHTML = `<option value="">Cargando…</option>`;
+    selCa.innerHTML = `<option value="">Cargando…</option>`;
+    let d;
+    try { d = await drcaLookupsDeMedio(medio, proyecto); }
+    catch (err) { toast(err.message, { error: true }); pintarListas(L.listas); return; }
+
+    pintarListas(d.listas);
+
+    selPl.innerHTML = `<option value="">— Sin plantilla —</option>` +
+      (d.plantillas || []).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+    if (prePlantilla) selPl.value = String(prePlantilla);
+    // Telegram todavía no tiene plantillas propias (`datarocket_plantillas.medio`
+    // sólo guarda 'C' y 'W'): se avisa en vez de mostrar un combo vacío mudo.
+    $('#drcaPlantillaAyuda').textContent = (d.plantillas || []).length === 0
+      ? (medio === 'telegram'
+          ? 'Telegram todavía no tiene plantillas propias.'
+          : 'No hay plantillas de este medio para el proyecto elegido.')
+      : '';
+
+    selCa.innerHTML = `<option value="">— Sin canal —</option>` +
+      (d.canales || []).map((c) => `<option value="${c.id}">${esc(c.nombre)}</option>`).join('');
+    if (preCanal) selCa.value = String(preCanal);
+    $('#drcaCanalAyuda').textContent = (d.canales || []).length === 0
+      ? 'No hay canales habilitados de este medio para el proyecto elegido.'
+      : '';
+  };
+
+  if (editando && r) {
+    $('#drcaNombre').value        = r.nombre        || '';
+    $('#drcaProyecto').value      = r.proyecto_id != null ? String(r.proyecto_id) : '';
+    $('#drcaMedio').value         = r.medio         || '';
+    $('#drcaSlug').value          = r.slug          || '';
+    $('#drcaEstado').value        = r.estado        || 'borrador';
+    $('#drcaProgramada').value    = drcaADatetimeLocal(r.programada);
+    $('#drcaPrioridad').value     = r.prioridad ?? 5;
+    $('#drcaAsunto').value        = r.asunto        || '';
+    $('#drcaDescripcion').value   = r.descripcion   || '';
+    $('#drcaObservaciones').value = r.observaciones || '';
+    await repoblar(r.lista_id, r.plantilla_id, r.canal_id);
+  } else {
+    $('#drcaEstado').value = 'borrador';
+    await repoblar(null, null, null);
+    // En el alta el slug se autocompleta desde el nombre mientras se tipea;
+    // deja de hacerlo en cuanto el operador lo edita a mano. En edición no se
+    // toca nunca: es un identificador estable y re-derivarlo rompería las
+    // referencias externas que el slug justamente evita.
+    const inpNom  = $('#drcaNombre');
+    const inpSlug = $('#drcaSlug');
+    inpSlug.addEventListener('input', () => { inpSlug.dataset.manual = '1'; });
+    inpNom.addEventListener('input', () => {
+      if (inpSlug.dataset.manual === '1') return;
+      inpSlug.value = drcaSlugify(inpNom.value);
+    });
+  }
+
+  if (!arrancada) {
+    $('#drcaMedio').addEventListener('change', () => repoblar(
+      $('#drcaLista').value || null, null, null));
+    $('#drcaProyecto').addEventListener('change', () => repoblar(
+      $('#drcaLista').value || null, $('#drcaPlantilla').value || null, $('#drcaCanal').value || null));
+    $('#drcaLista').addEventListener('change', drcaActualizarAlcance);
+  }
+
+  setTimeout(() => $('#drcaNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDrca();
+  });
+}
+
+// Alcance estimado = suscriptos de la lista elegida. Es una estimación y se
+// dice así: el expansor va a descartar a los que no tengan dato de contacto
+// para el medio, y ese recorte recién se conoce cuando corre.
+function drcaActualizarAlcance() {
+  const sel = $('#drcaLista');
+  const out = $('#drcaAlcance');
+  if (!sel || !out) return;
+  const opt = sel.selectedOptions[0];
+  const n   = Number(opt?.dataset?.suscriptos || 0);
+  out.textContent = sel.value && n > 0
+    ? `Alcance estimado: ${fmtNum(n)} prospectos suscriptos.`
+    : '';
+}
+
+async function guardarDrca() {
+  const err    = $('#drcaFormError');
+  const fallar = (msg) => {
+    if (err) { err.textContent = msg; err.style.display = ''; }
+    toast(msg, { error: true });
+  };
+  if (err) err.style.display = 'none';
+
+  const nombre = $('#drcaNombre').value.trim();
+  const medio  = $('#drcaMedio').value;
+  if (!nombre) { fallar('El nombre es obligatorio'); return; }
+  if (!medio)  { fallar('El medio es obligatorio'); return; }
+
+  const slug = $('#drcaSlug').value.trim().toLowerCase() || drcaSlugify(nombre);
+  if (!slug) { fallar('No se pudo derivar un slug del nombre — cargalo a mano'); return; }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+    fallar('El slug sólo admite minúsculas, dígitos y guiones (kebab-case)');
+    return;
+  }
+
+  const estado     = $('#drcaEstado').value || 'borrador';
+  const programada = $('#drcaProgramada').value || '';
+  // El expansor levanta por (estado='programada', programada <= NOW()): sin
+  // fecha la campaña quedaría invisible para él, esperando para siempre.
+  if (estado === 'programada' && !programada) {
+    fallar('Una campaña programada necesita fecha y hora de programación');
+    return;
+  }
+
+  const prioridad = Number($('#drcaPrioridad').value) || 5;
+  if (prioridad < 1 || prioridad > 9) { fallar('La prioridad debe estar entre 1 y 9'); return; }
+
+  const body = {
+    nombre,
+    slug,
+    medio,
+    estado,
+    programada,
+    prioridad,
+    proyecto_id:   $('#drcaProyecto').value  || null,
+    lista_id:      $('#drcaLista').value     || null,
+    plantilla_id:  $('#drcaPlantilla').value || null,
+    canal_id:      $('#drcaCanal').value     || null,
+    asunto:        $('#drcaAsunto').value.trim(),
+    descripcion:   $('#drcaDescripcion').value.trim(),
+    observaciones: $('#drcaObservaciones').value.trim(),
+  };
+
+  try {
+    if (drcaEditandoId) {
+      await apiSend(`${DRCA_API}?id=${drcaEditandoId}`, 'PUT', body);
+      toast('Campaña actualizada');
+    } else {
+      await apiSend(DRCA_API, 'POST', body);
+      toast('Campaña creada');
+    }
+    closeModal();
+    drcaEditandoId = null;
+    await cargarDrca();
+  } catch (e) {
+    fallar(e.message);
+  }
+}
+
+// ---- Modal Consulta ----
+// `tabInicial` permite entrar directo a Destinatarios desde el menú contextual
+// del listado, sin obligar a pasar por General.
+async function abrirConsultaDrca(id, tabInicial = 'general') {
+  let r;
+  try { r = await apiGet(`${DRCA_API}?id=${id}`); }
+  catch (err) { toast(err.message, { error: true }); return; }
+  drcaDetalleActual = r;
+  drcaPadronEstado  = '';
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem;word-break:break-word">${valor}</div>
+    </div>
+  `;
+  const txt = (v) => esc(v != null && v !== '' ? String(v) : '—');
+  const fec = (v) => v ? esc(fmtFechaAnio(v)) : '<span style="color:var(--muted)">—</span>';
+
+  openModal(`
+    <div class="modal" style="max-width:760px">
+      <div class="modal-header">
+        <div class="modal-title">
+          ${DRCA_MEDIO_EMOJI[r.medio] || '📨'}
+          <span class="modal-subtitle">${esc(r.nombre || `#${r.id}`)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab" role="tab" data-drca-tab="general"
+                  onclick="drcaCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-drca-tab="padron"
+                  onclick="drcaCambiarTab('padron')"><i class="fa-solid fa-list-check"></i> Destinatarios</button>
+        </div>
+
+        <div class="modal-tabpanel" data-drca-tab="general" role="tabpanel">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Código',        `<code>${r.id}</code>`)}
+            ${card('Estado',        drcaEstadoBadge(r))}
+            ${card('Nombre',        txt(r.nombre), 'full')}
+            ${card('Medio',         drcaMedioBadge(r))}
+            ${card('Proyecto',      txt(r.proyecto_nombre || (r.proyecto_id ? `#${r.proyecto_id}` : null)))}
+            ${card('Slug',          `<code style="font-size:.82rem">${esc(r.slug || '—')}</code>`)}
+            ${card('Prioridad',     txt(r.prioridad))}
+            ${card('Lista',         txt(r.lista_nombre || (r.lista_id ? `#${r.lista_id}` : null)))}
+            ${card('Plantilla',     txt(r.plantilla_nombre || (r.plantilla_id ? `#${r.plantilla_id}` : null)))}
+            ${card('Canal',         txt(r.canal_nombre || (r.canal_id ? `#${r.canal_id}` : null)))}
+            ${card('Suscriptos de la lista', r.lista_suscriptos != null ? esc(fmtNum(r.lista_suscriptos)) : '—')}
+            ${card('Programada',    fec(r.programada))}
+            ${card('Iniciada',      fec(r.iniciada))}
+            ${card('Completada',    fec(r.completada))}
+            ${card('Alta',          esc(fmtFechaAnio(r.fecha_creacion)))}
+            ${card('Última modificación', esc(fmtFechaAnio(r.fecha_modificacion)))}
+            ${card('Asunto del mensaje', txt(r.asunto), 'full')}
+            ${card('Descripción',   `<div style="white-space:pre-wrap;font-size:.85rem">${txt(r.descripcion)}</div>`, 'full')}
+            ${card('Observaciones', `<div style="white-space:pre-wrap;font-size:.85rem">${txt(r.observaciones)}</div>`, 'full')}
+          </div>
+
+          <div style="margin-top:14px;display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Destinatarios', esc(fmtNum(r.total)))}
+            ${card('Encolados',     esc(fmtNum(r.encolados)))}
+            ${card('Enviados',      `<span style="color:var(--success)">${esc(fmtNum(r.enviados))}</span>`)}
+            ${card('Fallidos',      `<span style="color:var(--danger)">${esc(fmtNum(r.fallidos))}</span>`)}
+            ${card('Omitidos',      esc(fmtNum(r.omitidos)), 'full')}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drca-tab="padron" role="tabpanel" hidden>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+            <div class="search-wrap" style="flex:1;min-width:200px">
+              <input type="search" class="search-input" id="drcaPadronSearch"
+                     placeholder="🔍 Buscar destinatario, destino o motivo…">
+            </div>
+            <button class="btn btn-ghost btn-icon" id="drcaPadronRefrescar" title="Refrescar">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+          </div>
+          <div id="drcaPadronChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+          <div class="table-card" style="max-height:340px;overflow:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:80px">Código</th>
+                  <th>Destinatario</th>
+                  <th style="width:180px">Destino</th>
+                  <th style="width:110px">Estado</th>
+                  <th>Motivo</th>
+                </tr>
+              </thead>
+              <tbody id="drcaPadronTbody">
+                <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-icon" title="Más acciones" data-act="menu-consulta">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
+        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      </div>
+    </div>
+  `);
+
+  drcaCambiarTab(tabInicial);
+
+  $('#drcaPadronRefrescar')?.addEventListener('click', () => drcaCargarPadron(id));
+  let padronTimer = null;
+  $('#drcaPadronSearch')?.addEventListener('input', () => {
+    clearTimeout(padronTimer);
+    padronTimer = setTimeout(() => drcaCargarPadron(id), 250);
+  });
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrca(id); }
+    const men = ev.target.closest('[data-act="menu-consulta"]');
+    if (men) {
+      ev.stopPropagation();
+      const rect = men.getBoundingClientRect();
+      abrirCtxMenu($('#drcaConsultaCtxMenu'), rect.left, rect.top - 160, { id });
+    }
+  });
+
+  await drcaCargarPadron(id);
+}
+
+// Padrón de la campaña. Es SOLO lectura: lo escribe el job expansor. Mientras
+// ese job no exista, esta tabla se ve vacía en toda campaña — es el estado
+// correcto, no un error de carga, y el mensaje vacío lo dice.
+async function drcaCargarPadron(id) {
+  const tbody = $('#drcaPadronTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams({ id: String(id), mensajes: '1', limite: '200' });
+  if (drcaPadronEstado) qs.set('estado', drcaPadronEstado);
+  const q = $('#drcaPadronSearch')?.value.trim();
+  if (q) qs.set('q', q);
+
+  let data;
+  try { data = await apiGet(`${DRCA_API}?${qs.toString()}`); }
+  catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    return;
+  }
+
+  // Los chips muestran el conteo del padrón COMPLETO (no el de la página), así
+  // que se repintan con cada carga: el conteo viene del endpoint.
+  const chips = $('#drcaPadronChips');
+  if (chips) {
+    const conteo = data.conteo || {};
+    const L = drcaLookupsCache || {};
+    chips.innerHTML =
+      `<button type="button" class="filter-chip${drcaPadronEstado === '' ? ' active' : ''}" data-estado="">Todos (${fmtNum(data.total || 0)})</button>` +
+      (L.estados_padron || [])
+        .filter((e) => (conteo[e.valor] || 0) > 0)
+        .map((e) => `<button type="button" class="filter-chip${drcaPadronEstado === e.valor ? ' active' : ''}" data-estado="${esc(e.valor)}">${esc(e.texto)} (${fmtNum(conteo[e.valor])})</button>`)
+        .join('');
+    chips.onclick = (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drcaPadronEstado = b.dataset.estado || '';
+      drcaCargarPadron(id);
+    };
+  }
+
+  const items = data.items || [];
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${
+      (data.total || 0) === 0
+        ? 'Esta campaña todavía no se expandió: el padrón se genera cuando corre el envío.'
+        : 'Sin resultados con el filtro actual.'
+    }</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = items.map((m) => `
+    <tr>
+      <td><code style="font-size:.8rem">${m.id}</code></td>
+      <td>${esc(m.prospecto_nombre || `#${m.prospecto_id}`)}</td>
+      <td style="font-family:monospace;font-size:.78rem">${esc(m.destino || '—')}</td>
+      <td>${drcaPadronBadge(m)}</td>
+      <td style="font-size:.8rem;color:var(--muted)">${esc(m.motivo || '—')}</td>
+    </tr>
+  `).join('');
+}
+
+// ---- Ejecutar ahora (consola en vivo) ----
+// Corre el expansor contra el servidor y muestra el progreso línea por línea.
+// El transporte es SSE, igual que el Sincronizador de tablas: EventSource manda
+// GET con cookies same-origin, así que la auth por cookie funciona sin tocar
+// nada. El trabajo real está en cloud/api/lib/datarocket_campanas_expandir.php.
+let _drcaEjecES     = null;
+let _drcaEjecutando = false;
+
+function drcaLogAppend(type, msg) {
+  const log = document.getElementById('drcaEjecLog');
+  if (!log) return;
+  const cls = ({ error: 'term-error', warn: 'term-warn', success: 'term-success', done: 'term-info' })[type] || 'term-info';
+  const pre = ({ error: '✗ ', warn: '⚠ ', success: '✓ ' })[type] || '';
+  const line = document.createElement('div');
+  line.className   = cls;
+  line.textContent = pre + msg;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function drcaCerrarEjecutor() {
+  // Cortar el EventSource NO cancela la corrida: el endpoint va con
+  // ignore_user_abort(true) a propósito, así que el servidor termina el lote que
+  // está procesando. La campaña es reanudable, no queda a medias de forma sucia.
+  if (_drcaEjecES) {
+    try { _drcaEjecES.close(); } catch (_) {}
+    _drcaEjecES = null;
+  }
+  _drcaEjecutando = false;
+  document.getElementById('drcaEjecBackdrop')?.classList.remove('open');
+  cargarDrca();
+}
+window.drcaCerrarEjecutor = drcaCerrarEjecutor;
+
+async function drcaEjecutar(id) {
+  const r = drcaItems.find((x) => x.id === id);
+  if (!r) return;
+
+  const est = Number(r.lista_suscriptos) || 0;
+  const ok = await confirmar({
+    title:       'Ejecutar campaña ahora',
+    message:     `Se va a armar el padrón de "${r.nombre || '#' + r.id}" y a encolar los mensajes` +
+                 (est > 0 ? ` para los ${fmtNum(est)} prospectos suscriptos` : '') +
+                 `. Los mensajes salen a medida que el motor de ${r.medio_texto || r.medio} los despacha. ¿Seguimos?`,
+    confirmText: 'Ejecutar',
+    danger:      true,
+  });
+  if (!ok) return;
+
+  // El backdrop se crea al vuelo y se destruye al cerrar: es un modal de una
+  // sola campaña por vez, no vale la pena tenerlo en el HTML de la vista.
+  document.getElementById('drcaEjecBackdrop')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop open';
+  wrap.id        = 'drcaEjecBackdrop';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:760px">
+      <div class="modal-header">
+        <div class="modal-title">
+          ⚡ <span class="modal-subtitle">${esc(r.nombre || '#' + r.id)}</span>
+        </div>
+        <button class="btn-icon-sm" onclick="drcaCerrarEjecutor()">×</button>
+      </div>
+      <div class="modal-body">
+        <pre class="terminal-log" id="drcaEjecLog" style="height:340px;overflow:auto;margin:0"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="drcaEjecCerrar" onclick="drcaCerrarEjecutor()">Cerrar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+
+  _drcaEjecutando = true;
+  const btnCerrar = document.getElementById('drcaEjecCerrar');
+  btnCerrar.textContent = 'Cerrar y seguir en segundo plano';
+
+  const es = new EventSource(`api/datarocket_campanas_ejecutar.php?id=${encodeURIComponent(id)}`,
+                             { withCredentials: true });
+  _drcaEjecES = es;
+
+  const finalizar = () => {
+    if (_drcaEjecES) {
+      try { _drcaEjecES.close(); } catch (_) {}
+      _drcaEjecES = null;
+    }
+    _drcaEjecutando = false;
+    if (btnCerrar) btnCerrar.textContent = 'Cerrar';
+  };
+
+  es.onmessage = (ev) => {
+    let o;
+    try { o = JSON.parse(ev.data); }
+    catch (_) { drcaLogAppend('info', ev.data); return; }
+    drcaLogAppend(o.type || 'info', o.msg || '');
+    if (o.type === 'done') finalizar();
+  };
+  es.onerror = () => {
+    // EventSource reintenta solo; si ya terminamos no hay nada que avisar.
+    if (!_drcaEjecutando) return;
+    drcaLogAppend('error', 'Conexión con el servidor interrumpida. La corrida sigue del lado del servidor — reabrí y ejecutá de nuevo para retomar.');
+    finalizar();
+  };
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const b = document.getElementById('drcaEjecBackdrop');
+  if (b && b.classList.contains('open')) drcaCerrarEjecutor();
+});
+
+// ---- Acciones de ciclo de vida ----
+// Larga la campaña. El endpoint valida que esté completa (lista, canal,
+// plantilla y al menos un suscripto) y la deja en el estado que el expansor
+// busca; el envío real lo hace el job en su próxima corrida. Va con confirmación
+// porque es la única acción del módulo que termina en mensajes a terceros.
+async function drcaIniciar(id) {
+  const r = drcaItems.find((x) => x.id === id);
+  if (!r) return;
+
+  // El alcance sale del contador denormalizado de la lista, así que se muestra
+  // como estimación. El número autoritativo lo cuenta el endpoint sobre la
+  // tabla puente antes de dejar largar.
+  const est = Number(r.lista_suscriptos) || 0;
+  const ok = await confirmar({
+    title:       'Programar la campaña para ya',
+    message:     `Se va a marcar "${r.nombre || '#' + r.id}" para que salga en la próxima corrida del cron` +
+                 (est > 0 ? `, a los ${fmtNum(est)} prospectos suscriptos a "${r.lista_nombre || 'la lista'}"` : '') +
+                 '. Si querés verla correr ahora mismo, usá "Ejecutar ahora" en su lugar.',
+    confirmText: 'Programar',
+    danger:      true,
+  });
+  if (!ok) return;
+
+  try {
+    await apiSend(`${DRCA_API}?id=${id}&action=iniciar`, 'POST', {});
+    toast('Campaña programada — la levanta el cron en la próxima corrida');
+    await cargarDrca();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function drcaTogglePausa(id) {
+  const r = drcaItems.find((x) => x.id === id);
+  if (!r) return;
+  const nuevo = r.estado === 'pausada' ? 'enviando' : 'pausada';
+  try {
+    await apiSend(`${DRCA_API}?id=${id}`, 'PUT', { estado: nuevo });
+    toast(nuevo === 'pausada' ? 'Campaña pausada' : 'Campaña reanudada');
+    await cargarDrca();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function drcaCancelar(id) {
+  const r = drcaItems.find((x) => x.id === id);
+  if (!r) return;
+  const ok = await confirmar({
+    title:       'Cancelar campaña',
+    message:     `¿Cancelás la campaña "${r.nombre || '#' + r.id}"? Los destinatarios que todavía no se encolaron no van a recibir nada. Los mensajes que ya están en la cola del canal se envían igual.`,
+    confirmText: 'Cancelar campaña',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DRCA_API}?id=${id}`, 'PUT', { estado: 'cancelada' });
+    toast('Campaña cancelada');
+    await cargarDrca();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// Recomputa los 5 contadores desde el padrón. Hace falta cuando el expansor se
+// cortó a mitad de una corrida y los denormalizados quedaron atrasados.
+async function drcaRecalcular(id) {
+  try {
+    await apiSend(`${DRCA_API}?id=${id}&action=recalcular`, 'POST', {});
+    toast('Contadores recalculados');
+    await cargarDrca();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDrca(id) {
+  const r = drcaItems.find((x) => x.id === id);
+  if (!r) return;
+  const total = Number(r.total) || 0;
+  const ok = await confirmar({
+    title:       'Eliminar campaña',
+    message:     `¿Eliminás la campaña "${r.nombre || '#' + r.id}"?` +
+                 (total > 0 ? ` Se borran también los ${fmtNum(total)} renglones de su padrón — se pierde el registro de a quién se le mandó y a quién no.` : ''),
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DRCA_API}?id=${id}`, 'DELETE');
+    toast('Campaña eliminada');
+    await cargarDrca();
   } catch (err) {
     toast(err.message, { error: true });
   }

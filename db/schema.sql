@@ -2092,8 +2092,114 @@ CREATE TABLE `datarocket_oportunidades`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 4927 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for datarocket_campanas
+-- ----------------------------
+-- Envio masivo: el eslabon entre la lista (a quien), la plantilla (que) y el
+-- canal (por donde). Los ABMs de mensajes (`aws_mensajes`,
+-- `evolution_mensajes`, `telegram_mensajes`) encolan de a UNO; la campana es
+-- el registro que el job expansor convierte en N filas de cola.
+--
+-- Creada por la migracion 20260828_1000_datarocket_campanas_modulo.sql, que
+-- reemplaza a la legacy `datarocketcampanas` (definida mas abajo, sin medio ni
+-- canal ni contadores). La legacy queda hasta confirmar que ninguna otra app
+-- del grupo la consulta; el cloud no la lee ni la escribe.
+--
+-- `canal_id` NO lleva FK: apunta a `aws_canales`, `evolution_canales` o
+-- `telegram_canales` SEGUN `medio`, y una FK solo puede apuntar a una tabla.
+-- La resolucion la hace DRCA_CANALES_POR_MEDIO en api/datarocket_campanas.php.
+--
+-- `proyecto_id` tampoco: `proyectos` es compartida con las apps legacy y las
+-- tablas Datarocket que la referencian no llevan FK contra ella.
+--
+-- Los cinco contadores estan denormalizados sobre `datarocket_campanas_mensajes`
+-- y se recomputan con ?action=recalcular del endpoint.
+DROP TABLE IF EXISTS `datarocket_campanas`;
+CREATE TABLE `datarocket_campanas`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `proyecto_id` int(11) NULL DEFAULT NULL,
+  `nombre` varchar(150) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `slug` varchar(60) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `descripcion` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  -- Asunto propio de la campana (migracion 20260828_1100). Alimenta el
+  -- `{asunto}` de las plantillas "transaccionales", que guardan ese marcador
+  -- esperando recibirlo del caller (aplicarPlantillaAws en lib/aws_mensajes.php).
+  -- Las plantillas con asunto fijo lo ignoran. La capa PHP valida al lanzar que
+  -- el asunto resultante no quede vacio en las campanas de correo.
+  `asunto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `medio` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `canal_id` int(11) NULL DEFAULT NULL,
+  `lista_id` int(11) NULL DEFAULT NULL,
+  `plantilla_id` int(11) NULL DEFAULT NULL,
+  `prioridad` tinyint(3) UNSIGNED NOT NULL DEFAULT 5,
+  `estado` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'borrador',
+  `programada` datetime NULL DEFAULT NULL,
+  `iniciada` datetime NULL DEFAULT NULL,
+  `completada` datetime NULL DEFAULT NULL,
+  `total` int(11) NOT NULL DEFAULT 0,
+  `encolados` int(11) NOT NULL DEFAULT 0,
+  `enviados` int(11) NOT NULL DEFAULT 0,
+  `fallidos` int(11) NOT NULL DEFAULT 0,
+  `omitidos` int(11) NOT NULL DEFAULT 0,
+  `observaciones` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `fecha_creacion` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `fecha_modificacion` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uq_drca_slug`(`slug`) USING BTREE,
+  INDEX `idx_drca_proyecto`(`proyecto_id`) USING BTREE,
+  INDEX `idx_drca_medio`(`medio`) USING BTREE,
+  INDEX `idx_drca_estado`(`estado`) USING BTREE,
+  INDEX `idx_drca_lista`(`lista_id`) USING BTREE,
+  INDEX `idx_drca_plantilla`(`plantilla_id`) USING BTREE,
+  INDEX `idx_drca_estado_programada`(`estado`, `programada`) USING BTREE,
+  CONSTRAINT `fk_drca_lista` FOREIGN KEY (`lista_id`) REFERENCES `datarocket_listas` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_drca_plantilla` FOREIGN KEY (`plantilla_id`) REFERENCES `datarocket_plantillas` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datarocket_campanas_mensajes
+-- ----------------------------
+-- PADRON de una campana: una fila por (campana, prospecto). Es lo que permite
+-- responder "a quien le toca, quien recibio y quien quedo afuera y por que"
+-- sin depender de la cola del canal, que es transporte: se purga, rota y no
+-- puede guardar el motivo por el que un mensaje NUNCA llego a existir.
+--
+-- NO duplica el mensaje: sin `asunto` ni `cuerpo`. El texto fuente vive en la
+-- plantilla y el texto ya resuelto por prospecto en la fila de la cola. Una
+-- tercera copia garantizaria drift.
+--
+-- `mensaje_id` apunta a la fila de la cola del canal (`aws_mensajes`,
+-- `evolution_mensajes` o `telegram_mensajes` segun `datarocket_campanas.medio`).
+-- Sin FK por el mismo motivo que `canal_id`, y porque las colas se purgan.
+--
+-- El UNIQUE (campana_id, prospecto_id) es lo que hace reanudable al expansor:
+-- correrlo dos veces sobre la misma campana no duplica destinatarios.
+DROP TABLE IF EXISTS `datarocket_campanas_mensajes`;
+CREATE TABLE `datarocket_campanas_mensajes`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `campana_id` int(11) NOT NULL,
+  `prospecto_id` int(11) NOT NULL,
+  `destino` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `estado` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'pendiente',
+  `motivo` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `mensaje_id` int(11) NULL DEFAULT NULL,
+  `encolado` datetime NULL DEFAULT NULL,
+  `enviado` datetime NULL DEFAULT NULL,
+  `fecha_creacion` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uq_drcam_campana_prospecto`(`campana_id`, `prospecto_id`) USING BTREE,
+  INDEX `idx_drcam_campana_estado`(`campana_id`, `estado`) USING BTREE,
+  INDEX `idx_drcam_prospecto`(`prospecto_id`) USING BTREE,
+  INDEX `idx_drcam_mensaje`(`mensaje_id`) USING BTREE,
+  CONSTRAINT `fk_drcam_campana` FOREIGN KEY (`campana_id`) REFERENCES `datarocket_campanas` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT,
+  CONSTRAINT `fk_drcam_prospecto` FOREIGN KEY (`prospecto_id`) REFERENCES `datarocket_prospectos` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for datarocketcampanas
 -- ----------------------------
+-- LEGACY: reemplazada por `datarocket_campanas` (migracion 20260828_1000).
+-- Queda en la base hasta confirmar que ningun otro proyecto del grupo la
+-- consulta. El cloud ya no la lee ni la escribe.
 DROP TABLE IF EXISTS `datarocketcampanas`;
 CREATE TABLE `datarocketcampanas`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,

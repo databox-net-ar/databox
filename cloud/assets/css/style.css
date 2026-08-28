@@ -1089,27 +1089,13 @@ tbody tr.row-clickable { cursor: pointer; }
 .drli-sus-mono                { font-family: monospace; font-size: .78rem; word-break: break-all; }
 
 /* ---- Modo editor de la pestaña (alta / edicion) ---- */
-/* Resultados del buscador de altas: lista inline debajo del input. Inline y no
-   dropdown flotante porque `.modal` crea containing-block con su `transform` y
-   un position:fixed adentro necesita portal + reflow (ver attachChipsPicker). */
-.drli-sus-add-res       { border: 1px solid var(--border); border-radius: var(--radius);
-                          background: var(--bg); max-height: 220px; overflow-y: auto;
-                          margin-top: 6px; }
-.drli-sus-add-msg       { padding: 10px 12px; font-size: .82rem; color: var(--muted); }
-.drli-sus-add-item      { display: flex; align-items: center; gap: 10px; width: 100%;
-                          padding: 8px 12px; background: none; border: 0;
-                          border-bottom: 1px solid var(--border); cursor: pointer;
-                          font-family: inherit; font-size: .85rem; color: var(--text);
-                          text-align: left; transition: background .12s; }
-.drli-sus-add-item:last-child { border-bottom: none; }
-.drli-sus-add-item:hover      { background: var(--row-hover); }
-.drli-sus-add-nombre    { font-weight: 600; flex: 1; min-width: 0;
-                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drli-sus-add-dato      { font-family: monospace; font-size: .75rem; color: var(--muted);
-                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                          max-width: 40%; }
-.drli-sus-add-mas       { color: var(--primary); font-weight: 700; font-size: 1.1rem;
-                          line-height: 1; }
+/* Picker de prospectos: modal apilado sobre el de alta/edicion. La tabla
+   scrollea adentro para que el buscador y el footer no se vayan de pantalla. */
+.drli-picker-table-card          { max-height: 46vh; overflow: auto; }
+.drli-picker-table-card thead tr { background: var(--bg); position: sticky; top: 0; z-index: 1; }
+.drli-picker-table-card th,
+.drli-picker-table-card td       { padding: 8px 10px; }
+.drli-picker-table-card td       { font-size: .82rem; }
 
 /* Filas pendientes de guardar: alta en verde de marca, baja tachada y apagada. */
 .drli-sus-table-card tr.drli-sus-alta td { background: color-mix(in srgb, var(--primary) 12%, transparent); }
