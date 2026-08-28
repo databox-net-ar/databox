@@ -24,6 +24,16 @@
 //                                                        que pertenecer al
 //                                                        embudo de la oportunidad.
 //   PUT    api/datarocket_oportunidades.php?id=N          -> modificacion (JSON body)
+//   PUT    api/datarocket_oportunidades.php?id=N&action=asignar
+//                                                     -> cambia SOLO el dueño de
+//                                                        la oportunidad.
+//                                                        Body: { asignado: N|null }
+//                                                        (null = sacarle el dueño).
+//                                                        Lo usa "Asignar" del menu
+//                                                        contextual de Interacciones,
+//                                                        que no tiene el registro
+//                                                        completo para mandar un PUT
+//                                                        normal.
 //   DELETE api/datarocket_oportunidades.php?id=N          -> baja en cascada:
 //                                                        borra primero las
 //                                                        interacciones de la
@@ -106,6 +116,12 @@ try {
         handleCambiarEtapaOportunidad($pdo, $id, readJsonBody());
     } elseif ($method === 'POST') {
         handleCreateOportunidad($pdo, readJsonBody());
+    } elseif ($method === 'PUT' && $action === 'asignar') {
+        // Va por PUT y no por POST (como `cambiar_etapa`) a proposito: asignar
+        // es editar un registro existente, y asi `requirePermCrud` pide
+        // `datarocket.oportunidades.editar` en vez de `.agregar`.
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleAsignarOportunidad($pdo, $id, readJsonBody());
     } elseif ($method === 'PUT') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleUpdateOportunidad($pdo, $id, readJsonBody());
@@ -809,6 +825,60 @@ function handleDeleteOportunidad(PDO $pdo, int $id): void {
         $pdo->rollBack();
         throw $e;
     }
+}
+
+// Cambio del dueño de la oportunidad, sin tocar nada mas. Existe aparte del PUT
+// completo porque el llamador tipico —el menu contextual del ABM de
+// Interacciones— no tiene el registro entero de la oportunidad: mandar un PUT
+// normal con medio payload le pisaria en NULL todo lo que no incluyera.
+//
+// `asignado: null` es un valor legitimo (dejarla sin dueño); lo que se rechaza
+// es que la clave no venga, que siempre es un payload mal armado.
+function handleAsignarOportunidad(PDO $pdo, int $id, array $in): void {
+    $stmt = $pdo->prepare('SELECT id, asignado FROM datarocket_oportunidades WHERE id = :id');
+    $stmt->execute([':id' => $id]);
+    $prev = $stmt->fetch();
+    if (!$prev) jsonError('Oportunidad no encontrada', 404);
+
+    if (!array_key_exists('asignado', $in)) jsonError('Falta asignado', 400);
+    $asignado = drOpoNullableInt($in['asignado']);
+    // El 0 llega desde selects que usan "" y desde payloads viejos; para la
+    // columna es lo mismo que "sin dueño" y ademas violaria la FK.
+    if ($asignado !== null && $asignado <= 0) $asignado = null;
+
+    $nombre = null;
+    if ($asignado !== null) {
+        // `fk_dr_oportunidades_asignado` es ON DELETE RESTRICT: un id que no
+        // existe reventaria con un error de integridad crudo. Se valida antes
+        // para devolver un mensaje legible.
+        $u = $pdo->prepare('SELECT id, nombre FROM usuarios WHERE id = :id LIMIT 1');
+        $u->execute([':id' => $asignado]);
+        $row = $u->fetch();
+        if (!$row) jsonError('El usuario indicado no existe.', 400);
+        $nombre = (string)$row['nombre'];
+    }
+
+    $now = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+            ->format('Y-m-d H:i:s');
+
+    $upd = $pdo->prepare(
+        'UPDATE datarocket_oportunidades
+            SET asignado    = :asignado,
+                actualizado = :actualizado
+          WHERE id = :id'
+    );
+    $upd->execute([
+        ':asignado'    => $asignado,
+        ':actualizado' => $now,
+        ':id'          => $id,
+    ]);
+
+    jsonOk([
+        'id'              => $id,
+        'asignado'        => $asignado,
+        'asignado_nombre' => $nombre,
+        'cambio'          => (int)($prev['asignado'] ?? 0) !== (int)($asignado ?? 0),
+    ]);
 }
 
 // Movimiento de la oportunidad entre etapas del kanban (equivalente a arrastrar

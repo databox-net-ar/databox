@@ -54,13 +54,17 @@ const DRCA_ORDENES = ['id', 'nombre', 'medio', 'estado', 'prioridad', 'programad
 
 const DRCA_COLS = 'id, proyecto_id, nombre, slug, descripcion, asunto, medio, canal_id, lista_id,
                    plantilla_id, prioridad, estado, programada, iniciada, completada,
-                   total, encolados, enviados, fallidos, omitidos, observaciones,
-                   fecha_creacion, fecha_modificacion';
+                   total, encolados, enviados, fallidos, omitidos, rebotados, bajas,
+                   observaciones, fecha_creacion, fecha_modificacion';
 
 // Campos de `estados` que alimentan los combos del ABM.
 const DRCA_CAMPO_MEDIO         = 'datarocket_campana_medio';
 const DRCA_CAMPO_ESTADO        = 'datarocket_campana_estado';
 const DRCA_CAMPO_ESTADO_PADRON = 'datarocket_campana_mensaje_estado';
+// Feedback de entrega de SES (entregado/abierto/cliqueado/spam/rebotado/
+// rechazado). Es un eje distinto de `estado`: un rebote llega con
+// estado='enviado' porque el mensaje SI salio — reboto despues.
+const DRCA_CAMPO_RESULTADO_PADRON = 'datarocket_campana_mensaje_resultado';
 
 // Estados en los que la campana ya arranco y por lo tanto su configuracion
 // (lista, plantilla, canal, medio) deja de ser editable: cambiarla a mitad de
@@ -79,6 +83,23 @@ const DRCA_CANALES_POR_MEDIO = [
     'correo'   => ['tabla' => 'aws_canales',       'proyecto' => null],
     'whatsapp' => ['tabla' => 'evolution_canales', 'proyecto' => 'proyecto'],
     'telegram' => ['tabla' => 'telegram_canales',  'proyecto' => 'proyecto'],
+];
+
+// De donde sale el destino de cada prospecto segun el medio, para la pestaña
+// Lista del modal de Consultar. ESPEJA DRCA_DESTINO_SQL de
+// lib/datarocket_campanas_expandir.php — se duplica en vez de requerir la lib
+// porque esa arrastra los tres libs de mensajes (~1400 lineas) y aca solo se
+// necesita la expresion. Si una cambia, cambiar la otra: el punto de esa
+// pestaña es mostrar exactamente el destino que va a resolver el expansor,
+// incluido el hueco de quien no tiene el dato cargado.
+//
+// Va arriba y no al lado de su handler porque las `const` de nivel de archivo
+// NO se hoistean como las funciones: declarada mas abajo, el dispatcher se la
+// come sin definir.
+const DRCA_DESTINO_PREVIEW_SQL = [
+    'correo'   => "NULLIF(TRIM(p.correo), '')",
+    'whatsapp' => "COALESCE(NULLIF(TRIM(p.whatsapp), ''), NULLIF(TRIM(p.celular), ''))",
+    'telegram' => "COALESCE(NULLIF(TRIM(p.telefono), ''), NULLIF(TRIM(p.celular), ''))",
 ];
 
 try {
@@ -109,6 +130,13 @@ try {
         handleLookupsCampana($pdo, $_GET);
     } elseif ($method === 'GET' && $id > 0 && ($_GET['mensajes'] ?? '') !== '') {
         handlePadronCampana($pdo, $id, $_GET);
+    } elseif ($method === 'GET' && $id > 0 && ($_GET['plantilla'] ?? '') !== '') {
+        handlePlantillaCampana($pdo, $id);
+    } elseif ($method === 'GET' && $id > 0 && ($_GET['lista'] ?? '') !== '') {
+        // OJO con el orden: `lista` tambien es un filtro de handleListCampanas.
+        // No chocan porque aquel solo se alcanza sin `id`, pero mover esta rama
+        // debajo de la del listado romperia el filtro o esta pestaña.
+        handleListaCampana($pdo, $id, $_GET);
     } elseif ($method === 'GET' && $id > 0) {
         handleGetOneCampana($pdo, $id);
     } elseif ($method === 'GET') {
@@ -161,6 +189,15 @@ function normalizarFilaCampana(array $r): array {
         'enviados'           => (int) ($r['enviados']  ?? 0),
         'fallidos'           => (int) ($r['fallidos']  ?? 0),
         'omitidos'           => (int) ($r['omitidos']  ?? 0),
+        // Rebotados / rechazados / spam segun SES, y cuantos de esos causaron la
+        // baja del prospecto de la lista. Se miden sobre `resultado`, no sobre
+        // `estado`: un rebote llega con estado='enviado'.
+        'rebotados'          => (int) ($r['rebotados'] ?? 0),
+        'bajas'              => (int) ($r['bajas']     ?? 0),
+        // Renglones del padron todavia sin encolar. No es una columna de la
+        // tabla: lo cuenta drcaSelectCols() del padron, porque no se puede
+        // derivar de los otros cinco contadores.
+        'pendientes'         => (int) ($r['pendientes'] ?? 0),
         'observaciones'      => $r['observaciones'] !== null ? (string) $r['observaciones'] : null,
         'fecha_creacion'     => $r['fecha_creacion']     ?? null,
         'fecha_modificacion' => $r['fecha_modificacion'] ?? null,
@@ -342,7 +379,19 @@ function drcaSelectCols(): string {
                 ORDER BY e1.orden ASC, e1.id ASC LIMIT 1) AS medio_texto"
          . ", (SELECT e2.texto FROM estados e2
                 WHERE e2.campo = '" . DRCA_CAMPO_ESTADO . "' AND e2.valor = c.estado
-                ORDER BY e2.orden ASC, e2.id ASC LIMIT 1) AS estado_texto";
+                ORDER BY e2.orden ASC, e2.id ASC LIMIT 1) AS estado_texto"
+         // Cuantos renglones del padron quedan sin encolar. NO sale de los 5
+         // contadores denormalizados: `encolados` cuenta `mensaje_id IS NOT NULL`
+         // (o sea, todo lo que alguna vez llego a la cola, incluido lo ya enviado
+         // y lo que reboto despues), asi que total - encolados - ... no da
+         // pendientes. Hay que contarlo del padron.
+         //
+         // Lo consume el menu de la fila para decidir si ofrecer "Continuar
+         // encolado": una campana en 'enviando' con pendientes es reanudable.
+         // Cuesta un seek sobre idx_drcam_campana_estado(campana_id, estado) por
+         // fila listada, con un LIMIT de 1000 como techo.
+         . ", (SELECT COUNT(*) FROM datarocket_campanas_mensajes m
+                WHERE m.campana_id = c.id AND m.estado = 'pendiente') AS pendientes";
 }
 
 // Resuelve el nombre del canal de cada fila. Agrupa por medio y hace UNA query
@@ -457,14 +506,24 @@ function handlePadronCampana(PDO $pdo, int $id, array $q): void {
     $st->execute([':id' => $id]);
     if (!$st->fetch()) jsonError('Campaña no encontrada', 404);
 
-    $estado = trim((string) ($q['estado'] ?? ''));
-    $search = trim((string) ($q['q']      ?? ''));
-    $limite = max(1, min(1000, (int) ($q['limite'] ?? 200)));
+    $estado    = trim((string) ($q['estado']    ?? ''));
+    $resultado = trim((string) ($q['resultado'] ?? ''));
+    $search    = trim((string) ($q['q']         ?? ''));
+    $limite    = max(1, min(1000, (int) ($q['limite'] ?? 200)));
 
     $where  = ['m.campana_id = :id'];
     $params = [':id' => $id];
 
     if ($estado !== '') { $where[] = 'm.estado = :estado'; $params[':estado'] = $estado; }
+    // 'sin_evento' es el pseudo-valor con el que el conteo agrupa los NULL, asi
+    // que el chip correspondiente tiene que traducirse a IS NULL y no a una
+    // comparacion literal (que no matchearia nunca).
+    if ($resultado === 'sin_evento') {
+        $where[] = 'm.resultado IS NULL';
+    } elseif ($resultado !== '') {
+        $where[] = 'm.resultado = :resultado';
+        $params[':resultado'] = $resultado;
+    }
     if ($search !== '') {
         $where[] = '(m.destino LIKE :s1 OR p.nombre LIKE :s2 OR m.motivo LIKE :s3)';
         foreach (['s1', 's2', 's3'] as $k) $params[":{$k}"] = "%{$search}%";
@@ -472,10 +531,14 @@ function handlePadronCampana(PDO $pdo, int $id, array $q): void {
 
     $sql = 'SELECT m.id, m.prospecto_id, m.destino, m.estado, m.motivo, m.mensaje_id,
                    m.encolado, m.enviado, m.fecha_creacion,
+                   m.resultado, m.resultado_fecha, m.baja_lista,
                    p.nombre AS prospecto_nombre,
                    (SELECT e.texto FROM estados e
                      WHERE e.campo = \'' . DRCA_CAMPO_ESTADO_PADRON . '\' AND e.valor = m.estado
-                     ORDER BY e.orden ASC, e.id ASC LIMIT 1) AS estado_texto
+                     ORDER BY e.orden ASC, e.id ASC LIMIT 1) AS estado_texto,
+                   (SELECT e.texto FROM estados e
+                     WHERE e.campo = \'' . DRCA_CAMPO_RESULTADO_PADRON . '\' AND e.valor = m.resultado
+                     ORDER BY e.orden ASC, e.id ASC LIMIT 1) AS resultado_texto
               FROM ' . DRCA_TABLA_PADRON . ' m
               LEFT JOIN datarocket_prospectos p ON p.id = m.prospecto_id
              WHERE ' . implode(' AND ', $where) . '
@@ -495,6 +558,12 @@ function handlePadronCampana(PDO $pdo, int $id, array $q): void {
         'mensaje_id'       => $r['mensaje_id'] !== null ? (int) $r['mensaje_id'] : null,
         'encolado'         => $r['encolado'] ?? null,
         'enviado'          => $r['enviado']  ?? null,
+        'resultado'        => $r['resultado']       !== null ? (string) $r['resultado']       : null,
+        'resultado_texto'  => $r['resultado_texto'] !== null ? (string) $r['resultado_texto'] : null,
+        'resultado_fecha'  => $r['resultado_fecha'] ?? null,
+        // Estampa de la baja automatica. El renglon de la lista ya no existe:
+        // esto es lo unico que prueba que la persona estuvo suscripta.
+        'baja_lista'       => $r['baja_lista'] ?? null,
         'fecha_creacion'   => $r['fecha_creacion'] ?? null,
     ], $st->fetchAll());
 
@@ -507,10 +576,234 @@ function handlePadronCampana(PDO $pdo, int $id, array $q): void {
     $conteo = [];
     foreach ($sc->fetchAll() as $r) $conteo[(string) $r['estado']] = (int) $r['c'];
 
+    // Mismo criterio para `resultado`, que es el otro eje del padron. Los NULL
+    // se agrupan bajo 'sin_evento' en vez de descartarse: "todavia no llego
+    // ningun evento de SES" es informacion, y distinguirlo de 'entregado' es lo
+    // que permite notar que el webhook SNS dejo de llegar.
+    $rc = $pdo->prepare('SELECT COALESCE(resultado, \'sin_evento\') AS resultado, COUNT(*) AS c
+                           FROM ' . DRCA_TABLA_PADRON . '
+                          WHERE campana_id = :id GROUP BY COALESCE(resultado, \'sin_evento\')');
+    $rc->execute([':id' => $id]);
+    $conteoResultado = [];
+    foreach ($rc->fetchAll() as $r) $conteoResultado[(string) $r['resultado']] = (int) $r['c'];
+
     jsonOk([
-        'items'  => $items,
-        'conteo' => $conteo,
-        'total'  => array_sum($conteo),
+        'items'            => $items,
+        'conteo'           => $conteo,
+        'conteo_resultado' => $conteoResultado,
+        'total'            => array_sum($conteo),
+    ]);
+}
+
+// ----------------------------------------------------------------------------
+// Handlers — que se manda (plantilla) y a quien (lista)
+// ----------------------------------------------------------------------------
+//
+// Las dos pestañas homonimas del modal de Consultar. Viven ACA y no en
+// `datarocketplantillas.php` / `datarocketlistas.php` por el mismo motivo que
+// `?suscriptos=1` vive en el endpoint de listas: quien puede consultar una
+// campaña tiene que poder ver que mensaje sale y a quien le llega con su propio
+// `datarocket.campanas.consultar`, sin necesitar ademas
+// `sistemas.datarocket.plantillas.consultar` ni `datarocket.listas.consultar`.
+// Ambas son SOLO lectura.
+
+/**
+ * La plantilla que la campaña va a enviar, con el asunto ya resuelto.
+ *
+ *   GET api/datarocket_campanas.php?id=N&plantilla=1
+ *   -> {ok:true, data:{plantilla:{...}|null, asunto_resuelto:'...', ...}}
+ *
+ * `plantilla` en null cubre dos casos distintos y el front los distingue por
+ * `plantilla_id`: la campaña todavia no eligio plantilla (null) o la eligio y
+ * la plantilla se borro despues (id con fila faltante).
+ */
+function handlePlantillaCampana(PDO $pdo, int $id): void {
+    $st = $pdo->prepare('SELECT id, medio, asunto, plantilla_id FROM ' . DRCA_TABLA . ' WHERE id = :id LIMIT 1');
+    $st->execute([':id' => $id]);
+    $c = $st->fetch();
+    if (!$c) jsonError('Campaña no encontrada', 404);
+
+    $plantillaId   = $c['plantilla_id'] !== null ? (int) $c['plantilla_id'] : null;
+    $campanaAsunto = (string) ($c['asunto'] ?? '');
+
+    $tpl = null;
+    if ($plantillaId !== null) {
+        $st = $pdo->prepare('SELECT pl.id, pl.slug, pl.nombre, pl.proyecto_id, pl.medio,
+                                    pl.remitente, pl.remite, pl.asunto, pl.cuerpo,
+                                    pl.formato, pl.adjunto, pl.adjunto_origen,
+                                    pr.nombre AS proyecto_nombre
+                               FROM datarocket_plantillas pl
+                               LEFT JOIN proyectos pr ON pr.id = pl.proyecto_id
+                              WHERE pl.id = :id LIMIT 1');
+        $st->execute([':id' => $plantillaId]);
+        $row = $st->fetch();
+        if ($row) {
+            $tpl = [
+                'id'              => (int) $row['id'],
+                'slug'            => $row['slug']   !== null ? (string) $row['slug']   : null,
+                'nombre'          => $row['nombre'] !== null ? (string) $row['nombre'] : null,
+                'proyecto_id'     => $row['proyecto_id'] !== null ? (int) $row['proyecto_id'] : null,
+                'proyecto_nombre' => $row['proyecto_nombre'] !== null ? (string) $row['proyecto_nombre'] : null,
+                'medio'           => $row['medio']     !== null ? (string) $row['medio']     : null,
+                'remitente'       => $row['remitente'] !== null ? (string) $row['remitente'] : null,
+                'remite'          => $row['remite']    !== null ? (string) $row['remite']    : null,
+                'asunto'          => $row['asunto']    !== null ? (string) $row['asunto']    : null,
+                'cuerpo'          => $row['cuerpo']    !== null ? (string) $row['cuerpo']    : null,
+                'formato'         => $row['formato']   !== null ? (string) $row['formato']   : null,
+                'adjunto'         => $row['adjunto']   !== null ? (string) $row['adjunto']   : null,
+                'adjunto_origen'  => $row['adjunto_origen'] !== null ? (string) $row['adjunto_origen'] : null,
+            ];
+        }
+    }
+
+    // Mismo calculo que hace drcaValidarLanzable() antes de largar: las
+    // plantillas "transaccionales" guardan literalmente `{asunto}` esperando
+    // recibirlo del caller, asi que el asunto real es el de la plantilla con el
+    // de la campaña sustituido adentro. Se expone precalculado para que la
+    // pestaña muestre lo que va a salir y no dos campos sueltos que el operador
+    // tenga que combinar mentalmente.
+    $tplAsunto      = (string) ($tpl['asunto'] ?? '');
+    $usaPlaceholder = strpos($tplAsunto, '{asunto}') !== false;
+    $asuntoResuelto = trim(str_replace('{asunto}', $campanaAsunto, $tplAsunto));
+
+    jsonOk([
+        'plantilla_id'    => $plantillaId,
+        'plantilla'       => $tpl,
+        'medio'           => (string) ($c['medio'] ?? ''),
+        'campana_asunto'  => $campanaAsunto !== '' ? $campanaAsunto : null,
+        'usa_placeholder' => $usaPlaceholder,
+        'asunto_resuelto' => $asuntoResuelto !== '' ? $asuntoResuelto : null,
+    ]);
+}
+
+/**
+ * Suscriptos de la lista de la campaña, con el destino que les tocaria segun el
+ * medio. Es la foto de la lista HOY — no el padron, que es la foto congelada al
+ * momento de expandir y vive en `?mensajes=1`.
+ *
+ *   GET api/datarocket_campanas.php?id=N&lista=1&q=texto&limite=100&sin_dato=1
+ *   -> {ok:true, data:{lista:{...}|null, total_lista:N, total:M, sin_dato:K, items:[...]}}
+ *
+ * `total_lista` es la cuenta cruda de suscriptos, `total` la cuenta con el
+ * buscador aplicado y `sin_dato` cuantos de la lista entera quedarian omitidos
+ * por no tener el dato de contacto del medio. Los tres se cuentan contra la
+ * tabla puente y no contra el denormalizado `datarocket_listas.suscriptos`, que
+ * puede estar atrasado hasta que corra el recalculo.
+ */
+function handleListaCampana(PDO $pdo, int $id, array $q): void {
+    $st = $pdo->prepare('SELECT id, medio, lista_id FROM ' . DRCA_TABLA . ' WHERE id = :id LIMIT 1');
+    $st->execute([':id' => $id]);
+    $c = $st->fetch();
+    if (!$c) jsonError('Campaña no encontrada', 404);
+
+    $medio   = (string) ($c['medio'] ?? '');
+    $listaId = $c['lista_id'] !== null ? (int) $c['lista_id'] : null;
+
+    if ($listaId === null) {
+        jsonOk(['lista' => null, 'lista_id' => null, 'medio' => $medio,
+                'total_lista' => 0, 'total' => 0, 'sin_dato' => 0, 'items' => []]);
+        return;
+    }
+
+    $st = $pdo->prepare('SELECT li.id, li.nombre, li.slug, li.descripcion, li.suscriptos,
+                                li.proyecto_id, pr.nombre AS proyecto_nombre
+                           FROM datarocket_listas li
+                           LEFT JOIN proyectos pr ON pr.id = li.proyecto_id
+                          WHERE li.id = :id LIMIT 1');
+    $st->execute([':id' => $listaId]);
+    $lista = $st->fetch() ?: null;
+
+    if (!$lista) {
+        // La lista se borro despues de asignarla. No es 404 de la campaña: la
+        // campaña existe, lo que falta es su lista, y el front lo avisa.
+        jsonOk(['lista' => null, 'lista_id' => $listaId, 'medio' => $medio,
+                'total_lista' => 0, 'total' => 0, 'sin_dato' => 0, 'items' => []]);
+        return;
+    }
+
+    // Sin medio conocido no hay expresion de destino: se muestra el directorio
+    // sin la columna Destino en vez de romper.
+    $destinoSql = DRCA_DESTINO_PREVIEW_SQL[$medio] ?? 'NULL';
+
+    $search  = trim((string) ($q['q'] ?? ''));
+    $sinDato = trim((string) ($q['sin_dato'] ?? '')) !== '';
+    $limite  = max(1, min(1000, (int) ($q['limite'] ?? 100)));
+
+    $where  = ['dpl.lista_id = :lista_id'];
+    $params = [':lista_id' => $listaId];
+
+    if ($search !== '') {
+        // LIKE sobre utf8mb4_general_ci, que ya pliega caja y acentos. Mismos
+        // campos que el buscador de la pestaña Suscriptos del ABM de listas.
+        $campos = ['nombre', 'empresa_nombre', 'persona_nombre', 'correo',
+                   'telefono', 'celular', 'whatsapp', 'persona_dni', 'uuid'];
+        $ors = [];
+        foreach ($campos as $i => $campo) {
+            $k = ":s{$i}";
+            $ors[]        = "p.{$campo} LIKE {$k}";
+            $params[$k]   = "%{$search}%";
+        }
+        $where[] = '(' . implode(' OR ', $ors) . ')';
+    }
+    // Chip "Sin dato": los que hoy quedarian omitidos al expandir. Es la razon
+    // practica de mirar esta pestaña antes de lanzar.
+    if ($sinDato) $where[] = "{$destinoSql} IS NULL";
+
+    $sqlWhere = 'WHERE ' . implode(' AND ', $where);
+
+    $st = $pdo->prepare('SELECT COUNT(*) FROM datarocket_prospectos_listas WHERE lista_id = :id');
+    $st->execute([':id' => $listaId]);
+    $totalLista = (int) $st->fetchColumn();
+
+    // Cuantos de la lista ENTERA no tienen el dato de contacto del medio. Se
+    // cuenta siempre sobre la lista completa (sin buscador ni chip) porque
+    // alimenta el chip, que tiene que decir cuantos hay y no cuantos se ven.
+    $st = $pdo->prepare("SELECT COUNT(*)
+                           FROM datarocket_prospectos_listas dpl
+                           JOIN datarocket_prospectos p ON p.id = dpl.prospecto_id
+                          WHERE dpl.lista_id = :id AND {$destinoSql} IS NULL");
+    $st->execute([':id' => $listaId]);
+    $conteoSinDato = (int) $st->fetchColumn();
+
+    if ($search === '' && !$sinDato) {
+        $total = $totalLista;
+    } else {
+        $st = $pdo->prepare("SELECT COUNT(*)
+                               FROM datarocket_prospectos_listas dpl
+                               JOIN datarocket_prospectos p ON p.id = dpl.prospecto_id
+                             {$sqlWhere}");
+        $st->execute($params);
+        $total = (int) $st->fetchColumn();
+    }
+
+    // Orden alfabetico: la pestaña se lee como un directorio, y con el limite
+    // recortando siempre devuelve el mismo tramo (el desempate por id evita que
+    // dos homonimos se intercambien entre corridas).
+    $st = $pdo->prepare("SELECT p.id, p.tipo, p.nombre, p.correo, p.celular, p.whatsapp,
+                                {$destinoSql} AS destino, dpl.fecha_creacion
+                           FROM datarocket_prospectos_listas dpl
+                           JOIN datarocket_prospectos p ON p.id = dpl.prospecto_id
+                         {$sqlWhere}
+                         ORDER BY p.nombre ASC, p.id ASC
+                         LIMIT {$limite}");
+    $st->execute($params);
+
+    jsonOk([
+        'lista' => [
+            'id'              => (int) $lista['id'],
+            'nombre'          => $lista['nombre'] !== null ? (string) $lista['nombre'] : null,
+            'slug'            => $lista['slug']   !== null ? (string) $lista['slug']   : null,
+            'descripcion'     => $lista['descripcion'] !== null ? (string) $lista['descripcion'] : null,
+            'suscriptos'      => $lista['suscriptos']  !== null ? (int) $lista['suscriptos']     : null,
+            'proyecto_id'     => $lista['proyecto_id'] !== null ? (int) $lista['proyecto_id']    : null,
+            'proyecto_nombre' => $lista['proyecto_nombre'] !== null ? (string) $lista['proyecto_nombre'] : null,
+        ],
+        'lista_id'    => $listaId,
+        'medio'       => $medio,
+        'total_lista' => $totalLista,
+        'total'       => $total,
+        'sin_dato'    => $conteoSinDato,
+        'items'       => $st->fetchAll(),
     ]);
 }
 
@@ -610,6 +903,7 @@ function handleLookupsCampana(PDO $pdo, array $q): void {
         'medios'         => $catalogo(DRCA_CAMPO_MEDIO),
         'estados'        => $catalogo(DRCA_CAMPO_ESTADO),
         'estados_padron' => $catalogo(DRCA_CAMPO_ESTADO_PADRON),
+        'resultados'     => $catalogo(DRCA_CAMPO_RESULTADO_PADRON),
         'listas'         => $listas,
         'plantillas'     => $plantillas,
         'canales'        => $canales,

@@ -897,24 +897,89 @@ function sanitizeListaIds(mixed $raw): array {
 
 // Deja la puente `datarocket_prospectos_listas` con exactamente `$listaIds`
 // para `$prospectoId`. Estrategia "full replace" (DELETE + INSERT IGNORE) —
-// es suficiente porque el volumen por prospecto es chico (decenas) y evita
-// tener que diffear. Los ids inexistentes en `datarocket_listas` se
-// descartan via INNER JOIN antes de insertar para no violar la FK.
+// es suficiente porque el volumen por prospecto es chico (decenas). Los ids
+// inexistentes en `datarocket_listas` se descartan antes de insertar para no
+// violar la FK.
+//
+// El diff contra el estado actual NO es para ahorrar escrituras (el full
+// replace sigue igual): es para el historial. Un "guardar" de la ficha que no
+// toco las listas igual pasa por el DELETE + INSERT de todas, asi que sin
+// diffear cada guardado registraria un alta por lista que el prospecto ya
+// tenia, y el log terminaria contando guardados en vez de suscripciones.
 function syncListas(PDO $pdo, int $prospectoId, array $listaIds): void {
+    // Estado actual ANTES de tocar nada: es lo unico que distingue un cambio
+    // real de un guardado que no movio nada.
+    $act = $pdo->prepare('SELECT lista_id FROM datarocket_prospectos_listas WHERE prospecto_id = :cid');
+    $act->execute([':cid' => $prospectoId]);
+    $actuales = array_map('intval', $act->fetchAll(PDO::FETCH_COLUMN));
+
+    // Validamos los ids contra `datarocket_listas` para no depender de que la
+    // capa cliente haya elegido de la lista real (defensa en profundidad). El
+    // diff va contra los validos, no contra lo que mando el cliente: un id
+    // inexistente no es un alta, es basura descartada.
+    $validIds = [];
+    if ($listaIds) {
+        $ph  = implode(',', array_fill(0, count($listaIds), '?'));
+        $val = $pdo->prepare("SELECT id FROM datarocket_listas WHERE id IN ({$ph})");
+        $val->execute($listaIds);
+        $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
+    }
+
+    $altas = array_values(array_diff($validIds, $actuales));
+    $bajas = array_values(array_diff($actuales, $validIds));
+    if ($altas || $bajas) {
+        registrarCambioListasProspecto($pdo, $prospectoId, $altas, $bajas);
+    }
+
     $del = $pdo->prepare('DELETE FROM datarocket_prospectos_listas WHERE prospecto_id = :cid');
     $del->execute([':cid' => $prospectoId]);
-    if (!$listaIds) return;
-    // Validamos los ids contra `datarocket_listas` para no depender de que la
-    // capa cliente haya elegido de la lista real (defensa en profundidad).
-    $ph  = implode(',', array_fill(0, count($listaIds), '?'));
-    $val = $pdo->prepare("SELECT id FROM datarocket_listas WHERE id IN ({$ph})");
-    $val->execute($listaIds);
-    $validIds = array_map('intval', array_column($val->fetchAll(), 'id'));
     if (!$validIds) return;
     $ins = $pdo->prepare('INSERT IGNORE INTO datarocket_prospectos_listas
                           (prospecto_id, lista_id) VALUES (:cid, :lid)');
     foreach ($validIds as $lid) {
         $ins->execute([':cid' => $prospectoId, ':lid' => $lid]);
+    }
+}
+
+/**
+ * Escribe en los historiales de lista (`datarocket_listas_altas` /
+ * `datarocket_listas_bajas`) las suscripciones que cambiaron al guardar la
+ * ficha de un prospecto.
+ *
+ * Esta es la SEGUNDA puerta de entrada a las listas: la otra es el editor de
+ * suscriptos del ABM de Listas (`datarocketlistas.php`, handleSuscriptosGuardar).
+ * Las dos tienen que escribir el mismo historial o el log miente por omision —
+ * que es exactamente el problema que las dos tablas existen para resolver.
+ *
+ * Corre dentro de la transaccion del caller (POST y PUT ya abren una), asi que
+ * si el guardado falla el historial se va con el rollback.
+ *
+ * `destino` guarda el correo del prospecto AL MOMENTO del cambio, igual que en
+ * el otro escritor: si despues se corrige, el historial sigue diciendo con que
+ * dato entro o salio.
+ */
+function registrarCambioListasProspecto(PDO $pdo, int $prospectoId, array $altas, array $bajas): void {
+    $st = $pdo->prepare('SELECT correo FROM datarocket_prospectos WHERE id = :id');
+    $st->execute([':id' => $prospectoId]);
+    $correo  = trim((string) ($st->fetchColumn() ?: ''));
+    $destino = $correo !== '' ? $correo : null;
+
+    // `sub` es el id de usuario en el JWT (ver computePermisosUsuario).
+    // 0 -> NULL para no dejar un id inexistente en el historial.
+    $uid = (int) (currentAuth()['sub'] ?? 0);
+    $uid = $uid > 0 ? $uid : null;
+
+    // Mismo shape en las dos tablas salvo el nombre; se arma una sola vez.
+    $sql = "INSERT INTO %s
+                (lista_id, prospecto_id, destino, motivo, origen, usuario_id, fecha)
+            VALUES (:lid, :pid, :dest, 'manual', 'abm/datarocketprospectos', :uid, NOW())";
+
+    foreach ([['datarocket_listas_altas', $altas], ['datarocket_listas_bajas', $bajas]] as [$tabla, $ids]) {
+        if (!$ids) continue;
+        $ins = $pdo->prepare(sprintf($sql, $tabla));
+        foreach ($ids as $lid) {
+            $ins->execute([':lid' => $lid, ':pid' => $prospectoId, ':dest' => $destino, ':uid' => $uid]);
+        }
     }
 }
 

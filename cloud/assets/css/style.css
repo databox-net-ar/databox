@@ -115,6 +115,11 @@ a { color: inherit; text-decoration: none; }
 .btn-primary:hover { background: var(--primary-h); }
 .btn-danger        { background: var(--danger); color: #fff; }
 .btn-danger:hover  { background: #c91515; }
+/* Naranja sólido: para la acción que no es destructiva pero tampoco es la
+   normal (descartar una consulta, aplazar, revertir). El texto va en el gris
+   oscuro del fondo y no en blanco — sobre `--warn` el blanco queda ilegible. */
+.btn-warn          { background: var(--warn); color: var(--bg); }
+.btn-warn:hover    { background: color-mix(in srgb, var(--warn) 85%, #000); }
 .btn-secondary     { background: var(--surface); color: var(--text);
                      border: 1px solid var(--border); }
 .btn-secondary:hover { background: var(--bg); }
@@ -1114,3 +1119,143 @@ tbody tr.row-clickable { cursor: pointer; }
                           background: var(--warn); color: #fff;
                           font-size: .68rem; font-weight: 700; line-height: 18px;
                           text-align: center; }
+
+/* =====================================================================
+   25. Ficha publica de interaccion
+   (cloud/datarocket/interacciones/index.php)
+
+   Unica pantalla del proyecto que vive FUERA de la SPA: la abre el
+   responsable desde el WhatsApp del aviso de pendientes, sin sesion y
+   casi siempre en un celular. Por eso no hay sidebar ni topbar del
+   panel — el chrome se reduce a una barra verde con el logo (regla 2
+   de DESIGN.md: el verde solido solo en el chrome) y todo lo demas es
+   una columna angosta centrada.
+
+   Reutiliza .btn, .badge y .data-list del sistema; lo de aca abajo es
+   solo el contenedor y los tres bloques que no existen en el panel
+   (banner de estado, botones de contacto rapido, historial).
+   ===================================================================== */
+.pub-body    { background: var(--bg); }
+.pub-topbar  { background: var(--primary); height: 56px; padding: 0 20px;
+               display: flex; align-items: center;
+               box-shadow: var(--shadow); }
+.pub-logo    { height: 22px; width: auto; display: block; }
+
+/* Columna de lectura. El padding inferior generoso deja respirar el
+   ultimo bloque por encima de la barra del navegador movil. */
+.pub-wrap    { max-width: 720px; margin: 0 auto;
+               padding: 18px 14px 56px;
+               display: flex; flex-direction: column; gap: 14px; }
+
+.pub-card    { background: var(--surface); border: 1px solid var(--border);
+               border-radius: var(--radius); padding: 18px;
+               box-shadow: var(--shadow); }
+
+/* ---- Banner de estado (pendiente / atendida / no aplica) ---- */
+.pub-banner        { display: flex; align-items: flex-start; gap: 12px;
+                     border-radius: var(--radius); padding: 14px 16px;
+                     border: 1px solid var(--border); }
+.pub-banner-icono  { font-size: 1.4rem; line-height: 1.2; flex-shrink: 0; }
+.pub-banner-titulo { font-weight: 700; font-size: .95rem; }
+.pub-banner-sub    { font-size: .82rem; color: var(--muted); margin-top: 2px; }
+.pub-banner-ok     { background: rgba(34,197,94,.12);
+                     border-color: rgba(34,197,94,.35); }
+.pub-banner-warn   { background: rgba(245,158,11,.12);
+                     border-color: rgba(245,158,11,.35); }
+.pub-banner-info   { background: rgba(59,130,246,.12);
+                     border-color: rgba(59,130,246,.35); }
+
+/* ---- Encabezado del prospecto ---- */
+.pub-titulo    { font-size: 1.25rem; font-weight: 700; line-height: 1.25; }
+.pub-sub       { margin-top: 8px; display: flex; flex-wrap: wrap;
+                 align-items: center; gap: 8px 12px;
+                 font-size: .84rem; color: var(--muted); }
+.pub-sub-item  { display: inline-flex; align-items: center; gap: 5px; }
+.pub-etiquetas { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---- Titulos de seccion ---- */
+.pub-section-titulo { font-size: .78rem; font-weight: 700;
+                      text-transform: uppercase; letter-spacing: .06em;
+                      color: var(--muted); margin-bottom: 12px; }
+/* Subsecciones de la tarjeta grande (consulta / identidad / contacto /
+   ubicacion / registro / oportunidad). Como ahora viven todas adentro de UNA
+   tarjeta, el separador superior es lo que evita que se lean como una lista
+   continua de 40 renglones. */
+.pub-subtitulo      { font-size: .78rem; font-weight: 700;
+                      text-transform: uppercase; letter-spacing: .06em;
+                      color: var(--muted);
+                      margin: 20px 0 12px; padding-top: 16px;
+                      border-top: 1px solid var(--border); }
+
+/* ---- Mensaje recibido ---- */
+/* pre-wrap: el texto de la consulta llega con los saltos de linea con los
+   que la persona lo escribio, y se leen. */
+.pub-mensaje { white-space: pre-wrap; word-break: break-word;
+               font-size: .9rem; line-height: 1.55;
+               background: var(--bg); border: 1px solid var(--border);
+               border-radius: var(--radius); padding: 12px 14px; }
+.pub-mensaje.muted { color: var(--muted); font-style: italic; }
+
+/* ---- Contacto rapido ---- */
+.pub-quick     { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pub-quick-btn { display: flex; align-items: center; gap: 10px;
+                 background: var(--bg); border: 1px solid var(--border);
+                 border-radius: var(--radius); padding: 12px 14px;
+                 color: var(--text); text-decoration: none;
+                 transition: border-color .15s, background .15s; }
+.pub-quick-btn:hover  { border-color: var(--primary); background: var(--row-hover); }
+.pub-quick-icono      { font-size: 1.2rem; flex-shrink: 0; }
+.pub-quick-label      { display: block; font-size: .8rem; font-weight: 600; }
+.pub-quick-dato       { display: block; font-size: .78rem; color: var(--muted);
+                        word-break: break-all; }
+
+/* ---- Accion primaria ---- */
+/* Unica accion primaria de la pantalla (regla 3 de DESIGN.md). Ocupa el
+   ancho completo y con 48px de alto entra comodo bajo el pulgar. */
+.pub-card-accion { text-align: center; }
+.pub-cta   { width: 100%; justify-content: center;
+             font-size: .95rem; padding: 14px 20px; }
+.pub-nota  { font-size: .78rem; color: var(--muted); margin-top: 10px;
+             line-height: 1.5; }
+
+/* ---- Accion secundaria: descartar ---- */
+/* La salida para lo que no hay que contestar (spam, formulario en blanco).
+   Sigue siendo un boton de ancho completo —el pulgar necesita el area— pero en
+   ghost y separado por una linea, para que no compita con la accion primaria
+   ni se toque por error: no hay confirmacion intermedia. */
+.pub-form-secundaria  { margin-top: 18px; padding-top: 18px;
+                        border-top: 1px solid var(--border); }
+.pub-cta-secundaria   { width: 100%; justify-content: center;
+                        font-size: .9rem; padding: 12px 20px; }
+
+/* ---- Historial ---- */
+.pub-hist        { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.pub-hist-item   { background: var(--bg); border: 1px solid var(--border);
+                   border-left: 3px solid var(--border);
+                   border-radius: var(--radius); padding: 10px 12px; }
+/* El borde izquierdo dice la direccion de un vistazo, sin leer el badge. */
+.pub-hist-entrante { border-left-color: var(--info); }
+.pub-hist-saliente { border-left-color: var(--primary); }
+.pub-hist-meta   { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+                   font-size: .76rem; color: var(--muted); }
+.pub-hist-fecha  { font-weight: 600; color: var(--text); }
+.pub-hist-texto  { font-size: .84rem; margin-top: 6px; word-break: break-word; }
+
+/* ---- Links dentro de la ficha ---- */
+.pub-link        { color: var(--success); text-decoration: none;
+                   word-break: break-all; }
+.pub-link:hover  { text-decoration: underline; }
+
+/* ---- Pantalla sin ficha (token invalido / vencido / borrada) ---- */
+.pub-estado         { text-align: center; padding: 48px 20px;
+                      background: var(--surface); border: 1px solid var(--border);
+                      border-radius: var(--radius); }
+.pub-estado-icono   { font-size: 2.6rem; margin-bottom: 12px; }
+.pub-estado-titulo  { font-size: 1.1rem; font-weight: 700; margin-bottom: 8px; }
+.pub-estado-detalle { font-size: .88rem; color: var(--muted);
+                      line-height: 1.6; max-width: 440px;
+                      margin: 0 auto 20px; }
+
+@media (max-width: 560px) {
+  .pub-quick { grid-template-columns: 1fr; }
+}

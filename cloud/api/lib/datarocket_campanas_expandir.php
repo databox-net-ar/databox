@@ -40,6 +40,10 @@ require_once __DIR__ . '/../db.php';
 require_once __DIR__ . '/aws_mensajes.php';
 require_once __DIR__ . '/evolution_mensajes.php';
 require_once __DIR__ . '/telegram_mensajes.php';
+// Las bajas automaticas de lista se logean con registrarSuceso(): borrar a
+// alguien de una lista sin dejar rastro no es aceptable. Los dos callers ya lo
+// incluian, pero la lib no puede depender de que lo hagan.
+require_once __DIR__ . '/sucesos.php';
 
 // Cuantos mensajes se encolan por vuelta del loop de la fase 2. No es un limite
 // de throughput sino el tamano del SELECT: mas grande = menos round-trips, pero
@@ -83,9 +87,21 @@ const DRCA_MOTIVO_SIN_DATO = [
  */
 function drcaValidarLanzable(PDO $pdo, array $c): int {
     $estado = (string) $c['estado'];
-    if (!in_array($estado, ['borrador', 'programada'], true)) {
+    // 'enviando' entra a proposito: es el estado en el que queda una campana que
+    // no termino de encolar su padron en una sola corrida (se agoto el deadline
+    // con pendientes). Retomarla es exactamente el caso reanudable que las dos
+    // fases estan disenadas para soportar, y sin esto quedaba clavada para
+    // siempre: el cron solo levantaba 'programada' y el boton del panel solo
+    // ofrecia 'borrador'/'programada', asi que nadie volvia a encolar sus
+    // pendientes nunca.
+    //
+    // 'expandiendo' NO entra: es el candado que toma una corrida en curso. Dejar
+    // pasar ese estado seria permitir que dos procesos encolen el mismo padron a
+    // la vez. 'pausada' y 'cancelada' tampoco: son decisiones del operador que
+    // no se pisan solas -- para volver de ahi esta el boton Reanudar.
+    if (!in_array($estado, ['borrador', 'programada', 'enviando'], true)) {
         throw new InvalidArgumentException(
-            "La campaña está en estado \"{$estado}\": solo se pueden lanzar las que están en borrador o programadas."
+            "La campaña está en estado \"{$estado}\": solo se pueden lanzar las que están en borrador, programadas o a medio enviar."
         );
     }
 
@@ -434,6 +450,196 @@ function drcaCampanaEjecutar(PDO $pdo, int $id, callable $log, array $opts = [])
     ]);
 }
 
+// ----------------------------------------------------------------------------
+// Feedback de entrega (SES) y bajas de lista
+// ----------------------------------------------------------------------------
+
+// Resultados que provocan la baja del prospecto de la lista de la campana.
+//
+//   spam     -> Complaint. El destinatario apreto "esto es spam". Seguir
+//               mandandole es exactamente lo que hunde la reputacion del
+//               dominio, asi que la baja no admite matices.
+//   rebotado -> SOLO si el bounce fue 'Permanent'. Ver drcaBajasPorRebote.
+//
+// 'rechazado' (Reject) queda deliberadamente AFUERA: SES rechaza por nuestro
+// contenido (virus, dominio en lista negra), no por la casilla del otro. Dar de
+// baja al destinatario por un problema nuestro seria castigar al equivocado.
+const DRCA_RESULTADOS_BAJA = ['spam', 'rebotado'];
+
+// Resultados que cuentan como "no le llego / no lo quiere" en el contador
+// `rebotados` de la campana. Incluye 'rechazado' aunque no de de baja: el
+// operador igual necesita ver que ese mensaje no llego.
+const DRCA_RESULTADOS_REBOTE = ['rebotado', 'rechazado', 'spam'];
+
+/**
+ * Copia `aws_mensajes.resultado` al padron. Devuelve cuantos renglones
+ * cambiaron.
+ *
+ * El guard `m.resultado <> q.resultado` (con su NULL-check explicito, porque en
+ * SQL `NULL <> 'x'` es NULL y no TRUE) hace que la corrida sea un no-op cuando
+ * no llego nada nuevo. Eso importa: esta funcion la llama el cron cada minuto
+ * sobre toda campana dentro de la ventana de eventos, y sin el guard estaria
+ * reescribiendo el padron entero y moviendo `resultado_fecha` cada vez, lo que
+ * volveria inutil esa columna como senal de "cuando llego el ultimo evento".
+ */
+function drcaSincronizarResultado(PDO $pdo, int $campanaId): int {
+    $st = $pdo->prepare("
+        UPDATE datarocket_campanas_mensajes m
+          JOIN aws_mensajes q ON q.id = m.mensaje_id
+           SET m.resultado       = q.resultado,
+               m.resultado_fecha = NOW()
+         WHERE m.campana_id = :c
+           AND m.mensaje_id IS NOT NULL
+           AND q.resultado  IS NOT NULL
+           AND (m.resultado IS NULL OR m.resultado <> q.resultado)
+    ");
+    $st->execute([':c' => $campanaId]);
+    return $st->rowCount();
+}
+
+/**
+ * Da de baja de la lista de la campana a los prospectos que rebotaron duro o
+ * denunciaron el mensaje como spam. Devuelve cuantos dio de baja.
+ *
+ * REBOTE DURO vs BLANDO
+ * ---------------------
+ * `resultado = 'rebotado'` NO alcanza. SES manda bounceType 'Permanent' (la
+ * casilla no existe) y 'Transient' (buzon lleno, servidor caido) y los dos
+ * mapean al mismo 'rebotado' en aws_mensajes (ver AWS_EVT_TIPO_A_RESULTADO en
+ * api/v4/aws/eventos.php). Al escribir esto prod tenia 10 Permanent y 7
+ * Transient: desuscribir por los 7 seria perder la suscripcion de gente cuya
+ * casilla existe y anda, solo porque estaba llena ese dia. El subtipo se cruza
+ * contra `aws_eventos` por `uuid`.
+ *
+ * El complaint ('spam') no necesita ese cruce: cualquier denuncia da de baja.
+ *
+ * LA BAJA ES DESTRUCTIVA
+ * ----------------------
+ * Borra el renglon de `datarocket_prospectos_listas`, que no tiene columnas
+ * propias donde anotar nada. Por eso antes de borrar se estampa `baja_lista` en
+ * el padron: ese renglon sobrevive a la desuscripcion y conserva prospecto_id,
+ * destino y resultado. Es la unica evidencia de por que alguien dejo de estar
+ * en la lista.
+ *
+ * Se borra SOLO de la lista de esta campana. Un prospecto puede estar en varias
+ * y el rebote lo probamos contra una sola direccion en un solo envio; sacarlo
+ * de todas seria extrapolar mas de lo que el evento dice.
+ */
+function drcaBajasPorRebote(PDO $pdo, array $c): int {
+    $listaId = $c['lista_id'] !== null ? (int) $c['lista_id'] : 0;
+    if ($listaId <= 0) return 0;
+
+    $ph = implode(',', array_fill(0, count(DRCA_RESULTADOS_BAJA), '?'));
+
+    // Candidatos: rebote/spam todavia sin baja estampada. El bounce 'Transient'
+    // se filtra aca — el EXISTS exige un evento 'Permanent' para el uuid.
+    // Se trae tambien `mensaje_id` y el subtipo del evento: los dos van al
+    // historial de bajas, que tiene que poder responder "¿por que la sacamos?"
+    // sin depender del padron (que se borra junto con la campana).
+    $sql = "
+        SELECT m.id, m.prospecto_id, m.destino, m.resultado, m.mensaje_id,
+               (SELECT ev.subtipo
+                  FROM aws_eventos ev
+                 WHERE ev.uuid = q.uuid
+                   AND ev.tipo IN ('bounce', 'complaint')
+                 ORDER BY ev.id DESC LIMIT 1) AS subtipo
+          FROM datarocket_campanas_mensajes m
+          JOIN aws_mensajes q ON q.id = m.mensaje_id
+         WHERE m.campana_id = ?
+           AND m.baja_lista IS NULL
+           AND m.resultado IN ({$ph})
+           AND (
+                m.resultado = 'spam'
+             OR EXISTS (SELECT 1
+                          FROM aws_eventos ev
+                         WHERE ev.uuid    = q.uuid
+                           AND ev.tipo    = 'bounce'
+                           AND ev.subtipo = 'Permanent')
+           )
+    ";
+    $st = $pdo->prepare($sql);
+    $st->execute(array_merge([(int) $c['id']], DRCA_RESULTADOS_BAJA));
+    $filas = $st->fetchAll();
+    if (!$filas) return 0;
+
+    $ids       = array_map(fn($f) => (int) $f['id'],           $filas);
+    $prospecto = array_map(fn($f) => (int) $f['prospecto_id'], $filas);
+
+    $phIds  = implode(',', array_fill(0, count($ids), '?'));
+    $phProsp = implode(',', array_fill(0, count($prospecto), '?'));
+
+    // Estampa y borrado tienen que ser atomicos, pero PDO no anida
+    // transacciones: si un caller ya abrio una, beginTransaction() tira
+    // "There is already an active transaction". Se toma la transaccion solo si
+    // no hay una en curso; si la hay, la atomicidad ya la garantiza el caller.
+    $propia = !$pdo->inTransaction();
+    if ($propia) $pdo->beginTransaction();
+    try {
+        // Estampar ANTES de borrar: si el DELETE falla, el rollback deja las dos
+        // cosas sin hacer; si estampáramos despues y fallara, tendriamos bajas
+        // sin rastro.
+        $up = $pdo->prepare("UPDATE datarocket_campanas_mensajes
+                                SET baja_lista = NOW()
+                              WHERE id IN ({$phIds})");
+        $up->execute($ids);
+
+        // El historial va ANTES del DELETE y es el registro que importa: vive
+        // fuera del padron, asi que sobrevive al borrado de la campana (su FK
+        // es ON DELETE SET NULL). Sin esto, borrar la campana borraria la razon
+        // por la que estas personas ya no estan en la lista.
+        $ins = $pdo->prepare("
+            INSERT INTO datarocket_listas_bajas
+                (lista_id, prospecto_id, destino, motivo, detalle, origen,
+                 campana_id, mensaje_id, fecha)
+            VALUES (?, ?, ?, ?, ?, 'cron/datarocket_campanas', ?, ?, NOW())
+        ");
+        foreach ($filas as $f) {
+            $ins->execute([
+                $listaId,
+                (int) $f['prospecto_id'],
+                $f['destino'],
+                // El motivo usa el vocabulario de `datarocket_lista_baja_motivo`,
+                // que para el rebote dice 'rebotado' (siempre duro: el blando no
+                // llega hasta aca).
+                (string) $f['resultado'] === 'spam' ? 'spam' : 'rebotado',
+                $f['subtipo'] !== null ? mb_substr((string) $f['subtipo'], 0, 255) : null,
+                (int) $c['id'],
+                $f['mensaje_id'] !== null ? (int) $f['mensaje_id'] : null,
+            ]);
+        }
+
+        $del = $pdo->prepare("DELETE FROM datarocket_prospectos_listas
+                               WHERE lista_id = ?
+                                 AND prospecto_id IN ({$phProsp})");
+        $del->execute(array_merge([$listaId], $prospecto));
+        $bajas = $del->rowCount();
+
+        // El contador denormalizado de la lista queda al dia en el acto: si no,
+        // el ABM de listas sigue mostrando el numero viejo hasta que alguien
+        // corra el recalculo global.
+        $pdo->prepare("UPDATE datarocket_listas dl
+                          SET dl.suscriptos = (SELECT COUNT(*)
+                                                 FROM datarocket_prospectos_listas dpl
+                                                WHERE dpl.lista_id = dl.id)
+                        WHERE dl.id = ?")->execute([$listaId]);
+
+        if ($propia) $pdo->commit();
+    } catch (Throwable $e) {
+        if ($propia) $pdo->rollBack();
+        throw $e;
+    }
+
+    // Una baja automatica cambia la lista sin que nadie la haya tocado: tiene
+    // que quedar en el log o el operador ve encoger la lista sin explicacion.
+    $detalle = array_map(fn($f) => "{$f['destino']} ({$f['resultado']})", $filas);
+    registrarSuceso($pdo, 'datarocket_campanas', 'alerta',
+        "Campaña #{$c['id']}: {$bajas} prospectos dados de baja de la lista #{$listaId}"
+        . ' por rebote duro o spam — ' . implode(', ', array_slice($detalle, 0, 20))
+        . (count($detalle) > 20 ? ' …' : ''));
+
+    return $bajas;
+}
+
 /**
  * Pone al dia el padron y los contadores de la campana.
  *
@@ -468,6 +674,17 @@ function drcaCampanaReconciliar(PDO $pdo, int $id): array {
                AND q.estado IN ('enviado', 'error')
         ");
         $st->execute([':c' => $id]);
+
+        // Feedback de entrega de SES. Va aparte del bloque de arriba y NO se
+        // limita a los renglones que acaban de transicionar: los eventos SNS
+        // llegan DESPUES del envio (un open a las horas, un complaint a los
+        // dias), asi que hay que refrescar tambien lo que ya estaba 'enviado'.
+        // Solo correo: `resultado` es una columna de aws_mensajes, evolution y
+        // telegram no la tienen (romperia el UPDATE con Unknown column).
+        if ((string) $c['medio'] === 'correo') {
+            drcaSincronizarResultado($pdo, $id);
+            drcaBajasPorRebote($pdo, $c);
+        }
     }
 
     // `encolados` = "cuantos llegaron a la cola del canal", asi que se mide por
@@ -475,6 +692,10 @@ function drcaCampanaReconciliar(PDO $pdo, int $id): array {
     // despues reboto sigue habiendo llegado a la cola; uno que fallo ANTES de
     // encolarse (excepcion en la fase 2) no tiene mensaje_id y no cuenta. Los
     // dos casos comparten el estado 'fallido', que por si solo no distingue.
+    // `rebotados` y `bajas` se miden sobre `resultado` / `baja_lista` y NO sobre
+    // `estado`: un rebote de SES llega con estado='enviado' (el mensaje SALIO;
+    // reboto despues), asi que contarlo por estado lo haria invisible.
+    $phReb = implode(',', array_fill(0, count(DRCA_RESULTADOS_REBOTE), '?'));
     $st = $pdo->prepare("
         SELECT COUNT(*) AS total,
                SUM(CASE WHEN mensaje_id IS NOT NULL THEN 1 ELSE 0 END) AS encolados,
@@ -482,11 +703,13 @@ function drcaCampanaReconciliar(PDO $pdo, int $id): array {
                SUM(CASE WHEN estado = 'fallido'   THEN 1 ELSE 0 END) AS fallidos,
                SUM(CASE WHEN estado = 'omitido'   THEN 1 ELSE 0 END) AS omitidos,
                SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) AS pendientes,
-               SUM(CASE WHEN estado = 'encolado'  THEN 1 ELSE 0 END) AS en_vuelo
+               SUM(CASE WHEN estado = 'encolado'  THEN 1 ELSE 0 END) AS en_vuelo,
+               SUM(CASE WHEN resultado IN ({$phReb}) THEN 1 ELSE 0 END) AS rebotados,
+               SUM(CASE WHEN baja_lista IS NOT NULL  THEN 1 ELSE 0 END) AS bajas
           FROM datarocket_campanas_mensajes
-         WHERE campana_id = :c
+         WHERE campana_id = ?
     ");
-    $st->execute([':c' => $id]);
+    $st->execute(array_merge(DRCA_RESULTADOS_REBOTE, [$id]));
     $g = $st->fetch() ?: [];
 
     $r = [
@@ -497,6 +720,8 @@ function drcaCampanaReconciliar(PDO $pdo, int $id): array {
         'omitidos'   => (int) ($g['omitidos']   ?? 0),
         'pendientes' => (int) ($g['pendientes'] ?? 0),
         'en_vuelo'   => (int) ($g['en_vuelo']   ?? 0),
+        'rebotados'  => (int) ($g['rebotados']  ?? 0),
+        'bajas'      => (int) ($g['bajas']      ?? 0),
     ];
 
     // La campana esta completa cuando no queda nada por encolar ni nada en
@@ -524,7 +749,8 @@ function drcaCampanaReconciliar(PDO $pdo, int $id): array {
     }
 
     $pdo->prepare('UPDATE datarocket_campanas
-                      SET total = :t, encolados = :en, enviados = :ev, fallidos = :f, omitidos = :o
+                      SET total = :t, encolados = :en, enviados = :ev, fallidos = :f,
+                          omitidos = :o, rebotados = :rb, bajas = :bj
                     WHERE id = :id')
         ->execute([
             ':t'  => $r['total'],
@@ -532,6 +758,8 @@ function drcaCampanaReconciliar(PDO $pdo, int $id): array {
             ':ev' => $r['enviados'],
             ':f'  => $r['fallidos'],
             ':o'  => $r['omitidos'],
+            ':rb' => $r['rebotados'],
+            ':bj' => $r['bajas'],
             ':id' => $id,
         ]);
 

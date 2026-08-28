@@ -1858,6 +1858,13 @@ CREATE TABLE `datarocket_interacciones`  (
   `sentido`      varchar(10)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `canal`        varchar(20)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `respondida`   datetime     NULL DEFAULT NULL,
+  -- Tercer estado de una entrante (migracion 20260828_1900): la consulta que NO
+  -- hay que contestar — spam, formulario en blanco, mensaje sin pregunta.
+  --   pendiente  -> sentido='entrante' AND respondida IS NULL AND descartada IS NULL
+  --   respondida -> respondida IS NOT NULL
+  --   descartada -> descartada IS NOT NULL
+  -- Excluyentes con `respondida` por regla de la API, no por constraint.
+  `descartada`   datetime     NULL DEFAULT NULL,
   `asunto`       varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `mensaje`      mediumtext   CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   PRIMARY KEY (`id`) USING BTREE,
@@ -1867,6 +1874,7 @@ CREATE TABLE `datarocket_interacciones`  (
   INDEX `idx_dri_sentido_canal`(`sentido`, `canal`) USING BTREE,
   INDEX `idx_dri_canal`(`canal`) USING BTREE,
   INDEX `idx_dri_sentido_respondida`(`sentido`, `respondida`) USING BTREE,
+  INDEX `idx_dri_sentido_respondida_descartada`(`sentido`, `respondida`, `descartada`) USING BTREE,
   CONSTRAINT `fk_dri_oportunidad` FOREIGN KEY (`oportunidad_id`) REFERENCES `datarocket_oportunidades` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
@@ -1957,6 +1965,41 @@ CREATE TABLE `datainfra_endpoints_ejecuciones`  (
   INDEX `idx_de_ejec_endpoint_inicio`(`endpoint_id`, `inicio`) USING BTREE,
   INDEX `idx_de_ejec_estado`(`estado`) USING BTREE,
   CONSTRAINT `fk_de_ejec_endpoint` FOREIGN KEY (`endpoint_id`) REFERENCES `datainfra_endpoints` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datarocket_listas_altas
+-- ----------------------------
+-- Historial de suscripciones a listas. Es un LOG DE EVENTOS, no una tabla de
+-- estado: quien esta suscripto HOY lo dice la puente `datarocket_prospectos_listas`,
+-- que es pura PK compuesta y no guarda fecha. Sin UNIQUE (lista_id, prospecto_id)
+-- a proposito — entrar, darse de baja y volver a entrar deja tres renglones
+-- entre esta tabla y `datarocket_listas_bajas`, que es justo lo que interesa.
+--
+-- Lo escriben las dos puertas de entrada a las listas, y se distinguen por
+-- `origen`: 'abm/datarocketlistas' (editor de suscriptos) y
+-- 'abm/datarocketprospectos' (combo de listas de la ficha). No lleva
+-- `campana_id`/`mensaje_id` como su espejo de bajas: un alta no se origina
+-- nunca en una campana.
+--
+-- Ver cloud/sql/migrations/20260828_2000_datarocket_listas_altas.sql.
+DROP TABLE IF EXISTS `datarocket_listas_altas`;
+CREATE TABLE `datarocket_listas_altas`  (
+  `id`           int(11) NOT NULL AUTO_INCREMENT,
+  `lista_id`     int(11) NOT NULL,
+  `prospecto_id` int(11) NOT NULL,
+  `destino`      varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `motivo`       varchar(30)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `detalle`      varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `origen`       varchar(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `usuario_id`   int(11) NULL DEFAULT NULL,
+  `fecha`        datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_drla_lista_fecha`(`lista_id`, `fecha`) USING BTREE,
+  INDEX `idx_drla_prospecto`(`prospecto_id`) USING BTREE,
+  INDEX `idx_drla_motivo_fecha`(`motivo`, `fecha`) USING BTREE,
+  CONSTRAINT `fk_drla_lista` FOREIGN KEY (`lista_id`) REFERENCES `datarocket_listas` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT,
+  CONSTRAINT `fk_drla_prospecto` FOREIGN KEY (`prospecto_id`) REFERENCES `datarocket_prospectos` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

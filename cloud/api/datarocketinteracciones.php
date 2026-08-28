@@ -15,6 +15,8 @@
 //   PUT    api/datarocketinteracciones.php?id=N     -> modificacion (JSON body)
 //   PUT    api/datarocketinteracciones.php?id=N&action=responder
 //                                                   -> marca/desmarca respondida
+//   PUT    api/datarocketinteracciones.php?id=N&action=descartar
+//                                                   -> marca/desmarca descartada
 //   DELETE api/datarocketinteracciones.php?id=N     -> baja
 //
 // `prospecto_id` y `oportunidad_id` se fijan en el alta y NO se pueden cambiar
@@ -51,6 +53,30 @@
 //   la respuesta) y `espera_minutos` (cuanto lleva esperando la que sigue
 //   pendiente). Filtros: `?pendiente=1` y `?respondida=1`.
 //
+// Nota sobre `descartada` (migracion 20260828_1900):
+//   Tercer estado de una entrante, tambien datetime NULL-able: la consulta que
+//   NO hay que contestar (spam, formulario en blanco, mensaje sin pregunta).
+//   Excluyente con `respondida` — las dos acciones se rechazan mutuamente con
+//   409 — y como ella, solo aplica a las entrantes.
+//
+//   Los tres estados quedan:
+//     pendiente  -> sentido='entrante' AND respondida IS NULL AND descartada IS NULL
+//     respondida -> respondida IS NOT NULL
+//     descartada -> descartada IS NOT NULL
+//
+//   La descartada sale de las pendientes (`?pendiente=1`), de la tarjeta "Sin
+//   responder" del landing y de la cola del aviso por WhatsApp, pero NO entra en
+//   `respuesta_promedio`: nunca se contesto, y contarla ahi arruinaria la metrica
+//   con lo que justamente no era trabajo. Filtro propio: `?descartada=1`.
+//
+// Nota sobre `?asignado=`:
+//   Filtra por el responsable de la OPORTUNIDAD relacionada (`o.asignado`, via
+//   el LEFT JOIN de DR_INT_JOINS): la interaccion no tiene dueño propio.
+//   `?asignado=N` acota a ese usuario y `?asignado=_null` a las que no tienen
+//   responsable — incluidas las interacciones sueltas, que al no colgar de
+//   ninguna oportunidad tampoco tienen a quien asignarles. Ese `_null` es el
+//   que usa la tarjeta "Sin asignar" del landing de Datarocket.
+//
 // Nota sobre `oportunidad_id`:
 //   FK NULL-able a `datarocket_oportunidades`. Filtrable por query string
 //   (`?oportunidad_id=N`) — lo usa la pestaña "Interacciones" del modal de
@@ -73,14 +99,17 @@ require_once __DIR__ . '/lib/auth_check.php';
 // en SQL y no en el cliente para que el reloj sea el del servidor (la BD y el
 // panel comparten zona horaria — ver la herramienta Editor de zona horaria).
 const DR_INT_COLS = "i.id, i.fecha, i.prospecto_id, i.oportunidad_id, i.sentido, i.canal,
-                     i.respondida, i.asunto, i.mensaje,
+                     i.respondida, i.descartada, i.asunto, i.mensaje,
                      CASE WHEN i.respondida IS NOT NULL
                           THEN TIMESTAMPDIFF(MINUTE, i.fecha, i.respondida) END AS respuesta_minutos,
                      CASE WHEN i.sentido = 'entrante' AND i.respondida IS NULL
+                                                     AND i.descartada IS NULL
                           THEN TIMESTAMPDIFF(MINUTE, i.fecha, NOW())        END AS espera_minutos,
                      p.nombre AS prospecto_nombre,
                      p.correo AS prospecto_correo,
                      o.producto AS oportunidad_producto,
+                     o.proyecto_id AS proyecto_id,
+                     pr.nombre     AS proyecto_nombre,
                      o.asignado AS asignado_id,
                      u.nombre   AS asignado_nombre";
 
@@ -92,9 +121,15 @@ const DR_INT_COLS = "i.id, i.fecha, i.prospecto_id, i.oportunidad_id, i.sentido,
 // evento es quien tiene asignado el negocio. La interaccion no guarda autor
 // propio — la columna `usuario_id` existio pero nunca se escribio y se dropeo
 // en la 20260817_1200.
-const DR_INT_JOINS = "LEFT JOIN datarocket_prospectos    p ON p.id = i.prospecto_id
-                      LEFT JOIN datarocket_oportunidades o ON o.id = i.oportunidad_id
-                      LEFT JOIN usuarios                 u ON u.id = o.asignado";
+//
+// `proyectos` cuelga tambien de la oportunidad (`o.proyecto_id`): ni la
+// interaccion ni el prospecto tienen proyecto propio, asi que las interacciones
+// sueltas (sin `oportunidad_id`) vienen con `proyecto_nombre` NULL y el listado
+// las muestra con guion.
+const DR_INT_JOINS = "LEFT JOIN datarocket_prospectos    p  ON p.id  = i.prospecto_id
+                      LEFT JOIN datarocket_oportunidades o  ON o.id  = i.oportunidad_id
+                      LEFT JOIN proyectos                pr ON pr.id = o.proyecto_id
+                      LEFT JOIN usuarios                 u  ON u.id  = o.asignado";
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -117,6 +152,11 @@ try {
         // distintas (esta solo aplica a entrantes y valida contra la fecha).
         if ($id <= 0) jsonError('Falta id', 400);
         handleResponder($pdo, $id, readJsonBody());
+    } elseif ($method === 'PUT' && $action === 'descartar') {
+        // Tercer estado (20260828_1900). Vive en su propia accion por la misma
+        // razon que `responder`: reglas propias, y el PUT plano edita contenido.
+        if ($id <= 0) jsonError('Falta id', 400);
+        handleDescartar($pdo, $id, readJsonBody());
     } elseif ($method === 'PUT') {
         if ($id <= 0) jsonError('Falta id', 400);
         handleUpdate($pdo, $id, readJsonBody());
@@ -141,11 +181,17 @@ function handleList(PDO $pdo, array $q): void {
     $embudo      = isset($q['embudo_id'])      && $q['embudo_id']      !== '' ? (int)$q['embudo_id']      : null;
     $sentido  = trim((string)($q['sentido'] ?? ''));
     $canal    = trim((string)($q['canal']   ?? ''));
+    // Responsable. Cuelga de la oportunidad (`o.asignado`), no de la
+    // interaccion. `_null` es el centinela de "sin asignar" — mismo patron que
+    // el `_null` de `canal` — e incluye las interacciones sueltas: sin
+    // oportunidad no hay a quien asignarle nada.
+    $asignado = trim((string)($q['asignado'] ?? ''));
     // Estado de respuesta. Viajan como flags separados y no como un solo
     // parametro tri-estado porque asi el "sin filtro" sigue siendo la ausencia
     // de la clave, igual que el resto de los filtros del ABM.
     $pendiente  = trim((string)($q['pendiente']  ?? '')) === '1';
     $respondida = trim((string)($q['respondida'] ?? '')) === '1';
+    $descartada = trim((string)($q['descartada'] ?? '')) === '1';
     $desde    = trim((string)($q['desde']   ?? ''));
     $hasta    = trim((string)($q['hasta']   ?? ''));
     $search   = trim((string)($q['q']       ?? ''));
@@ -178,10 +224,19 @@ function handleList(PDO $pdo, array $q): void {
     // de `tipo` en el ABM de prospectos.
     if ($canal === '_null')    { $where[] = 'i.canal IS NULL'; }
     elseif ($canal !== '')     { $where[] = 'i.canal = :canal';                 $params[':canal']       = $canal; }
+    // El `0` entra en "sin asignar" junto al NULL: es como quedan las filas
+    // viejas a las que nunca se les cargo responsable (mismo criterio que la
+    // stat `sin_atender` del ABM de oportunidades).
+    if ($asignado === '_null') { $where[] = '(o.asignado IS NULL OR o.asignado = 0)'; }
+    elseif ($asignado !== '')  { $where[] = 'o.asignado = :asignado';           $params[':asignado']    = (int)$asignado; }
     // "Pendiente" es solo de las entrantes: una saliente sin `respondida` no
-    // esta esperando nada.
-    if ($pendiente)            { $where[] = "i.sentido = 'entrante' AND i.respondida IS NULL"; }
+    // esta esperando nada. Y desde la 20260828_1900 tampoco esta pendiente la
+    // descartada — spam o mensaje sin pregunta: nadie la va a contestar, asi que
+    // dejarla en la cola era ruido permanente (y un recordatorio por hora al
+    // vendedor, desde que existe el aviso por WhatsApp).
+    if ($pendiente)            { $where[] = "i.sentido = 'entrante' AND i.respondida IS NULL AND i.descartada IS NULL"; }
     if ($respondida)           { $where[] = 'i.respondida IS NOT NULL'; }
+    if ($descartada)           { $where[] = 'i.descartada IS NOT NULL'; }
     if ($desde       !== '')   { $where[] = 'i.fecha >= :desde';                $params[':desde']       = $desde . ' 00:00:00'; }
     if ($hasta       !== '')   { $where[] = 'i.fecha <= :hasta';                $params[':hasta']       = $hasta . ' 23:59:59'; }
 
@@ -206,9 +261,13 @@ function handleList(PDO $pdo, array $q): void {
             COUNT(DISTINCT prospecto_id)                              AS prospectos,
             SUM(CASE WHEN sentido = 'entrante' THEN 1 ELSE 0 END)    AS entrantes,
             SUM(CASE WHEN sentido = 'entrante' AND respondida IS NULL
+                          AND descartada IS NULL
                      THEN 1 ELSE 0 END)                              AS pendientes,
+            SUM(CASE WHEN descartada IS NOT NULL THEN 1 ELSE 0 END)  AS descartadas,
             -- Promedio de demora sobre lo ya contestado, en minutos. NULL
-            -- mientras no haya ninguna respondida.
+            -- mientras no haya ninguna respondida. Las descartadas no entran:
+            -- nunca se contestaron, y contarlas como demora enorme arruinaria
+            -- la metrica justo con lo que no era trabajo real.
             AVG(CASE WHEN respondida IS NOT NULL
                      THEN TIMESTAMPDIFF(MINUTE, fecha, respondida) END) AS respuesta_promedio
         FROM datarocket_interacciones
@@ -232,6 +291,7 @@ function handleList(PDO $pdo, array $q): void {
             'prospectos'          => (int)($stats['prospectos']  ?? 0),
             'entrantes'          => (int)($stats['entrantes']  ?? 0),
             'pendientes'         => (int)($stats['pendientes'] ?? 0),
+            'descartadas'        => (int)($stats['descartadas'] ?? 0),
             'respuesta_promedio' => $stats['respuesta_promedio'] !== null
                                     ? (int)round((float)$stats['respuesta_promedio'])
                                     : null,
@@ -417,7 +477,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
 //   body {"respondida": "2026-08-17 09:30:00"}   -> sella con esa hora
 //   body {"respondida": false|null}              -> vuelve a pendiente
 function handleResponder(PDO $pdo, int $id, array $in): void {
-    $st = $pdo->prepare('SELECT sentido, fecha FROM datarocket_interacciones WHERE id = :id');
+    $st = $pdo->prepare('SELECT sentido, fecha, descartada FROM datarocket_interacciones WHERE id = :id');
     $st->execute([':id' => $id]);
     $row = $st->fetch();
     if (!$row) jsonError('Interaccion no encontrada', 404);
@@ -427,6 +487,15 @@ function handleResponder(PDO $pdo, int $id, array $in): void {
     // que despues ensucia el promedio de demora.
     if ((string)$row['sentido'] !== 'entrante') {
         jsonError('Solo las interacciones entrantes se pueden marcar como respondidas.', 400);
+    }
+
+    // Respondida y descartada son excluyentes: una consulta se contesto o se
+    // decidio que no habia nada que contestar, nunca las dos. Se frena en vez de
+    // limpiar `descartada` en silencio — que el operador diga cual de las dos
+    // vale (misma politica que el choque sentido/respondida del PUT).
+    $quiereSellar = !in_array($in['respondida'] ?? null, [false, null, '', 0, '0'], true);
+    if ($quiereSellar && $row['descartada'] !== null) {
+        jsonError('Esta interacción figura descartada: quitale el descarte antes de marcarla como respondida.', 409);
     }
 
     $raw = $in['respondida'] ?? null;
@@ -457,6 +526,63 @@ function handleResponder(PDO $pdo, int $id, array $in): void {
             ? (int)round((strtotime($respondida) - strtotime((string)$row['fecha'])) / 60)
             : null,
     ]);
+}
+
+// ----------------------------------------------------------------------------
+// Descartar / recuperar
+// ----------------------------------------------------------------------------
+
+// PUT api/datarocketinteracciones.php?id=N&action=descartar
+//   body {"descartada": true}                    -> sella con la hora actual
+//   body {"descartada": "2026-08-28 09:30:00"}   -> sella con esa hora
+//   body {"descartada": false|null}              -> vuelve a pendiente
+//
+// Descartar es "esto no hay que contestarlo": spam, un formulario mandado en
+// blanco, un mensaje sin ninguna pregunta. Saca la consulta de las pendientes
+// SIN mentir que alguien la contesto — que es lo que pasaba cuando el unico
+// escape era marcarla respondida: inflaba el trabajo hecho y metia en el
+// promedio de demora consultas que nadie atendio.
+//
+// Es reversible: `false` la devuelve a pendiente. Si el descarte estuvo mal, no
+// hay que borrar y volver a crear la interaccion.
+function handleDescartar(PDO $pdo, int $id, array $in): void {
+    $st = $pdo->prepare('SELECT sentido, fecha, respondida FROM datarocket_interacciones WHERE id = :id');
+    $st->execute([':id' => $id]);
+    $row = $st->fetch();
+    if (!$row) jsonError('Interaccion no encontrada', 404);
+
+    // Misma regla que `responder`: solo las entrantes tienen algo que descartar.
+    // Una saliente o una nota interna no esperan nada de nadie.
+    if ((string)$row['sentido'] !== 'entrante') {
+        jsonError('Solo las interacciones entrantes se pueden descartar.', 400);
+    }
+
+    $raw = $in['descartada'] ?? null;
+
+    if ($raw === false || $raw === null || $raw === '' || $raw === 0 || $raw === '0') {
+        $descartada = null;                       // vuelve a pendiente
+    } elseif ($raw === true || $raw === 1 || $raw === '1') {
+        $descartada = (new DateTime('now', new DateTimeZone('America/Argentina/Buenos_Aires')))
+                      ->format('Y-m-d H:i:s');
+    } else {
+        $descartada = drIntNormalizarFecha($raw);
+        if ($descartada === null) {
+            jsonError('La fecha de descarte no es válida (se espera AAAA-MM-DD HH:MM).', 400);
+        }
+        if ($descartada < (string)$row['fecha']) {
+            jsonError('El descarte no puede ser anterior a la consulta.', 400);
+        }
+    }
+
+    // Excluyente con `respondida`, igual que del otro lado.
+    if ($descartada !== null && $row['respondida'] !== null) {
+        jsonError('Esta interacción ya figura respondida: volvela a pendiente antes de descartarla.', 409);
+    }
+
+    $upd = $pdo->prepare('UPDATE datarocket_interacciones SET descartada = :d WHERE id = :id');
+    $upd->execute([':d' => $descartada, ':id' => $id]);
+
+    jsonOk(['id' => $id, 'descartada' => $descartada]);
 }
 
 // Acepta 'AAAA-MM-DDTHH:MM' (input datetime-local), 'AAAA-MM-DD HH:MM' y

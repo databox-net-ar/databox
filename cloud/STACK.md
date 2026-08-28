@@ -67,6 +67,8 @@ databox/                        ← raíz del repositorio
     ├── index.php               ← SPA shell: layout + contenedor de vistas
     ├── api/                    ← endpoints PHP (un archivo por recurso)
     │   └── dashboard.php
+    ├── datarocket/             ← páginas PÚBLICAS server-side (ver §4)
+    │   └── interacciones/      ← ficha de consulta pendiente (enlace de WhatsApp)
     ├── assets/
     │   ├── css/style.css       ← un único CSS para toda la aplicación
     │   ├── js/app.js           ← un único JS para toda la aplicación
@@ -103,6 +105,23 @@ framework y sin build step:
   se la muestra por primera vez (lazy load).
 
 - No hay rutas server-side. El navegador siempre está en `index.php`.
+
+**Única excepción — páginas públicas renderizadas en el servidor:**
+`cloud/datarocket/interacciones/index.php` es HTML armado en PHP, fuera
+de la SPA y **sin autenticación**. Es el destino del enlace que viaja en
+el WhatsApp del aviso de consultas pendientes: muestra la ficha del
+prospecto y ofrece un botón para marcarla como atendida. Se abre desde
+el navegador embebido de WhatsApp, donde no hay sesión del panel ni
+garantía de que el JS cargue, así que el botón es un `<form method="post">`
+con POST-Redirect-GET y el GET nunca modifica nada (los previsualizadores
+de enlaces hacen GET automático).
+
+Lo que reemplaza a la sesión es un token HMAC firmado con `APP_KEY_CLOUD`
+que lleva adentro el id de la interacción y un vencimiento
+(`cloud/api/lib/datarocket_interacciones_enlace.php`): la URL **es** la
+credencial. Cualquier página pública que se sume tiene que seguir el
+mismo patrón — token firmado por recurso, `noindex`, `no-store` y
+vencimiento — y quedar documentada acá.
 
 **Ventajas:** deploy = copiar archivos, sin Node ni build, recarga
 inmediata en desarrollo (volumen bind de Docker).

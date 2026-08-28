@@ -26504,6 +26504,59 @@ route('/datarocket', async (mount) => {
       <div class="page-subtitle">Motor de mensajería masiva multi-canal: prospectos y envíos.</div>
     </div>
 
+    <!-- Indicadores del modulo. Van ARRIBA de la grilla de modulos a proposito:
+         lo primero que tiene que ver el operador al entrar es que quedo sin
+         responder, no el menu de navegacion.
+         El foco es la respuesta pendiente (tarjetas 1 a 4); "Respuesta promedio"
+         y "Oportunidades sin atender" entran como contexto.
+         Cada bloque se pinta solo si el usuario tiene el permiso de consulta del
+         ABM del que sale el numero — el endpoint aplica el mismo gate y devuelve
+         null para lo que no corresponde (ver api/datarocket_indicadores.php).
+         Los valores arrancan en "—" y los completa drIndCargar() async: la
+         grilla de modulos no espera a la query. -->
+    <div class="stats-bar" id="drIndStats">
+      ${hasPermission('datarocket.interacciones.consultar') ? `
+      <!-- "Sin asignar" va PRIMERA: es el subconjunto peor de "Sin responder"
+           —la consulta que nadie está mirando porque su oportunidad no tiene
+           dueño—, y es el único de estos números por el que el cron de avisos
+           no le escribe a nadie. -->
+      <div class="stat-card dash-link" id="drIndSinAsignar"
+           title="Consultas entrantes sin responder cuya oportunidad no tiene responsable asignado: nadie recibe el aviso por WhatsApp. Clic para verlas."
+           onclick="verInteraccionesSinAsignarDr()">
+        <span class="stat-label">Sin asignar</span><span class="stat-value red">—</span>
+      </div>
+      <div class="stat-card dash-link" id="drIndPendientes"
+           title="Interacciones entrantes que todavía no fueron respondidas. Clic para verlas, de la más vieja a la más nueva."
+           onclick="verInteraccionesPendientesDr()">
+        <span class="stat-label">Sin responder</span><span class="stat-value orange">—</span>
+      </div>
+      <div class="stat-card dash-link" id="drIndPendientes24"
+           title="De las anteriores, las que llevan más de 24 horas esperando. Clic para ver la cola de pendientes ordenada por antigüedad."
+           onclick="verInteraccionesPendientesDr()">
+        <span class="stat-label">Sin responder +24 h</span><span class="stat-value red">—</span>
+      </div>
+      <div class="stat-card dash-link" id="drIndEspera"
+           title="Cuánto lleva esperando la consulta entrante más vieja sin responder."
+           onclick="verInteraccionesPendientesDr()">
+        <span class="stat-label">Espera más antigua</span><span class="stat-value">—</span>
+      </div>
+      <div class="stat-card dash-link" id="drIndEntrantesHoy"
+           title="Interacciones entrantes registradas hoy, respondidas o no."
+           onclick="verInteraccionesEntrantesHoyDr()">
+        <span class="stat-label">Entrantes hoy</span><span class="stat-value blue">—</span>
+      </div>
+      <div class="stat-card" id="drIndRespuesta"
+           title="Demora promedio en responder, sobre las interacciones ya marcadas como respondidas.">
+        <span class="stat-label">Respuesta promedio</span><span class="stat-value green">—</span>
+      </div>` : ''}
+      ${hasPermission('datarocket.oportunidades.consultar') ? `
+      <div class="stat-card dash-link" id="drIndOpoSinAtender"
+           title="Oportunidades sin nadie que las haya tomado (campo Atendido vacío)."
+           onclick="location.hash='#/datarocket_oportunidades'">
+        <span class="stat-label">Oportunidades sin atender</span><span class="stat-value orange">—</span>
+      </div>` : ''}
+    </div>
+
     <!-- Orden de tarjetas fijado por el usuario (no alfabetico): sigue el flujo
          CRM "quien" (Prospectos, Oportunidades) -> "que paso" (Interacciones) ->
          "pipeline" (Embudos, Etapas) -> "insumos de mensajeria" (Listas,
@@ -26560,7 +26613,109 @@ route('/datarocket', async (mount) => {
       </button>
     </div>
   `;
+
+  drIndCargar();
 }, 'Datarocket');
+
+// ---- Indicadores del landing de Datarocket ----
+// Fecha (YYYY-MM-DD) con la que el servidor conto "Entrantes hoy".
+let drIndHoy = '';
+
+// Una sola llamada para toda la barra (api/datarocket_indicadores.php). No se
+// hace `await` desde el route: los numeros llegan cuando llegan y mientras
+// tanto las tarjetas muestran "—". Un error no rompe la pantalla — se esconde
+// la barra y quedan los modulos, que es a lo que el operador entro.
+async function drIndCargar() {
+  const bar = $('#drIndStats');
+  if (!bar) return;
+  // Usuario sin ningun permiso de consulta de los modulos que alimentan la
+  // barra: no quedo ninguna tarjeta que pintar, asi que ni pedimos los numeros
+  // y sacamos el hueco que dejaria el margen del contenedor vacio.
+  if (!bar.querySelector('.stat-card')) { bar.style.display = 'none'; return; }
+  try {
+    const d = await apiGet('api/datarocket_indicadores.php');
+    drIndPintar(d);
+  } catch (e) {
+    bar.style.display = 'none';
+  }
+}
+
+function drIndPintar(d) {
+  // `setVal` tolera la tarjeta ausente: la barra se arma segun permisos, asi
+  // que un bloque de la respuesta puede no tener donde pintarse.
+  const setVal = (cardId, txt) => {
+    const el = $(`#${cardId} .stat-value`);
+    if (el) el.textContent = txt;
+  };
+
+  const i = d?.interacciones;
+  if (i) {
+    setVal('drIndSinAsignar',    fmtNum(i.pendientes_sin_asignar));
+    setVal('drIndPendientes',    fmtNum(i.pendientes));
+    setVal('drIndPendientes24',  fmtNum(i.pendientes_24h));
+    setVal('drIndEntrantesHoy',  fmtNum(i.entrantes_hoy));
+    // null mientras no se haya marcado ninguna respondida (ver el endpoint).
+    setVal('drIndRespuesta', i.respuesta_promedio == null
+      ? '—' : drIntFmtMinutos(i.respuesta_promedio));
+
+    // Espera mas antigua: el valor es el tiempo y el detalle (quien y desde
+    // cuando) va al tooltip, que es donde el operador lo necesita para decidir.
+    const em = i.espera_maxima;
+    setVal('drIndEspera', em ? drIntFmtMinutos(em.minutos) : '—');
+    const cardEspera = $('#drIndEspera');
+    if (cardEspera && em) {
+      const quien = em.prospecto_nombre || 'prospecto sin nombre';
+      cardEspera.title = `Interacción #${em.id} de ${quien}, sin responder desde `
+                       + `${fmtFechaLarga(em.fecha)}. Clic para ver la cola de pendientes.`;
+    }
+    // El dia lo manda el servidor: el navegador puede estar en otra zona
+    // horaria y el filtro tiene que caer sobre el mismo dia que se conto.
+    drIndHoy = i.hoy || '';
+  }
+
+  const o = d?.oportunidades;
+  if (o) setVal('drIndOpoSinAtender', fmtNum(o.sin_atender));
+}
+
+// Salta al ABM de interacciones con la cola de pendientes: entrantes sin
+// responder, de la mas vieja a la mas nueva (que es el orden en que hay que
+// atenderlas). Resetea el resto de los filtros para que aterrice limpia —
+// mismo patron que verSuscriptosDrLi(). Sin filtro de responsable: van TODAS
+// las pendientes, asignadas y sin asignar.
+function verInteraccionesPendientesDr() {
+  Object.assign(drIntFiltros, drIntFiltrosDefaults, {
+    respuesta: 'pendiente', order_by: 'fecha', dir: 'asc',
+  });
+  location.hash = '#/datarocketinteracciones';
+}
+
+// Igual que la anterior pero acotada a las que no tienen responsable: el
+// subconjunto por el que el cron de avisos no le escribe a nadie. `_null` es el
+// centinela que entiende el API (ver la nota de `?asignado=` en
+// cloud/api/datarocketinteracciones.php).
+function verInteraccionesSinAsignarDr() {
+  Object.assign(drIntFiltros, drIntFiltrosDefaults, {
+    respuesta: 'pendiente', asignado: '_null', order_by: 'fecha', dir: 'asc',
+  });
+  location.hash = '#/datarocketinteracciones';
+}
+
+// Entrantes del dia. El ABM filtra por rango de fechas (granularidad dia), asi
+// que desde y hasta van al mismo dia.
+function verInteraccionesEntrantesHoyDr() {
+  const hoy = drIndHoy || new Date().toLocaleDateString('en-CA');
+  Object.assign(drIntFiltros, drIntFiltrosDefaults, {
+    sentido: 'entrante', desde: hoy, hasta: hoy, order_by: 'fecha', dir: 'desc',
+  });
+  location.hash = '#/datarocketinteracciones';
+}
+
+// Exponer para los onclick de las tarjetas de indicadores. app.js se carga como
+// script clásico, así que ya serían globales; se declaran igual por la misma
+// razón que el resto del archivo: dejar explícito qué consume el HTML inline.
+window.verInteraccionesPendientesDr   = verInteraccionesPendientesDr;
+window.verInteraccionesSinAsignarDr   = verInteraccionesSinAsignarDr;
+window.verInteraccionesEntrantesHoyDr = verInteraccionesEntrantesHoyDr;
 
 // ------------------------- Vista: Datarocket > Listas (ABM) -------------------------
 // Listas de distribucion del motor Datarocket. Cada lista pertenece
@@ -27016,6 +27171,14 @@ async function abrirConsultarDrLi(id) {
                 data-drli-tab="suscriptos" onclick="drLiCambiarTab('suscriptos')">
           <i class="fa-solid fa-users"></i> Suscriptos
         </button>
+        <button type="button" class="modal-tab" role="tab"
+                data-drli-tab="altas" onclick="drLiCambiarTab('altas')">
+          <i class="fa-solid fa-user-plus"></i> Altas
+        </button>
+        <button type="button" class="modal-tab" role="tab"
+                data-drli-tab="bajas" onclick="drLiCambiarTab('bajas')">
+          <i class="fa-solid fa-user-slash"></i> Bajas
+        </button>
       </div>
 
       <div class="modal-tabpanel" data-drli-tab="general" role="tabpanel">
@@ -27025,8 +27188,20 @@ async function abrirConsultarDrLi(id) {
       <div class="modal-tabpanel" data-drli-tab="suscriptos" role="tabpanel" hidden>
         ${renderSuscriptosDrLiHtml()}
       </div>
+
+      <div class="modal-tabpanel" data-drli-tab="altas" role="tabpanel" hidden>
+        ${renderAltasDrLiHtml()}
+      </div>
+
+      <div class="modal-tabpanel" data-drli-tab="bajas" role="tabpanel" hidden>
+        ${renderBajasDrLiHtml()}
+      </div>
     `;
     bindSuscriptosDrLi();
+    drLiAltasEstado = { listaId: l.id, cargado: false, motivo: '' };
+    bindAltasDrLi();
+    drLiBajasEstado = { listaId: l.id, cargado: false, motivo: '' };
+    bindBajasDrLi();
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
   }
@@ -27045,8 +27220,276 @@ function drLiCambiarTab(tab) {
     drLiSusEstado.cargado = true;
     cargarSuscriptosDrLi();
   }
+  if (tab === 'altas' && drLiAltasEstado && !drLiAltasEstado.cargado) {
+    drLiAltasEstado.cargado = true;
+    cargarAltasDrLi();
+  }
+  if (tab === 'bajas' && drLiBajasEstado && !drLiBajasEstado.cargado) {
+    drLiBajasEstado.cargado = true;
+    cargarBajasDrLi();
+  }
 }
 window.drLiCambiarTab = drLiCambiarTab;
+
+// ---- Altas de la lista (historial, sólo lectura) ----
+// El espejo de Bajas: responde "¿de dónde salieron los suscriptos de esta
+// lista?". También es un log — el endpoint sólo expone GET. Las escriben las dos
+// puertas de entrada que existen: el editor de suscriptos de esta misma lista y
+// el combo de listas de la ficha del prospecto.
+//
+// OJO al leer el total: el historial arranca con la migración 20260828_2000 y no
+// se pudo backfillear (la tabla puente no guarda fecha de alta). Una lista con
+// 5.000 suscriptos y 3 altas registradas no creció 3 — creció 3 desde entonces.
+// Por eso la vista vacía lo dice con todas las letras en vez de mostrar un cero
+// que se leería como "nunca entró nadie".
+let drLiAltasEstado = null;
+
+// Espeja el catálogo `datarocket_lista_alta_motivo` de la tabla `estados`. Hoy
+// tiene un solo valor porque hay un solo motivo con escritor; los dos orígenes
+// manuales se distinguen por `origen`, no por motivo. Cuando entre un alta no
+// manual, alcanza con sembrarla en `estados` y agregarla acá para el color.
+const DRLI_ALTA_MOTIVOS = [
+  { valor: 'manual', texto: 'Alta manual', badge: 'badge-muted' },
+];
+const DRLI_ALTA_BADGE = Object.fromEntries(DRLI_ALTA_MOTIVOS.map((m) => [m.valor, m.badge]));
+
+// Las dos puertas de entrada, en prosa. El `origen` crudo es un string técnico
+// ('abm/datarocketlistas'): mostrarlo tal cual obliga al operador a traducirlo.
+const DRLI_ALTA_ORIGENES = {
+  'abm/datarocketlistas':     'editor de suscriptos',
+  'abm/datarocketprospectos': 'ficha del prospecto',
+};
+
+function renderAltasDrLiHtml() {
+  return `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input type="search" class="search-input" id="drLiAltasSearch"
+             placeholder="🔍 Buscar destino, prospecto o detalle" style="flex:1">
+      <button class="btn btn-ghost btn-icon" id="drLiAltasRefrescar" title="Refrescar">
+        <i class="fa-solid fa-rotate"></i>
+      </button>
+    </div>
+    <div id="drLiAltasChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+    <div class="table-card" style="max-height:340px;overflow:auto">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:140px">Fecha</th>
+            <th>Prospecto</th>
+            <th style="width:180px">Destino</th>
+            <th style="width:120px">Motivo</th>
+            <th>Origen</th>
+          </tr>
+        </thead>
+        <tbody id="drLiAltasTbody">
+          <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function cargarAltasDrLi() {
+  const tbody = $('#drLiAltasTbody');
+  if (!tbody || !drLiAltasEstado) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams({ lista: String(drLiAltasEstado.listaId), limite: '200' });
+  if (drLiAltasEstado.motivo) qs.set('motivo', drLiAltasEstado.motivo);
+  const q = $('#drLiAltasSearch')?.value.trim();
+  if (q) qs.set('q', q);
+
+  let data;
+  try { data = await apiGet(`api/datarocket_listas_altas.php?${qs.toString()}`); }
+  catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    return;
+  }
+
+  const chips = $('#drLiAltasChips');
+  if (chips) {
+    const conteo = data.conteo || {};
+    chips.innerHTML =
+      `<button type="button" class="filter-chip${drLiAltasEstado.motivo === '' ? ' active' : ''}" data-motivo="">Todas (${fmtNum(data.total || 0)})</button>` +
+      DRLI_ALTA_MOTIVOS
+        .filter((e) => (conteo[e.valor] || 0) > 0)
+        .map((e) => `<button type="button" class="filter-chip${drLiAltasEstado.motivo === e.valor ? ' active' : ''}" data-motivo="${esc(e.valor)}">${esc(e.texto)} (${fmtNum(conteo[e.valor])})</button>`)
+        .join('');
+    chips.onclick = (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drLiAltasEstado.motivo = b.dataset.motivo || '';
+      cargarAltasDrLi();
+    };
+  }
+
+  const items = data.items || [];
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${
+      (data.total || 0) === 0
+        ? 'Sin altas registradas. El historial arranca en agosto de 2026: los suscriptos anteriores no tienen fecha de alta.'
+        : 'Sin resultados con el filtro actual.'
+    }</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = items.map((a) => {
+    const cls = DRLI_ALTA_BADGE[a.motivo] || 'badge-info';
+    // Quién la hizo y por qué puerta. El usuario puede faltar (alta escrita sin
+    // sesión); la puerta, si aparece un origen nuevo que este mapa no conoce, se
+    // muestra cruda antes que desaparecer.
+    const puerta = a.origen ? (DRLI_ALTA_ORIGENES[a.origen] || a.origen) : null;
+    let origen = a.usuario_nombre ? `Manual — ${esc(a.usuario_nombre)}` : 'Manual';
+    if (puerta) origen += ` <span style="color:var(--muted)">(${esc(puerta)})</span>`;
+    const detalle = a.detalle ? ` <span style="color:var(--muted)">(${esc(a.detalle)})</span>` : '';
+    return `
+      <tr>
+        <td style="font-size:.78rem">${esc(a.fecha || '—')}</td>
+        <td>${esc(a.prospecto_nombre || `#${a.prospecto_id}`)}</td>
+        <td style="font-family:monospace;font-size:.78rem">${esc(a.destino || '—')}</td>
+        <td><span class="badge ${cls}">${esc(a.motivo_texto || a.motivo)}</span></td>
+        <td style="font-size:.8rem">${origen}${detalle}</td>
+      </tr>`;
+  }).join('');
+}
+
+function bindAltasDrLi() {
+  $('#drLiAltasRefrescar')?.addEventListener('click', () => cargarAltasDrLi());
+  // Mismo debounce a mano que el buscador de Bajas.
+  let altasTimer = null;
+  $('#drLiAltasSearch')?.addEventListener('input', () => {
+    clearTimeout(altasTimer);
+    altasTimer = setTimeout(() => cargarAltasDrLi(), 250);
+  });
+}
+
+// ---- Bajas de la lista (historial, sólo lectura) ----
+// Responde "¿por qué encogió esta lista?". Es un log: no se edita ni se borra
+// desde acá — el endpoint sólo expone GET. Las bajas automáticas las escribe el
+// motor de campañas al detectar un rebote duro o una denuncia de spam; las
+// manuales, el editor de suscriptos de esta misma lista.
+let drLiBajasEstado = null;
+
+// Espeja el catálogo `datarocket_lista_baja_motivo` de la tabla `estados`. El
+// texto visible viene del servidor (`motivo_texto`); esto sólo define el color
+// y el rótulo de respaldo, para no depender de un endpoint de lookups que el
+// ABM de listas no tiene.
+const DRLI_BAJA_MOTIVOS = [
+  { valor: 'rebotado', texto: 'Rebote duro',      badge: 'badge-danger' },
+  { valor: 'spam',     texto: 'Denuncia de spam', badge: 'badge-danger' },
+  { valor: 'manual',   texto: 'Baja manual',      badge: 'badge-muted'  },
+];
+const DRLI_BAJA_BADGE = Object.fromEntries(DRLI_BAJA_MOTIVOS.map((m) => [m.valor, m.badge]));
+
+function renderBajasDrLiHtml() {
+  return `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input type="search" class="search-input" id="drLiBajasSearch"
+             placeholder="🔍 Buscar destino, prospecto o detalle" style="flex:1">
+      <button class="btn btn-ghost btn-icon" id="drLiBajasRefrescar" title="Refrescar">
+        <i class="fa-solid fa-rotate"></i>
+      </button>
+    </div>
+    <div id="drLiBajasChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+    <div class="table-card" style="max-height:340px;overflow:auto">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:140px">Fecha</th>
+            <th>Prospecto</th>
+            <th style="width:180px">Destino</th>
+            <th style="width:120px">Motivo</th>
+            <th>Origen</th>
+          </tr>
+        </thead>
+        <tbody id="drLiBajasTbody">
+          <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function cargarBajasDrLi() {
+  const tbody = $('#drLiBajasTbody');
+  if (!tbody || !drLiBajasEstado) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const qs = new URLSearchParams({ lista: String(drLiBajasEstado.listaId), limite: '200' });
+  if (drLiBajasEstado.motivo) qs.set('motivo', drLiBajasEstado.motivo);
+  const q = $('#drLiBajasSearch')?.value.trim();
+  if (q) qs.set('q', q);
+
+  let data;
+  try { data = await apiGet(`api/datarocket_listas_bajas.php?${qs.toString()}`); }
+  catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    return;
+  }
+
+  const chips = $('#drLiBajasChips');
+  if (chips) {
+    const conteo = data.conteo || {};
+    chips.innerHTML =
+      `<button type="button" class="filter-chip${drLiBajasEstado.motivo === '' ? ' active' : ''}" data-motivo="">Todas (${fmtNum(data.total || 0)})</button>` +
+      DRLI_BAJA_MOTIVOS
+        .filter((e) => (conteo[e.valor] || 0) > 0)
+        .map((e) => `<button type="button" class="filter-chip${drLiBajasEstado.motivo === e.valor ? ' active' : ''}" data-motivo="${esc(e.valor)}">${esc(e.texto)} (${fmtNum(conteo[e.valor])})</button>`)
+        .join('');
+    chips.onclick = (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drLiBajasEstado.motivo = b.dataset.motivo || '';
+      cargarBajasDrLi();
+    };
+  }
+
+  const items = data.items || [];
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${
+      (data.total || 0) === 0
+        ? 'Esta lista no tuvo ninguna baja registrada.'
+        : 'Sin resultados con el filtro actual.'
+    }</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = items.map((b) => {
+    const cls = DRLI_BAJA_BADGE[b.motivo] || 'badge-info';
+    // El origen se cuenta en prosa porque es lo que el operador necesita leer:
+    // quién la hizo (persona o automatismo) y de qué campaña salió. Una campaña
+    // borrada deja `campana_id` en NULL — la baja sobrevive igual, y decirlo es
+    // más honesto que mostrar un id que ya no resuelve.
+    let origen;
+    if (b.motivo === 'manual') {
+      origen = b.usuario_nombre ? `Manual — ${esc(b.usuario_nombre)}` : 'Manual';
+    } else if (b.campana_nombre) {
+      origen = `Campaña “${esc(b.campana_nombre)}”`;
+    } else if (b.campana_id) {
+      origen = `Campaña #${b.campana_id}`;
+    } else {
+      origen = '<span style="color:var(--muted)">Campaña eliminada</span>';
+    }
+    const detalle = b.detalle ? ` <span style="color:var(--muted)">(${esc(b.detalle)})</span>` : '';
+    return `
+      <tr>
+        <td style="font-size:.78rem">${esc(b.fecha || '—')}</td>
+        <td>${esc(b.prospecto_nombre || `#${b.prospecto_id}`)}</td>
+        <td style="font-family:monospace;font-size:.78rem">${esc(b.destino || '—')}</td>
+        <td><span class="badge ${cls}">${esc(b.motivo_texto || b.motivo)}</span></td>
+        <td style="font-size:.8rem">${origen}${detalle}</td>
+      </tr>`;
+  }).join('');
+}
+
+function bindBajasDrLi() {
+  $('#drLiBajasRefrescar')?.addEventListener('click', () => cargarBajasDrLi());
+  // Mismo debounce a mano que el buscador del padrón de campañas: no hay helper
+  // `debounce` en este archivo y no vale la pena introducir uno para dos usos.
+  let bajasTimer = null;
+  $('#drLiBajasSearch')?.addEventListener('input', () => {
+    clearTimeout(bajasTimer);
+    bajasTimer = setTimeout(() => cargarBajasDrLi(), 250);
+  });
+}
 
 function renderConsultaDrLi(l, proyectos = []) {
   const card = (label, value, full = false) => {
@@ -30295,6 +30738,9 @@ async function eliminarDrPr(id) {
 // nunca el prospecto ni la oportunidad, que son fijos desde el alta.
 const drIntFiltrosDefaults = {
   q: '', codigo: '', prospecto_id: '', sentido: '', canal: '', respuesta: '',
+  // `asignado` filtra por el responsable de la oportunidad, no de la
+  // interacción (que no tiene dueño propio). '_null' = sin asignar.
+  asignado: '',
   desde: '', hasta: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -30367,6 +30813,13 @@ function drIntRespuestaCelda(a) {
     const demora = drIntFmtMinutos(a.respuesta_minutos);
     return `<span class="badge badge-success" title="Respondida el ${esc(fmtFechaLarga(a.respondida))} — demoró ${esc(demora)}">`
          + `<i class="fa-solid fa-check"></i> ${esc(demora)}</span>`;
+  }
+  // Descartada va antes que "Pendiente": es un estado terminal, aunque
+  // `respondida` siga en NULL. Badge neutro y no de alerta — no hay nada que
+  // hacer con ella, que es justamente el punto.
+  if (a.descartada) {
+    return `<span class="badge badge-muted" title="Descartada el ${esc(fmtFechaLarga(a.descartada))} — no requería respuesta">`
+         + `<i class="fa-solid fa-ban"></i> Descartada</span>`;
   }
   if (a.sentido === 'entrante') {
     // `fmtHace` en vez de los minutos crudos: una consulta de 16 segundos
@@ -30539,6 +30992,9 @@ route('/datarocketinteracciones', async (mount) => {
         <div class="stat-card"><span class="stat-label">Prospectos únicos</span><span class="stat-value">—</span></div>
         <div class="stat-card"><span class="stat-label">Entrantes</span><span class="stat-value green">—</span></div>
         <div class="stat-card"><span class="stat-label">Sin responder</span><span class="stat-value orange">—</span></div>
+        <div class="stat-card" title="Consultas que no requerían respuesta: spam, formularios en blanco, mensajes sin pregunta.">
+          <span class="stat-label">Descartadas</span><span class="stat-value">—</span>
+        </div>
         <div class="stat-card"><span class="stat-label">Respuesta promedio</span><span class="stat-value">—</span></div>
       </div>
 
@@ -30565,8 +31021,12 @@ route('/datarocketinteracciones', async (mount) => {
             <tr>
               <th>Código</th>
               <th>Fecha</th>
+              <!-- El proyecto sale de la oportunidad relacionada. Reemplaza a la
+                   columna Oportunidad, que decía el producto: el proyecto ubica
+                   mejor la interacción y el detalle del negocio ya está en el
+                   modal de Consultar. -->
+              <th>Proyecto</th>
               <th>Prospecto</th>
-              <th>Oportunidad</th>
               <th style="width:70px;text-align:center" title="Sentido y canal">Vía</th>
               <th>Asunto / Mensaje</th>
               <th style="width:170px">Asignado</th>
@@ -30594,6 +31054,23 @@ route('/datarocketinteracciones', async (mount) => {
       <button type="button" data-action="despender" role="menuitem">
         <i class="fa-solid fa-rotate-left"></i><span>Volver a pendiente</span>
       </button>
+      <!-- Tercer estado: la consulta que NO hay que contestar (spam, formulario
+           en blanco, mensaje sin pregunta). Sale de las pendientes sin mentir
+           que alguien la respondió. Como las dos de arriba, sólo en entrantes. -->
+      <button type="button" data-action="descartar" role="menuitem">
+        <i class="fa-solid fa-ban"></i><span>Descartar</span>
+      </button>
+      <button type="button" data-action="recuperar" role="menuitem">
+        <i class="fa-solid fa-rotate-left"></i><span>Quitar descarte</span>
+      </button>
+      <!-- Asignar escribe sobre la OPORTUNIDAD de la interacción, no sobre la
+           interacción (que no tiene dueño propio). Por eso pide el permiso de
+           editar oportunidades, y el handler del menú la oculta en las
+           interacciones sueltas, que no cuelgan de ningún negocio. -->
+      ${hasPermission('datarocket.oportunidades.editar') ? `
+      <button type="button" data-action="asignar" role="menuitem">
+        <i class="fa-solid fa-user-check"></i><span>Asignar</span>
+      </button>` : ''}
       <div class="ctx-menu-sep"></div>
       ${hasPermission('datarocket.interacciones.editar') ? `
       <button type="button" data-action="editar" role="menuitem">
@@ -30647,6 +31124,7 @@ route('/datarocketinteracciones', async (mount) => {
                 <option value="">— Todas —</option>
                 <option value="pendiente">Sin responder</option>
                 <option value="respondida">Respondidas</option>
+                <option value="descartada">Descartadas</option>
               </select>
             </div>
           </div>
@@ -30654,6 +31132,16 @@ route('/datarocketinteracciones', async (mount) => {
             <div class="form-group">
               <label>Prospecto (ID)</label>
               <input type="number" id="fDrIntProspecto" min="1" oninput="onFiltroDrInt('prospecto_id', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Asignado</label>
+              <!-- El responsable sale de la oportunidad. Los usuarios los
+                   completa drIntPoblarAsignados() al montar la vista, desde los
+                   lookups del ABM de Oportunidades. -->
+              <select id="fDrIntAsignado" onchange="onFiltroDrInt('asignado', this.value)">
+                <option value="">— Todos —</option>
+                <option value="_null">— Sin asignar —</option>
+              </select>
             </div>
           </div>
           <div class="form-row">
@@ -30733,6 +31221,9 @@ route('/datarocketinteracciones', async (mount) => {
     if (b.dataset.action === 'consultar')  abrirConsultarDrInt(data.id);
     if (b.dataset.action === 'responder')  marcarRespondidaDrInt(data.id, true);
     if (b.dataset.action === 'despender')  marcarRespondidaDrInt(data.id, false);
+    if (b.dataset.action === 'descartar')  marcarDescartadaDrInt(data.id, true);
+    if (b.dataset.action === 'recuperar')  marcarDescartadaDrInt(data.id, false);
+    if (b.dataset.action === 'asignar')    abrirAsignarDrInt(data.oportunidadId, data.asignadoId);
     if (b.dataset.action === 'editar')     abrirEditarDrInt(data.id);
     if (b.dataset.action === 'eliminar')   eliminarDrInt(data.id);
   });
@@ -30758,6 +31249,7 @@ route('/datarocketinteracciones', async (mount) => {
   });
 
   refrescarBadgeFiltrosDrInt();
+  drIntPoblarAsignados();   // sin await: el combo de filtros no bloquea el listado
   await cargarDrInt();
 
   // Llegada desde "Registrar interacción" del ABM de Oportunidades: abrimos el
@@ -30778,9 +31270,104 @@ function abrirCtxMenuDrInt(tr, x, y) {
   const menu       = $('#drIntCtxMenu');
   const esEntrante = tr.dataset.sentido === 'entrante';
   const respondida = tr.dataset.respondida === '1';
-  menu.querySelector('[data-action="responder"]').style.display = (esEntrante && !respondida) ? '' : 'none';
+  const descartada = tr.dataset.descartada === '1';
+  // Los tres estados son excluyentes, así que cada fila ofrece sólo los pasos
+  // que puede dar desde donde está: pendiente → responder o descartar;
+  // respondida → volver a pendiente; descartada → quitar el descarte.
+  menu.querySelector('[data-action="responder"]').style.display = (esEntrante && !respondida && !descartada) ? '' : 'none';
   menu.querySelector('[data-action="despender"]').style.display = (esEntrante &&  respondida) ? '' : 'none';
-  abrirCtxMenu(menu, x, y, { id: Number(tr.dataset.id) });
+  menu.querySelector('[data-action="descartar"]').style.display = (esEntrante && !respondida && !descartada) ? '' : 'none';
+  menu.querySelector('[data-action="recuperar"]').style.display = (esEntrante &&  descartada) ? '' : 'none';
+  // "Asignar" solo existe si la interacción cuelga de una oportunidad: el dueño
+  // es de la oportunidad. El botón puede no estar (falta el permiso de editar
+  // oportunidades), por eso el optional chaining.
+  const oportunidadId = Number(tr.dataset.oportunidad) || 0;
+  const btnAsignar    = menu.querySelector('[data-action="asignar"]');
+  if (btnAsignar) btnAsignar.style.display = oportunidadId ? '' : 'none';
+  abrirCtxMenu(menu, x, y, {
+    id:            Number(tr.dataset.id),
+    oportunidadId: oportunidadId,
+    asignadoId:    Number(tr.dataset.asignado) || 0,
+  });
+}
+
+// Modal "Asignar": elige a quién queda asignada la OPORTUNIDAD de la
+// interacción. Se abre desde el menú contextual del listado.
+//
+// El combo sale de los mismos lookups que usa el ABM de Oportunidades
+// (opCargarLookups, cacheado entre navegaciones), así que la lista de usuarios
+// es exactamente la del campo "Asignado" de ese formulario.
+async function abrirAsignarDrInt(oportunidadId, asignadoActual) {
+  if (!oportunidadId) {
+    toast('Esta interacción no está vinculada a ninguna oportunidad, así que no hay qué asignar.', { error: true });
+    return;
+  }
+
+  const lk = await opCargarLookups();
+  const usuarios = lk?.usuarios || [];
+  if (!usuarios.length) {
+    // opCargarLookups() se come los errores y devuelve listas vacías (típico:
+    // el usuario puede editar oportunidades pero no consultarlas).
+    toast('No se pudo cargar la lista de usuarios.', { error: true });
+    return;
+  }
+
+  const actual = Number(asignadoActual) || 0;
+  const opts = ['<option value="">— Sin asignar —</option>']
+    .concat(usuarios.map((u) =>
+      `<option value="${u.id}"${Number(u.id) === actual ? ' selected' : ''}>${esc(u.nombre)}</option>`))
+    .join('');
+
+  openModal(`
+    <div class="modal" style="max-width:460px">
+      <div class="modal-header">
+        <div class="modal-title">Asignar <span class="modal-subtitle">oportunidad #${esc(oportunidadId)}</span></div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Asignado a</label>
+          <select id="drIntAsignarUsuario">${opts}</select>
+        </div>
+        <div style="font-size:.82rem;color:var(--muted);line-height:1.45;margin-top:10px">
+          El dueño se guarda en la oportunidad, no en la interacción: el cambio
+          alcanza a todas las interacciones de ese negocio.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
+        <button class="btn btn-primary" data-act="guardar">Guardar</button>
+      </div>
+    </div>
+  `);
+
+  setTimeout(() => document.getElementById('drIntAsignarUsuario')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarAsignarDrInt(oportunidadId);
+  });
+}
+
+async function guardarAsignarDrInt(oportunidadId) {
+  const v = $('#drIntAsignarUsuario')?.value ?? '';
+  // "" = sin asignar. Viaja como null explícito: el endpoint distingue "sacarle
+  // el dueño" de "no me mandaste la clave".
+  const asignado = v === '' ? null : Number(v);
+  try {
+    const r = await apiSend(
+      `${OP_API}?id=${encodeURIComponent(oportunidadId)}&action=asignar`, 'PUT', { asignado }
+    );
+    closeModal();
+    toast(r.asignado_nombre
+      ? `Oportunidad #${oportunidadId} asignada a ${r.asignado_nombre}.`
+      : `Oportunidad #${oportunidadId} quedó sin asignar.`);
+    // El listado muestra el asignado en su propia columna: hay que recargarlo
+    // para que la fila (y las hermanas de la misma oportunidad) se actualicen.
+    cargarDrInt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
 }
 
 // Sella (o borra) la hora de respuesta de una interacción entrante. El backend
@@ -30798,6 +31385,20 @@ async function marcarRespondidaDrInt(id, respondida) {
   }
 }
 
+// Descarta (o recupera) una consulta entrante: el tercer estado, para lo que no
+// hay que contestar. La saca de las pendientes —y de la cola del aviso por
+// WhatsApp— sin marcarla como respondida, que sería mentir sobre el trabajo
+// hecho y ensuciar el promedio de demora.
+async function marcarDescartadaDrInt(id, descartada) {
+  try {
+    await apiSend(`api/datarocketinteracciones.php?id=${id}&action=descartar`, 'PUT', { descartada });
+    toast(descartada ? 'Interacción descartada.' : 'Se quitó el descarte: vuelve a pendiente.');
+    cargarDrInt();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
 async function cargarDrInt() {
   const tbody = $('#drIntTbody');
   if (!tbody) return;
@@ -30806,9 +31407,10 @@ async function cargarDrInt() {
   const qs = new URLSearchParams();
   Object.entries(drIntFiltros).forEach(([k, v]) => {
     if (v === '' || v == null) return;
-    // `respuesta` es un tri-estado del formulario; el API lo recibe como dos
-    // flags separados (`pendiente` / `respondida`).
-    if (k === 'respuesta') { qs.set(v === 'pendiente' ? 'pendiente' : 'respondida', '1'); return; }
+    // `respuesta` es un selector de estado del formulario; el API lo recibe
+    // como flags separados (`pendiente` / `respondida` / `descartada`), uno por
+    // estado. El valor del <option> ya coincide con el nombre del flag.
+    if (k === 'respuesta') { qs.set(v, '1'); return; }
     qs.set(k, v);
   });
   try {
@@ -30822,14 +31424,15 @@ async function cargarDrInt() {
 
 function pintarStatsDrInt(s) {
   const cards = $$('#drIntStats .stat-card .stat-value');
-  if (cards.length < 5) return;
+  if (cards.length < 6) return;
   cards[0].textContent = fmtNum(s.total);
   cards[1].textContent = fmtNum(s.prospectos);
   cards[2].textContent = fmtNum(s.entrantes);
   cards[3].textContent = fmtNum(s.pendientes);
+  cards[4].textContent = fmtNum(s.descartadas);
   // null cuando todavía no se marcó ninguna respondida: no hay promedio que
   // mostrar y un "0 min" sería mentira.
-  cards[4].textContent = s.respuesta_promedio == null
+  cards[5].textContent = s.respuesta_promedio == null
     ? '—' : drIntFmtMinutos(s.respuesta_promedio);
 }
 
@@ -30847,26 +31450,28 @@ function pintarTablaDrInt(rows) {
     const prospectoTxt = a.prospecto_nombre
       ? esc(a.prospecto_nombre)
       : `<span style="color:var(--muted)">#${esc(a.prospecto_id)}</span>`;
-    // Oportunidad: el `producto` es lo que la nombra en el resto del panel (el
-    // `asunto` se dropeo en la migracion 20260817_1700). `oportunidad_id` es
-    // NULL-able —las interacciones sueltas del prospecto no cuelgan de ningun
-    // negocio—, asi que ahi va el guion. Texto plano y no link, igual que la
+    // Proyecto: cuelga de la oportunidad (`o.proyecto_id`), no de la interaccion
+    // ni del prospecto — ninguno de los dos tiene proyecto propio. Por eso las
+    // interacciones sueltas (sin oportunidad) y las de oportunidades sin
+    // proyecto cargado quedan en guion. Texto plano y no link, igual que la
     // columna Prospecto: la fila entera ya es clickeable y el salto a la ficha
     // de la oportunidad vive en el modal de Consultar.
-    const oportunidadTxt = !a.oportunidad_id
-      ? '<span style="color:var(--muted)">—</span>'
-      : (a.oportunidad_producto
-          ? esc(a.oportunidad_producto)
-          : `<span style="color:var(--muted)">#${esc(a.oportunidad_id)}</span>`);
+    const proyectoTxt = a.proyecto_nombre
+      ? esc(a.proyecto_nombre)
+      : '<span style="color:var(--muted)">—</span>';
     // `data-sentido` / `data-respondida` los lee el menú contextual para
-    // decidir si ofrece "Marcar respondida" o "Volver a pendiente".
+    // decidir si ofrece "Marcar respondida" o "Volver a pendiente";
+    // `data-oportunidad` / `data-asignado`, para "Asignar" (que necesita saber
+    // sobre qué oportunidad escribe y quién la tiene hoy).
     return `
     <tr data-id="${a.id}" class="row-clickable"
-        data-sentido="${esc(a.sentido || '')}" data-respondida="${a.respondida ? '1' : ''}">
+        data-sentido="${esc(a.sentido || '')}" data-respondida="${a.respondida ? '1' : ''}"
+        data-descartada="${a.descartada ? '1' : ''}"
+        data-oportunidad="${a.oportunidad_id || ''}" data-asignado="${a.asignado_id || ''}">
       <td class="td-id">#${esc(a.id)}</td>
       <td style="font-family:monospace">${esc(fmtFechaLarga(a.fecha))}</td>
+      <td>${proyectoTxt}</td>
       <td>${prospectoTxt}</td>
-      <td>${oportunidadTxt}</td>
       <td style="text-align:center">${drIntViaCelda(a)}</td>
       <td>${drIntAsuntoCelda(a)}</td>
       <td>${drIntAsignadoCelda(a)}</td>
@@ -30885,7 +31490,7 @@ function pintarTablaDrInt(rows) {
 
 // ---- Modal de Filtros ----
 function onFiltroDrInt(key, value) {
-  if (['sentido', 'canal', 'respuesta', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
+  if (['sentido', 'canal', 'respuesta', 'asignado', 'order_by', 'dir', 'desde', 'hasta'].includes(key)) {
     drIntFiltros[key] = value;
   } else if (['codigo', 'prospecto_id'].includes(key)) {
     const v = String(value).trim();
@@ -30913,6 +31518,28 @@ function refrescarBadgeFiltrosDrInt() {
   else           { btn.classList.remove('active'); badge.style.display = 'none'; }
 }
 
+// Completa el combo "Asignado" del modal de filtros con los usuarios, tomados
+// de los lookups del ABM de Oportunidades (opCargarLookups, cacheado entre
+// navegaciones) — que es de donde sale el responsable. Si el usuario no tiene
+// permiso de consultar oportunidades, opCargarLookups() devuelve listas vacías
+// y el combo queda con "Todos" / "Sin asignar", que son los dos que necesitan
+// las tarjetas del landing.
+async function drIntPoblarAsignados() {
+  const sel = $('#fDrIntAsignado');
+  if (!sel) return;
+  const lk = await opCargarLookups();
+  for (const u of (lk?.usuarios || [])) {
+    const o = document.createElement('option');
+    o.value = String(u.id);
+    o.textContent = u.nombre;
+    sel.appendChild(o);
+  }
+  // El filtro puede venir preseteado desde el landing: se re-aplica el valor
+  // ahora que las opciones existen (un <select> descarta el value que todavía
+  // no tiene <option>).
+  sel.value = drIntFiltros.asignado;
+}
+
 function sincronizarControlesFiltrosDrInt() {
   const f = drIntFiltros;
   $('#fDrIntCodigo').value   = f.codigo;
@@ -30920,6 +31547,7 @@ function sincronizarControlesFiltrosDrInt() {
   $('#fDrIntCanal').value    = f.canal;
   $('#fDrIntRespuesta').value = f.respuesta;
   $('#fDrIntProspecto').value = f.prospecto_id;
+  $('#fDrIntAsignado').value  = f.asignado;
   $('#fDrIntDesde').value    = f.desde;
   $('#fDrIntHasta').value    = f.hasta;
   $('#fDrIntLimite').value   = f.limite;
@@ -35718,6 +36346,19 @@ let drcaLookupsPromesa  = null;
 // tenga que volver a pedir la ficha entera.
 let drcaDetalleActual   = null;
 let drcaPadronEstado    = '';
+// Filtro por feedback de SES. Va aparte de `drcaPadronEstado` porque son dos
+// ejes independientes: se puede querer "los enviados que rebotaron".
+let drcaPadronResultado = '';
+
+// Pestañas Plantilla y Lista: se cargan la primera vez que se entra a cada una
+// y no al abrir el modal. Son dos requests que la mayoría de las consultas no
+// necesita — y la de Lista puede traer 1000 prospectos.
+let drcaTplCargada      = false;
+let drcaListaCargada    = false;
+// Chip "Sin dato" de la pestaña Lista: los suscriptos que hoy quedarían
+// omitidos al expandir porque no tienen el dato de contacto del medio.
+let drcaListaSinDato    = false;
+let drcaListaTimer      = null;
 
 // Catálogos que no dependen del medio: proyectos, los tres catálogos de
 // `estados` y las listas. Se piden una sola vez por vida de la página.
@@ -35731,6 +36372,7 @@ async function drcaCargarLookups() {
       medios:         d.medios         || [],
       estados:        d.estados        || [],
       estados_padron: d.estados_padron || [],
+      resultados:     d.resultados     || [],
       listas:         d.listas         || [],
     };
     return drcaLookupsCache;
@@ -35779,6 +36421,65 @@ function drcaSlugify(s) {
   return out.slice(0, 60);
 }
 
+// Nombre sugerido a partir de los campos que definen la campaña. Sirve al
+// operador que entra al alta y arranca eligiendo medio / lista / plantilla sin
+// haberle puesto nombre: en vez de dejarlo con el campo obligatorio vacío, el
+// nombre se va armando solo con lo que ya eligió.
+//
+// La forma es "Proyecto · Qué se manda — A quién": la plantilla (o, si no hay,
+// el asunto escrito a mano) y la lista de destino. El medio sólo entra cuando
+// no hay ninguna de las dos, para que elegirlo ya deje algo escrito.
+function drcaNombreSugerido() {
+  const nombreOpcion = (sel) => {
+    const opt = sel?.selectedOptions?.[0];
+    if (!sel?.value || !opt) return '';
+    return (opt.dataset.nombre || opt.textContent || '').trim();
+  };
+  const proyecto  = nombreOpcion($('#drcaProyecto'));
+  const plantilla = nombreOpcion($('#drcaPlantilla'));
+  const lista     = nombreOpcion($('#drcaLista'));
+  const asunto    = ($('#drcaAsunto')?.value || '').trim();
+  const medio     = drcaTextoDe('medios', $('#drcaMedio')?.value || '', '');
+
+  const cuerpo = [plantilla || asunto, lista].filter(Boolean).join(' — ');
+  return [proyecto, cuerpo || medio].filter(Boolean).join(' · ').slice(0, 150);
+}
+
+// Nombre para un clon: "X (copia)", "X (copia 2)"… El sufijo sube hasta que el
+// slug derivado no choque con ninguna campaña del listado. El UNIQUE de `slug`
+// es global y acá sólo se ve la página cargada, así que esto no reemplaza al
+// 409 del endpoint: le ahorra el rebote al caso normal (clonar dos veces
+// seguidas la misma campaña).
+function drcaNombreDeCopia(nombre) {
+  const base   = String(nombre || '').trim() || 'Campaña';
+  const usados = new Set((drcaItems || []).map((c) => String(c.slug || '')));
+  for (let n = 1; n <= 50; n++) {
+    const sufijo = ` (copia${n > 1 ? ' ' + n : ''})`;
+    const cand   = base.slice(0, 150 - sufijo.length).trim() + sufijo;
+    if (!usados.has(drcaSlugify(cand))) return cand;
+  }
+  return base.slice(0, 142).trim() + ' (copia)';
+}
+
+// Repinta el nombre desde los combos. No hace nada si el operador ya escribió
+// uno a mano (`data-auto` en '0') ni en edición, donde el flag nunca se activa:
+// re-derivar el nombre de una campaña guardada sería pisarle lo que puso.
+function drcaAutocompletarNombre() {
+  const inpNom = $('#drcaNombre');
+  if (!inpNom || inpNom.dataset.auto !== '1') return;
+  inpNom.value = drcaNombreSugerido();
+  drcaSincronizarSlug();
+}
+
+// El slug sigue al nombre — venga el nombre de la mano del operador o del
+// autocompletado — hasta que se edita el slug a mano.
+function drcaSincronizarSlug() {
+  const inpNom  = $('#drcaNombre');
+  const inpSlug = $('#drcaSlug');
+  if (!inpNom || !inpSlug || inpSlug.dataset.manual === '1') return;
+  inpSlug.value = drcaSlugify(inpNom.value);
+}
+
 function drcaMedioBadge(r) {
   const emoji = DRCA_MEDIO_EMOJI[r.medio] || '📨';
   const texto = r.medio_texto || drcaTextoDe('medios', r.medio);
@@ -35795,6 +36496,35 @@ function drcaPadronBadge(m) {
   const cls   = DRCA_PADRON_BADGE[m.estado] || 'badge-info';
   const texto = m.estado_texto || drcaTextoDe('estados_padron', m.estado);
   return `<span class="badge ${cls}">${esc(texto)}</span>`;
+}
+
+// Badge del feedback de SES. Es un eje DISTINTO de `estado`: un rebote llega
+// con estado='enviado' porque el mensaje sí salió — rebotó después. Por eso son
+// dos columnas y no una.
+//
+// `null` no es "sin datos" sino "todavía no llegó ningún evento de SNS", que en
+// una campaña recién enviada es lo normal y en una de hace una semana significa
+// que el webhook dejó de llegar. Se muestra como "—" en gris.
+const DRCA_RESULTADO_BADGE = {
+  entregado: 'badge-ok',
+  abierto:   'badge-ok',
+  cliqueado: 'badge-ok',
+  spam:      'badge-danger',
+  rebotado:  'badge-danger',
+  rechazado: 'badge-danger',
+};
+
+function drcaResultadoBadge(m) {
+  if (!m.resultado) return '<span style="color:var(--muted)">—</span>';
+  const cls   = DRCA_RESULTADO_BADGE[m.resultado] || 'badge-info';
+  const texto = m.resultado_texto || drcaTextoDe('resultados', m.resultado);
+  // La baja de lista se muestra pegada al resultado que la causó: es la única
+  // pista de que la campaña sacó a alguien de la lista, porque el renglón de
+  // `datarocket_prospectos_listas` ya no existe.
+  const baja = m.baja_lista
+    ? ` <span class="badge badge-warn" title="Dado de baja de la lista el ${esc(m.baja_lista)}">baja</span>`
+    : '';
+  return `<span class="badge ${cls}">${esc(texto)}</span>${baja}`;
 }
 
 // Barra de progreso enviados/total. Con `total` en 0 la campaña todavía no se
@@ -35912,7 +36642,7 @@ route('/datarocket_campanas', async (mount) => {
         <i class="fa-solid fa-list-check"></i><span>Ver destinatarios</span>
       </button>
       <button type="button" data-action="ejecutar" role="menuitem">
-        <i class="fa-solid fa-bolt"></i><span>Ejecutar ahora</span>
+        <i class="fa-solid fa-bolt"></i><span data-label>Ejecutar ahora</span>
       </button>
       <button type="button" data-action="iniciar" role="menuitem">
         <i class="fa-solid fa-paper-plane"></i><span>Programar para ya</span>
@@ -35925,6 +36655,9 @@ route('/datarocket_campanas', async (mount) => {
       </button>
       <button type="button" data-action="recalcular" role="menuitem">
         <i class="fa-solid fa-calculator"></i><span>Recalcular contadores</span>
+      </button>
+      <button type="button" data-action="clonar" role="menuitem">
+        <i class="fa-solid fa-clone"></i><span>Clonar</span>
       </button>
       <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
@@ -36055,6 +36788,7 @@ route('/datarocket_campanas', async (mount) => {
     const a = b.dataset.action;
     if (a === 'consultar')     abrirConsultaDrca(data.id);
     if (a === 'destinatarios') abrirConsultaDrca(data.id, 'padron');
+    if (a === 'clonar')        abrirAltaEdicionDrca(null, data.id);
     if (a === 'editar')        abrirAltaEdicionDrca(data.id);
     if (a === 'eliminar')      eliminarDrca(data.id);
     if (a === 'ejecutar')      drcaEjecutar(data.id);
@@ -36182,10 +36916,23 @@ function drcaAbrirMenu(x, y, id) {
   //   Programar para ya -> sólo la deja lista y el cron la levanta. Es el
   //                        camino desatendido, y el que sirve cuando la campaña
   //                        es grande y no querés tener el navegador abierto.
-  // Las dos aplican sólo desde borrador o programada — igual que el endpoint.
+  // "Programar para ya" aplica sólo desde borrador o programada: no tiene
+  // sentido re-programar algo que ya arrancó.
   const lanzable = ['borrador', 'programada'].includes(est);
-  if (btnEjec) btnEjec.style.display = lanzable ? '' : 'none';
-  if (btnIni)  btnIni.style.display  = lanzable ? '' : 'none';
+  if (btnIni) btnIni.style.display = lanzable ? '' : 'none';
+
+  // "Ejecutar ahora" suma un tercer caso: 'enviando' con pendientes, que es la
+  // reanudación. Una campaña que no entró entera en una corrida termina así, y
+  // el propio log le dice al operador "volvé a ejecutar para continuar" — hasta
+  // que esto existió, ese mensaje mentía porque el botón estaba oculto.
+  // Espeja drcaValidarLanzable() del PHP: si la lista de acá se abre más que la
+  // de allá, el SSE contesta "No se puede ejecutar" y el operador no entiende.
+  if (btnEjec) {
+    const reanudable = est === 'enviando' && (Number(r?.pendientes) || 0) > 0;
+    btnEjec.style.display = (lanzable || reanudable) ? '' : 'none';
+    const lblEjec = btnEjec.querySelector('[data-label]');
+    if (lblEjec) lblEjec.textContent = reanudable ? 'Continuar encolado' : 'Ejecutar ahora';
+  }
 
   if (btnPausa) {
     const lbl = btnPausa.querySelector('[data-label]');
@@ -36375,23 +37122,39 @@ function drcaCambiarTab(tab) {
   document.querySelectorAll('#modalRoot .modal-tabpanel[data-drca-tab]').forEach((p) => {
     p.hidden = p.dataset.drcaTab !== tab;
   });
+
+  // Carga diferida de Plantilla y Lista: cada una pide lo suyo la primera vez
+  // que se la abre. El flag se levanta ANTES del await para que dos clicks
+  // seguidos no disparen dos requests.
+  const id = drcaDetalleActual?.id;
+  if (!id) return;
+  if (tab === 'plantilla' && !drcaTplCargada)   { drcaTplCargada   = true; drcaCargarPlantilla(id); }
+  if (tab === 'lista'     && !drcaListaCargada) { drcaListaCargada = true; drcaCargarLista(id); }
 }
 window.drcaCambiarTab = drcaCambiarTab;
 
 // ---- Modal Alta / Edición ----
-async function abrirAltaEdicionDrca(id) {
+// `clonarDe` abre un alta con los datos de otra campaña ya cargados. Es un alta
+// de verdad: no toca el original y no persiste nada hasta que el operador
+// guarda. Tiene que pasar por el formulario porque el UNIQUE de `slug` es
+// global — dos campañas idénticas no pueden compartir identificador — y porque
+// el clon nace en borrador, listo para reprogramarse.
+async function abrirAltaEdicionDrca(id, clonarDe = null) {
   drcaEditandoId = id;
   const editando = !!id;
+  const clonando = !editando && !!clonarDe;
 
   await drcaCargarLookups();
   const L = drcaLookupsCache || {};
 
   let r = null;
-  if (editando) {
-    try { r = await apiGet(`${DRCA_API}?id=${id}`); }
+  if (editando || clonando) {
+    try { r = await apiGet(`${DRCA_API}?id=${editando ? id : clonarDe}`); }
     catch (err) { toast(err.message, { error: true }); return; }
   }
 
+  // Sólo la edición se bloquea: el clon es un registro nuevo, así que aunque
+  // el original ya haya salido, la copia se edita entera.
   const arrancada = editando && DRCA_ESTADOS_ARRANCADOS.includes(r?.estado || '');
 
   const optsProy = `<option value="">— Sin proyecto —</option>` +
@@ -36405,7 +37168,8 @@ async function abrirAltaEdicionDrca(id) {
   openModal(`
     <div class="modal" style="max-width:680px">
       <div class="modal-header">
-        <div class="modal-title">${editando ? 'Editar campaña' : 'Nueva campaña'}</div>
+        <div class="modal-title">${editando ? 'Editar campaña' : 'Nueva campaña'}${
+          clonando ? ` <span class="modal-subtitle">(clonada de #${clonarDe})</span>` : ''}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
@@ -36416,9 +37180,19 @@ async function abrirAltaEdicionDrca(id) {
           dejaría el registro mintiendo sobre lo que se mandó. Si necesitás otra
           combinación, cancelá esta campaña y creá una nueva.
         </div>` : ''}
+        ${clonando ? `
+        <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:.82rem;color:var(--muted)">
+          Copia de <b>${esc(r?.nombre || ('#' + clonarDe))}</b>. Se duplicó todo salvo el
+          estado (la copia nace en borrador), la fecha de programación y los contadores
+          de envío. Revisá el nombre y el slug — el slug es único en todo el sistema.
+        </div>` : ''}
 
         <div class="form-group">
-          <label for="drcaNombre">Nombre *</label>
+          <label for="drcaNombre">Nombre *${(editando || clonando) ? '' : `
+            <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+              — si lo dejás vacío se arma solo con el proyecto, la plantilla y la lista que elijas
+            </span>`}
+          </label>
           <input type="text" id="drcaNombre" maxlength="150" autocomplete="off"
                  placeholder="Ej: Promo Navidad 2026 — clientes activos">
         </div>
@@ -36518,7 +37292,7 @@ async function abrirAltaEdicionDrca(id) {
     const pintarListas = (listas) => {
       selLi.innerHTML = `<option value="">— Sin lista —</option>` +
         (listas || []).map((l) =>
-          `<option value="${l.id}" data-suscriptos="${l.suscriptos}">${esc(l.nombre)} (${fmtNum(l.suscriptos)})</option>`).join('');
+          `<option value="${l.id}" data-suscriptos="${l.suscriptos}" data-nombre="${esc(l.nombre)}">${esc(l.nombre)} (${fmtNum(l.suscriptos)})</option>`).join('');
       if (preLista) selLi.value = String(preLista);
       drcaActualizarAlcance();
     };
@@ -36559,39 +37333,71 @@ async function abrirAltaEdicionDrca(id) {
       : '';
   };
 
-  if (editando && r) {
-    $('#drcaNombre').value        = r.nombre        || '';
+  // Lo que define la campaña se copia igual en editar y en clonar. Lo que las
+  // separa (nombre, slug, estado, programación) se resuelve abajo.
+  if (r) {
     $('#drcaProyecto').value      = r.proyecto_id != null ? String(r.proyecto_id) : '';
     $('#drcaMedio').value         = r.medio         || '';
-    $('#drcaSlug').value          = r.slug          || '';
-    $('#drcaEstado').value        = r.estado        || 'borrador';
-    $('#drcaProgramada').value    = drcaADatetimeLocal(r.programada);
     $('#drcaPrioridad').value     = r.prioridad ?? 5;
     $('#drcaAsunto').value        = r.asunto        || '';
     $('#drcaDescripcion').value   = r.descripcion   || '';
     $('#drcaObservaciones').value = r.observaciones || '';
+  }
+
+  if (editando) {
+    $('#drcaNombre').value     = r.nombre || '';
+    $('#drcaSlug').value       = r.slug   || '';
+    $('#drcaEstado').value     = r.estado || 'borrador';
+    $('#drcaProgramada').value = drcaADatetimeLocal(r.programada);
     await repoblar(r.lista_id, r.plantilla_id, r.canal_id);
   } else {
+    // El clon arranca en borrador y sin fecha: heredar la programación del
+    // original dejaría una fecha ya vencida esperando a que alguien pase la
+    // copia a "programada", y ahí saldría de golpe.
     $('#drcaEstado').value = 'borrador';
-    await repoblar(null, null, null);
-    // En el alta el slug se autocompleta desde el nombre mientras se tipea;
-    // deja de hacerlo en cuanto el operador lo edita a mano. En edición no se
-    // toca nunca: es un identificador estable y re-derivarlo rompería las
-    // referencias externas que el slug justamente evita.
+    // En el alta el nombre se arma solo con los campos que se van eligiendo, y
+    // el slug se deriva del nombre. Cada uno deja de autocompletarse en cuanto
+    // el operador lo edita a mano. En edición no se tocan nunca: el nombre ya
+    // es el que puso y el slug es un identificador estable — re-derivarlo
+    // rompería las referencias externas que el slug justamente evita.
     const inpNom  = $('#drcaNombre');
     const inpSlug = $('#drcaSlug');
+    inpNom.dataset.auto = '1';
     inpSlug.addEventListener('input', () => { inpSlug.dataset.manual = '1'; });
     inpNom.addEventListener('input', () => {
-      if (inpSlug.dataset.manual === '1') return;
-      inpSlug.value = drcaSlugify(inpNom.value);
+      // Escribir a mano corta el autocompletado. Vaciar el campo lo reactiva,
+      // pero sin repintar en el acto: repintarlo mientras borra dejaría el
+      // campo imposible de vaciar. Vuelve a llenarse al tocar otro combo.
+      inpNom.dataset.auto = inpNom.value.trim() === '' ? '1' : '0';
+      drcaSincronizarSlug();
     });
+    $('#drcaPlantilla').addEventListener('change', drcaAutocompletarNombre);
+    $('#drcaLista').addEventListener('change', drcaAutocompletarNombre);
+    $('#drcaAsunto').addEventListener('input', drcaAutocompletarNombre);
+
+    if (clonando) {
+      // El clon ya trae nombre propio ("… (copia)"), así que el autocompletado
+      // arranca apagado. El slug sí sigue al nombre: si el operador reescribe
+      // el nombre de la copia, el identificador acompaña.
+      inpNom.value = drcaNombreDeCopia(r?.nombre);
+      inpNom.dataset.auto = '0';
+      drcaSincronizarSlug();
+      await repoblar(r?.lista_id, r?.plantilla_id, r?.canal_id);
+    } else {
+      await repoblar(null, null, null);
+      drcaAutocompletarNombre();
+    }
   }
 
   if (!arrancada) {
-    $('#drcaMedio').addEventListener('change', () => repoblar(
-      $('#drcaLista').value || null, null, null));
-    $('#drcaProyecto').addEventListener('change', () => repoblar(
-      $('#drcaLista').value || null, $('#drcaPlantilla').value || null, $('#drcaCanal').value || null));
+    $('#drcaMedio').addEventListener('change', async () => {
+      await repoblar($('#drcaLista').value || null, null, null);
+      drcaAutocompletarNombre();
+    });
+    $('#drcaProyecto').addEventListener('change', async () => {
+      await repoblar($('#drcaLista').value || null, $('#drcaPlantilla').value || null, $('#drcaCanal').value || null);
+      drcaAutocompletarNombre();
+    });
     $('#drcaLista').addEventListener('change', drcaActualizarAlcance);
   }
 
@@ -36688,8 +37494,13 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
   let r;
   try { r = await apiGet(`${DRCA_API}?id=${id}`); }
   catch (err) { toast(err.message, { error: true }); return; }
-  drcaDetalleActual = r;
-  drcaPadronEstado  = '';
+  drcaDetalleActual   = r;
+  drcaPadronEstado    = '';
+  drcaPadronResultado = '';
+  drcaTplCargada      = false;
+  drcaListaCargada    = false;
+  drcaListaSinDato    = false;
+  clearTimeout(drcaListaTimer);
 
   const card = (label, valor, ancho) => `
     <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
@@ -36703,7 +37514,7 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
   const fec = (v) => v ? esc(fmtFechaAnio(v)) : '<span style="color:var(--muted)">—</span>';
 
   openModal(`
-    <div class="modal" style="max-width:760px">
+    <div class="modal" style="width:92vw;max-width:1040px">
       <div class="modal-header">
         <div class="modal-title">
           ${DRCA_MEDIO_EMOJI[r.medio] || '📨'}
@@ -36712,11 +37523,22 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
       <div class="modal-body">
+        ${/* El orden cuenta la campaña de punta a punta: qué es (General), qué
+              sale (Plantilla), a quién le sale HOY (Lista), a quién le salió de
+              verdad cuando se expandió (Destinatarios) y cómo le fue
+              (Estadísticas). Las dos del medio miran el presente; las dos
+              últimas, la foto congelada del padrón. */''}
         <div class="modal-tabs" role="tablist">
           <button type="button" class="modal-tab" role="tab" data-drca-tab="general"
                   onclick="drcaCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-drca-tab="plantilla"
+                  onclick="drcaCambiarTab('plantilla')"><i class="fa-solid fa-envelope-open-text"></i> Plantilla</button>
+          <button type="button" class="modal-tab" role="tab" data-drca-tab="lista"
+                  onclick="drcaCambiarTab('lista')"><i class="fa-solid fa-users"></i> Lista</button>
           <button type="button" class="modal-tab" role="tab" data-drca-tab="padron"
                   onclick="drcaCambiarTab('padron')"><i class="fa-solid fa-list-check"></i> Destinatarios</button>
+          <button type="button" class="modal-tab" role="tab" data-drca-tab="stats"
+                  onclick="drcaCambiarTab('stats')"><i class="fa-solid fa-chart-simple"></i> Estadísticas</button>
         </div>
 
         <div class="modal-tabpanel" data-drca-tab="general" role="tabpanel">
@@ -36741,13 +37563,51 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
             ${card('Descripción',   `<div style="white-space:pre-wrap;font-size:.85rem">${txt(r.descripcion)}</div>`, 'full')}
             ${card('Observaciones', `<div style="white-space:pre-wrap;font-size:.85rem">${txt(r.observaciones)}</div>`, 'full')}
           </div>
+        </div>
 
-          <div style="margin-top:14px;display:flex;flex-wrap:wrap;gap:12px">
-            ${card('Destinatarios', esc(fmtNum(r.total)))}
-            ${card('Encolados',     esc(fmtNum(r.encolados)))}
-            ${card('Enviados',      `<span style="color:var(--success)">${esc(fmtNum(r.enviados))}</span>`)}
-            ${card('Fallidos',      `<span style="color:var(--danger)">${esc(fmtNum(r.fallidos))}</span>`)}
-            ${card('Omitidos',      esc(fmtNum(r.omitidos)), 'full')}
+        ${/* Los dos paneles siguientes nacen con el spinner puesto y los llenan
+              drcaCargarPlantilla() / drcaCargarLista() la primera vez que se
+              entra a la pestaña. */''}
+        <div class="modal-tabpanel" data-drca-tab="plantilla" role="tabpanel" hidden>
+          <div id="drcaTplPanel">
+            <div style="text-align:center;padding:40px"><div class="spin"></div></div>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drca-tab="lista" role="tabpanel" hidden>
+          <div id="drcaListaCabecera"></div>
+          ${/* La toolbar es estática: si la repintara el loader, cada tecla del
+                buscador le sacaría el foco al input. */''}
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center">
+            <div class="search-wrap" style="flex:1;min-width:200px">
+              <input type="search" class="search-input" id="drcaListaSearch"
+                     placeholder="🔍 Buscar suscripto por nombre, correo o teléfono…" autocomplete="off">
+            </div>
+            <button class="btn btn-ghost btn-icon" id="drcaListaRefrescar" title="Refrescar">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+            <label for="drcaListaLimite" style="font-size:.8rem;color:var(--muted)">Límite</label>
+            <select id="drcaListaLimite" style="width:auto">
+              ${[25, 50, 100, 250, 500, 1000].map((n) => `<option value="${n}"${n === 100 ? ' selected' : ''}>${n}</option>`).join('')}
+            </select>
+          </div>
+          <div id="drcaListaChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+          <div id="drcaListaResumen" style="font-size:.8rem;color:var(--muted);margin-bottom:8px">&nbsp;</div>
+          <div class="table-card" style="max-height:340px;overflow:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:80px">Código</th>
+                  <th style="width:44px;text-align:center">Tipo</th>
+                  <th>Nombre</th>
+                  <th style="width:220px">Destino</th>
+                  <th style="width:120px">Suscripto</th>
+                </tr>
+              </thead>
+              <tbody id="drcaListaTbody">
+                <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -36770,13 +37630,36 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
                   <th>Destinatario</th>
                   <th style="width:180px">Destino</th>
                   <th style="width:110px">Estado</th>
+                  <th style="width:150px">Resultado</th>
                   <th>Motivo</th>
                 </tr>
               </thead>
               <tbody id="drcaPadronTbody">
-                <tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+                <tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+
+        ${/* Los contadores denormalizados de la campaña. Salen de la misma
+              ficha que General (ya está cargada), así que esta pestaña no pide
+              nada: se pinta con el modal. */''}
+        <div class="modal-tabpanel" data-drca-tab="stats" role="tabpanel" hidden>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Destinatarios', esc(fmtNum(r.total)))}
+            ${card('Encolados',     esc(fmtNum(r.encolados)))}
+            ${card('Enviados',      `<span style="color:var(--success)">${esc(fmtNum(r.enviados))}</span>`)}
+            ${card('Fallidos',      `<span style="color:var(--danger)">${esc(fmtNum(r.fallidos))}</span>`)}
+            ${card('Omitidos',      esc(fmtNum(r.omitidos)))}
+            ${/* Rebotados y bajas sólo aplican a correo: los alimenta el webhook
+                  SNS de SES, que no existe para WhatsApp ni Telegram. Mostrar
+                  "0 rebotados" en una campaña de WhatsApp se leería como "no
+                  rebotó ninguno" cuando en realidad no se mide. */''}
+            ${r.medio !== 'correo' ? '' : `
+              ${card('Rebotados',   `<span style="color:var(--danger)">${esc(fmtNum(r.rebotados ?? 0))}</span>`)}
+              ${card('Bajas de la lista',
+                     `<span style="color:var(--warn)">${esc(fmtNum(r.bajas ?? 0))}</span>`, 'full')}
+            `}
           </div>
         </div>
       </div>
@@ -36799,6 +37682,13 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
     padronTimer = setTimeout(() => drcaCargarPadron(id), 250);
   });
 
+  $('#drcaListaRefrescar')?.addEventListener('click', () => drcaCargarLista(id));
+  $('#drcaListaLimite')?.addEventListener('change', () => drcaCargarLista(id));
+  $('#drcaListaSearch')?.addEventListener('input', () => {
+    clearTimeout(drcaListaTimer);
+    drcaListaTimer = setTimeout(() => drcaCargarLista(id), 250);
+  });
+
   $('#modalRoot').addEventListener('click', (ev) => {
     if (ev.target.closest('[data-act="close"]'))  closeModal();
     if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrca(id); }
@@ -36819,10 +37709,11 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
 async function drcaCargarPadron(id) {
   const tbody = $('#drcaPadronTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams({ id: String(id), mensajes: '1', limite: '200' });
-  if (drcaPadronEstado) qs.set('estado', drcaPadronEstado);
+  if (drcaPadronEstado)    qs.set('estado',    drcaPadronEstado);
+  if (drcaPadronResultado) qs.set('resultado', drcaPadronResultado);
   const q = $('#drcaPadronSearch')?.value.trim();
   if (q) qs.set('q', q);
 
@@ -36837,25 +37728,53 @@ async function drcaCargarPadron(id) {
   // que se repintan con cada carga: el conteo viene del endpoint.
   const chips = $('#drcaPadronChips');
   if (chips) {
-    const conteo = data.conteo || {};
+    const conteo    = data.conteo || {};
+    const conteoRes = data.conteo_resultado || {};
     const L = drcaLookupsCache || {};
-    chips.innerHTML =
+
+    // Dos filas de chips porque son dos ejes: el de arriba filtra el ciclo de
+    // vida del padrón (pendiente/encolado/enviado/…), el de abajo el feedback
+    // de SES (entregado/rebotado/spam/…). Se combinan — "enviados que
+    // rebotaron" es la consulta que importa para limpiar la lista.
+    // Los chips de resultado sólo aparecen si hay algún evento: en WhatsApp y
+    // Telegram no existe SNS y la fila entera sobraría.
+    const hayResultados = Object.keys(conteoRes).some((k) => k !== 'sin_evento');
+
+    const filaEstado =
       `<button type="button" class="filter-chip${drcaPadronEstado === '' ? ' active' : ''}" data-estado="">Todos (${fmtNum(data.total || 0)})</button>` +
       (L.estados_padron || [])
         .filter((e) => (conteo[e.valor] || 0) > 0)
         .map((e) => `<button type="button" class="filter-chip${drcaPadronEstado === e.valor ? ' active' : ''}" data-estado="${esc(e.valor)}">${esc(e.texto)} (${fmtNum(conteo[e.valor])})</button>`)
         .join('');
+
+    const filaResultado = !hayResultados ? '' :
+      `<div style="flex-basis:100%;height:0"></div>` +
+      `<span style="font-size:.75rem;color:var(--muted);align-self:center;margin-right:2px">SES:</span>` +
+      `<button type="button" class="filter-chip${drcaPadronResultado === '' ? ' active' : ''}" data-resultado="">Todos</button>` +
+      (L.resultados || [])
+        .filter((e) => (conteoRes[e.valor] || 0) > 0)
+        .map((e) => `<button type="button" class="filter-chip${drcaPadronResultado === e.valor ? ' active' : ''}" data-resultado="${esc(e.valor)}">${esc(e.texto)} (${fmtNum(conteoRes[e.valor])})</button>`)
+        .join('') +
+      ((conteoRes.sin_evento || 0) > 0
+        ? `<button type="button" class="filter-chip${drcaPadronResultado === 'sin_evento' ? ' active' : ''}" data-resultado="sin_evento">Sin evento (${fmtNum(conteoRes.sin_evento)})</button>`
+        : '');
+
+    chips.innerHTML = filaEstado + filaResultado;
     chips.onclick = (ev) => {
       const b = ev.target.closest('.filter-chip');
       if (!b) return;
-      drcaPadronEstado = b.dataset.estado || '';
+      // `undefined` distingue "chip de la otra fila" de "chip Todos" (que lleva
+      // string vacío): sin esta distinción, tocar un chip de estado limpiaría
+      // el filtro de resultado y viceversa.
+      if (b.dataset.estado    !== undefined) drcaPadronEstado    = b.dataset.estado;
+      if (b.dataset.resultado !== undefined) drcaPadronResultado = b.dataset.resultado;
       drcaCargarPadron(id);
     };
   }
 
   const items = data.items || [];
   if (!items.length) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">${
       (data.total || 0) === 0
         ? 'Esta campaña todavía no se expandió: el padrón se genera cuando corre el envío.'
         : 'Sin resultados con el filtro actual.'
@@ -36869,7 +37788,246 @@ async function drcaCargarPadron(id) {
       <td>${esc(m.prospecto_nombre || `#${m.prospecto_id}`)}</td>
       <td style="font-family:monospace;font-size:.78rem">${esc(m.destino || '—')}</td>
       <td>${drcaPadronBadge(m)}</td>
+      <td>${drcaResultadoBadge(m)}</td>
       <td style="font-size:.8rem;color:var(--muted)">${esc(m.motivo || '—')}</td>
+    </tr>
+  `).join('');
+}
+
+// ---- Pestaña Plantilla ----
+// Qué mensaje va a salir. Se lee del endpoint de campañas y no del de
+// plantillas para que alcance con `datarocket.campanas.consultar` (ver el
+// comentario de handlePlantillaCampana en el PHP).
+//
+// Es SOLO lectura: para cambiar la plantilla está su propio ABM. Acá el
+// operador viene a contestar "¿qué le va a llegar a la gente?" justo antes de
+// apretar Ejecutar, y por eso lo que se muestra grande es el asunto YA
+// RESUELTO, no los dos pedazos sueltos que lo forman.
+async function drcaCargarPlantilla(id) {
+  const panel = $('#drcaTplPanel');
+  if (!panel) return;
+
+  let d;
+  try { d = await apiGet(`${DRCA_API}?id=${id}&plantilla=1`); }
+  catch (e) {
+    // El flag se baja para que reabrir la pestaña reintente en vez de dejar el
+    // error clavado hasta cerrar el modal.
+    drcaTplCargada = false;
+    if ($('#drcaTplPanel')) panel.innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
+    return;
+  }
+  if (!$('#drcaTplPanel')) return;   // el modal se cerró mientras cargaba
+
+  const vacio = (msg) => `
+    <div class="table-empty" style="padding:34px 18px;text-align:center">
+      <div style="font-size:1.8rem;margin-bottom:8px">✉️</div>${msg}
+    </div>`;
+
+  if (d.plantilla_id == null) {
+    panel.innerHTML = vacio('La campaña todavía no tiene plantilla asignada. Elegila desde Editar: sin plantilla no se puede lanzar.');
+    return;
+  }
+  const p = d.plantilla;
+  if (!p) {
+    panel.innerHTML = vacio(`La plantilla <code>#${esc(d.plantilla_id)}</code> ya no existe — se borró después de asignarla. Elegí otra desde Editar.`);
+    return;
+  }
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem;word-break:break-word">${valor}</div>
+    </div>
+  `;
+  const txt = (v) => esc(v != null && v !== '' ? String(v) : '—');
+
+  // Mismo criterio que el ABM de plantillas: preview renderizado sólo cuando es
+  // correo en HTML; en cualquier otro caso el cuerpo va tal cual como texto,
+  // porque es tal cual como se manda.
+  const esHtml = p.medio === 'C' && p.formato === 'html';
+  const cuerpo = p.cuerpo && String(p.cuerpo).trim() !== ''
+    ? (esHtml
+        ? `<iframe srcdoc="${esc(p.cuerpo)}" sandbox
+                   style="width:100%;min-height:320px;border:1px solid var(--border);border-radius:8px;background:#fff"></iframe>`
+        : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 80%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5;max-height:320px;overflow:auto">${esc(p.cuerpo)}</pre>`)
+    : `<div style="color:var(--muted);font-style:italic">Sin cuerpo cargado.</div>`;
+
+  // El asunto sale grande y aparte: es lo único de la plantilla que la campaña
+  // puede modificar (sustituyendo `{asunto}`), así que mostrarlo como una
+  // tarjeta más lo escondería justo donde importa. WhatsApp y Telegram no
+  // tienen subject, así que el bloque entero se omite.
+  const asuntoBloque = d.medio !== 'correo' ? '' : `
+    <div style="margin-top:14px;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:14px 16px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Asunto que va a salir</div>
+      <div style="font-size:1.02rem;font-weight:600;word-break:break-word${d.asunto_resuelto ? '' : ';color:var(--danger)'}">
+        ${d.asunto_resuelto ? esc(d.asunto_resuelto) : 'Queda vacío — la campaña no va a poder lanzarse.'}
+      </div>
+      ${d.usa_placeholder ? `
+        <div style="font-size:.78rem;color:var(--muted);margin-top:8px;line-height:1.5">
+          La plantilla es transaccional: guarda <code>{asunto}</code> y espera recibirlo de la campaña.
+          Resulta de reemplazar ese hueco por el asunto de la campaña
+          (${d.campana_asunto ? `<strong>${esc(d.campana_asunto)}</strong>` : '<em>vacío</em>'}).
+        </div>` : `
+        <div style="font-size:.78rem;color:var(--muted);margin-top:8px;line-height:1.5">
+          Lo fija la plantilla. El asunto cargado en la campaña
+          (${d.campana_asunto ? `<strong>${esc(d.campana_asunto)}</strong>` : '<em>vacío</em>'})
+          no se usa: la plantilla no tiene <code>{asunto}</code> donde meterlo.
+        </div>`}
+    </div>`;
+
+  panel.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:12px">
+      ${card('Plantilla',  `${txt(p.nombre)} <code style="font-size:.78rem;color:var(--muted)">#${esc(p.id)}</code>`, 'full')}
+      ${card('Slug',       `<code style="font-size:.82rem">${esc(p.slug || '—')}</code>`)}
+      ${card('Proyecto',   txt(p.proyecto_nombre || (p.proyecto_id ? `#${p.proyecto_id}` : null)))}
+      ${card('Medio',      txt(DR_PL_MEDIO_MAP[p.medio] || p.medio))}
+      ${card('Formato',    txt(DR_PL_FORMATO_MAP[p.formato] || p.formato))}
+      ${card('Remitente',  txt(p.remitente))}
+      ${card('Remite',     p.remite ? `<code style="font-size:.82rem">${esc(p.remite)}</code>` : '—')}
+    </div>
+
+    ${asuntoBloque}
+
+    <div style="margin-top:14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Cuerpo</div>
+      ${cuerpo}
+    </div>
+
+    ${!p.adjunto ? '' : `
+      <div style="margin-top:14px;display:flex;flex-wrap:wrap;gap:12px">
+        ${card('Adjunto', `<a href="${esc(p.adjunto)}" target="_blank" rel="noopener noreferrer" style="font-size:.85rem">${esc(p.adjunto)}</a>`, 'full')}
+      </div>`}
+  `;
+}
+
+// ---- Pestaña Lista ----
+// A quién le va a llegar. Es la foto de la lista HOY, no el padrón: el padrón
+// (pestaña Destinatarios) es la foto congelada al momento de expandir, y entre
+// una y otra puede haber gente que entró o salió de la lista.
+//
+// La columna Destino muestra el dato de contacto que el expansor va a resolver
+// para el medio de la campaña, con la misma expresión que usa él. Los que
+// aparecen "Sin dato" son exactamente los que van a quedar omitidos: por eso el
+// chip, que es la razón práctica de mirar esta pestaña antes de lanzar.
+let _drcaListaSeq = 0;
+
+async function drcaCargarLista(id) {
+  const tbody = $('#drcaListaTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  // Dos consultas seguidas (tipear y después cambiar el límite) pueden volver
+  // desordenadas y la vieja pisaría a la nueva. Sólo pinta la última que salió.
+  const seq = ++_drcaListaSeq;
+
+  const qs = new URLSearchParams({ id: String(id), lista: '1' });
+  qs.set('limite', $('#drcaListaLimite')?.value || '100');
+  const q = $('#drcaListaSearch')?.value.trim();
+  if (q) qs.set('q', q);
+  if (drcaListaSinDato) qs.set('sin_dato', '1');
+
+  const vigente = () => $('#drcaListaTbody') && _drcaListaSeq === seq;
+
+  let d;
+  try { d = await apiGet(`${DRCA_API}?${qs.toString()}`); }
+  catch (e) {
+    if (!vigente()) return;
+    drcaListaCargada = false;
+    $('#drcaListaTbody').innerHTML = `<tr><td colspan="5" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    return;
+  }
+  if (!vigente()) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem;word-break:break-word">${valor}</div>
+    </div>
+  `;
+  const txt = (v) => esc(v != null && v !== '' ? String(v) : '—');
+
+  // Las cuatro tarjetas de arriba van a media caja para que caigan de a dos por
+  // fila: Lista | Slug arriba, Proyecto | Suscriptos abajo. La Descripción
+  // queda entera porque es texto libre y puede ser larga.
+  const cab = $('#drcaListaCabecera');
+  if (cab) {
+    cab.innerHTML = !d.lista
+      ? `<div class="table-empty" style="padding:24px 18px;text-align:center">${
+          d.lista_id == null
+            ? 'La campaña todavía no tiene lista de distribución asignada. Elegila desde Editar: sin lista no se puede lanzar.'
+            : `La lista <code>#${esc(d.lista_id)}</code> ya no existe — se borró después de asignarla. Elegí otra desde Editar.`
+        }</div>`
+      : `<div style="display:flex;flex-wrap:wrap;gap:12px">
+           ${card('Lista',      `${txt(d.lista.nombre)} <code style="font-size:.78rem;color:var(--muted)">#${esc(d.lista.id)}</code>`)}
+           ${card('Slug',       `<code style="font-size:.82rem">${esc(d.lista.slug || '—')}</code>`)}
+           ${card('Proyecto',   txt(d.lista.proyecto_nombre || (d.lista.proyecto_id ? `#${d.lista.proyecto_id}` : null)))}
+           ${card('Suscriptos', esc(fmtNum(d.total_lista || 0)))}
+           ${d.lista.descripcion
+              ? card('Descripción', `<div style="white-space:pre-wrap;font-size:.85rem">${esc(d.lista.descripcion)}</div>`, 'full')
+              : ''}
+         </div>`;
+  }
+
+  // Sin lista no hay a quién listar ni qué filtrar: se apagan chips y tabla y
+  // manda el mensaje de la cabecera.
+  const chips = $('#drcaListaChips');
+  if (!d.lista) {
+    if (chips) chips.innerHTML = '';
+    $('#drcaListaResumen').innerHTML = '&nbsp;';
+    $('#drcaListaTbody').innerHTML = `<tr><td colspan="5" class="table-empty">Sin lista asignada.</td></tr>`;
+    return;
+  }
+
+  if (chips) {
+    const conDato = Math.max(0, (d.total_lista || 0) - (d.sin_dato || 0));
+    // El chip de "sin dato" sólo aparece si hay alguno: en una lista sana la
+    // fila entera sobra, y un "Sin dato (0)" invita a clickear la nada.
+    chips.innerHTML =
+      `<button type="button" class="filter-chip${drcaListaSinDato ? '' : ' active'}" data-sd="0">Todos (${fmtNum(d.total_lista || 0)})</button>` +
+      ((d.sin_dato || 0) > 0
+        ? `<button type="button" class="filter-chip${drcaListaSinDato ? ' active' : ''}" data-sd="1" title="No tienen el dato de contacto que necesita el medio de la campaña: al expandir quedan omitidos">Sin dato (${fmtNum(d.sin_dato)})</button>`
+        : '') +
+      `<span style="font-size:.75rem;color:var(--muted);align-self:center;margin-left:4px">${fmtNum(conDato)} con destino resuelto</span>`;
+    chips.onclick = (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drcaListaSinDato = b.dataset.sd === '1';
+      drcaCargarLista(id);
+    };
+  }
+
+  const items = d.items || [];
+  const res   = $('#drcaListaResumen');
+  if (res) {
+    const hayFiltro = !!q || drcaListaSinDato;
+    res.textContent = (d.total || 0) === 0
+      ? (hayFiltro ? `Sin coincidencias entre los ${fmtNum(d.total_lista || 0)} suscriptos.` : 'La lista no tiene suscriptos.')
+      : `Mostrando ${fmtNum(items.length)} de ${fmtNum(d.total)}`
+        + (hayFiltro ? ` coincidencias · ${fmtNum(d.total_lista || 0)} suscriptos en total.` : ' suscriptos.');
+  }
+
+  if (!items.length) {
+    $('#drcaListaTbody').innerHTML = `<tr><td colspan="5" class="table-empty">${
+      (d.total_lista || 0) === 0
+        ? 'La lista no tiene prospectos suscriptos: la campaña no se puede lanzar así.'
+        : 'Ningún suscripto coincide con el filtro actual.'
+    }</td></tr>`;
+    return;
+  }
+
+  $('#drcaListaTbody').innerHTML = items.map((p) => `
+    <tr>
+      <td><code style="font-size:.8rem">${esc(p.id)}</code></td>
+      <td style="text-align:center">${drPrTipoIcon(p.tipo)}</td>
+      <td>${esc(p.nombre || '—')}</td>
+      <td>${p.destino
+        ? `<span style="font-family:monospace;font-size:.78rem">${esc(p.destino)}</span>`
+        : '<span class="badge badge-warn">Sin dato</span>'}</td>
+      <td style="color:var(--muted);white-space:nowrap;font-size:.8rem">${p.fecha_creacion ? esc(fmtFechaSola(p.fecha_creacion)) : '—'}</td>
     </tr>
   `).join('');
 }
