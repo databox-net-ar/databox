@@ -120,6 +120,12 @@ a { color: inherit; text-decoration: none; }
    oscuro del fondo y no en blanco — sobre `--warn` el blanco queda ilegible. */
 .btn-warn          { background: var(--warn); color: var(--bg); }
 .btn-warn:hover    { background: color-mix(in srgb, var(--warn) 85%, #000); }
+/* Azul sólido: para la acción principal de una pantalla que NO es del panel y
+   por lo tanto no debe usar el verde institucional — hoy, el "Darme de baja"
+   de la página pública de suscripción. Dentro del panel la acción primaria
+   sigue siendo `.btn-primary`. */
+.btn-info          { background: var(--info); color: #fff; }
+.btn-info:hover    { background: color-mix(in srgb, var(--info) 85%, #000); }
 .btn-secondary     { background: var(--surface); color: var(--text);
                      border: 1px solid var(--border); }
 .btn-secondary:hover { background: var(--bg); }
@@ -1122,24 +1128,26 @@ tbody tr.row-clickable { cursor: pointer; }
 
 /* =====================================================================
    25. Ficha publica de interaccion
-   (cloud/datarocket/interacciones/index.php)
+   (www/datarocket/prospecto/index.php)
 
-   Unica pantalla del proyecto que vive FUERA de la SPA: la abre el
-   responsable desde el WhatsApp del aviso de pendientes, sin sesion y
-   casi siempre en un celular. Por eso no hay sidebar ni topbar del
-   panel — el chrome se reduce a una barra verde con el logo (regla 2
-   de DESIGN.md: el verde solido solo en el chrome) y todo lo demas es
+   Paginas que viven FUERA de la SPA: la ficha la abre el responsable
+   desde el WhatsApp del aviso de pendientes, sin sesion y casi siempre
+   en un celular. Por eso no hay sidebar ni topbar del panel — todo es
    una columna angosta centrada.
+
+   NINGUNA de las dos lleva encabezado ni logo: quien las abre llego
+   desde un mensaje que ya sabe de quien es, y la marca arriba solo
+   agrega chrome a una pantalla que gana siendo minima. Por eso ya no
+   existen .pub-topbar ni .pub-logo. Si alguna vuelve a necesitar
+   header, tener en cuenta que logo_light.png es blanco sobre
+   transparente: sobre la variante clara desaparece, y hace falta un
+   logo_dark.png o teñirlo con filter: brightness(0).
 
    Reutiliza .btn, .badge y .data-list del sistema; lo de aca abajo es
    solo el contenedor y los tres bloques que no existen en el panel
    (banner de estado, botones de contacto rapido, historial).
    ===================================================================== */
 .pub-body    { background: var(--bg); }
-.pub-topbar  { background: var(--primary); height: 56px; padding: 0 20px;
-               display: flex; align-items: center;
-               box-shadow: var(--shadow); }
-.pub-logo    { height: 22px; width: auto; display: block; }
 
 /* Columna de lectura. El padding inferior generoso deja respirar el
    ultimo bloque por encima de la barra del navegador movil. */
@@ -1259,3 +1267,32 @@ tbody tr.row-clickable { cursor: pointer; }
 @media (max-width: 560px) {
   .pub-quick { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------------
+   Variante CLARA de las páginas públicas
+   (www/datarocket/suscripcion/index.php)
+
+   El panel es oscuro y su chrome es verde sólido, pero una página que se
+   abre desde un correo no es el panel: llega al cliente de mail de un
+   destinatario, casi siempre sobre fondo blanco, y una pantalla oscura
+   con una barra verde se lee como "esto es otra app" en vez de como el
+   pie del mail que acaba de recibir.
+
+   Se resuelve redefiniendo los TOKENS dentro de `.pub-light`, no
+   reescribiendo las reglas `.pub-*`. Así la estructura entera —tarjetas,
+   tipografía, espaciados, estados— se reutiliza tal cual y las dos
+   variantes no pueden divergir: un ajuste de layout las arregla a las
+   dos. Es la excepción a "tema único" de DESIGN.md §1, y aplica sólo a
+   páginas públicas fuera del panel.
+   --------------------------------------------------------------------- */
+.pub-light {
+  --bg:        #ffffff;
+  --surface:   #ffffff;
+  --border:    #e3e6ea;
+  --text:      #1f2328;
+  --muted:     #656d76;
+  --shadow:    0 1px 3px rgba(0, 0, 0, .08);
+}
+
+/* La única página que usa esta variante hoy es la de suscripción, que no lleva
+   cabecera: por eso no hay overrides de chrome acá, sólo los tokens de arriba. */

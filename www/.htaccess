@@ -1,6 +1,49 @@
-# URLs sin extension: /foo sirve foo.php cuando existe.
+# www/.htaccess
+# ---------------------------------------------------------------------------
+# URLS SIN EXTENSION — REGLA DE TODO EL ARBOL DE www/
+# ---------------------------------------------------------------------------
+# Regla del proyecto: NINGUNA URL servida desde este DocumentRoot (vhost
+# www.databox.net.ar, puerto interno 8113 — ver docker/Dockerfile) se escribe
+# ni se publica con `.php`:
+#
+#   https://www.databox.net.ar/supervisor   ==   .../supervisor.php
+#
+# La forma con `.php` se sigue sirviendo tal cual (el rewrite es interno, no hay
+# redirect), pero NO es la que se documenta, ni la que se linkea, ni la que se
+# manda por correo. Es la misma regla que rige `api/` — ver api/.htaccess.
+#
+# Las paginas que viven en su propia carpeta con un `index.php` adentro
+# (`www/datarocket/interacciones/`, `www/datarocket/listas/`) ya cumplen sin
+# depender de este rewrite: la URL es la carpeta y Apache resuelve el
+# DirectoryIndex. Es la forma preferida para paginas nuevas, porque la URL
+# publica no revela el nombre del archivo ni cambia si manana el archivo se
+# parte en varios.
+#
+# Este archivo es el UNICO lugar donde vive la regla y cubre el arbol entero,
+# porque Apache aplica el .htaccess del padre a todo subdirectorio que no
+# declare reglas de rewrite propias.
+#
+# OJO AL AGREGAR UN .htaccess EN UN SUBDIRECTORIO: mod_rewrite NO hereda. Un
+# `RewriteRule` en, por ejemplo, `www/datarocket/.htaccess` descarta ESTAS
+# reglas para esa carpeta y sus URLs dejan de resolver sin extension sin que
+# nada avise. Si hace falta un .htaccess ahi, que no lleve directivas de
+# rewrite — o que repita el bloque de abajo entero.
+
+# Sin `-MultiViews` la negociacion de contenido de Apache resuelve la URL sin
+# extension ANTES que mod_rewrite, y elige el archivo por `Accept` del cliente.
+# En la imagen php:8.2-apache viene apagado; esto lo deja explicito para que la
+# regla no dependa de un default que puede cambiar con la imagen base.
+Options -MultiViews
+
 RewriteEngine On
+
+# Solo se reescribe cuando la URL no es un archivo ni un directorio real y
+# existe el `.php` hermano. Asi los assets y las carpetas siguen resolviendo
+# por su cuenta, y una URL inexistente sigue dando 404 en vez de caer en una
+# pagina que nadie pidio.
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteCond %{REQUEST_FILENAME}\.php -f
+# El `/?$` tolera la barra final: `/supervisor/` resuelve igual que
+# `/supervisor`.
 RewriteRule ^(.+?)/?$ $1.php [L]

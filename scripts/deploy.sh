@@ -103,7 +103,7 @@ done
 #       del contenedor (owner distinto, archivos lockeados). Si el --delete
 #       las alcanza, rsync aborta con "Permission denied" -- son runtime state
 #       del server, no artefactos del repo.
-echo "  Subiendo cloud/, api/, robot/, docker/, db/, env.php, .env.production, certs/..."
+echo "  Subiendo cloud/, www/, api/, robot/, docker/, db/, env.php, .env.production, certs/..."
 cd "$BASE_LOCAL"
 
 # db/ se incluye porque CLAUDE.md lo declara como schema de referencia.
@@ -138,17 +138,24 @@ EOF
 )
 
 # 3b. Subir tarball al staging
+# www/ entra desde el 2026-08-28: hasta entonces el sitio publico no se
+# deployaba y su unico contenido vivia en cloud/. La ficha de interaccion se
+# mudo ahi (www/datarocket/interacciones/), asi que sin esto la ruta nueva
+# devolveria 404 en produccion.
 tar \
     --exclude='./cloud/.git' \
     --exclude='./cloud/node_modules' \
     --exclude='./cloud/vendor' \
+    --exclude='./www/.git' \
+    --exclude='./www/node_modules' \
+    --exclude='./www/vendor' \
     --exclude='./api/.git' \
     --exclude='./api/node_modules' \
     --exclude='./api/vendor' \
     --exclude='*.log' \
     --exclude='api/v4/telegram/canales' \
     --exclude='api/v4/telegram/session_*' \
-    -czf - cloud api robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
+    -czf - cloud www api robot docker $INCLUDE_DB env.php .env.production $INCLUDE_CERTS | \
 ssh -i "$KEY" -o StrictHostKeyChecking=no \
     "$USER@$HOST" \
     "tar --no-overwrite-dir -xzf - -C '$STAGING_REMOTE/'"
@@ -158,7 +165,7 @@ ssh -i "$KEY" -o StrictHostKeyChecking=no \
 # generado por aprovisionar_server.sh, que no debe tocarse.
 ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$HOST" bash <<EOF
 set -e
-for d in cloud api robot docker db certs; do
+for d in cloud www api robot docker db certs; do
     if [ -d "$STAGING_REMOTE/\$d" ]; then
         mkdir -p "$BASE_REMOTE/\$d"
         # --no-o --no-g --no-p: no intentar preservar owner/group/perms.

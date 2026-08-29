@@ -48,6 +48,9 @@ require_once __DIR__ . '/sucesos.php';
 // `datarocket_prospectos_listas` por su cuenta: la baja por rebote sigue las
 // mismas reglas que la que hace un operador a mano.
 require_once __DIR__ . '/datarocket_listas_suscripciones.php';
+// Enlace firmado de baja, para la variable {baja} que las plantillas pueden
+// poner en el pie. Ver drcaEncolarUno().
+require_once __DIR__ . '/datarocket_listas_baja_enlace.php';
 
 // Cuantos mensajes se encolan por vuelta del loop de la fase 2. No es un limite
 // de throughput sino el tamano del SELECT: mas grande = menos round-trips, pero
@@ -305,8 +308,48 @@ function drcaVariablesDe(array $p): array {
  * manual a una direccion tipeada a mano no de de alta prospectos basura; aca el
  * prospecto YA existe y viene de la lista, asi que no hay nada que ensuciar — y
  * el rastro en `datarocket_interacciones` es medio punto de tener un CRM.
+ *
+ * LA VARIABLE {baja}
+ * ------------------
+ * Se arma aca y no en drcaVariablesDe() porque el enlace necesita la LISTA de
+ * la campana, y esa funcion solo ve la fila del prospecto. Es un enlace firmado
+ * distinto por destinatario: identifica a esta persona en esta lista, y es lo
+ * que resuelve www/datarocket/suscripcion/index.php.
+ *
+ * QUIEN DECIDE SI EL PIE APARECE: LA PLANTILLA
+ * --------------------------------------------
+ * La variable se manda SIEMPRE, pero el enlace solo sale en los correos cuya
+ * plantilla tenga el literal `{baja}` en el cuerpo (o en el asunto). El motor
+ * no inyecta nada: aplicarPlantillaAws() hace un str_replace y si el marcador
+ * no esta, no cambia nada. Poner o sacar el pie de baja de una campana es
+ * entonces editar su plantilla, no tocar codigo.
+ *
+ * `drListaBajaConfig()` se cachea en estatica: son dos lecturas de `parametros`
+ * y sin el cache costarian dos queries POR MENSAJE — 40.000 en una campana de
+ * 20.000. La config no cambia a mitad de corrida.
+ *
+ * Si falla la generacion no se cae el encolado: una campana entera que no sale
+ * es peor que un mensaje sin pie. En ese caso la clave NO se setea, y el
+ * literal `{baja}` sobrevive al cuerpo. Es deliberado: un enlace visiblemente
+ * roto se reporta, mientras que un `href=""` se ve normal y solo se descubre
+ * cuando alguien no puede darse de baja y termina apretando "esto es spam".
  */
 function drcaEncolarUno(PDO $pdo, array $c, array $fila): int {
+    static $cfgBaja = null;
+
+    $vars = drcaVariablesDe($fila);
+    try {
+        if ($cfgBaja === null) $cfgBaja = drListaBajaConfig($pdo);
+        $vars['baja'] = drListaBajaUrl(
+            $cfgBaja['base'],
+            (int) $fila['prospecto_id'],
+            (int) $c['lista_id'],
+            (int) $cfgBaja['dias']
+        );
+    } catch (Throwable) {
+        // Sin la clave, el str_replace de 'baja' no corre. Ver la nota de arriba.
+    }
+
     $datos = [
         'proyecto_id'         => (int) $c['proyecto_id'],
         'canal_id'            => (int) $c['canal_id'],
@@ -315,7 +358,7 @@ function drcaEncolarUno(PDO $pdo, array $c, array $fila): int {
         'destino'             => (string) $fila['destino'],
         'destinatario'        => (string) ($fila['prospecto_nombre'] ?? ''),
         'prioridad'           => (int) $c['prioridad'],
-        'variables'           => drcaVariablesDe($fila),
+        'variables'           => $vars,
         'registrar_prospecto' => true,
         // Alimenta el `{asunto}` de las plantillas transaccionales. Si la
         // plantilla ya trae asunto fijo este valor se ignora — el str_replace

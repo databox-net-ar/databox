@@ -106,13 +106,29 @@ framework y sin build step:
 
 - No hay rutas server-side. El navegador siempre está en `index.php`.
 
-**Única excepción — páginas públicas renderizadas en el servidor:**
-`cloud/datarocket/interacciones/index.php` es HTML armado en PHP, fuera
-de la SPA y **sin autenticación**. Es el destino del enlace que viaja en
-el WhatsApp del aviso de consultas pendientes: muestra la ficha del
-prospecto y ofrece un botón para marcarla como atendida. Se abre desde
-el navegador embebido de WhatsApp, donde no hay sesión del panel ni
-garantía de que el JS cargue, así que el botón es un `<form method="post">`
+**Excepción — páginas públicas renderizadas en el servidor:** viven en
+`www/` (vhost `www.databox.net.ar`, puerto 8113), **no** en `cloud/`,
+porque son anónimas y `cloud` es el dominio del panel. Son dos:
+
+- `www/datarocket/prospecto/index.php` — ficha de una consulta
+  pendiente, destino del enlace que viaja en el WhatsApp del aviso.
+  Estuvo en `cloud/datarocket/interacciones/`, donde hoy queda un
+  redirect 301 mientras haya enlaces viejos vivos (hasta 30 días desde
+  la migración `20260828_2700`).
+- `www/datarocket/suscripcion/index.php` — baja de una lista de distribución,
+  destino del pie de los correos de campaña (variable `{baja}` de las
+  plantillas).
+
+Las dos comparten forma: HTML armado en PHP, **sin autenticación**, con
+la URL firmada haciendo de credencial (HMAC con `APP_KEY_CLOUD`, sin
+tabla de control). Los includes resuelven por `dirname(__DIR__, 3) .
+'/cloud/...'` = `/var/www/cloud`, el segundo bind mount de `./cloud`; los
+assets se sirven del vhost de cloud con URL absoluta elegida por
+`APP_ENV`. **El GET nunca modifica nada** — los previsualizadores de
+enlaces y los escáneres corporativos hacen GET automático. Se abren desde
+el navegador embebido de WhatsApp o del cliente de correo, donde no hay
+sesión del panel ni garantía de que el JS cargue, así que el botón es un
+`<form method="post">`
 con POST-Redirect-GET y el GET nunca modifica nada (los previsualizadores
 de enlaces hacen GET automático).
 

@@ -12,11 +12,12 @@
  * enlace corta ese camino: abre la ficha completa del prospecto y ofrece un solo
  * boton.
  *
- *   https://cloud.databox.net.ar/datarocket/interacciones/?t=1041.mrb8k.<firma>
+ *   https://www.databox.net.ar/datarocket/prospecto/?t=1041.mrb8k.<firma>
  *
- * La pagina que lo consume es cloud/datarocket/interacciones/index.php y es
+ * La pagina que lo consume es www/datarocket/prospecto/index.php y es
  * PUBLICA: no pide login, porque quien la abre lo hace desde el WhatsApp en el
- * celular y no tiene sesion del panel ahi.
+ * celular y no tiene sesion del panel ahi. Por eso vive en www/ y no en cloud/,
+ * que es el dominio del panel. En la ruta vieja quedo un redirect 301.
  *
  * POR QUE UN TOKEN Y NO EL ID PELADO
  * ----------------------------------
@@ -61,7 +62,10 @@ const DR_INT_ENLACE_PARAM_DIAS = 'datarocket.interacciones.enlace.dias';
 
 // La base es la URL PUBLICA de la pagina, no la interna del contenedor: este
 // link lo abre una persona desde su celular, fuera de la red del servidor.
-const DR_INT_ENLACE_BASE_DEFAULT = 'https://cloud.databox.net.ar/datarocket/interacciones/';
+// Vive en www/ y no en cloud/: es publica y sin login, y cloud es el dominio
+// del panel. La mudanza es de la migracion 20260828_2400, que ademas reescribe
+// el parametro runtime — este default solo aplica a una instalacion nueva.
+const DR_INT_ENLACE_BASE_DEFAULT = 'https://www.databox.net.ar/datarocket/prospecto/';
 const DR_INT_ENLACE_DIAS_DEFAULT = 30;
 
 // Etiqueta de dominio del HMAC: separa esta familia de tokens de cualquier otra

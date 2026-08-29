@@ -1,9 +1,46 @@
 <?php
 /**
- * cloud/datarocket/interacciones/index.php
+ * www/datarocket/prospecto/index.php
  * Ficha PUBLICA de una consulta pendiente + boton para marcarla como atendida.
  *
- * https://cloud.databox.net.ar/datarocket/interacciones/?t=<token firmado>
+ * https://www.databox.net.ar/datarocket/prospecto/?t=<token firmado>
+ *
+ * La carpeta se llama `prospecto` y no `interacciones` porque es lo que se ve
+ * en la barra del navegador y lo que la pagina muestra: la ficha de una
+ * persona. "Interacciones" es el nombre del modulo del panel, no de lo que el
+ * responsable esta mirando en el celular.
+ *
+ * POR QUE VIVE EN www/ Y NO EN cloud/
+ * -----------------------------------
+ * Es la unica pagina publica del proyecto: no pide login y la abre gente desde
+ * el WhatsApp de su celular. `cloud.databox.net.ar` es el dominio del panel de
+ * administracion, donde todo lo demas exige sesion; colgar de ahi una URL
+ * anonima mezclaba dos superficies con reglas de acceso opuestas.
+ * `www.databox.net.ar` (DocumentRoot /var/www/www, puerto 8113) es el sitio
+ * publico y es donde corresponde.
+ *
+ * La version anterior vivia en cloud/datarocket/interacciones/. Ahi quedo un
+ * index.php que redirige 301 a esta URL conservando el `?t=`, porque los
+ * enlaces ya enviados por WhatsApp siguen vivos hasta 30 dias.
+ *
+ * La ruta `www/datarocket/interacciones/` existio unos minutos entre dos
+ * renombres y NO necesita redirect: se verifico que ningun aviso salio con esa
+ * base (el job corre `0 9-19 * * *` y no toco esa ventana), y en produccion la
+ * migracion que la habria activado se aplica junto con la que la reemplaza.
+ *
+ * DE DONDE SALEN LOS INCLUDES Y LOS ASSETS
+ * ----------------------------------------
+ * El codigo compartido (db, sucesos, el verificador del token) sigue en cloud/.
+ * Se llega por `dirname(__DIR__, 3) . '/cloud/...'` = /var/www/cloud, el segundo
+ * bind mount de la misma carpeta que ya usan las APIs v4 — declarado tanto en
+ * docker-compose.yml como en el compose que genera aprovisionar_server.sh.
+ *
+ * Los assets (CSS, favicon) siguen sirviendose desde el vhost de cloud
+ * con URL absoluta. No se duplican en www/ porque la hoja de estilos de esta
+ * pagina son los bloques `.pub-*` de assets/css/style.css MAS los tokens del
+ * design system y `.btn` / `.badge` / `.data-list`: recortar eso a un CSS
+ * propio garantizaba que las dos copias se separaran con el primer retoque de
+ * paleta.
  *
  * QUE ES
  * ------
@@ -75,9 +112,22 @@
  * fecha sola y no guarda autor.
  */
 
-require_once __DIR__ . '/../../api/db.php';
-require_once __DIR__ . '/../../api/lib/sucesos.php';
-require_once __DIR__ . '/../../api/lib/datarocket_interacciones_enlace.php';
+// /var/www/cloud — el segundo mount de ./cloud, que existe para exactamente
+// esto: compartir librerias del panel con codigo servido desde otro
+// DocumentRoot, sin acoplarlo a /var/www/html.
+require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/sucesos.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/datarocket_interacciones_enlace.php';
+
+// Base publica del vhost de cloud, de donde cuelgan CSS y favicon. Se
+// elige por APP_ENV y no por el Host del request: el request llega a
+// www.databox.net.ar, asi que derivarlo de ahi apuntaria los assets al sitio
+// equivocado. APP_ENV lo define env.php, que ya vino con db.php.
+const FICHA_CLOUD_BASE_PROD = 'https://cloud.databox.net.ar';
+const FICHA_CLOUD_BASE_DEV  = 'http://localhost:8091';
+$cloudBase = (defined('APP_ENV') && APP_ENV === 'production')
+    ? FICHA_CLOUD_BASE_PROD
+    : FICHA_CLOUD_BASE_DEV;
 
 // La pagina muestra datos personales de un tercero (nombre, telefono, correo,
 // domicilio). Nada de cache compartida, nada de indexar, nada de filtrar la URL
@@ -474,7 +524,10 @@ function bloque(string $titulo, array $filas): string {
 // Render
 // ----------------------------------------------------------------------------
 
-$cssVer = @filemtime(__DIR__ . '/../../assets/css/style.css') ?: time();
+// El mtime se lee del archivo real en /var/www/cloud; la URL apunta al vhost
+// publico de cloud. Son la misma hoja: una es el path en disco y la otra como
+// la sirve Apache.
+$cssVer = @filemtime(dirname(__DIR__, 3) . '/cloud/assets/css/style.css') ?: time();
 
 // Datos derivados que la vista usa mas de una vez.
 // Pendiente = entrante sin resolver por ninguno de los dos caminos. Desde la
@@ -502,14 +555,10 @@ $titular   = $f !== null
   <meta property="og:title" content="Prospecto pendiente de atención">
   <meta property="og:description" content="Ficha del prospecto y confirmación de atención. Databox Cloud.">
   <meta property="og:type" content="website">
-  <link rel="icon" href="../../favicon.ico">
-  <link rel="stylesheet" href="../../assets/css/style.css?v=<?= $cssVer ?>">
+  <link rel="icon" href="<?= h($cloudBase) ?>/favicon.ico">
+  <link rel="stylesheet" href="<?= h($cloudBase) ?>/assets/css/style.css?v=<?= $cssVer ?>">
 </head>
 <body class="pub-body">
-
-<header class="pub-topbar">
-  <img src="../../assets/img/logo_light.png" class="pub-logo" alt="Databox">
-</header>
 
 <main class="pub-wrap">
 <?php if ($aviso !== null): ?>
@@ -519,7 +568,7 @@ $titular   = $f !== null
     <div class="pub-estado-icono"><?= $icono ?></div>
     <h1 class="pub-estado-titulo"><?= h($titulo) ?></h1>
     <p class="pub-estado-detalle"><?= h($detalle) ?></p>
-    <a class="btn btn-secondary" href="https://cloud.databox.net.ar/#/datarocketinteracciones">Abrir el panel</a>
+    <a class="btn btn-secondary" href="<?= h($cloudBase) ?>/#/datarocketinteracciones">Abrir el panel</a>
   </div>
 
 <?php else: ?>

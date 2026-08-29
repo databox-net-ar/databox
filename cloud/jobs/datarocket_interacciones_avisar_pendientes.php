@@ -14,7 +14,7 @@
  *
  * ENLACE A LA FICHA
  * -----------------
- * Cada mensaje cierra con un link firmado a cloud/datarocket/interacciones/,
+ * Cada mensaje cierra con un link firmado a www/datarocket/prospecto/,
  * una pagina publica (sin login) que muestra la ficha completa del prospecto y
  * ofrece un boton para marcar la consulta como atendida. Es lo que cierra el
  * circuito: hasta que existio, contestar era facil pero MARCAR obligaba a
@@ -444,7 +444,7 @@ function drAvisoCanalTexto(?string $canal): string {
  * eso es media pantalla de nada entre el nombre y la consulta. Si se prefiere
  * el formato fijo, alcanza con sacar los `if` de cada linea.
  *
- * `$ficha` es la URL firmada de cloud/datarocket/interacciones/, que abre esta
+ * `$ficha` es la URL firmada de www/datarocket/prospecto/, que abre esta
  * misma ficha en el navegador y ofrece el boton para marcarla atendida sin
  * pasar por el login del panel. Va al pie, despues del texto de la consulta:
  * primero se lee que preguntaron, despues se decide que hacer.
