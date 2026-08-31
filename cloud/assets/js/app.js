@@ -8937,7 +8937,7 @@ async function eliminarAwsCh(id) {
 
 // ------------------------- Vista: Datarocket > Plantillas (ABM) -------------------------
 const drPlFiltrosDefaults = {
-  q: '', codigo: '', proyecto_id: '', medio: '', formato: '',
+  q: '', codigo: '', proyecto_id: '', medio: '', tipo: '', formato: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
 const drPlFiltros = { ...drPlFiltrosDefaults };
@@ -8950,6 +8950,15 @@ const DR_PL_MEDIO_ICON  = {
   // fa-envelope. Sin match => guion en la celda.
   C: '<i class="fa-solid fa-envelope"  title="Correo"></i>',
   W: '<i class="fa-brands fa-whatsapp" title="WhatsApp"></i>',
+};
+// `tipo` = intencion de la plantilla (migracion 20260829_0400). Se guarda en
+// minuscula, igual que `formato`. NULL/'' => sin clasificar: las filas previas
+// a la migracion quedaron asi a proposito, el listado las muestra con guion y
+// el filtro las junta con el valor centinela `_null`.
+const DR_PL_TIPO_MAP  = { transaccional: 'Transaccional', comunicacional: 'Comunicacional' };
+const DR_PL_TIPO_ICON = {
+  transaccional:  '<i class="fa-solid fa-receipt"  title="Transaccional"></i>',
+  comunicacional: '<i class="fa-solid fa-bullhorn" title="Comunicacional"></i>',
 };
 // `formato` es varchar(20) en BD (migrado desde varchar(1)); los codigos
 // abarcan los 6 tipos que el ABM reconoce. El listado muestra solo el icono
@@ -8966,6 +8975,64 @@ const DR_PL_FORMATO_ICON = {
   ubicacion: '<i class="fa-solid fa-location-dot" title="Ubicación"></i>',
 };
 let drPlProyectosCache = null;
+
+// Filtros rápidos de la toolbar: los mismos `medio` y `tipo` que ya viven en el
+// modal de Filtros, pero a un click. Escriben en `drPlFiltros` a través de
+// onFiltroDrPl(), o sea que el badge del botón Filtros y los selects del modal
+// se mantienen en sync solos — no hay un segundo estado que sincronizar.
+// Agregar un grupo nuevo es agregar una entrada acá; el resto es genérico.
+const DR_PL_RAPIDOS = [
+  {
+    key: 'medio',
+    titulo: 'Medio',
+    opciones: [
+      { v: '',  t: 'Todos',    icon: 'fa-solid fa-asterisk' },
+      { v: 'C', t: 'Correo',   icon: 'fa-solid fa-envelope' },
+      { v: 'W', t: 'WhatsApp', icon: 'fa-brands fa-whatsapp' },
+    ],
+  },
+  {
+    key: 'tipo',
+    titulo: 'Tipo',
+    opciones: [
+      { v: '',               t: 'Todos',          icon: 'fa-solid fa-asterisk' },
+      { v: 'transaccional',  t: 'Transaccional',  icon: 'fa-solid fa-receipt' },
+      { v: 'comunicacional', t: 'Comunicacional', icon: 'fa-solid fa-bullhorn' },
+      // Centinela que el endpoint traduce a "(tipo IS NULL OR tipo = '')".
+      { v: '_null',          t: 'Sin clasificar', icon: 'fa-solid fa-circle-question' },
+    ],
+  },
+];
+
+function drPlMenuRapidosHtml() {
+  return DR_PL_RAPIDOS.map((g, i) => {
+    const actual = String(drPlFiltros[g.key] ?? '');
+    const items = g.opciones.map((o) => {
+      const activo = actual === o.v;
+      return `
+        <button type="button" role="menuitemradio" aria-checked="${activo}"
+                class="${activo ? 'ctx-menu-activo' : ''}"
+                data-rapido-key="${esc(g.key)}" data-rapido-valor="${esc(o.v)}">
+          <i class="${o.icon}"></i><span>${esc(o.t)}</span>
+          ${activo ? '<i class="fa-solid fa-check ctx-menu-check"></i>' : ''}
+        </button>`;
+    }).join('');
+    // role="group" + aria-label para que el lector de pantalla asocie el rotulo
+    // del grupo con sus menuitemradio (el <div> del titulo por si solo no es
+    // parte del arbol de accesibilidad del menu).
+    return `${i > 0 ? '<div class="ctx-menu-sep"></div>' : ''}
+            <div class="ctx-menu-group" aria-hidden="true">${esc(g.titulo)}</div>
+            <div role="group" aria-label="${esc(g.titulo)}">${items}</div>`;
+  }).join('');
+}
+
+function abrirMenuRapidosDrPl(btn) {
+  const menu = $('#drPlRapidosMenu');
+  if (!menu || !btn) return;
+  menu.innerHTML = drPlMenuRapidosHtml();
+  const r = btn.getBoundingClientRect();
+  abrirCtxMenu(menu, r.left, r.bottom + 4, null);
+}
 
 route('/datarocketplantillas', async (mount) => {
   mount.innerHTML = `
@@ -9001,6 +9068,9 @@ route('/datarocketplantillas', async (mount) => {
             <i class="fa-solid fa-filter"></i>
             <span class="btn-icon-badge" id="drPlFiltrosBadge" style="display:none">0</span>
           </button>
+          <button class="btn btn-ghost btn-icon" id="drPlRapidosBtn" title="Filtros rápidos">
+            <i class="fa-solid fa-bars"></i>
+          </button>
           <button class="btn btn-ghost btn-icon" id="drPlRefrescarBtn" title="Refrescar">
             <i class="fa-solid fa-rotate"></i>
           </button>
@@ -9017,6 +9087,7 @@ route('/datarocketplantillas', async (mount) => {
               <th>Código</th>
               <th>Proyecto</th>
               <th style="text-align:center">Medio</th>
+              <th style="text-align:center">Tipo</th>
               <th>Nombre</th>
               <th>Slug</th>
               <th>Remitente</th>
@@ -9026,11 +9097,16 @@ route('/datarocketplantillas', async (mount) => {
             </tr>
           </thead>
           <tbody id="drPlTbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
     </div>
+
+    <!-- Filtros rápidos de la toolbar. El contenido se regenera en cada
+         apertura (drPlMenuRapidosHtml) porque los checks tienen que reflejar
+         el estado actual de drPlFiltros. -->
+    <div id="drPlRapidosMenu" class="ctx-menu" role="menu"></div>
 
     <div id="drPlCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="consultar" role="menuitem">
@@ -9063,13 +9139,26 @@ route('/datarocketplantillas', async (mount) => {
               <input type="number" id="fDrPlProyecto" min="1" placeholder="ID proyecto…" oninput="onFiltroDrPl('proyecto_id', this.value)">
             </div>
           </div>
-          <div class="form-row">
+          <div class="form-row form-row-3">
             <div class="form-group">
               <label>Medio</label>
               <select id="fDrPlMedio" onchange="onFiltroDrPl('medio', this.value)">
                 <option value="">Todos</option>
                 <option value="C">Correo</option>
                 <option value="W">WhatsApp</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <!-- El valor _null es el centinela que el endpoint traduce a
+                   "(tipo IS NULL OR tipo = '')" — las plantillas anteriores a
+                   la migracion 20260829_0400 quedaron sin clasificar y esta es
+                   la unica forma de listarlas juntas. -->
+              <label>Tipo</label>
+              <select id="fDrPlTipo" onchange="onFiltroDrPl('tipo', this.value)">
+                <option value="">Todos</option>
+                <option value="transaccional">Transaccional</option>
+                <option value="comunicacional">Comunicacional</option>
+                <option value="_null">Sin clasificar</option>
               </select>
             </div>
             <div class="form-group">
@@ -9097,6 +9186,7 @@ route('/datarocketplantillas', async (mount) => {
                 <option value="nombre">Nombre</option>
                 <option value="proyecto_id">Proyecto</option>
                 <option value="medio">Medio</option>
+                <option value="tipo">Tipo</option>
                 <option value="remitente">Remitente</option>
                 <option value="asunto">Asunto</option>
                 <option value="formato">Formato</option>
@@ -9119,14 +9209,17 @@ route('/datarocketplantillas', async (mount) => {
       </div>
     </div>
 
-    <!-- Editor HTML del cuerpo (misma modalidad que aws_mensajes). z-index 400
-         para quedar arriba del modal Editar plantilla que lo dispara. -->
+    <!-- Editor visual (WYSIWYG) del cuerpo HTML — misma modalidad que
+         aws_mensajes. Lo dispara la pestaña Diseño del modal Alta/Edicion y va
+         aparte (no embebido en la pestaña) para tener el ancho que TinyMCE
+         necesita; z-index 400 para quedar por encima del modal que lo abre.
+         La vista de codigo sale por el boton "Código" de su propia toolbar. -->
     <div class="modal-backdrop" id="drPlHtmlEditorBackdrop"
          style="z-index: 400"
          onclick="if(event.target===this) cerrarEditorHtmlDrPl()">
       <div class="modal modal-wide" style="max-width:1100px">
         <div class="modal-header">
-          <div class="modal-title"><i class="fa-solid fa-code"></i> Editar HTML del cuerpo</div>
+          <div class="modal-title"><i class="fa-solid fa-wand-magic-sparkles"></i> Editor visual del cuerpo</div>
           <button class="btn-icon-sm" onclick="cerrarEditorHtmlDrPl()">×</button>
         </div>
         <div class="modal-body">
@@ -9144,6 +9237,20 @@ route('/datarocketplantillas', async (mount) => {
   $('#drPlNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrPl(null));
   $('#drPlFiltrosBtn').addEventListener('click', () => abrirModalFiltrosDrPl());
   $('#drPlRefrescarBtn').addEventListener('click', () => cargarDrPl());
+
+  // stopPropagation: sin esto el handler global que cierra el ctx-menu al
+  // clickear afuera lo cerraria en el mismo click que lo abre (mismo motivo
+  // que el hamburguesa de las filas).
+  $('#drPlRapidosBtn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    abrirMenuRapidosDrPl(ev.currentTarget);
+  });
+  $('#drPlRapidosMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-rapido-key]');
+    if (!b) return;
+    cerrarCtxMenu();
+    onFiltroDrPl(b.dataset.rapidoKey, b.dataset.rapidoValor);
+  });
 
   const inp = $('#drPlSearch');
   const clr = $('#drPlSearchClear');
@@ -9201,7 +9308,7 @@ route('/datarocketplantillas', async (mount) => {
 async function cargarDrPl() {
   const tbody = $('#drPlTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   Object.entries(drPlFiltros).forEach(([k, v]) => {
@@ -9215,7 +9322,7 @@ async function cargarDrPl() {
     pintarStatsDrPl(data.stats);
     pintarTablaDrPl(data.items || [], proyectos);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -9238,7 +9345,7 @@ function pintarStatsDrPl(s) {
 function pintarTablaDrPl(rows, proyectos = []) {
   const tbody = $('#drPlTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin plantillas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin plantillas.</td></tr>`;
     return;
   }
   const proyMap = new Map(proyectos.map((p) => [Number(p.id), p.nombre]));
@@ -9248,11 +9355,16 @@ function pintarTablaDrPl(rows, proyectos = []) {
       ? esc(proyNom)
       : (p.proyecto_id == null || p.proyecto_id === '' ? '—' : `#${esc(p.proyecto_id)}`);
     const medioCell = DR_PL_MEDIO_ICON[p.medio] || '—';
+    // Sin clasificar (NULL) => guion con tooltip, para que se lea como "falta
+    // decidirlo" y no como un tipo mas.
+    const tipoCell = DR_PL_TIPO_ICON[p.tipo]
+      || (p.tipo ? esc(p.tipo) : '<span title="Sin clasificar" style="color:var(--muted)">—</span>');
     return `
     <tr data-id="${p.id}" class="row-clickable">
       <td class="td-id">#${esc(p.id)}</td>
       <td>${proyCell}</td>
       <td style="text-align:center">${medioCell}</td>
+      <td style="text-align:center">${tipoCell}</td>
       <td class="td-nombre">${esc(p.nombre || '—')}</td>
       <td style="white-space:nowrap"><code style="font-size:.78rem;color:var(--muted)">${esc(p.slug || '—')}</code></td>
       <td>${esc(p.remitente || '—')}</td>
@@ -9271,7 +9383,7 @@ function pintarTablaDrPl(rows, proyectos = []) {
 }
 
 function onFiltroDrPl(key, value) {
-  if (['medio', 'formato', 'order_by', 'dir'].includes(key)) {
+  if (['medio', 'tipo', 'formato', 'order_by', 'dir'].includes(key)) {
     drPlFiltros[key] = value;
   } else if (['codigo', 'proyecto_id'].includes(key)) {
     const v = String(value).trim();
@@ -9304,6 +9416,7 @@ function sincronizarControlesFiltrosDrPl() {
   $('#fDrPlCodigo').value   = f.codigo;
   $('#fDrPlProyecto').value = f.proyecto_id;
   $('#fDrPlMedio').value    = f.medio;
+  $('#fDrPlTipo').value     = f.tipo;
   $('#fDrPlFormato').value  = f.formato;
   $('#fDrPlLimite').value   = f.limite;
   $('#fDrPlOrderBy').value  = f.order_by;
@@ -9455,6 +9568,7 @@ function renderConsultaDrPl(p, proyectos = []) {
         ${card('Nombre',   p.nombre)}
         ${card('Proyecto', proyNombre)}
         ${card('Medio',    DR_PL_MEDIO_MAP[p.medio] || p.medio)}
+        ${card('Tipo',     DR_PL_TIPO_MAP[p.tipo] || p.tipo)}
         ${card('Formato',  DR_PL_FORMATO_MAP[p.formato] || p.formato)}
       </dl>
 
@@ -9488,6 +9602,8 @@ function renderConsultaDrPl(p, proyectos = []) {
   `;
 }
 
+// Compartida por los modales Consultar y Alta/Edicion: los dos viven en
+// #modalRoot y rotulan sus pestañas con data-drpl-tab.
 function drPlCambiarTab(tab) {
   document.querySelectorAll('#modalRoot .modal-tab[data-drpl-tab]').forEach((b) => {
     b.classList.toggle('active', b.dataset.drplTab === tab);
@@ -9495,6 +9611,9 @@ function drPlCambiarTab(tab) {
   document.querySelectorAll('#modalRoot .modal-tabpanel[data-drpl-tab]').forEach((p) => {
     p.hidden = p.dataset.drplTab !== tab;
   });
+  // El iframe del panel Diseño no se puede pintar mientras esta `hidden`
+  // (queda con alto 0), asi que lo refrescamos justo al entrar.
+  if (tab === 'diseno') drPlRefrescarPreview();
 }
 window.drPlCambiarTab = drPlCambiarTab;
 
@@ -9546,7 +9665,13 @@ async function abrirAltaEdicionDrPl(id) {
     if (a.dataset.act === 'guardar') await guardarDrPl(id, a);
   });
   const limpiarInvalido = (ev) => ev.target?.classList?.remove('input-invalid');
-  $('#modalRoot').addEventListener('input',  limpiarInvalido);
+  $('#modalRoot').addEventListener('input', (ev) => {
+    limpiarInvalido(ev);
+    // Tipear HTML a mano en el textarea repinta el preview de la pestaña
+    // Diseño. Tambien entra por aca el evento sintetico que dispara
+    // aceptarEditorHtmlDrPl() al volcar lo del editor visual.
+    if (ev.target?.id === 'drPlCuerpo') drPlRefrescarPreview();
+  });
   $('#modalRoot').addEventListener('change', async (ev) => {
     limpiarInvalido(ev);
     // Cascada Medio -> Formato: al cambiar el medio, repoblar las opciones
@@ -9567,25 +9692,36 @@ async function abrirAltaEdicionDrPl(id) {
   });
 }
 
-// Alterna la vista del campo Cuerpo en el editor de plantilla segun el select
-// Formato: si formato=H mostramos el iframe preview + boton flotante para
-// abrir el editor HTML (TinyMCE); si no, textarea normal. Mismo criterio que
-// awsMsgSincronizarCuerpo() — el textarea siempre queda en el DOM como fuente
-// de verdad.
+// Habilita o deshabilita la pestaña Diseño del alta/edicion segun el select
+// Formato: el diseño visual solo tiene sentido con formato=html (que a su vez
+// solo existe con medio=Correo, ver drPlFormatoOptionsHtml). El textarea del
+// cuerpo queda siempre visible como fuente de verdad — la pestaña Diseño
+// agrega el render y el WYSIWYG, no los reemplaza.
+//
+// Si el operador estaba parado en Diseño y cambia el formato a uno que no es
+// HTML, lo devolvemos a Cuerpo para no dejarlo mirando un panel muerto.
 function drPlSincronizarCuerpo() {
-  const formato  = $('#drPlFormato')?.value || '';
-  const textarea = $('#drPlCuerpo');
-  const preview  = $('#drPlCuerpoPreview');
-  const iframe   = $('#drPlCuerpoIframe');
-  if (!textarea || !preview || !iframe) return;
-  if (formato === 'html') {
-    textarea.style.display = 'none';
-    preview.style.display  = '';
-    iframe.srcdoc = textarea.value || '';
-  } else {
-    textarea.style.display = '';
-    preview.style.display  = 'none';
+  const esHtml = ($('#drPlFormato')?.value || '') === 'html';
+  const tab    = $('#drPlDisenoTab');
+  const hint   = $('#drPlCuerpoHtmlHint');
+  if (!tab) return;               // no estamos en el modal de alta/edicion
+  tab.disabled = !esHtml;
+  tab.title = esHtml ? '' : 'Solo aplica a plantillas de correo con formato HTML';
+  if (hint) hint.style.display = esHtml ? 'flex' : 'none';
+  if (esHtml) {
+    drPlRefrescarPreview();
+  } else if (tab.classList.contains('active')) {
+    drPlCambiarTab('cuerpo');
   }
+}
+
+// Vuelca el contenido actual del textarea en el iframe del panel Diseño.
+// `srcdoc` re-renderiza de cero en cada asignacion, asi que alcanza con
+// llamarla al tipear, al entrar a la pestaña y al aceptar el editor visual.
+function drPlRefrescarPreview() {
+  const ta     = $('#drPlCuerpo');
+  const iframe = $('#drPlCuerpoIframe');
+  if (ta && iframe) iframe.srcdoc = ta.value || '';
 }
 
 // ----------------------------------------------------------------------------
@@ -9661,8 +9797,7 @@ function aceptarEditorHtmlDrPl() {
     ta.value = html;
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   }
-  const iframe = $('#drPlCuerpoIframe');
-  if (iframe) iframe.srcdoc = html;
+  drPlRefrescarPreview();
   cerrarEditorHtmlDrPl();
 }
 window.cerrarEditorHtmlDrPl  = cerrarEditorHtmlDrPl;
@@ -9701,6 +9836,16 @@ function formDrPlHtml(p, proyectos = [], plantillaId = null) {
     { v: 'C', t: 'Correo' },
     { v: 'W', t: 'WhatsApp' },
   ].map((o) => `<option value="${o.v}"${o.v === medioActual ? ' selected' : ''}>${o.t}</option>`).join('');
+  // `tipo` no tiene cascada con `medio` (a diferencia de `formato`): una
+  // plantilla de correo o de WhatsApp puede ser transaccional o comunicacional
+  // por igual. Las plantillas viejas llegan con tipo NULL y el select arranca
+  // en '—', asi que editarlas obliga a clasificarlas (ver guardarDrPl).
+  const tipoActual = String(p?.tipo ?? '');
+  const tipoOptions = [
+    { v: '',               t: '—' },
+    { v: 'transaccional',  t: 'Transaccional' },
+    { v: 'comunicacional', t: 'Comunicacional' },
+  ].map((o) => `<option value="${o.v}"${o.v === tipoActual ? ' selected' : ''}>${o.t}</option>`).join('');
   const formatoActual = String(p?.formato ?? '');
   const formatoOptions = drPlFormatoOptionsHtml(medioActual, formatoActual);
 
@@ -9729,74 +9874,113 @@ function formDrPlHtml(p, proyectos = [], plantillaId = null) {
        <input type="file" id="drPlAdjuntoInput" style="display:none">`;
 
   return `
-    <div class="form-row form-row-3">
-      <div class="form-group">
-        <label>Proyecto</label>
-        <select id="drPlProyecto">${proyectoOptions}</select>
-      </div>
-      <div class="form-group">
-        <label>Medio</label>
-        <select id="drPlMedio">${medioOptions}</select>
+    <!-- Pestañas del alta/edicion: espejan las del modal Consultar (General /
+         Cuerpo) y usan la MISMA drPlCambiarTab() — los dos modales viven en
+         #modalRoot y comparten el atributo data-drpl-tab. La tercera, Diseño,
+         solo aplica cuando formato=html; drPlSincronizarCuerpo() la habilita o
+         deshabilita cada vez que cambia Medio o Formato. -->
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" role="tab"
+              data-drpl-tab="general" onclick="drPlCambiarTab('general')">
+        <i class="fa-solid fa-circle-info"></i> General
+      </button>
+      <button type="button" class="modal-tab" role="tab"
+              data-drpl-tab="cuerpo" onclick="drPlCambiarTab('cuerpo')">
+        <i class="fa-solid fa-envelope-open-text"></i> Cuerpo
+      </button>
+      <button type="button" class="modal-tab" role="tab" id="drPlDisenoTab"
+              data-drpl-tab="diseno" onclick="drPlCambiarTab('diseno')" disabled>
+        <i class="fa-solid fa-wand-magic-sparkles"></i> Diseño
+      </button>
+    </div>
+
+    <div class="modal-tabpanel" data-drpl-tab="general">
+      <div class="form-row form-row-3">
+        <div class="form-group">
+          <label>Proyecto</label>
+          <select id="drPlProyecto">${proyectoOptions}</select>
+        </div>
+        <div class="form-group">
+          <label>Medio</label>
+          <select id="drPlMedio">${medioOptions}</select>
+        </div>
+        <div class="form-group">
+          <label>Tipo</label>
+          <select id="drPlTipo">${tipoOptions}</select>
+        </div>
       </div>
       <div class="form-group">
         <label>Nombre</label>
         <input type="text" id="drPlNombre" maxlength="100" value="${v('nombre')}">
       </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Remitente</label>
-        <input type="text" id="drPlRemitente" maxlength="255" value="${v('remitente')}">
-      </div>
-      <div class="form-group">
-        <label>Remite</label>
-        <input type="text" id="drPlRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Asunto</label>
-      <input type="text" id="drPlAsunto" maxlength="255" value="${v('asunto')}">
-    </div>
-    <div class="form-group">
-      <label>Formato</label>
-      <select id="drPlFormato">${formatoOptions}</select>
-    </div>
-    <div class="form-group">
-      <label>Cuerpo</label>
-      <!-- Mismo patron que el editor de aws_mensajes: el textarea es la
-           fuente de verdad y siempre esta en el DOM (guardarDrPl lee de
-           #drPlCuerpo). Cuando formato=H el textarea se oculta y se muestra
-           un preview iframe con un boton flotante que abre el editor HTML
-           (TinyMCE). drPlSincronizarCuerpo() alterna la vista. -->
-      <div id="drPlCuerpoWrap" style="position:relative">
-        <textarea id="drPlCuerpo" rows="12" style="font-family:monospace">${v('cuerpo')}</textarea>
-        <div id="drPlCuerpoPreview" style="display:none;position:relative">
-          <iframe id="drPlCuerpoIframe"
-                  style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>
-          <button type="button" id="drPlCuerpoEditarBtn" title="Editar HTML"
-                  style="position:absolute;top:12px;right:12px;width:38px;height:38px;
-                         border-radius:50%;border:1px solid rgba(255,255,255,.4);
-                         background:rgba(0,0,0,.55);color:#fff;cursor:pointer;
-                         opacity:.65;transition:opacity .15s;display:flex;
-                         align-items:center;justify-content:center;font-size:.9rem"
-                  onmouseover="this.style.opacity=1"
-                  onmouseout="this.style.opacity=.65">
-            <i class="fa-solid fa-pen"></i>
-          </button>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Remitente</label>
+          <input type="text" id="drPlRemitente" maxlength="255" value="${v('remitente')}">
+        </div>
+        <div class="form-group">
+          <label>Remite</label>
+          <input type="text" id="drPlRemite" maxlength="255" value="${v('remite')}" style="font-family:monospace">
         </div>
       </div>
     </div>
-    <div class="form-group">
-      <label>Adjunto (URL o archivo)</label>
-      <div style="display:flex;gap:8px;align-items:stretch">
-        <input type="text" id="drPlAdjunto" maxlength="500" value="${v('adjunto')}"
-               style="font-family:monospace;flex:1"
-               placeholder="${esArchivo ? '' : 'Pegá una URL o subí un archivo…'}"
-               ${inputAttrs}>
-        ${adjuntoControl}
+
+    <div class="modal-tabpanel" data-drpl-tab="cuerpo" hidden>
+      <div class="form-group">
+        <label>Asunto</label>
+        <input type="text" id="drPlAsunto" maxlength="255" value="${v('asunto')}">
       </div>
-      <div id="drPlAdjuntoStatus" style="font-size:.78rem;color:var(--muted);margin-top:6px"></div>
+      <div class="form-group">
+        <label>Formato</label>
+        <select id="drPlFormato">${formatoOptions}</select>
+      </div>
+      <div class="form-group">
+        <label>Cuerpo</label>
+        <!-- El textarea es la fuente de verdad y esta SIEMPRE en el DOM
+             (guardarDrPl lee de #drPlCuerpo, y el editor visual escribe
+             aca al Aceptar). Cuando formato=html sigue visible como vista
+             de codigo: el render y el WYSIWYG viven en la pestaña Diseño. -->
+        <textarea id="drPlCuerpo" rows="12" style="font-family:monospace">${v('cuerpo')}</textarea>
+        <!-- display se alterna none <-> flex desde drPlSincronizarCuerpo(). -->
+        <div id="drPlCuerpoHtmlHint" style="font-size:.78rem;color:var(--muted);margin-top:6px;align-items:center;gap:8px;flex-wrap:wrap;display:none">
+          <span>Este es el HTML crudo. Para verlo renderizado y editarlo visualmente:</span>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="drPlCambiarTab('diseno')">
+            <i class="fa-solid fa-wand-magic-sparkles"></i> Ir a Diseño
+          </button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Adjunto (URL o archivo)</label>
+        <div style="display:flex;gap:8px;align-items:stretch">
+          <input type="text" id="drPlAdjunto" maxlength="500" value="${v('adjunto')}"
+                 style="font-family:monospace;flex:1"
+                 placeholder="${esArchivo ? '' : 'Pegá una URL o subí un archivo…'}"
+                 ${inputAttrs}>
+          ${adjuntoControl}
+        </div>
+        <div id="drPlAdjuntoStatus" style="font-size:.78rem;color:var(--muted);margin-top:6px"></div>
+      </div>
     </div>
+
+    <!-- Diseño: preview renderizado del cuerpo + acceso al editor visual
+         (TinyMCE, en su propio modal por encima de este). Solo se puede entrar
+         con formato=html; el panel se arma igual para no depender del orden en
+         que el operador elige Medio/Formato. -->
+    <div class="modal-tabpanel" data-drpl-tab="diseno" hidden>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn btn-primary" id="drPlCuerpoEditarBtn">
+          <i class="fa-solid fa-wand-magic-sparkles"></i> Abrir editor visual
+        </button>
+        <span style="font-size:.78rem;color:var(--muted)">
+          El preview se actualiza solo con lo que haya en el cuerpo; el HTML crudo se edita en la pestaña Cuerpo.
+        </span>
+      </div>
+      <div id="drPlCuerpoPreview">
+        <iframe id="drPlCuerpoIframe"
+                style="width:100%;height:min(60vh,620px);min-height:320px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>
+      </div>
+    </div>
+
     <div class="field-error" id="drPlFormError" style="display:none"></div>
   `;
 }
@@ -9886,10 +10070,24 @@ function drPlIntercambiarBotonAdjunto(modo) {
   viejo.replaceWith(nuevo);
 }
 
+// En que pestaña del modal Alta/Edicion vive cada campo obligatorio. Lo usa
+// guardarDrPl() para abrir la pestaña del primer campo que falta.
+const DR_PL_TAB_DE_CAMPO = {
+  drPlProyecto:  'general',
+  drPlMedio:     'general',
+  drPlTipo:      'general',
+  drPlNombre:    'general',
+  drPlRemitente: 'general',
+  drPlRemite:    'general',
+  drPlAsunto:    'cuerpo',
+  drPlFormato:   'cuerpo',
+  drPlCuerpo:    'cuerpo',
+};
+
 async function guardarDrPl(id, btn) {
   const err = $('#drPlFormError');
   err.style.display = 'none';
-  const camposReq = ['drPlProyecto', 'drPlMedio', 'drPlNombre',
+  const camposReq = ['drPlProyecto', 'drPlMedio', 'drPlTipo', 'drPlNombre',
                      'drPlRemitente', 'drPlRemite', 'drPlAsunto',
                      'drPlFormato', 'drPlCuerpo'];
   camposReq.forEach((cid) => $('#' + cid)?.classList.remove('input-invalid'));
@@ -9898,6 +10096,7 @@ async function guardarDrPl(id, btn) {
     nombre:      $('#drPlNombre').value.trim(),
     proyecto_id: $('#drPlProyecto').value,
     medio:       $('#drPlMedio').value,
+    tipo:        $('#drPlTipo').value,
     remitente:   $('#drPlRemitente').value.trim(),
     remite:      $('#drPlRemite').value.trim(),
     asunto:      $('#drPlAsunto').value.trim(),
@@ -9909,6 +10108,7 @@ async function guardarDrPl(id, btn) {
   const reglas = [
     ['drPlProyecto',  payload.proyecto_id === '' || payload.proyecto_id == null, 'El proyecto es obligatorio.'],
     ['drPlMedio',     !payload.medio,       'El medio es obligatorio.'],
+    ['drPlTipo',      !payload.tipo,        'El tipo es obligatorio.'],
     ['drPlNombre',    !payload.nombre,      'El nombre es obligatorio.'],
     ['drPlRemitente', !payload.remitente,   'El remitente es obligatorio.'],
     ['drPlRemite',    !payload.remite,      'El remite es obligatorio.'],
@@ -9923,6 +10123,11 @@ async function guardarDrPl(id, btn) {
       ? faltantes[0][2]
       : 'Completá los campos obligatorios marcados.';
     err.style.display = '';
+    // Con el form partido en pestañas, el primer campo faltante puede estar en
+    // un panel oculto: sin este salto el focus() no hace nada y el operador ve
+    // el error sin ver el campo. El .field-error vive fuera de los paneles, asi
+    // que se lee desde cualquier pestaña.
+    drPlCambiarTab(DR_PL_TAB_DE_CAMPO[faltantes[0][0]] || 'general');
     $('#' + faltantes[0][0])?.focus();
     return;
   }
@@ -27251,17 +27456,25 @@ let drLiAltasEstado = null;
 // distinguen por `origen`; cuando entre un alta no manual (link de suscripción,
 // importador), alcanza con sembrarla en `estados` y agregarla acá.
 const DRLI_ALTA_MOTIVOS = [
-  { valor: 'manual',       texto: 'Alta manual',              badge: 'badge-muted' },
-  { valor: 'preexistente', texto: 'Suscripción preexistente', badge: 'badge-info'  },
+  { valor: 'manual',       texto: 'Alta manual',              badge: 'badge-muted'   },
+  // 'Solicitada' a secas y no 'Alta solicitada': la pestaña ya dice que son
+  // altas. Tiene que coincidir con `estados.texto` (migración 20260829_0300),
+  // que es de donde sale el rótulo real del badge — esto es sólo el respaldo.
+  { valor: 'solicitada',   texto: 'Solicitada',               badge: 'badge-success' },
+  { valor: 'preexistente', texto: 'Suscripción preexistente', badge: 'badge-info'    },
 ];
 const DRLI_ALTA_BADGE = Object.fromEntries(DRLI_ALTA_MOTIVOS.map((m) => [m.valor, m.badge]));
 
 // Los orígenes conocidos, en prosa. El `origen` crudo es un string técnico
 // ('abm/datarocketlistas'): mostrarlo tal cual obliga al operador a traducirlo.
 const DRLI_ALTA_ORIGENES = {
-  'abm/datarocketlistas':     'editor de suscriptos',
-  'abm/datarocketprospectos': 'ficha del prospecto',
-  'backfill/20260828_2100':   'carga inicial del historial',
+  'abm/datarocketlistas':       'editor de suscriptos',
+  'abm/datarocketprospectos':   'ficha del prospecto',
+  'backfill/20260828_2100':     'carga inicial del historial',
+  // La página pública del pie de los correos. Es la única alta sin usuario
+  // detrás: la pidió el destinatario desde su casilla, así que la fila no tiene
+  // `usuario_id` y esta prosa es todo lo que explica de dónde salió.
+  'www/datarocket_listas_alta': 'volvió a suscribirse desde el correo',
 };
 
 function renderAltasDrLiHtml() {
@@ -27383,9 +27596,13 @@ let drLiBajasEstado = null;
 // y el rótulo de respaldo, para no depender de un endpoint de lookups que el
 // ABM de listas no tiene.
 const DRLI_BAJA_MOTIVOS = [
-  { valor: 'rebotado', texto: 'Rebote duro',      badge: 'badge-danger' },
-  { valor: 'spam',     texto: 'Denuncia de spam', badge: 'badge-danger' },
-  { valor: 'manual',   texto: 'Baja manual',      badge: 'badge-muted'  },
+  { valor: 'rebotado',   texto: 'Rebote duro',      badge: 'badge-danger' },
+  { valor: 'spam',       texto: 'Denuncia de spam', badge: 'badge-danger' },
+  { valor: 'manual',     texto: 'Baja manual',      badge: 'badge-muted'  },
+  // La que pide el propio destinatario desde el pie del correo
+  // (www/datarocket/suscripcion/). Naranja y no roja: no es un problema de
+  // entrega ni una denuncia, es alguien que ejerció la opción que le dimos.
+  { valor: 'solicitada', texto: 'Solicitada',       badge: 'badge-warn'   },
 ];
 const DRLI_BAJA_BADGE = Object.fromEntries(DRLI_BAJA_MOTIVOS.map((m) => [m.valor, m.badge]));
 
@@ -27470,6 +27687,11 @@ async function cargarBajasDrLi() {
     let origen;
     if (b.motivo === 'manual') {
       origen = b.usuario_nombre ? `Manual — ${esc(b.usuario_nombre)}` : 'Manual';
+    } else if (b.motivo === 'solicitada') {
+      // La pidió el destinatario desde el pie del correo, así que no tiene ni
+      // usuario ni campaña: sin esta rama caía en el `else` final y se mostraba
+      // como “Campaña eliminada”, que es exactamente lo contrario de lo que pasó.
+      origen = 'El destinatario, desde el correo';
     } else if (b.campana_nombre) {
       origen = `Campaña “${esc(b.campana_nombre)}”`;
     } else if (b.campana_id) {
@@ -38375,6 +38597,18 @@ route('/datainfra', async (mount) => {
       <div class="page-subtitle">Infraestructura: catálogo de servidores, bases de datos y endpoints administrados.</div>
     </div>
 
+    <!-- Puntos de falla. Van ARRIBA de la grilla de sub-modulos a proposito:
+         lo primero que tiene que ver el operador al entrar a Datainfra es que
+         esta caido o por vencer, no el menu de navegacion.
+         Una tarjeta por sub-modulo CON problemas, listando todos los suyos; el
+         sub-modulo sano no ocupa lugar. Si no hay ninguno, queda una sola
+         tarjeta verde de "todo en orden".
+         Arranca con spinner y lo completa dinfPfCargar() async: la grilla de
+         sub-modulos no espera a la query (ver api/datainfra_indicadores.php). -->
+    <div class="pf-grid" id="dinfPfGrid">
+      <div class="pf-card"><div class="pf-empty" style="text-align:center"><div class="spin"></div></div></div>
+    </div>
+
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/datainfraservidores'">
         <span class="tile-icon">🖥️</span>
@@ -38398,7 +38632,142 @@ route('/datainfra', async (mount) => {
       </button>
     </div>
   `;
+  dinfPfCargar();
 }, 'Datainfra');
+
+// ---- Puntos de falla del landing de Datainfra ----
+// Una sola llamada para toda la seccion (api/datainfra_indicadores.php). No se
+// hace `await` desde el route: las tarjetas llegan cuando llegan y mientras
+// tanto se ve el spinner. Un error no rompe la pantalla — se esconde la seccion
+// y quedan los sub-modulos, que es a lo que el operador entro.
+async function dinfPfCargar() {
+  const grid = $('#dinfPfGrid');
+  if (!grid) return;
+  try {
+    const d = await apiGet('api/datainfra_indicadores.php');
+    // La vista pudo cambiar mientras viajaba la respuesta.
+    if (!document.body.contains(grid)) return;
+    dinfPfPintar(grid, d);
+  } catch (e) {
+    grid.style.display = 'none';
+  }
+}
+
+// Arma la grilla a partir de la respuesta del endpoint. Cada bloque puede venir
+// `null` (el usuario no tiene el permiso de consulta de ese sub-modulo, o el
+// sub-modulo todavia no tiene fuente de datos) y en ese caso no se pinta nada:
+// no queremos delatar la existencia de un recurso al que no puede entrar.
+function dinfPfPintar(grid, d) {
+  const cards = [
+    dinfPfCardEndpoints(d?.endpoints),
+    dinfPfCardDominios(d?.dominios),
+  ].filter(Boolean);
+
+  // Ningun sub-modulo visible reporto problemas. Si ademas no habia ninguno
+  // visible (usuario sin permisos), la seccion entera sobra: sacamos el hueco
+  // que dejaria el margen del contenedor vacio.
+  if (!cards.length) {
+    if (!d?.endpoints && !d?.dominios) { grid.style.display = 'none'; return; }
+    grid.innerHTML = `
+      <div class="pf-card pf-ok">
+        <div class="pf-card-header">
+          <span class="pf-card-title">✅ Sin puntos de falla</span>
+        </div>
+        <div class="pf-empty">Todos los sub-módulos monitoreados están en orden.</div>
+      </div>`;
+    return;
+  }
+  grid.innerHTML = cards.join('');
+}
+
+// Tarjeta de un sub-modulo. `items` ya viene acotado por el endpoint
+// (DINF_MAX_ITEMS): si `conProblemas` es mayor, se agrega el pie "y N más".
+function dinfPfCard({ icono, titulo, ruta, tono, conProblemas, etiqueta, items }) {
+  const badgeCls = tono === 'warn' ? 'badge-warn' : 'badge-danger';
+  const sobrantes = conProblemas - items.length;
+  return `
+    <div class="pf-card pf-${tono}">
+      <div class="pf-card-header">
+        <span class="pf-card-title">
+          ${icono} ${esc(titulo)}
+          <span class="badge ${badgeCls}">${fmtNum(conProblemas)} ${esc(etiqueta)}</span>
+        </span>
+        <span class="dash-ver-mas" onclick="location.hash='#/${ruta}'">Ver más</span>
+      </div>
+      <div class="pf-list">${items.join('')}</div>
+      ${sobrantes > 0 ? `<div class="pf-mas">y ${fmtNum(sobrantes)} más…</div>` : ''}
+    </div>`;
+}
+
+// Endpoints activos cuyo ultimo health-check dio error o timeout. Los inactivos
+// y los que nunca corrieron no cuentan — mismo criterio que el endpoint.
+function dinfPfCardEndpoints(ep) {
+  if (!ep) return '';
+  const conProblemas = Number(ep.con_problemas) || 0;
+  if (conProblemas === 0) return '';
+
+  const items = (ep.items || []).map((e) => {
+    const estado = e.ultimo_estado === 'timeout' ? 'Timeout' : 'Error';
+    const codigo = e.ultimo_codigo == null ? '' : ` ${e.ultimo_codigo}`;
+    // El error crudo del check es lo unico que dice POR QUE se cayo: va al
+    // title para no romper el alto de la fila.
+    const tip = [e.url, e.ultimo_error, e.ultimo_check ? `Último check: ${fmtFecha(e.ultimo_check)}` : '']
+      .filter(Boolean).join('\n');
+    return `
+      <div class="pf-item" title="${esc(tip)}" onclick="location.hash='#/datainfraendpoints'">
+        <span class="pf-item-main">
+          <span class="pf-item-nombre">${esc(e.nombre || '—')}</span>
+          <span class="pf-item-detalle">${esc(e.metodo || 'GET')} ${esc(e.url || '')}</span>
+        </span>
+        <span class="badge badge-danger">${esc(estado + codigo)}</span>
+      </div>`;
+  });
+
+  return dinfPfCard({
+    icono: '🔌', titulo: 'Endpoints', ruta: 'datainfraendpoints', tono: 'danger',
+    conProblemas, etiqueta: conProblemas === 1 ? 'caído' : 'caídos', items,
+  });
+}
+
+// Dominios de responsabilidad Databox vencidos o por vencer dentro de 30 dias.
+// El tono de la tarjeta es rojo si hay alguno YA vencido y amarillo si solo hay
+// proximos a vencer: no es lo mismo llegar tarde que llegar justo.
+function dinfPfCardDominios(dom) {
+  if (!dom) return '';
+  const conProblemas = Number(dom.con_problemas) || 0;
+  if (conProblemas === 0) return '';
+  const vencidos = Number(dom.vencidos) || 0;
+
+  const items = (dom.items || []).map((d) => {
+    const dias = Number(d.dias);
+    const vencido = isFinite(dias) && dias < 0;
+    let txt;
+    if      (!isFinite(dias)) txt = '—';
+    else if (dias < 0)        txt = `Vencido hace ${-dias} d`;
+    else if (dias === 0)      txt = 'Vence hoy';
+    else                      txt = `En ${dias} d`;
+    const fecha = String(d.fecha_siguiente_renovacion || '').substring(0, 10);
+    // Al title le va tambien el costo: es el dato que decide si se renueva o
+    // se deja caer, y no entra en la fila sin apretar el nombre del dominio.
+    const costo = d.costo_renovacion == null || d.costo_renovacion === ''
+      ? '' : `\nCosto: ${d.moneda || 'ARS'} ${Number(d.costo_renovacion).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `
+      <div class="pf-item" title="${esc(`Renovación: ${fecha || '—'}${costo}`)}"
+           onclick="location.hash='#/datainfradominios'">
+        <span class="pf-item-main">
+          <span class="pf-item-nombre" style="font-family:monospace">${esc(d.dominio || '—')}</span>
+          <span class="pf-item-detalle">${esc(d.titular_dominio || 'Sin titular')}</span>
+        </span>
+        <span class="badge ${vencido ? 'badge-danger' : 'badge-warn'}">${esc(txt)}</span>
+      </div>`;
+  });
+
+  return dinfPfCard({
+    icono: '🌐', titulo: 'Dominios', ruta: 'datainfradominios',
+    tono: vencidos > 0 ? 'danger' : 'warn',
+    conProblemas, etiqueta: 'por renovar', items,
+  });
+}
 
 // ------------------------- Vista: Datainfra > Servidores (placeholder) -------------------------
 // Stub: la landing del sub-modulo solo muestra el encabezado y un aviso

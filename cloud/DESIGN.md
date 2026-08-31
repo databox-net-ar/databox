@@ -740,6 +740,80 @@ Grilla de **tarjetas-botón** para pantallas que funcionan como menú de aterriz
 - Columna mínima 220px con `auto-fill`: el grid se acomoda solo desde una sola tarjeta hasta varias por fila.
 - No anidar `tile-grid`s ni mezclar `tile-card` con `stat-card` en el mismo contenedor: cada uno tiene su semántica.
 
+## 25. Puntos de falla (tarjetas de estado en landings de módulo)
+
+Para landings de módulo que agrupan sub-módulos con `tile-grid` (§24) y necesitan
+mostrar **qué está roto** antes del menú de navegación. Una tarjeta por sub-módulo
+con problemas, con el listado de sus items adentro. No es `stat-card` (§12): no
+muestra un número, muestra la lista accionable.
+
+```html
+<div class="pf-grid">
+  <div class="pf-card pf-danger">
+    <div class="pf-card-header">
+      <span class="pf-card-title">🔌 Endpoints <span class="badge badge-danger">3 caídos</span></span>
+      <span class="dash-ver-mas">Ver más</span>
+    </div>
+    <div class="pf-list">
+      <div class="pf-item">
+        <span class="pf-item-main">
+          <span class="pf-item-nombre">API de facturación</span>
+          <span class="pf-item-detalle">GET https://api.ejemplo.com/salud</span>
+        </span>
+        <span class="badge badge-danger">Error 502</span>
+      </div>
+    </div>
+    <div class="pf-mas">y 12 más…</div>
+  </div>
+</div>
+```
+
+```css
+.pf-grid  { display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 16px; margin-bottom: 20px; }
+.pf-card  { background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); box-shadow: var(--shadow);
+            display: flex; flex-direction: column; overflow: hidden; }
+.pf-card.pf-danger { border-color: rgba(230,42,42,.45); }
+.pf-card.pf-warn   { border-color: rgba(245,158,11,.40); }
+.pf-card.pf-ok     { border-color: rgba(34,197,94,.35); }
+
+.pf-card-header { padding: 12px 16px; border-bottom: 1px solid var(--border);
+                  display: flex; align-items: center; justify-content: space-between;
+                  gap: 10px; }
+.pf-card-title  { display: flex; align-items: center; gap: 8px;
+                  font-weight: 600; font-size: .92rem; }
+
+.pf-list  { display: flex; flex-direction: column;
+            max-height: 260px; overflow-y: auto; }
+
+.pf-item  { display: flex; align-items: center; gap: 10px;
+            padding: 9px 16px; border-bottom: 1px solid var(--border);
+            cursor: pointer; transition: background .15s; }
+.pf-item:last-child { border-bottom: none; }
+.pf-item:hover      { background: var(--row-hover); }
+.pf-item-main    { display: flex; flex-direction: column; gap: 2px;
+                   flex: 1; min-width: 0; }
+.pf-item-nombre  { font-size: .85rem; font-weight: 600; color: var(--text);
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-item-detalle { font-size: .75rem; color: var(--muted); font-family: monospace;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-item .badge  { flex-shrink: 0; }
+
+.pf-empty { padding: 18px 16px; font-size: .85rem; color: var(--muted); }
+.pf-mas   { padding: 8px 16px; font-size: .78rem; color: var(--muted);
+            border-top: 1px solid var(--border); }
+```
+
+**Reglas:**
+- Va **entre el `.page-header` y la `.tile-grid`** del landing. Lo primero que ve el operador al entrar es qué atender, no el menú.
+- **Sólo se pinta el sub-módulo con problemas.** El sano no ocupa lugar. Si ninguno tiene problemas, queda una única tarjeta `.pf-ok` con "Sin puntos de falla"; si el usuario no tiene permiso de consulta de ningún sub-módulo, la sección se oculta entera (`display:none`) para no dejar el hueco del margen.
+- El tono del borde lo marca la severidad: `.pf-danger` para lo ya roto / vencido, `.pf-warn` para lo que está por romperse. El cuerpo sigue siendo gris — el color entra como acento en borde y badge, nunca como fondo (§1).
+- La lista tiene techo de alto (260px) y scrollea sola: una caída masiva no puede empujar la `tile-grid` fuera de la pantalla. El listado llega acotado desde la API y el pie `.pf-mas` avisa cuántos quedaron afuera.
+- Cada `.pf-item` navega al ABM del sub-módulo. El detalle largo (URL completa, error crudo, fecha del último check) va en el `title`, no en la fila.
+- Se carga async, sin `await` desde la ruta: el landing se pinta con un spinner en la sección y los sub-módulos no esperan la query. Si la llamada falla, se oculta la sección — nunca se rompe la pantalla.
+
 ---
 
 ## Reglas duras (criterios de aceptación)

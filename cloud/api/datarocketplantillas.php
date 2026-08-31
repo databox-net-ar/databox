@@ -13,8 +13,14 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
 require_once __DIR__ . '/lib/s3.php';
 
-const DR_PL_COLS = "id, slug, nombre, proyecto_id, medio, remitente, remite,
+const DR_PL_COLS = "id, slug, nombre, proyecto_id, medio, tipo, remitente, remite,
                     asunto, cuerpo, formato, adjunto, adjunto_origen";
+
+// Valores admitidos para `tipo` (intencion de la plantilla). Se guardan en
+// minuscula, igual que `formato`. Cualquier otro valor entra como NULL =
+// "sin clasificar" (asi quedaron las filas previas a la migracion
+// 20260829_0400, que no se backfilleo por heuristica).
+const DR_PL_TIPOS = ['transaccional', 'comunicacional'];
 
 // Prefijo bajo el cual se almacenan los archivos adjuntos subidos desde el ABM.
 // Cualquier `adjunto` cuya URL apunte a este prefijo dentro del bucket se
@@ -57,6 +63,7 @@ function handleList(PDO $pdo, array $q): void {
     $codigo     = isset($q['codigo'])      && $q['codigo']      !== '' ? (int)$q['codigo']      : null;
     $proyectoId = isset($q['proyecto_id']) && $q['proyecto_id'] !== '' ? (int)$q['proyecto_id'] : null;
     $medio      = trim((string)($q['medio']   ?? ''));
+    $tipo       = trim((string)($q['tipo']    ?? ''));
     $formato    = trim((string)($q['formato'] ?? ''));
     $search     = trim((string)($q['q']       ?? ''));
 
@@ -66,7 +73,7 @@ function handleList(PDO $pdo, array $q): void {
     if ($limite < 1)    $limite = 1;
     if ($limite > 1000) $limite = 1000;
 
-    $allowedOrder = ['id', 'nombre', 'proyecto_id', 'medio', 'remitente',
+    $allowedOrder = ['id', 'nombre', 'proyecto_id', 'medio', 'tipo', 'remitente',
                      'asunto', 'formato'];
     if (!in_array($orderBy, $allowedOrder, true)) $orderBy = 'id';
     $dirSql = $dir === 'asc' ? 'ASC' : 'DESC';
@@ -78,6 +85,13 @@ function handleList(PDO $pdo, array $q): void {
     if ($proyectoId !== null) { $where[] = 'proyecto_id = :proyecto_id';   $params[':proyecto_id'] = $proyectoId; }
     if ($medio      !== '')   { $where[] = 'medio = :medio';               $params[':medio']       = $medio; }
     if ($formato    !== '')   { $where[] = 'formato = :formato';           $params[':formato']     = $formato; }
+
+    // `tipo` acepta ademas el centinela `_null` para listar las plantillas sin
+    // clasificar — que son mayoria hasta que alguien las revise una por una
+    // (la migracion 20260829_0400 no backfilleo nada). Sin este filtro las
+    // filas en NULL solo se encontrarian escaneando el listado a ojo.
+    if ($tipo === '_null')    { $where[] = "(tipo IS NULL OR tipo = '')"; }
+    elseif ($tipo !== '')     { $where[] = 'tipo = :tipo';                 $params[':tipo']        = $tipo; }
 
     if ($search !== '') {
         $where[] = '(nombre LIKE :s1 OR asunto LIKE :s2 OR remitente LIKE :s3
@@ -155,10 +169,18 @@ function sanitizePayload(array $in): array {
     if ($adjunto !== null && $adjunto !== '') {
         $origen = drPlOwnedS3Key($adjunto) !== null ? 'archivo' : 'url';
     }
+    // `tipo` se normaliza a minuscula y se valida contra la lista blanca: un
+    // valor desconocido entra como NULL (sin clasificar) en vez de guardarse
+    // tal cual, porque esta columna se lee para decidir si un envio respeta o
+    // no una baja de lista y no puede quedar con basura.
+    $tipo = strtolower((string)nullableStr($in['tipo'] ?? null, 20));
+    if (!in_array($tipo, DR_PL_TIPOS, true)) $tipo = null;
+
     return [
         'nombre'         => nullableStr($in['nombre']      ?? null, 100),
         'proyecto_id'    => nullableInt($in['proyecto_id'] ?? null),
         'medio'          => nullableStr($in['medio']       ?? null, 1),
+        'tipo'           => $tipo,
         'remitente'      => nullableStr($in['remitente']   ?? null, 255),
         'remite'         => nullableStr($in['remite']      ?? null, 255),
         'asunto'         => nullableStr($in['asunto']      ?? null, 255),
@@ -177,10 +199,10 @@ function handleCreate(PDO $pdo, array $in): void {
 
     $sql = "
         INSERT INTO datarocket_plantillas
-            (slug, nombre, proyecto_id, medio, remitente, remite,
+            (slug, nombre, proyecto_id, medio, tipo, remitente, remite,
              asunto, cuerpo, formato, adjunto, adjunto_origen)
         VALUES
-            (:slug, :nombre, :proyecto_id, :medio, :remitente, :remite,
+            (:slug, :nombre, :proyecto_id, :medio, :tipo, :remitente, :remite,
              :asunto, :cuerpo, :formato, :adjunto, :adjunto_origen)
     ";
     $stmt = $pdo->prepare($sql);
@@ -189,6 +211,7 @@ function handleCreate(PDO $pdo, array $in): void {
         ':nombre'         => $p['nombre'],
         ':proyecto_id'    => $p['proyecto_id'],
         ':medio'          => $p['medio'],
+        ':tipo'           => $p['tipo'],
         ':remitente'      => $p['remitente'],
         ':remite'         => $p['remite'],
         ':asunto'         => $p['asunto'],
@@ -213,6 +236,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
             nombre         = :nombre,
             proyecto_id    = :proyecto_id,
             medio          = :medio,
+            tipo           = :tipo,
             remitente      = :remitente,
             remite         = :remite,
             asunto         = :asunto,
@@ -227,6 +251,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
         ':nombre'         => $p['nombre'],
         ':proyecto_id'    => $p['proyecto_id'],
         ':medio'          => $p['medio'],
+        ':tipo'           => $p['tipo'],
         ':remitente'      => $p['remitente'],
         ':remite'         => $p['remite'],
         ':asunto'         => $p['asunto'],

@@ -2061,6 +2061,12 @@ CREATE TABLE `datarocket_plantillas`  (
   `nombre` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `proyecto_id` int(11) NULL DEFAULT NULL,
   `medio` varchar(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  -- Intencion de la plantilla: 'transaccional' (disparada por un hecho del
+  -- destinatario: confirmacion, comprobante, aviso) o 'comunicacional'
+  -- (difusion / marketing, lo que una baja de lista debe poder frenar).
+  -- NULL = sin clasificar; las filas anteriores a la migracion
+  -- 20260829_0400 quedaron asi a proposito (no se backfilleo por heuristica).
+  `tipo` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `remitente` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `remite` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `asunto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,

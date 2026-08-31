@@ -72,6 +72,23 @@ const DR_LBAJA_SIG_LEN = 27;
 // una lista.
 const DR_LBAJA_MOTIVO = 'solicitada';
 
+// Y el de `datarocket_lista_alta_motivo`, para la vuelta: la misma pagina ofrece
+// volver a suscribirse al que ya no esta en la lista (el que se dio de baja por
+// error no tiene que escribir un mail para volver). Lo siembra la migracion
+// 20260829_0200.
+//
+// Mismo criterio que la baja, y por eso el mismo valor en los dos catalogos: una
+// suscripcion que pidio el destinatario desde el pie de un correo no es el alta
+// manual de un operador desde el ABM. Distinguirlas es lo que permite responder
+// cuantos se arrepintieron — el numero que dice si el enlace de baja se esta
+// tocando por error.
+//
+// Vive en este archivo, que se llama `_baja_`, porque lo que gobierna es el
+// enlace: el token es uno solo y sirve para las dos direcciones. Renombrar el
+// archivo arrastraria los `require_once` de la pagina publica y del motor de
+// campanas sin cambiar nada de lo que hace.
+const DR_LALTA_MOTIVO = 'solicitada';
+
 /**
  * Base / dias configurados, sembrando los parametros si no existen.
  * Devuelve ['base' => string, 'dias' => int].
