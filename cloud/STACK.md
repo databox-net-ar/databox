@@ -15,7 +15,7 @@ carpeta; no documenta otras aplicaciones del repositorio.
 | Lenguaje        | PHP 8.2 (`pdo_mysql`)                               |
 | Base de datos   | MySQL 8.0 (contenedor compartido `herramientas-mysql` en desarrollo, RDS en producción) |
 | Frontend        | HTML + CSS + **JavaScript vanilla** (sin framework) |
-| Iconografía     | Emojis + FontAwesome 6 (CDN)                        |
+| Iconografía     | Emojis + FontAwesome 6.5.1 Pro (autohospedado en `assets/fontawesome/`) |
 | Estilos         | CSS plano con variables — ver `DESIGN.md`           |
 | Runtime         | Docker + docker-compose                             |
 | Reverse proxy   | Nginx + certbot/Let's Encrypt (solo en producción)  |

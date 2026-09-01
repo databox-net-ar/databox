@@ -544,6 +544,7 @@ Para celdas / tarjetas en carga: `<tr><td colspan="N" style="text-align:center;p
 - Para nav y headers de cards usar **emojis** (📊 📋 ⚠️ 💬 👥 📦 💰 🛒 🏷️ 🛵 ⚙️ 🔔). Son legibles, no requieren librería y se ven bien tanto sobre el verde del sidebar como sobre los grises del contenido.
 - Para acciones por fila (editar / borrar / ver) usar **FontAwesome 6** (`<i class="fa-solid fa-pencil"></i>`).
 - No usar dos sistemas de iconos en el mismo lugar.
+- FontAwesome es **6.5.1 Pro autohospedado** en `assets/fontawesome/` — no CDN. Además de `fa-solid` están disponibles `fa-regular`, `fa-light`, `fa-thin`, `fa-duotone`, `fa-brands` y la familia Sharp (`fa-sharp fa-solid`, `fa-sharp fa-regular`, …). Para encontrar el ícono y copiar la etiqueta ya armada, usar **Herramientas > Explorador FA6**.
 
 ## 21. Menú de acciones (dropdown dentro de modal)
 
@@ -813,6 +814,103 @@ muestra un número, muestra la lista accionable.
 - La lista tiene techo de alto (260px) y scrollea sola: una caída masiva no puede empujar la `tile-grid` fuera de la pantalla. El listado llega acotado desde la API y el pie `.pf-mas` avisa cuántos quedaron afuera.
 - Cada `.pf-item` navega al ABM del sub-módulo. El detalle largo (URL completa, error crudo, fecha del último check) va en el `title`, no en la fila.
 - Se carga async, sin `await` desde la ruta: el landing se pinta con un spinner en la sección y los sub-módulos no esperan la query. Si la llamada falla, se oculta la sección — nunca se rompe la pantalla.
+
+---
+
+## 26. Navegador de documentos (índice + lector)
+
+Patrón de **dos paneles** para pantallas cuyo contenido es un catálogo de
+documentos largos: índice navegable fijo a la izquierda, documento a la derecha.
+Hoy lo usa la vista `#/documentacion`. No es una tabla (§10) ni una `tile-grid`
+(§24): el ítem no es un dato ni un lanzador, es la entrada a un texto que se lee
+sin perder de vista dónde está uno parado.
+
+```html
+<div class="doc-layout">
+  <aside class="doc-aside">
+    <div class="doc-aside-head">
+      <input type="search" class="search-input" placeholder="Buscar…">
+      <div class="doc-chips">
+        <button type="button" class="filter-chip active">Todos</button>
+      </div>
+    </div>
+    <div class="doc-aside-body">
+      <div class="doc-grupo">🛰️ Microservicios v4</div>
+      <div class="doc-seccion">Datarocket</div>
+      <button type="button" class="doc-item active">
+        <span class="doc-dot ok"></span>
+        <span class="doc-item-nombre">prospectos</span>
+      </button>
+      <button type="button" class="doc-item vacio">
+        <span class="doc-dot sin"></span>
+        <span class="doc-item-nombre">interacciones</span>
+      </button>
+    </div>
+  </aside>
+
+  <section class="doc-main">
+    <div class="doc-main-head">
+      <div class="doc-main-titulo">/v4/datarocket/prospectos</div>
+      <div class="doc-main-meta">95.8 KB · 2026-08-23</div>
+      <a class="btn btn-sm btn-ghost" target="_blank">Ver online</a>
+    </div>
+    <div class="doc-main-body"><div class="md-body">…</div></div>
+  </section>
+</div>
+```
+
+**Reglas:**
+- **Scrollean los paneles, no la página.** `.doc-layout` toma alto del viewport
+  (`calc(100vh - 172px)`, que descuenta topbar + padding + `.page-header`) y cada
+  panel maneja su propio `overflow-y`. Recorrer un documento largo no puede
+  perder el índice de vista.
+- **El estado del ítem es un punto, no un badge.** `.doc-dot` en `--success` /
+  `--warn` / gris. En una lista de 30 renglones un badge de texto tapa el nombre,
+  que es lo que se viene a leer; el texto del estado va en el `title`.
+- **Los ítems sin contenido siguen siendo clickeables** (`.doc-item.vacio`) y
+  abren un `.doc-estado` que explica qué falta y dónde iría. Un ítem que al
+  tocarlo no hace nada se lee como un bug.
+- Jerarquía del índice en tres niveles: `.doc-grupo` (mayúsculas, atenuado) →
+  `.doc-seccion` → `.doc-item`. El activo se pinta con `--primary` sólido — es la
+  excepción de acento del §1, igual que `.filter-chip.active`.
+- Debajo de **900px** los paneles se apilan y el índice pasa a `max-height: 320px`:
+  en pantalla angosta lo que se viene a hacer es leer.
+
+---
+
+## 27. Markdown renderizado (`.md-body`)
+
+Tipografía del documento que pinta `mdRender()` (`assets/js/app.js`) dentro del
+§26. Cubre encabezados `h1`–`h6`, párrafos, listas, citas, código en línea y en
+bloque, tablas GFM y separadores.
+
+```css
+.md-body  { font-size: .88rem; line-height: 1.75; max-width: 900px; }
+.md-h2    { border-bottom: 1px solid var(--border); }      /* separa secciones */
+.md-quote { border-left: 3px solid var(--primary); background: var(--bg); }
+.md-pre   { background: var(--bg); border: 1px solid var(--border);
+            overflow-x: auto; }
+.md-table-wrap { overflow-x: auto; }
+.md-link  { color: var(--primary); }
+.md-ruta  { color: var(--muted); border-bottom: 1px dotted var(--border); }
+```
+
+**Reglas:**
+- **Todo cuelga de `.md-body`.** Sin ese contenedor, las reglas de `h1`, `table`
+  y `code` de un documento le pisarían los estilos al resto del panel.
+- **`.md-table th` resetea el `th` global (§10).** El encabezado de una tabla del
+  panel va en mayúsculas y atenuado porque rotula datos; el de un documento es
+  **texto del autor** y se muestra tal cual está escrito.
+- **Nada de scroll horizontal en el panel.** Tablas y bloques de código
+  scrollean dentro de su propio contenedor (`.md-table-wrap`, `.md-pre`).
+- `max-width: 900px` en el cuerpo: una línea de prosa a lo ancho de un monitor
+  de 27" no se lee. Las tablas y el código sí usan todo el ancho disponible.
+- **Un enlace que no lleva a ningún lado no se pinta como enlace.** Lo que apunta
+  a un archivo del repo que el panel no sirve (`.php`, el schema) va como
+  `.md-ruta`: monospace atenuado con subrayado punteado, no `.md-link`.
+- **Los saltos internos no pueden usar `href="#…"`.** El panel rutea por
+  `location.hash`; un ancla nativa lo mandaría a una ruta inexistente. Van como
+  `data-ancla` y las resuelve un handler con `scrollIntoView`.
 
 ---
 

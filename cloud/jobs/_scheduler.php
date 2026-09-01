@@ -4,11 +4,12 @@
  * Tick minutal del Programador de tareas. Invocado por cron dentro del
  * contenedor databox-apache (ver cloud/jobs/crontab).
  *
- * Hace exactamente 4 cosas y sale en < 1s:
+ * Hace exactamente 5 cosas y sale en < 1s:
  *   1. Barre ejecuciones huerfanas (watchdog).
- *   2. Lee las tareas activas.
- *   3. Evalua cron_expr contra el minuto actual.
- *   4. Dispara en background las tareas que matchean (respetando overlap).
+ *   2. Consulta el interruptor general `scheduler.activo` y corta si esta en 0.
+ *   3. Lee las tareas activas.
+ *   4. Evalua cron_expr contra el minuto actual.
+ *   5. Dispara en background las tareas que matchean (respetando overlap).
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -19,6 +20,7 @@ if (PHP_SAPI !== 'cli') {
 date_default_timezone_set('America/Argentina/Buenos_Aires');
 require_once __DIR__ . '/../api/db.php';
 require_once __DIR__ . '/../api/lib/sucesos.php';
+require_once __DIR__ . '/../api/lib/parametros.php';
 
 const SCHED_LOG_DIR = '/var/log/databox/cloud/ejecuciones';
 // En databox, /var/www/html ES la carpeta cloud/ (ver docker-compose.yml).
@@ -85,7 +87,48 @@ foreach ($orphans as $o) {
 }
 
 // -----------------------------------------------------------------------------
-// 2) Leer tareas activas.
+// 2) Interruptor general del scheduler (`parametros.scheduler.activo`).
+//
+//    Corta el disparo de TODAS las tareas de una, sin tener que poner
+//    activo=0 tarea por tarea en la tabla `tareas` (eso ensucia la config
+//    real y hay que acordarse de revertirlo).
+//
+//    El default depende del entorno, no del codigo desplegado:
+//      - production  -> '1' (habilitado). El deploy nunca apaga produccion.
+//      - development -> '0' (apagado). El contenedor de dev pega contra los
+//        mismos proveedores reales (AWS SES, Evolution, Telegram, Kite), asi
+//        que el tick minutal termina mandando mensajes de verdad.
+//
+//    `parametroAsegurar` siembra la fila la primera vez, asi el flag aparece
+//    en Herramientas > Editor de parametros y se puede prender/apagar desde
+//    la UI sin tocar codigo ni reiniciar el contenedor (el proximo tick ya
+//    lee el valor nuevo).
+//
+//    Ojo: esto apaga SOLO el disparo automatico. El boton "Ejecutar ahora"
+//    del Programador de tareas va por api/tareas_ejecutar.php y sigue
+//    funcionando — que es justamente como se prueba un job en desarrollo.
+// -----------------------------------------------------------------------------
+
+$defaultActivo = (defined('APP_ENV') && APP_ENV === 'production') ? '1' : '0';
+
+parametroAsegurar($pdo, 'scheduler.activo', $defaultActivo,
+    'Interruptor general del Programador de tareas. Valor 1 = el scheduler ' .
+    'dispara las tareas activas; cualquier otro valor = disparo automatico ' .
+    'detenido (el boton "Ejecutar ahora" sigue andando). Ver cloud/jobs/_scheduler.php.');
+
+if (parametroLeer($pdo, 'scheduler.activo', $defaultActivo) !== '1') {
+    // Sin log por tick: el scheduler corre cada minuto y llenaria scheduler.log
+    // de ruido, tapando los mensajes que importan. Una linea por hora alcanza
+    // para que quede rastro de que el tick esta vivo pero apagado a proposito.
+    if ((int) date('i') === 0) {
+        fwrite(STDERR, '[' . date('Y-m-d H:i:s') .
+            '] scheduler: disparo automatico DETENIDO (parametros.scheduler.activo != 1)' . PHP_EOL);
+    }
+    exit(0);
+}
+
+// -----------------------------------------------------------------------------
+// 3) Leer tareas activas.
 // -----------------------------------------------------------------------------
 
 $tareas = $pdo->query('

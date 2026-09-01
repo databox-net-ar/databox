@@ -801,6 +801,9 @@ const ROUTE_PERMS = {
   '/accesos':                  { perm:   'seguridad.accesos.consultar' },
 
   '/herramientas':             { prefix: 'administracion.herramientas.' },
+  // Slug exacto y no prefijo: Documentacion es un modulo de un solo permiso
+  // (solo lectura), no una landing con sub-modulos como Herramientas.
+  '/documentacion':            { perm:   'administracion.documentacion.consultar' },
 };
 
 // Devuelve true si el usuario logueado puede navegar a la ruta indicada
@@ -10192,6 +10195,11 @@ route('/herramientas', async (mount) => {
         <span class="tile-icon">🗄️</span>
         <span class="tile-title">Explorador DB</span>
         <span class="tile-desc">Recorrá las tablas de la base del entorno actual, ojeá su estructura y los últimos registros.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="abrirExploradorFA6()">
+        <span class="tile-icon">🔣</span>
+        <span class="tile-title">Explorador FA6</span>
+        <span class="tile-desc">Recorré los íconos de Font Awesome 6 Pro autohospedados, buscá por nombre o sinónimo y copiá la etiqueta lista para pegar.</span>
       </button>
       <button type="button" class="tile-card" onclick="abrirExploradorS3()">
         <span class="tile-icon">📁</span>
@@ -51711,6 +51719,340 @@ async function guardarPerfilContrasena() {
   }
 }
 
+// ------------------------- Herramientas: Explorador FA6 -------------------------
+//
+// Catálogo navegable de los íconos de Font Awesome 6.5.1 Pro que el panel
+// tiene autohospedados en `assets/fontawesome/`. El listado sale del JSON
+// `assets/fontawesome/icons.json`, generado a partir de los metadatos del
+// paquete oficial (ver `assets/fontawesome/README.md`): no hay endpoint ni
+// tabla detrás, es un asset estático que se baja una sola vez por sesión.
+
+/**
+ * Las diez variantes que el panel puede pintar. `fam` dice de qué campo del
+ * catálogo sale la disponibilidad del ícono en ese estilo:
+ *   'c' → clásicas + brands (campo `c`, string de códigos "srltb")
+ *   'p' → familia Sharp     (campo `p`, string de códigos "srlt")
+ *   'd' → Duotone           (flag `d`)
+ */
+// `muestra` es el glifo que el chip usa de vitrina: tiene que existir en esa
+// familia, por eso Brands no puede usar `fa-star` como el resto.
+const FA6_ESTILOS = [
+  { k: 'solid',         label: 'Solid',    clases: 'fa-solid',            fam: 'c', cod: 's', muestra: 'fa-star' },
+  { k: 'regular',       label: 'Regular',  clases: 'fa-regular',          fam: 'c', cod: 'r', muestra: 'fa-star' },
+  { k: 'light',         label: 'Light',    clases: 'fa-light',            fam: 'c', cod: 'l', muestra: 'fa-star' },
+  { k: 'thin',          label: 'Thin',     clases: 'fa-thin',             fam: 'c', cod: 't', muestra: 'fa-star' },
+  { k: 'duotone',       label: 'Duotone',  clases: 'fa-duotone',          fam: 'd',           muestra: 'fa-star' },
+  { k: 'brands',        label: 'Brands',   clases: 'fa-brands',           fam: 'c', cod: 'b', muestra: 'fa-font-awesome' },
+  { k: 'sharp-solid',   label: 'Sharp solid',   clases: 'fa-sharp fa-solid',   fam: 'p', cod: 's', muestra: 'fa-star' },
+  { k: 'sharp-regular', label: 'Sharp regular', clases: 'fa-sharp fa-regular', fam: 'p', cod: 'r', muestra: 'fa-star' },
+  { k: 'sharp-light',   label: 'Sharp light',   clases: 'fa-sharp fa-light',   fam: 'p', cod: 'l', muestra: 'fa-star' },
+  { k: 'sharp-thin',    label: 'Sharp thin',    clases: 'fa-sharp fa-thin',    fam: 'p', cod: 't', muestra: 'fa-star' },
+];
+
+const FA6_LOTE = 240;   // íconos que se pintan por tanda al hacer scroll
+
+let fa6Catalogo      = null;   // { version, license, categories, icons }
+let fa6PorNombre     = new Map();
+let fa6CatsPorIcono  = new Map();
+let fa6Filtrados     = [];
+let fa6Pintados      = 0;
+let fa6Estilo        = 'solid';
+let fa6Busqueda      = '';
+let fa6Categoria     = '';
+let fa6Cargando      = false;
+let _fa6SearchTimer  = null;
+let fa6DetalleIcono  = null;
+let fa6DetalleEstilo = 'solid';
+
+/** Plegado para buscar: minúsculas y sin acentos en las dos puntas. */
+function fa6Plegar(s) {
+  return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function fa6TieneEstilo(ico, est) {
+  if (!ico || !est) return false;
+  if (est.fam === 'd') return !!ico.d;
+  return String(ico[est.fam] || '').includes(est.cod);
+}
+
+function fa6EstiloPorClave(k) {
+  return FA6_ESTILOS.find((e) => e.k === k) || FA6_ESTILOS[0];
+}
+
+/** Clases CSS completas del ícono en un estilo: "fa-sharp fa-solid fa-house". */
+function fa6Clases(nombre, estiloK) {
+  return `${fa6EstiloPorClave(estiloK).clases} fa-${nombre}`;
+}
+
+function abrirExploradorFA6() {
+  document.getElementById('fa6ExpModalBackdrop').classList.add('open');
+  fa6ExpCargarCatalogo();
+}
+
+function cerrarExploradorFA6() {
+  document.getElementById('fa6ExpModalBackdrop').classList.remove('open');
+}
+
+async function fa6ExpCargarCatalogo() {
+  if (fa6Catalogo) { fa6ExpAplicarFiltros(); fa6ExpFocoBuscador(); return; }
+  if (fa6Cargando) return;
+  fa6Cargando = true;
+
+  const grid = document.getElementById('fa6ExpGrid');
+  grid.innerHTML = '<div class="fa6-exp-cargando"><div class="spin"></div></div>';
+
+  try {
+    const r = await fetch('assets/fontawesome/icons.json', { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+
+    fa6Catalogo = j;
+    fa6PorNombre = new Map();
+    fa6CatsPorIcono = new Map();
+
+    // Blob de búsqueda precalculado por ícono: nombre, nombre con prefijo
+    // `fa-` (para pegar una clase entera), etiqueta, alias, sinónimos y
+    // unicode. Plegarlo una sola vez acá evita rehacerlo en cada tecleo.
+    (j.icons || []).forEach((ico) => {
+      ico._q = fa6Plegar([
+        ico.n, `fa-${ico.n}`, ico.l || '', ico.u || '',
+        (ico.a || []).join(' '), (ico.t || []).join(' '),
+      ].join(' '));
+      fa6PorNombre.set(ico.n, ico);
+    });
+
+    (j.categories || []).forEach((cat) => {
+      (cat.i || []).forEach((n) => {
+        if (!fa6CatsPorIcono.has(n)) fa6CatsPorIcono.set(n, []);
+        fa6CatsPorIcono.get(n).push(cat.l);
+      });
+    });
+
+    document.getElementById('fa6ExpVersion').textContent =
+      `${j.version || '?'} ${String(j.license || '').toUpperCase()}`.trim();
+    document.getElementById('fa6ExpResumen').textContent =
+      `${(j.icons || []).length.toLocaleString('es-AR')} íconos`;
+
+    fa6ExpRenderCategorias();
+    fa6ExpRenderChips();
+    fa6ExpAplicarFiltros();
+    fa6ExpFocoBuscador();
+  } catch (e) {
+    grid.innerHTML = `<div class="fa6-exp-vacio">No se pudo leer el catálogo de íconos.<br>${esc(e.message)}</div>`;
+  } finally {
+    fa6Cargando = false;
+  }
+}
+
+function fa6ExpFocoBuscador() {
+  const inp = document.getElementById('fa6ExpSearch');
+  if (inp) setTimeout(() => inp.focus(), 60);
+}
+
+function fa6ExpRenderCategorias() {
+  const sel = document.getElementById('fa6ExpCategoria');
+  const cats = (fa6Catalogo.categories || [])
+    .slice()
+    .sort((a, b) => String(a.l).localeCompare(String(b.l), 'es', { sensitivity: 'base' }));
+  sel.innerHTML = '<option value="">Todas</option>' +
+    cats.map((c) => `<option value="${esc(c.k)}">${esc(c.l)}</option>`).join('');
+  sel.value = fa6Categoria;
+}
+
+function fa6ExpRenderChips() {
+  const cont = document.getElementById('fa6ExpEstiloChips');
+  cont.innerHTML = FA6_ESTILOS.map((e) => {
+    const n = (fa6Catalogo.icons || []).reduce((acc, ico) => acc + (fa6TieneEstilo(ico, e) ? 1 : 0), 0);
+    return `<button type="button" class="filter-chip${e.k === fa6Estilo ? ' active' : ''}"
+                    data-estilo="${e.k}" onclick="fa6ExpSetEstilo('${e.k}')">
+              <i class="${e.clases} ${e.muestra}"></i> ${esc(e.label)}
+              <span class="fa6-exp-chip-n">${n.toLocaleString('es-AR')}</span>
+            </button>`;
+  }).join('');
+}
+
+function fa6ExpSetEstilo(k) {
+  fa6Estilo = k;
+  document.querySelectorAll('#fa6ExpEstiloChips .filter-chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.estilo === k);
+  });
+  fa6ExpAplicarFiltros();
+}
+
+function fa6ExpOnSearch(v) {
+  document.getElementById('fa6ExpSearchClear').style.display = v ? '' : 'none';
+  clearTimeout(_fa6SearchTimer);
+  _fa6SearchTimer = setTimeout(() => {
+    fa6Busqueda = fa6Plegar(v).trim();
+    fa6ExpAplicarFiltros();
+  }, 160);
+}
+
+function fa6ExpLimpiarBusqueda() {
+  const inp = document.getElementById('fa6ExpSearch');
+  inp.value = '';
+  document.getElementById('fa6ExpSearchClear').style.display = 'none';
+  fa6Busqueda = '';
+  fa6ExpAplicarFiltros();
+  inp.focus();
+}
+
+function fa6ExpCambiarTamano() {
+  const wrap = document.getElementById('fa6ExpGrid');
+  wrap.classList.remove('fa6-sm', 'fa6-md', 'fa6-lg');
+  wrap.classList.add(`fa6-${document.getElementById('fa6ExpTamano').value}`);
+}
+
+function fa6ExpAplicarFiltros() {
+  if (!fa6Catalogo) return;
+
+  fa6Categoria = document.getElementById('fa6ExpCategoria').value;
+  const est    = fa6EstiloPorClave(fa6Estilo);
+  const enCat  = fa6Categoria
+    ? new Set(((fa6Catalogo.categories || []).find((c) => c.k === fa6Categoria) || {}).i || [])
+    : null;
+  const terminos = fa6Busqueda ? fa6Busqueda.split(/\s+/).filter(Boolean) : [];
+
+  fa6Filtrados = (fa6Catalogo.icons || []).filter((ico) => {
+    if (!fa6TieneEstilo(ico, est)) return false;
+    if (enCat && !enCat.has(ico.n)) return false;
+    return terminos.every((t) => ico._q.includes(t));
+  });
+
+  fa6Pintados = 0;
+  const grid = document.getElementById('fa6ExpGrid');
+  grid.innerHTML = '';
+  fa6ExpCambiarTamano();
+  document.getElementById('fa6ExpGridWrap').scrollTop = 0;
+
+  if (!fa6Filtrados.length) {
+    grid.innerHTML = '<div class="fa6-exp-vacio">Ningún ícono coincide con el filtro.</div>';
+    fa6ExpActualizarInfo();
+    return;
+  }
+  fa6ExpPintarMas();
+}
+
+/** Pinta la siguiente tanda. Con ~3.800 íconos, volcarlos de una sola vez
+ *  cuelga el render; se van agregando a medida que se hace scroll. */
+function fa6ExpPintarMas() {
+  const grid  = document.getElementById('fa6ExpGrid');
+  const lote  = fa6Filtrados.slice(fa6Pintados, fa6Pintados + FA6_LOTE);
+  if (!lote.length) return;
+
+  grid.insertAdjacentHTML('beforeend', lote.map((ico) => {
+    const pro = ico.f ? '' : '<span class="fa6-exp-pro">PRO</span>';
+    return `<button type="button" class="fa6-exp-tile" title="${esc(ico.l || ico.n)}"
+                    onclick="fa6ExpAbrirDetalle('${esc(ico.n)}')">
+              ${pro}
+              <i class="${fa6Clases(ico.n, fa6Estilo)}"></i>
+              <span class="fa6-exp-name">${esc(ico.n)}</span>
+            </button>`;
+  }).join(''));
+
+  fa6Pintados += lote.length;
+  fa6ExpActualizarInfo();
+}
+
+function fa6ExpActualizarInfo() {
+  const total = (fa6Catalogo && fa6Catalogo.icons ? fa6Catalogo.icons.length : 0);
+  document.getElementById('fa6ExpInfo').textContent =
+    `${fa6Pintados.toLocaleString('es-AR')} de ${fa6Filtrados.length.toLocaleString('es-AR')} ` +
+    `íconos en ${fa6EstiloPorClave(fa6Estilo).label} (catálogo: ${total.toLocaleString('es-AR')})`;
+}
+
+function fa6ExpOnScroll(el) {
+  if (fa6Pintados >= fa6Filtrados.length) return;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) fa6ExpPintarMas();
+}
+
+// ---- Detalle de un ícono ----
+
+function fa6ExpAbrirDetalle(nombre) {
+  const ico = fa6PorNombre.get(nombre);
+  if (!ico) return;
+
+  fa6DetalleIcono = ico;
+  // Arranca en el estilo con el que se lo estaba mirando; si el ícono no lo
+  // tiene (no debería pasar, la grilla ya filtró), cae al primero disponible.
+  fa6DetalleEstilo = fa6TieneEstilo(ico, fa6EstiloPorClave(fa6Estilo))
+    ? fa6Estilo
+    : (FA6_ESTILOS.find((e) => fa6TieneEstilo(ico, e)) || FA6_ESTILOS[0]).k;
+
+  document.getElementById('fa6DetalleTitulo').textContent = ico.l || ico.n;
+  document.getElementById('fa6DetalleNombre').textContent = ico.n;
+  document.getElementById('fa6DetalleUnicode').textContent = ico.u ? `U+${ico.u.toUpperCase()}` : '—';
+
+  const lic = document.getElementById('fa6DetalleLicencia');
+  lic.textContent = ico.f ? 'Free' : 'Pro';
+  lic.className = `badge ${ico.f ? 'badge-success' : 'badge-warn'}`;
+
+  fa6DetalleTags('fa6DetalleAlias',       'fa6DetalleAliasWrap',       ico.a || []);
+  fa6DetalleTags('fa6DetalleCategorias',  'fa6DetalleCategoriasWrap',  fa6CatsPorIcono.get(ico.n) || []);
+  fa6DetalleTags('fa6DetalleTerminos',    'fa6DetalleTerminosWrap',    ico.t || []);
+
+  document.getElementById('fa6DetalleEstilos').innerHTML = FA6_ESTILOS
+    .filter((e) => fa6TieneEstilo(ico, e))
+    .map((e) => `<button type="button" class="fa6-det-estilo${e.k === fa6DetalleEstilo ? ' active' : ''}"
+                         data-estilo="${e.k}" onclick="fa6DetalleSetEstilo('${e.k}')">
+                   <i class="${fa6Clases(ico.n, e.k)}"></i>
+                   <span>${esc(e.label)}</span>
+                 </button>`).join('');
+
+  fa6DetalleSetEstilo(fa6DetalleEstilo);
+  document.getElementById('fa6DetalleBackdrop').classList.add('open');
+}
+
+function fa6DetalleTags(idLista, idWrap, valores) {
+  const wrap = document.getElementById(idWrap);
+  wrap.style.display = valores.length ? '' : 'none';
+  document.getElementById(idLista).innerHTML =
+    valores.map((v) => `<span class="fa6-det-tag">${esc(v)}</span>`).join('');
+}
+
+function fa6DetalleSetEstilo(k) {
+  if (!fa6DetalleIcono) return;
+  fa6DetalleEstilo = k;
+
+  const clases = fa6Clases(fa6DetalleIcono.n, k);
+  document.getElementById('fa6DetallePreview').className = clases;
+  document.getElementById('fa6DetalleClase').textContent = clases;
+  document.getElementById('fa6DetalleHtml').value = `<i class="${clases}"></i>`;
+
+  document.querySelectorAll('#fa6DetalleEstilos .fa6-det-estilo').forEach((b) => {
+    b.classList.toggle('active', b.dataset.estilo === k);
+  });
+}
+
+function cerrarDetalleFA6() {
+  document.getElementById('fa6DetalleBackdrop').classList.remove('open');
+}
+
+async function fa6DetalleCopiar(tipo) {
+  if (!fa6DetalleIcono) return;
+  const clases = fa6Clases(fa6DetalleIcono.n, fa6DetalleEstilo);
+  const mapa = {
+    html:    { txt: `<i class="${clases}"></i>`, msg: 'Etiqueta copiada.' },
+    clase:   { txt: clases,                      msg: 'Clases copiadas.' },
+    unicode: { txt: `\\${fa6DetalleIcono.u}`,    msg: 'Unicode copiado.' },
+  };
+  const it = mapa[tipo] || mapa.html;
+  try {
+    await navigator.clipboard.writeText(it.txt);
+    toast(it.msg);
+  } catch (e) {
+    toast('No se pudo copiar al portapapeles.', { error: true });
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const det = document.getElementById('fa6DetalleBackdrop');
+  if (det && det.classList.contains('open')) { cerrarDetalleFA6(); return; }
+  const back = document.getElementById('fa6ExpModalBackdrop');
+  if (back && back.classList.contains('open')) cerrarExploradorFA6();
+});
+
 // ------------------------- Herramientas: Editor de parámetros -------------------------
 // Editor de parámetros runtime. Sobre la tabla `parametros` (columnas
 // `variable` / `valor` / `comentario`) compartida con otras apps del grupo.
@@ -54428,6 +54770,609 @@ document.addEventListener('keydown', (e) => {
   if (ejec    && ejec.classList.contains('open'))     { cerrarEjecuciones(); return; }
   if (listado && listado.classList.contains('open'))  { cerrarTareas(); }
 });
+
+// ------------------------- Markdown: render -------------------------
+//
+// Renderizador propio, chico y sin dependencias, para los `.md` del repo que
+// muestra la vista Documentación. No pretende cubrir CommonMark: cubre lo que
+// esos documentos usan (encabezados, tablas GFM, vallas de código, citas,
+// listas, y en línea código/negrita/itálica/enlaces).
+//
+// POR QUÉ NO UNA LIBRERÍA
+// -----------------------
+// DESIGN.md pide no sumar librerías (§ "Reglas duras" 9) y el panel ya carga
+// FontAwesome de un CDN — pero un ícono que no llega es cosmético y un parser
+// que no llega deja la pantalla en blanco. Además marked & co. permiten HTML
+// crudo por default: habría que configurarles el sanitizado igual.
+//
+// ESCAPA PRIMERO, FORMATEA DESPUÉS
+// --------------------------------
+// El orden es la garantía de que no hay XSS: `esc()` corre sobre el texto
+// ENTERO antes de que se genere un solo tag, así que nada de lo que venga en
+// un `.md` puede convertirse en markup. Los tags los pone únicamente este
+// código. Las vallas de código se sacan antes de escapar y vuelven al final ya
+// escapadas — si se procesaran en el medio, un ejemplo de HTML dentro de un
+// bloque ```html se interpretaría como HTML de verdad.
+//
+// Los `.md` de v4 son nuestros y viven en el repo, o sea que hoy el contenido
+// es de confianza. El escapado no está por desconfiar del contenido: está para
+// que el día que alguien pegue un ejemplo con un `<script>` adentro, la
+// pantalla lo muestre en vez de ejecutarlo.
+
+// Marcadores internos. Van con \u0000 —imposible en un `.md` real— para que
+// ningún texto del documento pueda hacerse pasar por un placeholder.
+const MD_TOKEN_PRE = '\u0000P';
+const MD_TOKEN_COD = '\u0000C';
+const MD_TOKEN_FIN = '\u0000';
+
+/**
+ * Markdown → HTML. `ctx` orienta la resolución de enlaces:
+ *   dir  string  Carpeta del documento actual (repo-relativa), para resolver
+ *                los enlaces relativos entre `.md`.
+ *   docs Set     Rutas de los `.md` que el navegador sabe abrir. Un enlace a
+ *                algo que no esté acá se pinta como ruta inerte, no como link.
+ */
+function mdRender(src, ctx = {}) {
+  const pres = [];
+
+  let s = String(src ?? '').replace(/\r\n?/g, '\n');
+
+  // 1. Vallas de código fuera del camino, ANTES de escapar (ver encabezado).
+  s = s.replace(/```[^\n`]*\n([\s\S]*?)```/g, (_m, code) => {
+    pres.push(`<pre class="md-pre"><code>${esc(code.replace(/\n+$/, ''))}</code></pre>`);
+    return `${MD_TOKEN_PRE}${pres.length - 1}${MD_TOKEN_FIN}`;
+  });
+
+  // 2. Escapado único de todo el resto.
+  s = esc(s);
+
+  // 3. Bloques → HTML.
+  let html = mdBloques(s.split('\n'), ctx);
+
+  // 4. Vallas de vuelta a su lugar.
+  html = html.replace(/\u0000P(\d+)\u0000/g, (_m, i) => pres[Number(i)] ?? '');
+  return html;
+}
+
+/** Convierte líneas YA ESCAPADAS en HTML de bloque. Reentrante (citas). */
+function mdBloques(lineas, ctx) {
+  const out = [];
+  let i = 0;
+
+  while (i < lineas.length) {
+    const linea = lineas[i];
+    const t     = linea.trim();
+
+    if (t === '') { i++; continue; }
+
+    // Valla de código: ya es HTML, pasa derecho.
+    if (/^\u0000P\d+\u0000$/.test(t)) { out.push(t); i++; continue; }
+
+    // Comentario HTML del documento: no se muestra (es una nota para quien
+    // edita el `.md`, no para quien lo lee).
+    if (t.startsWith('&lt;!--')) {
+      while (i < lineas.length && !lineas[i].includes('--&gt;')) i++;
+      i++; continue;
+    }
+
+    // Separador. Va antes que las listas: `---` matchearía como bullet `-`.
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) { out.push('<hr class="md-hr">'); i++; continue; }
+
+    // Encabezado.
+    const h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      const n = h[1].length;
+      const texto = h[2].replace(/\s+#+$/, '');
+      out.push(`<h${n} class="md-h md-h${n}" id="doc-${esc(mdAncla(texto))}">`
+             + `${mdInline(texto, ctx)}</h${n}>`);
+      i++; continue;
+    }
+
+    // Tabla GFM: fila de encabezado + fila de guiones.
+    if (t.includes('|') && i + 1 < lineas.length && mdEsSeparador(lineas[i + 1])) {
+      const filas = [];
+      i += 2;
+      while (i < lineas.length && lineas[i].includes('|') && lineas[i].trim() !== '') {
+        filas.push(lineas[i]); i++;
+      }
+      out.push(mdTabla(t, filas, ctx));
+      continue;
+    }
+
+    // Cita. Se junta el bloque, se le saca el `>` y se renderiza recursivo:
+    // adentro puede haber párrafos, listas y hasta una valla de código.
+    if (t.startsWith('&gt;')) {
+      const dentro = [];
+      while (i < lineas.length && lineas[i].trim().startsWith('&gt;')) {
+        dentro.push(lineas[i].trim().replace(/^&gt;\s?/, ''));
+        i++;
+      }
+      out.push(`<blockquote class="md-quote">${mdBloques(dentro, ctx)}</blockquote>`);
+      continue;
+    }
+
+    // Lista (con un nivel de anidado).
+    if (mdEsItem(linea)) {
+      const [html, salto] = mdLista(lineas, i, ctx);
+      out.push(html); i = salto; continue;
+    }
+
+    // Párrafo: hasta la primera línea en blanco o el primer bloque de otra
+    // clase. Sin ese corte, un encabezado pegado al texto anterior se comería
+    // dentro del `<p>`.
+    const parrafo = [];
+    while (i < lineas.length) {
+      const l = lineas[i];
+      if (l.trim() === '' || mdEsItem(l) || /^\s*(#{1,6}\s|&gt;)/.test(l)
+          || /^\u0000P\d+\u0000$/.test(l.trim())
+          || /^(-{3,}|\*{3,}|_{3,})$/.test(l.trim())) break;
+      parrafo.push(l.trim()); i++;
+    }
+    if (parrafo.length) out.push(`<p class="md-p">${mdInline(parrafo.join(' '), ctx)}</p>`);
+  }
+
+  return out.join('\n');
+}
+
+/** ¿La línea abre un ítem de lista? Devuelve también con qué sangría. */
+function mdEsItem(linea) {
+  return /^(\s*)([-*+]|\d+[.)])\s+\S/.test(linea);
+}
+
+/**
+ * Lista desde `desde`. Devuelve `[html, indiceSiguiente]`.
+ *
+ * Un solo nivel de anidado: es lo único que usan estos documentos y lo que
+ * mantiene la función legible. Un tercer nivel se aplana al segundo, que se
+ * lee raro pero no pierde texto — es preferible a no mostrarlo.
+ */
+function mdLista(lineas, desde, ctx) {
+  const m0      = lineas[desde].match(/^(\s*)([-*+]|\d+[.)])\s+/);
+  const sangria = m0[1].length;
+  const ordenada = /\d/.test(m0[2]);
+  const items   = [];
+  let i = desde;
+
+  while (i < lineas.length) {
+    const l = lineas[i];
+    if (l.trim() === '') {
+      // Una línea en blanco corta la lista salvo que siga otro ítem (las
+      // listas "sueltas" de DESIGN.md separan sus ítems con blancos).
+      const sig = lineas[i + 1];
+      if (sig === undefined || !mdEsItem(sig)) break;
+      i++; continue;
+    }
+    const m = l.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+
+    if (m && m[1].length <= sangria) {
+      items.push({ texto: [m[3]], hijos: null });
+      i++; continue;
+    }
+    if (!items.length) break;
+
+    if (m) {                                   // ítem más indentado → sub-lista
+      const [html, salto] = mdLista(lineas, i, ctx);
+      items[items.length - 1].hijos = (items[items.length - 1].hijos || '') + html;
+      i = salto; continue;
+    }
+    if (/^\s+\S/.test(l)) {                    // continuación del ítem anterior
+      items[items.length - 1].texto.push(l.trim());
+      i++; continue;
+    }
+    break;
+  }
+
+  const tag  = ordenada ? 'ol' : 'ul';
+  const cls  = ordenada ? 'md-ol' : 'md-ul';
+  const body = items.map((it) =>
+    `<li class="md-li">${mdInline(it.texto.join(' '), ctx)}${it.hijos || ''}</li>`).join('');
+  return [`<${tag} class="${cls}">${body}</${tag}>`, i];
+}
+
+/**
+ * ¿Es la fila de guiones que confirma una tabla GFM?
+ * Toda celda no vacía tiene que ser `---`, `:---`, `---:` o `:---:`.
+ */
+function mdEsSeparador(linea) {
+  const t = linea.trim();
+  if (!t.includes('|') || !t.includes('-')) return false;
+  const celdas = mdPartirFila(t);
+  return celdas.length > 0 && celdas.every((c) => /^:?-{1,}:?$/.test(c.trim()));
+}
+
+/**
+ * Parte una fila de tabla por `|`, respetando el escape `\|` (que estos
+ * documentos usan para poner un pipe dentro de una celda, p.ej. el tipo
+ * `array \| string`). Se recorre a mano en vez de usar un lookbehind para no
+ * depender de soporte de regex avanzado en el navegador.
+ */
+function mdPartirFila(linea) {
+  const celdas = [];
+  let actual = '';
+  for (let i = 0; i < linea.length; i++) {
+    const c = linea[i];
+    if (c === '\\' && linea[i + 1] === '|') { actual += '|'; i++; continue; }
+    if (c === '|') { celdas.push(actual); actual = ''; continue; }
+    actual += c;
+  }
+  celdas.push(actual);
+  // Los pipes de los bordes dejan una celda vacía de cada lado: se descartan
+  // solo si son los extremos, nunca una celda vacía del medio (que es un dato
+  // legítimo: "esta columna no aplica").
+  if (celdas.length && celdas[0].trim() === '')                  celdas.shift();
+  if (celdas.length && celdas[celdas.length - 1].trim() === '')  celdas.pop();
+  return celdas;
+}
+
+function mdTabla(cabecera, filas, ctx) {
+  const ths = mdPartirFila(cabecera.trim())
+    .map((c) => `<th>${mdInline(c.trim(), ctx)}</th>`).join('');
+  const trs = filas.map((f) =>
+    '<tr>' + mdPartirFila(f.trim()).map((c) => `<td>${mdInline(c.trim(), ctx)}</td>`).join('') + '</tr>'
+  ).join('');
+  return `<div class="md-table-wrap"><table class="md-table">`
+       + `<thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+}
+
+/** Formato en línea sobre texto YA ESCAPADO. */
+function mdInline(txt, ctx) {
+  const cods = [];
+  let s = String(txt);
+
+  // Código en línea primero: adentro no se aplica ningún otro formato (un
+  // `**` dentro de backticks es literal, no negrita).
+  s = s.replace(/`([^`]+)`/g, (_m, c) => {
+    cods.push(`<code class="md-code">${c}</code>`);
+    return `${MD_TOKEN_COD}${cods.length - 1}${MD_TOKEN_FIN}`;
+  });
+
+  // Autoenlace `<https://…>` — llega escapado como `&lt;…&gt;`.
+  s = s.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g, (_m, url) => mdEnlace(url, esc(url), ctx));
+
+  // Imagen: estos documentos no traen ninguna. Se neutraliza el `!` para que
+  // no quede un `[alt](src)` suelto pareciendo un enlace roto.
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt) => alt);
+
+  // Enlace `[texto](destino)`.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, texto, destino) =>
+    mdEnlace(mdDesescapar(destino), mdInline(texto, ctx), ctx));
+
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Itálica solo con `*`, nunca con `_`: estos documentos están llenos de
+  // identificadores snake_case sueltos en la prosa (`extraccion_url`,
+  // `lista_ids`) y tomarlos como itálica se come el texto del medio.
+  s = s.replace(/(^|[\s(])\*([^\s*][^*]*)\*(?=$|[\s.,;:)])/g, '$1<em>$2</em>');
+
+  return s.replace(/\u0000C(\d+)\u0000/g, (_m, i) => cods[Number(i)] ?? '');
+}
+
+/** Deshace el escapado de `esc()`, para usar el valor en un atributo. */
+function mdDesescapar(s) {
+  return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                  .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+
+/**
+ * Un enlace del documento. Hay cuatro destinos posibles y cada uno se resuelve
+ * distinto — el criterio es que NUNCA quede un link que al tocarlo no haga
+ * nada o rompa la navegación:
+ *
+ *   http(s)/mailto  → se abre en otra pestaña.
+ *   `#ancla`        → salta dentro del documento. Ojo: NO va como `href="#x"`,
+ *                     porque el panel rutea por `location.hash` y eso lo
+ *                     mandaría a una ruta inexistente. Va como `data-ancla` y
+ *                     lo resuelve el handler con scrollIntoView.
+ *   otro `.md`      → se resuelve contra la carpeta del documento actual; si
+ *                     el navegador lo tiene en el índice, abre esa ficha.
+ *   cualquier otro  → un `.php`, el schema, una carpeta: el panel no los
+ *                     sirve, así que se muestra la ruta como texto inerte.
+ *
+ * Los esquemas raros (`javascript:`, `data:`) caen en la última rama y nunca
+ * llegan a un `href`.
+ */
+function mdEnlace(destino, textoHtml, ctx) {
+  const d = String(destino).trim();
+
+  if (/^(https?:\/\/|mailto:)/i.test(d)) {
+    return `<a class="md-link" href="${esc(d)}" target="_blank" rel="noopener noreferrer">${textoHtml}</a>`;
+  }
+  if (d.startsWith('#')) {
+    return `<a class="md-link md-ancla" data-ancla="${esc(mdAncla(d.slice(1)))}">${textoHtml}</a>`;
+  }
+
+  const limpio = d.split('#')[0];
+  if (limpio.toLowerCase().endsWith('.md')) {
+    const ruta = mdResolver(ctx.dir || '', limpio);
+    if (ctx.docs && ctx.docs.has(ruta)) {
+      return `<a class="md-link" data-doc="${esc(ruta)}">${textoHtml}</a>`;
+    }
+  }
+  return `<span class="md-ruta" title="${esc(d)}">${textoHtml}</span>`;
+}
+
+/** Resuelve `rel` contra `dir` (los dos repo-relativos), colapsando `..`. */
+function mdResolver(dir, rel) {
+  const partes = (rel.startsWith('/') ? [] : String(dir).split('/').filter(Boolean))
+    .concat(rel.split('/'));
+  const pila = [];
+  for (const p of partes) {
+    if (p === '' || p === '.') continue;
+    if (p === '..') { pila.pop(); continue; }
+    pila.push(p);
+  }
+  return pila.join('/');
+}
+
+/**
+ * Ancla al estilo GitHub: minúsculas, se descarta todo lo que no sea
+ * alfanumérico / espacio / guion, y los espacios pasan a guion. Tiene que
+ * coincidir con lo que los `.md` escriben a mano en sus enlaces internos
+ * (`[…](#se-busca-por-slug)`), o los saltos dentro del documento no matchean.
+ *
+ * Los acentos se pliegan con NFD + descarte de marcas combinantes, así
+ * `#autenticacion` encuentra al encabezado "Autenticación".
+ */
+function mdAncla(txt) {
+  return mdDesescapar(String(txt))
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-');
+}
+
+// ------------------------- Vista: Documentación -------------------------
+//
+// Navegador de los servicios del repo y de su documentación. El índice se
+// arma escaneando el filesystem en `api/documentacion.php`; acá solo se pinta.
+
+let docIndice   = [];      // items del índice, tal cual vienen del backend
+let docRutas    = new Set(); // rutas `.md` conocidas — resuelve los enlaces entre documentos
+let docActual   = null;    // ruta del `.md` abierto
+let docFiltro   = 'todos'; // todos | documentado | sin_doc
+let docBusqueda = '';
+let docApiBase  = '';
+
+/**
+ * Plegado para buscar: minúsculas y sin acentos, en las dos puntas de la
+ * comparación. Es la regla del proyecto para cualquier buscador — sin esto
+ * "cotización" no encuentra a "cotizacion" y el usuario concluye que el
+ * documento no existe.
+ */
+function docPlegar(s) {
+  return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+route('/documentacion', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Documentación</div>
+      <div class="page-subtitle" id="docSubtitulo">Servicios publicados y documentos del proyecto, leídos de los <code>.md</code> del repositorio.</div>
+    </div>
+
+    <div class="doc-layout">
+      <aside class="doc-aside">
+        <div class="doc-aside-head">
+          <input type="search" id="docBuscar" class="search-input" placeholder="Buscar servicio o documento…" autocomplete="off">
+          <div class="doc-chips">
+            <button type="button" class="filter-chip active" data-filtro="todos">Todos</button>
+            <button type="button" class="filter-chip" data-filtro="documentado">Con doc</button>
+            <button type="button" class="filter-chip" data-filtro="sin_doc">Sin doc</button>
+          </div>
+        </div>
+        <div class="doc-aside-body" id="docArbol">
+          <div style="text-align:center;padding:40px 0"><div class="spin"></div></div>
+        </div>
+      </aside>
+
+      <section class="doc-main">
+        <div class="doc-main-head">
+          <div class="doc-main-titulo" id="docTitulo">Documentación</div>
+          <div class="doc-main-meta" id="docMeta"></div>
+          <a class="btn btn-sm btn-ghost" id="docOnline" target="_blank" rel="noopener noreferrer" style="display:none">Ver online</a>
+        </div>
+        <div class="doc-main-body" id="docCuerpo">
+          <div style="text-align:center;padding:60px 0"><div class="spin"></div></div>
+        </div>
+      </section>
+    </div>
+  `;
+
+  $('#docBuscar').addEventListener('input', (e) => {
+    docBusqueda = e.target.value.trim();
+    docPintarArbol();
+  });
+  $$('.doc-aside .filter-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      docFiltro = chip.dataset.filtro;
+      $$('.doc-aside .filter-chip').forEach((c) => c.classList.toggle('active', c === chip));
+      docPintarArbol();
+    });
+  });
+
+  // Delegado: el HTML del documento se regenera entero en cada apertura, así
+  // que enganchar los enlaces uno por uno obligaría a re-bindear siempre.
+  $('#docCuerpo').addEventListener('click', (e) => {
+    const aDoc = e.target.closest('a[data-doc]');
+    if (aDoc) { e.preventDefault(); docAbrir(aDoc.dataset.doc); return; }
+    const aAnc = e.target.closest('a[data-ancla]');
+    if (aAnc) {
+      e.preventDefault();
+      const destino = document.getElementById('doc-' + aAnc.dataset.ancla);
+      if (destino) destino.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      else toast('En este documento no hay una sección con ese nombre.');
+    }
+  });
+
+  await docCargarIndice();
+}, 'Documentación');
+
+async function docCargarIndice() {
+  try {
+    const res  = await fetch('api/documentacion.php', { credentials: 'same-origin' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'No se pudo leer el índice');
+
+    docIndice  = data.data.items || [];
+    docApiBase = data.data.api_base || '';
+    docRutas   = new Set(docIndice.filter((i) => i.doc).map((i) => i.doc));
+
+    const r = data.data.resumen;
+    $('#docSubtitulo').innerHTML =
+      `${r.total} servicios y documentos · <strong>${r.documentado}</strong> documentados · `
+    + `${r.sin_doc} sin documentar · ${r.placeholder} sin implementar. `
+    + `Leídos de los <code>.md</code> del repositorio.`;
+
+    docPintarArbol();
+
+    // Se abre el primero que tenga documento: una pantalla que arranca vacía
+    // parece rota, y el primero es siempre uno real.
+    const primero = docIndice.find((i) => i.doc);
+    if (primero) docAbrir(primero.doc);
+    else docPintarEstado('📭', 'Sin documentación', 'No se encontró ningún <code>.md</code> en el árbol del repositorio.');
+  } catch (e) {
+    $('#docArbol').innerHTML = `<div class="doc-aside-vacio">✗ ${esc(e.message)}</div>`;
+    docPintarEstado('⚠️', 'No se pudo cargar el índice', esc(e.message));
+  }
+}
+
+/** Ítems que pasan el chip de estado y el texto del buscador. */
+function docFiltrados() {
+  const q = docPlegar(docBusqueda);
+  return docIndice.filter((it) => {
+    if (docFiltro === 'documentado' && it.estado !== 'documentado') return false;
+    // "Sin doc" incluye los placeholder: los dos son huecos de documentación,
+    // y separarlos en dos chips para tres ítems no le sirve a nadie.
+    if (docFiltro === 'sin_doc' && it.estado === 'documentado') return false;
+    if (q === '') return true;
+    return docPlegar([it.nombre, it.titulo, it.seccion, it.grupo, it.descripcion, it.endpoint]
+      .filter(Boolean).join(' ')).includes(q);
+  });
+}
+
+function docPintarArbol() {
+  const items = docFiltrados();
+  const cont  = $('#docArbol');
+
+  if (!items.length) {
+    cont.innerHTML = '<div class="doc-aside-vacio">Ningún servicio coincide con la búsqueda.</div>';
+    return;
+  }
+
+  // Agrupado grupo → sección preservando el orden en que vino el índice (el
+  // backend ya lo entrega ordenado; reordenar acá sería decidir dos veces).
+  const html = [];
+  let grupoActual = null, seccionActual = null;
+
+  for (const it of items) {
+    if (it.grupo !== grupoActual) {
+      grupoActual = it.grupo; seccionActual = null;
+      html.push(`<div class="doc-grupo">${esc(it.icono || '')} ${esc(it.grupo)}</div>`);
+    }
+    if (it.seccion !== seccionActual) {
+      seccionActual = it.seccion;
+      html.push(`<div class="doc-seccion">${esc(it.seccion)}</div>`);
+    }
+
+    const dot = it.estado === 'documentado' ? 'ok' : (it.estado === 'sin_doc' ? 'sin' : 'ph');
+    const tip = it.estado === 'documentado' ? 'Documentado'
+              : (it.estado === 'sin_doc' ? 'Sin documentar' : 'Sin implementar');
+
+    html.push(
+      `<button type="button" class="doc-item${it.doc ? '' : ' vacio'}"`
+    + ` data-id="${esc(it.id)}" title="${esc(it.descripcion || it.endpoint || it.id)}">`
+    + `<span class="doc-dot ${dot}" title="${tip}"></span>`
+    + `<span class="doc-item-nombre">${esc(it.nombre)}</span></button>`
+    );
+  }
+  cont.innerHTML = html.join('');
+
+  cont.querySelectorAll('.doc-item').forEach((b) => {
+    b.addEventListener('click', () => docSeleccionar(b.dataset.id));
+  });
+  docMarcarActivo();
+}
+
+/**
+ * Click en un ítem del índice. Los que tienen `.md` abren el documento; los
+ * que no, muestran qué falta y dónde iría el archivo — un ítem que al tocarlo
+ * no hace nada se lee como un bug del panel.
+ */
+function docSeleccionar(id) {
+  const it = docIndice.find((x) => x.id === id);
+  if (!it) return;
+
+  if (it.doc) { docAbrir(it.doc); return; }
+
+  docActual = null;
+  docMarcarActivo(id);
+  $('#docTitulo').textContent = it.nombre;
+  $('#docMeta').textContent   = it.endpoint || '';
+  $('#docOnline').style.display = 'none';
+
+  const rutaMd = it.id.replace(/\.php$/, '.md');
+  docPintarEstado(
+    it.estado === 'placeholder' ? '🚧' : '📄',
+    it.estado === 'placeholder' ? 'Servicio reservado, todavía sin escribir'
+                                : 'Este servicio no está documentado',
+    it.estado === 'placeholder'
+      ? `El archivo <code>${esc(it.id)}</code> existe pero está vacío: el nombre está tomado y el endpoint todavía no se implementó.`
+      : `El endpoint <code>${esc(it.endpoint || it.nombre)}</code> está publicado pero no tiene su <code>.md</code>. `
+      + `La documentación va en <code>${esc(rutaMd)}</code> y aparece acá sola en cuanto se deploye.`
+  );
+}
+
+async function docAbrir(ruta) {
+  docActual = ruta;
+  docMarcarActivo();
+  $('#docCuerpo').innerHTML = '<div style="text-align:center;padding:60px 0"><div class="spin"></div></div>';
+
+  try {
+    const res  = await fetch('api/documentacion.php?doc=' + encodeURIComponent(ruta), { credentials: 'same-origin' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'No se pudo leer el documento');
+
+    const d = data.data;
+    $('#docTitulo').textContent = d.titulo || ruta;
+    $('#docMeta').textContent   = `${ruta} · ${docTamano(d.bytes)} · ${d.modificado}`;
+
+    const online = $('#docOnline');
+    if (d.url_publica) {
+      online.href = d.url_publica;
+      online.style.display = '';
+      online.title = d.url_publica;
+    } else {
+      online.style.display = 'none';
+    }
+
+    const dir  = ruta.split('/').slice(0, -1).join('/');
+    const body = $('#docCuerpo');
+    body.innerHTML = `<div class="md-body">${mdRender(d.contenido, { dir, docs: docRutas })}</div>`;
+    body.scrollTop = 0;
+  } catch (e) {
+    docPintarEstado('⚠️', 'No se pudo abrir el documento', esc(e.message));
+  }
+}
+
+function docPintarEstado(icono, titulo, detalleHtml) {
+  $('#docCuerpo').innerHTML =
+    `<div class="doc-estado"><div class="doc-estado-icono">${icono}</div>`
+  + `<div class="doc-estado-titulo">${esc(titulo)}</div>`
+  + `<div class="doc-estado-detalle">${detalleHtml}</div></div>`;
+}
+
+/** Marca el ítem abierto. `forzarId` sirve para los que no tienen `.md`. */
+function docMarcarActivo(forzarId = null) {
+  const activo = forzarId
+    || (docActual ? (docIndice.find((i) => i.doc === docActual) || {}).id : null);
+  $$('#docArbol .doc-item').forEach((b) => {
+    b.classList.toggle('active', b.dataset.id === activo);
+  });
+}
+
+function docTamano(bytes) {
+  const n = Number(bytes) || 0;
+  return n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`;
+}
 
 // ------------------------- Boot -------------------------
 window.addEventListener('hashchange', () => {

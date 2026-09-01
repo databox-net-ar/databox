@@ -11,7 +11,18 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Databox Cloud</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <?php
+  // Font Awesome 6.5.1 Pro autohospedado (assets/fontawesome/). `all.min.css`
+  // trae las familias Classic (solid/regular/light/thin), Duotone y Brands;
+  // las cuatro hojas `sharp-*` agregan los @font-face de la familia Sharp,
+  // que `all.min.css` mapea pero no declara.
+  $faVer = @filemtime(__DIR__ . '/assets/fontawesome/css/all.min.css') ?: $cssVer;
+  ?>
+  <link rel="stylesheet" href="assets/fontawesome/css/all.min.css?v=<?= $faVer ?>">
+  <link rel="stylesheet" href="assets/fontawesome/css/sharp-solid.min.css?v=<?= $faVer ?>">
+  <link rel="stylesheet" href="assets/fontawesome/css/sharp-regular.min.css?v=<?= $faVer ?>">
+  <link rel="stylesheet" href="assets/fontawesome/css/sharp-light.min.css?v=<?= $faVer ?>">
+  <link rel="stylesheet" href="assets/fontawesome/css/sharp-thin.min.css?v=<?= $faVer ?>">
   <link rel="stylesheet" href="assets/css/style.css?v=<?= $cssVer ?>">
   <?php $printCssVer = @filemtime(__DIR__ . '/assets/css/print.css') ?: $cssVer; ?>
   <link rel="stylesheet" href="assets/css/print.css?v=<?= $printCssVer ?>">
@@ -181,6 +192,10 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
             <a href="#/herramientas" class="nav-item nav-sub-item" data-route="/herramientas"
                data-perm-prefix="administracion.herramientas.">
               <span class="nav-icon">🛠️</span> Herramientas
+            </a>
+            <a href="#/documentacion" class="nav-item nav-sub-item" data-route="/documentacion"
+               data-perm="administracion.documentacion.consultar">
+              <span class="nav-icon">📚</span> Documentación
             </a>
           </div>
         </div>
@@ -468,6 +483,135 @@ $version = trim(@file_get_contents(__DIR__ . '/version.txt') ?: '0.0.0', "\xEF\x
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="cerrarExploradorDB()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal Explorador FA6 ===== -->
+  <div class="modal-backdrop" id="fa6ExpModalBackdrop"
+       onclick="if(event.target===this)cerrarExploradorFA6()">
+    <div class="modal fa6-exp-modal">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:1.2rem">🔣</span>
+          <span>Explorador FA6</span>
+          <span class="badge badge-info" id="fa6ExpVersion" style="font-family:monospace">—</span>
+          <span class="modal-subtitle" id="fa6ExpResumen"></span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarExploradorFA6()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:12px">
+        <div class="toolbar" style="margin-bottom:0">
+          <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+            <div class="search-wrap">
+              <input class="search-input" type="search" id="fa6ExpSearch"
+                     placeholder="🔍 Buscar ícono o sinónimo…"
+                     autocomplete="off" spellcheck="false"
+                     oninput="fa6ExpOnSearch(this.value)">
+              <button class="search-clear" id="fa6ExpSearchClear" style="display:none"
+                      onclick="fa6ExpLimpiarBusqueda()">×</button>
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted)">
+              Categoría
+              <select id="fa6ExpCategoria" onchange="fa6ExpAplicarFiltros()">
+                <option value="">Todas</option>
+              </select>
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted)">
+              Tamaño
+              <select id="fa6ExpTamano" onchange="fa6ExpCambiarTamano()">
+                <option value="sm">Chico</option>
+                <option value="md" selected>Mediano</option>
+                <option value="lg">Grande</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <!-- Un solo estilo activo por vez: el mismo glifo existe en hasta 10
+             variantes y mostrarlas todas a la vez vuelve la grilla ilegible. -->
+        <div id="fa6ExpEstiloChips" class="fa6-exp-chips"></div>
+
+        <div class="fa6-exp-grid-wrap" id="fa6ExpGridWrap" onscroll="fa6ExpOnScroll(this)">
+          <div class="fa6-exp-grid" id="fa6ExpGrid">
+            <div class="fa6-exp-cargando"><div class="spin"></div></div>
+          </div>
+        </div>
+
+        <div class="db-exp-footer-info">
+          <span id="fa6ExpInfo">—</span>
+          <span>Tocá un ícono para ver el detalle y copiar su etiqueta.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="cerrarExploradorFA6()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal detalle de ícono FA6 -->
+  <div class="modal-backdrop" id="fa6DetalleBackdrop" style="z-index:160"
+       onclick="if(event.target===this)cerrarDetalleFA6()">
+    <div class="modal" style="max-width:720px">
+      <div class="modal-header">
+        <div class="modal-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:1.2rem">🔣</span>
+          <span id="fa6DetalleTitulo">Ícono</span>
+          <span class="badge" id="fa6DetalleLicencia">—</span>
+        </div>
+        <button class="btn-icon-sm" type="button" onclick="cerrarDetalleFA6()" title="Cerrar">×</button>
+      </div>
+      <div class="modal-body" style="gap:14px">
+        <div class="fa6-det-preview">
+          <i class="fa-solid fa-question" id="fa6DetallePreview"></i>
+          <code id="fa6DetalleClase">—</code>
+        </div>
+
+        <div class="form-group">
+          <label>Estilos disponibles</label>
+          <div class="fa6-det-estilos" id="fa6DetalleEstilos"></div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Nombre</label>
+            <div id="fa6DetalleNombre" style="font-family:monospace">—</div>
+          </div>
+          <div class="form-group">
+            <label>Unicode</label>
+            <div id="fa6DetalleUnicode" style="font-family:monospace">—</div>
+          </div>
+        </div>
+
+        <div class="form-group" id="fa6DetalleAliasWrap">
+          <label>Alias</label>
+          <div id="fa6DetalleAlias" class="fa6-det-tags">—</div>
+        </div>
+
+        <div class="form-group" id="fa6DetalleCategoriasWrap">
+          <label>Categorías</label>
+          <div id="fa6DetalleCategorias" class="fa6-det-tags">—</div>
+        </div>
+
+        <div class="form-group" id="fa6DetalleTerminosWrap">
+          <label>Sinónimos de búsqueda</label>
+          <div id="fa6DetalleTerminos" class="fa6-det-tags">—</div>
+        </div>
+
+        <div class="form-group">
+          <label>Etiqueta HTML</label>
+          <textarea class="json-editor" id="fa6DetalleHtml" readonly
+                    spellcheck="false" autocomplete="off"
+                    style="min-height:56px;font-family:monospace"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" style="margin-right:auto" onclick="fa6DetalleCopiar('html')">
+          <i class="fa-solid fa-copy"></i> Copiar etiqueta
+        </button>
+        <button class="btn btn-ghost" onclick="fa6DetalleCopiar('clase')">Copiar clases</button>
+        <button class="btn btn-ghost" onclick="fa6DetalleCopiar('unicode')">Copiar unicode</button>
+        <button class="btn btn-ghost" onclick="cerrarDetalleFA6()">Cerrar</button>
       </div>
     </div>
   </div>

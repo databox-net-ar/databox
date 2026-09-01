@@ -7,6 +7,12 @@
 # concretas se administran desde el back office (tabla `tareas`) y el
 # scheduler decide cuales disparar en cada tick.
 #
+# Para frenar TODO el disparo automatico de una (sin poner activo=0 tarea por
+# tarea) esta el parametro `scheduler.activo`, editable desde el panel en
+# Herramientas > Editor de parametros. Por defecto vale 1 en produccion y 0 en
+# desarrollo. El tick sigue corriendo igual — barre ejecuciones huerfanas y
+# despues corta. Ver la seccion 2) de _scheduler.php.
+#
 # Formato /etc/cron.d/ (7 campos): min hora dom mes dow USUARIO COMANDO
 
 SHELL=/bin/bash
