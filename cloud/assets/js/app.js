@@ -40983,8 +40983,10 @@ route('/evolutioncanales', async (mount) => {
               <input type="number" id="fEvoChCodigo" min="1" placeholder="ID …" oninput="onFiltroEvoCh('codigo', this.value)">
             </div>
             <div class="form-group">
-              <label>Proyecto (ID)</label>
-              <input type="number" id="fEvoChProyecto" min="1" oninput="onFiltroEvoCh('proyecto', this.value)">
+              <label>Proyecto</label>
+              <select id="fEvoChProyecto" onchange="onFiltroEvoCh('proyecto', this.value)">
+                <option value="">— Todos —</option>
+              </select>
             </div>
             <div class="form-group">
               <label>Habilitado</label>
@@ -41114,11 +41116,24 @@ async function cargarEvoCh() {
       evoChCargarProyectos(),
     ]);
     evoChCache = data.items || [];
+    poblarProyectosFiltroEvoCh(proyectos);
     pintarStatsEvoCh(data.stats);
     pintarTablaEvoCh(evoChCache, proyectos);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
+}
+
+// El <select> de Proyecto del modal de filtros guarda el id numerico como
+// value; se puebla una sola vez por vida de la vista.
+function poblarProyectosFiltroEvoCh(proyectos) {
+  const sel = $('#fEvoChProyecto');
+  if (!sel || sel.dataset.poblado === '1') return;
+  const actual = evoChFiltros.proyecto;
+  sel.innerHTML = `<option value="">— Todos —</option>` + proyectos.map((p) =>
+    `<option value="${esc(p.id)}" ${String(p.id) === String(actual) ? 'selected' : ''}>${esc(p.nombre)}</option>`
+  ).join('');
+  sel.dataset.poblado = '1';
 }
 
 function pintarStatsEvoCh(s) {
@@ -41195,7 +41210,7 @@ function refrescarBadgeFiltrosEvoCh() {
 function sincronizarControlesFiltrosEvoCh() {
   const f = evoChFiltros;
   $('#fEvoChCodigo').value     = f.codigo;
-  $('#fEvoChProyecto').value   = f.proyecto;
+  $('#fEvoChProyecto').value   = f.proyecto === '' || f.proyecto == null ? '' : String(f.proyecto);
   $('#fEvoChHabilitado').value = f.habilitado;
   $('#fEvoChOnline').value     = f.online;
   $('#fEvoChLimite').value     = f.limite;
