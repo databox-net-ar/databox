@@ -282,7 +282,8 @@ CREATE TABLE `aws_mensajes`  (
   `programado` datetime(0) NULL DEFAULT NULL,
   `enviado` datetime(0) NULL DEFAULT NULL,
   `demora` int(11) NULL DEFAULT NULL,
-  PRIMARY KEY (`id`) USING BTREE
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_awsmsg_estado_enviado`(`estado`, `enviado`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 14339 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -2635,7 +2636,8 @@ CREATE TABLE `evolution_mensajes`  (
   `programado` datetime NULL DEFAULT NULL,
   `enviado` datetime(0) NULL DEFAULT NULL,
   `demora` int(11) NULL DEFAULT NULL,
-  PRIMARY KEY (`id`) USING BTREE
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_evomsg_estado_enviado`(`estado`, `enviado`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 307057 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -3531,7 +3533,8 @@ CREATE TABLE `telegram_mensajes`  (
   INDEX `idx_telegram_mensajes_proyecto`(`proyecto_id`) USING BTREE,
   INDEX `idx_telegram_mensajes_canal`(`canal_id`) USING BTREE,
   INDEX `idx_telegram_mensajes_estado`(`estado`) USING BTREE,
-  INDEX `idx_telegram_mensajes_uuid`(`uuid`) USING BTREE
+  INDEX `idx_telegram_mensajes_uuid`(`uuid`) USING BTREE,
+  INDEX `idx_tgmsg_estado_enviado`(`estado`, `enviado`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

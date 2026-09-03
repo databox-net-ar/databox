@@ -702,6 +702,533 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape') cerrarCtxMenu();
 });
 
+// ------------------------- Gráfico de serie diaria por grupo (landings) -------------------------
+//
+// Widget compartido por los landings de Evolution API, AWS, Telegram y
+// Datarocket: una línea por grupo —canal en las de mensajería, proyecto en
+// Datarocket— con la actividad diaria de los últimos 30 días. Va arriba de la
+// grilla de módulos de cada pantalla.
+//
+// Los datos salen de api/<algo>_grafico.php. Todos los endpoints delegan en la
+// misma lib (cloud/api/lib/grafico_serie_diaria.php) y devuelven la misma
+// forma, así que el widget no sabe de qué plataforma está pintando: recibe
+// `fechas[]` + `series[]` y los dibuja.
+//
+// El SVG se arma a mano, igual que los gráficos de Datacount > Analíticas: el
+// panel no carga ninguna librería de charts y no vale la pena sumar una.
+//
+// Uso desde una route:
+//   mount.innerHTML = `… ${grafSerieTarjeta('aws')} …`;   // '' si falta el permiso
+//   grafSerieMontar('aws');                               // no-op si no se pintó
+
+const GRAF_SERIE_DIAS = 30;
+
+// Una entrada por pantalla. `permiso` es el mismo gate que aplica el endpoint:
+// si el usuario no puede consultar el ABM del que salen los números, tampoco ve
+// su gráfico. `unidad` y `grupo` son [singular, plural] y sólo se usan para
+// redactar el subtítulo y el estado vacío — el resto del widget es agnóstico.
+const GRAF_SERIE_FUENTES = {
+  evolution: {
+    permiso:  'plataformas.evolution.mensajes.consultar',
+    endpoint: 'api/evolutionmensajes_grafico.php',
+    listado:  '#/evolutionmensajes',
+    titulo:   'Mensajes enviados por día',
+    unidad:   ['mensaje', 'mensajes'],
+    grupo:    ['canal', 'canales'],
+    vacio:    'Ningún canal envió mensajes',
+  },
+  aws: {
+    permiso:  'plataformas.aws.mensajes.consultar',
+    endpoint: 'api/awsmensajes_grafico.php',
+    listado:  '#/awsmensajes',
+    titulo:   'Mensajes enviados por día',
+    unidad:   ['mensaje', 'mensajes'],
+    grupo:    ['canal', 'canales'],
+    vacio:    'Ningún canal envió mensajes',
+  },
+  telegram: {
+    permiso:  'plataformas.telegram.mensajes.consultar',
+    endpoint: 'api/telegrammensajes_grafico.php',
+    listado:  '#/telegrammensajes',
+    titulo:   'Mensajes enviados por día',
+    unidad:   ['mensaje', 'mensajes'],
+    grupo:    ['canal', 'canales'],
+    vacio:    'Ningún canal envió mensajes',
+  },
+  // Datarocket agrupa por PROYECTO, no por canal, y cuenta todas las
+  // interacciones (entrantes y salientes): es el movimiento diario de cada
+  // proyecto, no una cola de envío.
+  datarocket_interacciones: {
+    permiso:  'datarocket.interacciones.consultar',
+    endpoint: 'api/datarocket_interacciones_grafico.php',
+    listado:  '#/datarocketinteracciones',
+    titulo:   'Interacciones por día',
+    unidad:   ['interacción', 'interacciones'],
+    grupo:    ['proyecto', 'proyectos'],
+    vacio:    'Ningún proyecto registró interacciones',
+  },
+};
+
+// Paleta categórica: identidad, no magnitud. Los ocho tonos están validados
+// sobre el fondo oscuro del panel (banda de luminosidad, piso de croma,
+// separación bajo daltonismo y contraste >= 3:1 contra --surface), así que NO
+// reemplazar tonos sueltos a ojo. El color se asigna por POSICIÓN en
+// `series` y esa posición no cambia al apagar líneas desde la leyenda: un grupo
+// no cambia de color porque se oculte otro.
+// El tope de series lo pone el backend (GRAF_SERIE_MAX_SERIES): la cola llega
+// plegada en una serie "Otros", que se pinta en gris porque no es un grupo.
+const GRAF_SERIE_COLORES = [
+  '#3987e5', '#d95926', '#199e70', '#c98500',
+  '#d55181', '#008300', '#9085e9', '#e66767',
+];
+
+// Estado por pantalla: última respuesta del endpoint + series apagadas
+// desde la leyenda. Sobrevive a la navegación (volver al landing conserva lo
+// que el operador había apagado).
+const grafSerieEstado = {};
+let grafSerieResizeWired = false;
+let grafSerieResizeTimer = null;
+
+function grafSerieSt(clave) {
+  if (!grafSerieEstado[clave]) grafSerieEstado[clave] = { data: null, ocultas: new Set() };
+  return grafSerieEstado[clave];
+}
+
+// La tarjeta se ubica por `data-graf` y todo lo de adentro se busca acotado a
+// ella: nada de ids globales, así dos gráficos podrían convivir en una pantalla
+// sin pisarse.
+function grafSerieCard(clave) {
+  return document.querySelector(`.graf-serie[data-graf="${clave}"]`);
+}
+
+function grafSerieEl(clave, sel) {
+  const card = grafSerieCard(clave);
+  return card ? card.querySelector(sel) : null;
+}
+
+// HTML de la tarjeta. Devuelve '' si el usuario no tiene el permiso de la
+// plataforma — así el landing no deja un hueco.
+function grafSerieTarjeta(clave) {
+  const cfg = GRAF_SERIE_FUENTES[clave];
+  if (!cfg || !hasPermission(cfg.permiso)) return '';
+
+  return `
+    <div class="table-card graf-serie" data-graf="${clave}" style="padding:16px 20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="flex:1;min-width:200px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:600;font-size:.95rem">
+            <i class="fa-solid fa-chart-line" style="color:var(--primary);margin-right:6px"></i>${esc(cfg.titulo)}
+          </span>
+          <span class="graf-serie-sub" style="font-size:.8rem;color:var(--muted)">últimos ${GRAF_SERIE_DIAS} días</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="btn btn-ghost btn-icon graf-serie-listado" title="Ir al listado">
+            <i class="fa-solid fa-list"></i>
+          </button>
+          <button class="btn btn-ghost btn-icon graf-serie-refrescar" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="graf-serie-leyenda" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px"></div>
+
+      <div class="graf-serie-plot" style="position:relative;width:100%;transition:opacity .15s">
+        <div class="graf-serie-inner">
+          <div style="text-align:center;padding:70px 0"><div class="spin"></div></div>
+        </div>
+        <div class="graf-serie-tooltip" hidden
+             style="position:absolute;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow-lg);font-size:.8rem;pointer-events:none;z-index:5;white-space:nowrap;line-height:1.5"></div>
+      </div>
+    </div>`;
+}
+
+// Engancha los eventos y dispara la carga. No se hace `await`: los números
+// llegan cuando llegan y mientras tanto la tarjeta muestra el spinner — la
+// grilla de módulos, que es a lo que el operador entró, no espera la query.
+function grafSerieMontar(clave) {
+  const card = grafSerieCard(clave);
+  if (!card) return; // sin permiso: la tarjeta no se pintó
+
+  // Atajo al ABM del que salen los números: el gráfico muestra el agregado y el
+  // detalle está allá. Mismo destino que la tarjeta homónima de abajo.
+  card.querySelector('.graf-serie-listado').addEventListener('click', () => {
+    location.hash = GRAF_SERIE_FUENTES[clave].listado;
+  });
+  card.querySelector('.graf-serie-refrescar').addEventListener('click', () => grafSerieCargar(clave));
+
+  // Tooltip: el puntero apunta a un DÍA, no a una línea de 2px. Cada día tiene
+  // una banda transparente que cubre todo el alto del área de dibujo, y el
+  // globo lista TODAS las series visibles de esa fecha — no hace falta acertarle
+  // a ninguna curva para leer su número.
+  const plot = card.querySelector('.graf-serie-plot');
+  plot.addEventListener('mousemove', (ev) => {
+    const banda = ev.target.closest('.graf-serie-hit');
+    if (!banda) { grafSerieOcultarTooltip(clave); return; }
+    grafSerieMostrarTooltip(clave, Number(banda.dataset.i));
+  });
+  plot.addEventListener('mouseleave', () => grafSerieOcultarTooltip(clave));
+
+  // Redibujar al cambiar el ancho de la ventana: el SVG se calcula contra el
+  // ancho disponible, así que un resize sin repintado deja las etiquetas
+  // escaladas. Un solo listener para todas las plataformas, atado a las
+  // tarjetas que estén montadas en ese momento.
+  if (!grafSerieResizeWired) {
+    window.addEventListener('resize', () => {
+      clearTimeout(grafSerieResizeTimer);
+      grafSerieResizeTimer = setTimeout(() => {
+        document.querySelectorAll('.graf-serie[data-graf]').forEach(
+          (c) => grafSeriePintar(c.dataset.graf));
+      }, 150);
+    });
+    grafSerieResizeWired = true;
+  }
+
+  grafSerieCargar(clave);
+}
+
+async function grafSerieCargar(clave) {
+  const plot = grafSerieEl(clave, '.graf-serie-plot');
+  if (!plot) return;
+  const st = grafSerieSt(clave);
+
+  // Refresco sobre un gráfico ya pintado: se mantiene el render anterior
+  // atenuado en vez de volver al spinner, para que la tarjeta no salte de alto.
+  // (Al entrar de nuevo a la pantalla el estado sigue cargado de la visita
+  // anterior pero el DOM arranca con el spinner: ahí no hay nada que atenuar.)
+  if (st.data && !plot.querySelector('.spin')) plot.style.opacity = '.45';
+
+  try {
+    const d = await apiGet(`${GRAF_SERIE_FUENTES[clave].endpoint}?dias=${GRAF_SERIE_DIAS}`);
+    // La tarjeta pudo desmontarse mientras viajaba la respuesta (el operador
+    // ya navegó a otra pantalla): pintar ahí tiraría sobre un DOM muerto.
+    if (!grafSerieCard(clave)) return;
+    st.data = d;
+    grafSeriePintar(clave);
+  } catch (e) {
+    const inner = grafSerieEl(clave, '.graf-serie-inner');
+    if (inner && !st.data) {
+      inner.innerHTML = `
+        <div style="text-align:center;padding:60px 0;color:var(--muted);font-size:.85rem">
+          No se pudo cargar el gráfico: ${esc(e.message || 'error')}
+        </div>`;
+      const ley = grafSerieEl(clave, '.graf-serie-leyenda');
+      if (ley) ley.innerHTML = '';
+    }
+  } finally {
+    const p = grafSerieEl(clave, '.graf-serie-plot');
+    if (p) p.style.opacity = '';
+  }
+}
+
+function grafSeriePintar(clave) {
+  const st    = grafSerieSt(clave);
+  const d     = st.data;
+  const inner = grafSerieEl(clave, '.graf-serie-inner');
+  const ley   = grafSerieEl(clave, '.graf-serie-leyenda');
+  const sub   = grafSerieEl(clave, '.graf-serie-sub');
+  if (!d || !inner) return;
+
+  grafSerieOcultarTooltip(clave);
+
+  const cfg = GRAF_SERIE_FUENTES[clave];
+  if (sub) {
+    sub.textContent = `últimos ${d.dias} días · ${fmtNum(d.total)} `
+      + `${cfg.unidad[d.total === 1 ? 0 : 1]} · ${fmtNum(d.grupos)} `
+      + `${cfg.grupo[d.grupos === 1 ? 0 : 1]}`;
+  }
+
+  if (!d.series.length) {
+    ley.innerHTML   = '';
+    inner.innerHTML = `
+      <div style="text-align:center;padding:60px 0;color:var(--muted);font-size:.85rem">
+        ${esc(cfg.vacio)} en los últimos ${d.dias} días.
+      </div>`;
+    return;
+  }
+
+  grafSeriePintarLeyenda(clave, d);
+  inner.innerHTML = grafSerieRenderChart(clave, d, grafSerieEl(clave, '.graf-serie-plot').clientWidth);
+}
+
+// Leyenda + interruptor por serie. Va siempre (el color solo no puede ser el
+// único canal de identidad). El total de cada canal es el dato fuerte de la
+// fila; el nombre queda en tinta secundaria.
+function grafSeriePintarLeyenda(clave, d) {
+  const ley = grafSerieEl(clave, '.graf-serie-leyenda');
+  if (!ley) return;
+  const st = grafSerieSt(clave);
+
+  ley.innerHTML = d.series.map((s, i) => {
+    const off = st.ocultas.has(grafSerieSerieClave(s));
+    return `
+      <button type="button" class="graf-serie-ley" data-serie="${esc(grafSerieSerieClave(s))}"
+              title="${off ? 'Mostrar' : 'Ocultar'} ${esc(s.nombre)}"
+              style="display:inline-flex;align-items:center;gap:7px;background:none;border:0;
+                     padding:2px 0;cursor:pointer;font:inherit;font-size:.78rem;
+                     opacity:${off ? '.4' : '1'};transition:opacity .15s">
+        <span style="width:16px;height:2px;border-radius:1px;flex-shrink:0;
+                     background:${grafSerieColor(i, s)}"></span>
+        <span style="color:var(--muted)">${esc(s.nombre)}</span>
+        <span style="color:var(--text);font-weight:600">${fmtNum(s.total)}</span>
+      </button>`;
+  }).join('');
+
+  ley.querySelectorAll('.graf-serie-ley').forEach((b) => {
+    b.addEventListener('click', () => {
+      const serie = b.dataset.serie;
+      if (st.ocultas.has(serie)) st.ocultas.delete(serie);
+      else                       st.ocultas.add(serie);
+      grafSeriePintar(clave);
+    });
+  });
+}
+
+// Identidad estable de una serie, para que el apagado sobreviva a un refresco
+// (el índice no sirve: el orden es por volumen y puede cambiar entre cargas).
+function grafSerieSerieClave(s) {
+  return s.grupo_id != null ? `g${s.grupo_id}` : `n:${s.nombre}`;
+}
+
+function grafSerieColor(i, s) {
+  if (s && s.agrupada) return 'var(--muted)';
+  return GRAF_SERIE_COLORES[i % GRAF_SERIE_COLORES.length];
+}
+
+// 'YYYY-MM-DD' -> 'DD/MM'. Sin pasar por `new Date()`: la cadena es una fecha
+// pura y el constructor la interpretaría como medianoche UTC, corriéndola un
+// día para atrás en nuestro huso (ver la nota de fmtFechaSola).
+function grafSerieFechaLabel(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}` : String(iso || '');
+}
+
+// Índices (sobre d.series) de las líneas que hay que dibujar. Se conserva el
+// índice original a propósito: es lo que ancla el color al grupo.
+function grafSerieVisibles(clave, d) {
+  const st = grafSerieSt(clave);
+  return d.series
+    .map((s, i) => i)
+    .filter((i) => !st.ocultas.has(grafSerieSerieClave(d.series[i])));
+}
+
+function grafSerieRenderChart(clave, d, anchoDisponible) {
+  const W   = Math.max(320, Math.floor(anchoDisponible || 800));
+  const H   = 260;
+  const PAD = { top: 14, right: 18, bottom: 28, left: 52 };
+  const plotW = W - PAD.left - PAD.right;
+  const plotH = H - PAD.top - PAD.bottom;
+
+  const fechas   = d.fechas;
+  const n        = fechas.length;
+  const visibles = grafSerieVisibles(clave, d);
+
+  if (!visibles.length) {
+    return `<div style="text-align:center;padding:60px 0;color:var(--muted);font-size:.85rem">
+              Todas las líneas están ocultas. Volvé a encender alguna desde la leyenda.
+            </div>`;
+  }
+
+  // El eje Y se escala sólo con lo visible: apagar la serie dominante tiene que
+  // dejar ver el detalle de las que quedan.
+  const maxVal = visibles.reduce(
+    (m, i) => Math.max(m, ...d.series[i].valores.map(Number)), 0);
+  const { paso, ticks: yTicks } = grafSerieEjeY(maxVal);
+  const yMax = paso * yTicks;
+
+  // Grid + eje Y. Líneas sólidas de un tono contra el fondo (nunca punteadas:
+  // el punteo se lee como "proyección" o "umbral" y acá es sólo la grilla).
+  const gridLines = [];
+  const yLabels   = [];
+  for (let i = 0; i <= yTicks; i++) {
+    const val = paso * i;
+    const y   = PAD.top + plotH - (plotH * i / yTicks);
+    gridLines.push(`<line x1="${PAD.left}" y1="${y.toFixed(1)}" x2="${(PAD.left + plotW).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`);
+    yLabels.push(`<text x="${PAD.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)" font-family="inherit">${fmtNum(val)}</text>`);
+  }
+
+  // X: un punto por día, repartidos de borde a borde del área de dibujo.
+  const xDe = (i) => (n === 1 ? PAD.left + plotW / 2 : PAD.left + (plotW * i) / (n - 1));
+  const yDe = (v) => PAD.top + plotH - (yMax > 0 ? (plotH * Number(v || 0)) / yMax : 0);
+
+  // Etiquetas del eje X cada `stepX` días: las que entren sin pisarse en el
+  // ancho real (un 'DD/MM' a 10px pide unos 46px con aire). Con la ventana de
+  // 30 días eso deja una etiqueta cada dos o tres según el ancho de la tarjeta.
+  // Se cuenta desde el ÚLTIMO día hacia atrás para que "hoy" siempre lleve
+  // etiqueta y el espaciado quede parejo (contando desde el primero, la última
+  // se agrega a la fuerza y a veces cae pegada a la anterior).
+  const stepX  = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotW / 46))));
+  const xLabs  = fechas.map((f, i) => ((n - 1 - i) % stepX === 0)
+    ? `<text x="${xDe(i).toFixed(1)}" y="${(PAD.top + plotH + 16).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">${esc(grafSerieFechaLabel(f))}</text>`
+    : '').join('');
+
+  // Líneas + puntos. El anillo del color de la superficie es lo que mantiene
+  // legible un punto donde se cruza con otra línea (sin dibujarle un borde).
+  // Los puntos sólo salen si hay pocos días: con la ventana de 30 se tocan
+  // entre sí y una serie en cero se ve como una fila de bolitas en vez de una
+  // línea plana. La lectura día a día la da el tooltip, que sigue estando.
+  const conPuntos = n <= 14;
+  const lineas = [];
+  const puntos = [];
+  visibles.forEach((si) => {
+    const s    = d.series[si];
+    const col  = grafSerieColor(si, s);
+    const pts  = s.valores.map((v, i) => ({ x: xDe(i), y: yDe(v) }));
+    lineas.push(`<path d="${grafSeriePathSuave(pts)}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`);
+    if (conPuntos) pts.forEach((p) => {
+      puntos.push(`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="${col}" stroke="var(--surface)" stroke-width="2"/>`);
+    });
+  });
+
+  // Banda transparente por día: es el blanco del puntero (mucho más grande que
+  // los puntos) y lo que dispara el tooltip y la línea guía.
+  const bandW = n > 1 ? plotW / (n - 1) : plotW;
+  const hits  = fechas.map((f, i) => {
+    const x = Math.max(PAD.left, xDe(i) - bandW / 2);
+    const w = Math.min(bandW, PAD.left + plotW - x);
+    return `<rect class="graf-serie-hit" data-i="${i}" x="${x.toFixed(1)}" y="${PAD.top}" width="${w.toFixed(1)}" height="${plotH}" fill="transparent" style="cursor:crosshair"/>`;
+  }).join('');
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block">
+      ${gridLines.join('')}
+      ${yLabels.join('')}
+      <line class="graf-serie-cross" x1="0" y1="${PAD.top}" x2="0" y2="${PAD.top + plotH}"
+            stroke="var(--border)" stroke-width="1" visibility="hidden"/>
+      ${lineas.join('')}
+      ${puntos.join('')}
+      ${xLabs}
+      ${hits}
+    </svg>
+  `;
+}
+
+// Eje Y para una serie de CONTEOS: devuelve el paso entre marcas y cuántas
+// marcas van. El paso siempre es un entero "lindo" (1, 2, 5, 10, 20, 50…)
+// porque las marcas son cantidades de mensajes: un eje 0/6/13/19/25 —lo que
+// sale de repartir el máximo en partes iguales— no se lee.
+// No se usa `dcaNiceMax` (Analíticas) por eso mismo: ese redondea el TOPE y
+// deja los intermedios en fracciones, que para pesos está bien y para mensajes
+// no.
+function grafSerieEjeY(maxVal, marcasObjetivo = 4) {
+  const bruto = Math.max(1, Number(maxVal) || 0) / marcasObjetivo;
+  const exp   = Math.floor(Math.log10(bruto));
+  const base  = Math.pow(10, exp);
+  const norm  = bruto / base;
+  // Cortes en las medias geométricas: se elige el paso lindo MÁS CERCANO, no
+  // el inmediato superior (con "hacia arriba", un máximo de 22 salta a pasos de
+  // 10 y sobra medio gráfico vacío).
+  let paso;
+  if      (norm < 1.5) paso = 1;
+  else if (norm < 3)   paso = 2;
+  else if (norm < 7)   paso = 5;
+  else                 paso = 10;
+  paso = Math.max(1, Math.round(paso * base));
+
+  const ticks = Math.max(1, Math.ceil(Math.max(1, Number(maxVal) || 0) / paso));
+  return { paso, ticks };
+}
+
+// Path suavizado con cúbica monótona (Fritsch–Carlson). No se usa una
+// Catmull-Rom común porque ésa se pasa de los puntos: una serie 0 → 40 → 0
+// dibujaría una panza por debajo del eje, y "menos de cero mensajes" no existe.
+function grafSeriePathSuave(pts) {
+  const n = pts.length;
+  const P = (p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+  if (n === 0) return '';
+  if (n === 1) return `M ${P(pts[0])} L ${P(pts[0])}`;
+  if (n === 2) return `M ${P(pts[0])} L ${P(pts[1])}`;
+
+  // Pendiente de cada tramo.
+  const d = [];
+  for (let i = 0; i < n - 1; i++) {
+    d.push((pts[i + 1].y - pts[i].y) / (pts[i + 1].x - pts[i].x));
+  }
+  // Tangente en cada punto: promedio de los tramos vecinos, 0 en los picos
+  // (cambio de signo) y acotada a 3× el tramo más chico. Ese recorte es lo que
+  // garantiza que la curva quede dentro del rango de los datos.
+  const m = new Array(n);
+  m[0]     = d[0];
+  m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    if (d[i - 1] * d[i] <= 0) { m[i] = 0; continue; }
+    const prom = (d[i - 1] + d[i]) / 2;
+    const tope = 3 * Math.min(Math.abs(d[i - 1]), Math.abs(d[i]));
+    m[i] = Math.sign(prom) * Math.min(Math.abs(prom), tope);
+  }
+
+  let path = `M ${P(pts[0])}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h  = (pts[i + 1].x - pts[i].x) / 3;
+    const c1 = { x: pts[i].x + h,     y: pts[i].y     + m[i] * h };
+    const c2 = { x: pts[i + 1].x - h, y: pts[i + 1].y - m[i + 1] * h };
+    path += ` C ${P(c1)}, ${P(c2)}, ${P(pts[i + 1])}`;
+  }
+  return path;
+}
+
+function grafSerieMostrarTooltip(clave, i) {
+  const st   = grafSerieSt(clave);
+  const d    = st.data;
+  const tip  = grafSerieEl(clave, '.graf-serie-tooltip');
+  const plot = grafSerieEl(clave, '.graf-serie-plot');
+  const hit  = plot?.querySelector(`.graf-serie-hit[data-i="${i}"]`);
+  if (!d || !tip || !hit) return;
+
+  const visibles = grafSerieVisibles(clave, d);
+  const totalDia = visibles.reduce((acc, si) => acc + Number(d.series[si].valores[i] || 0), 0);
+
+  // El número manda y el nombre acompaña: acá el lector ya sabe qué serie
+  // busca y lo que quiere es la cantidad.
+  tip.innerHTML = `
+    <div style="font-weight:600;margin-bottom:4px">${esc(fmtFechaSola(d.fechas[i]))}</div>
+    ${visibles.map((si) => `
+      <div style="display:flex;align-items:center;gap:7px">
+        <span style="width:12px;height:2px;border-radius:1px;flex-shrink:0;
+                     background:${grafSerieColor(si, d.series[si])}"></span>
+        <span style="color:var(--muted);flex:1">${esc(d.series[si].nombre)}</span>
+        <span style="font-weight:600">${fmtNum(d.series[si].valores[i])}</span>
+      </div>`).join('')}
+    ${visibles.length > 1 ? `
+      <div style="display:flex;gap:12px;margin-top:4px;padding-top:4px;border-top:1px solid var(--border)">
+        <span style="color:var(--muted);flex:1">Total del día</span>
+        <span style="font-weight:600">${fmtNum(totalDia)}</span>
+      </div>` : ''}
+  `;
+
+  // Línea guía sobre el día apuntado. Se mueve en coordenadas del viewBox (no
+  // en píxeles de pantalla: el SVG se escala al ancho del contenedor).
+  const cross = plot.querySelector('.graf-serie-cross');
+  if (cross) {
+    const x = Number(hit.getAttribute('x')) + Number(hit.getAttribute('width')) / 2;
+    cross.setAttribute('x1', x);
+    cross.setAttribute('x2', x);
+    cross.setAttribute('visibility', 'visible');
+  }
+
+  // Posición del globo: centrado sobre la banda y pegado al alto del área de
+  // dibujo, corrigiendo si se sale por alguno de los bordes de la tarjeta.
+  const hitBox  = hit.getBoundingClientRect();
+  const plotBox = plot.getBoundingClientRect();
+  tip.hidden = false;
+  tip.style.left      = `${hitBox.left - plotBox.left + hitBox.width / 2}px`;
+  tip.style.top       = '8px';
+  tip.style.transform = 'translateX(-50%)';
+
+  const tipBox = tip.getBoundingClientRect();
+  let dx = 0;
+  if (tipBox.left < plotBox.left)        dx = plotBox.left  - tipBox.left;
+  else if (tipBox.right > plotBox.right) dx = plotBox.right - tipBox.right;
+  if (dx) tip.style.transform = `translateX(calc(-50% + ${dx.toFixed(1)}px))`;
+}
+
+function grafSerieOcultarTooltip(clave) {
+  const tip = grafSerieEl(clave, '.graf-serie-tooltip');
+  if (tip) tip.hidden = true;
+  const cross = grafSerieEl(clave, '.graf-serie-cross');
+  if (cross) cross.setAttribute('visibility', 'hidden');
+}
+
 // ------------------------- Router -------------------------
 const routes = {};
 function route(path, handler, title) {
@@ -4376,6 +4903,14 @@ route('/aws', async (mount) => {
       <div class="page-subtitle">Herramientas y recursos de la plataforma AWS.</div>
     </div>
 
+    <!-- Grafico de salida diaria (componente compartido con Evolution y
+         Telegram, ver grafSerieTarjeta). Va ARRIBA de la grilla de modulos a
+         proposito: lo primero que tiene que ver el operador al entrar es si el
+         motor esta despachando y por que canales, no el menu de navegacion.
+         Devuelve '' si el usuario no puede consultar el ABM de Mensajes: de ahi
+         salen los numeros y el endpoint aplica el mismo gate. -->
+    ${grafSerieTarjeta('aws')}
+
     <!-- orden fijo pedido por el negocio: Mensajes, Eventos, Canales,
          Servidores, Bases de Datos, Cuentas (Plataforma queda siempre al
          final como acceso externo). -->
@@ -4418,6 +4953,8 @@ route('/aws', async (mount) => {
       </button>
     </div>
   `;
+
+  grafSerieMontar('aws');
 }, 'AWS');
 
 // ------------------------- Vista: AWS Cuentas (ABM) -------------------------
@@ -26801,6 +27338,14 @@ route('/datarocket', async (mount) => {
       </div>` : ''}
     </div>
 
+    <!-- Grafico de interacciones diarias por proyecto (componente compartido con
+         los landings de Evolution, AWS y Telegram, ver grafSerieTarjeta). Va
+         entre los indicadores y la grilla: los indicadores dicen que hay que
+         atender AHORA y el grafico da el contexto de como viene el movimiento.
+         Devuelve '' si el usuario no puede consultar el ABM de Interacciones:
+         de ahi salen los numeros y el endpoint aplica el mismo gate. -->
+    ${grafSerieTarjeta('datarocket_interacciones')}
+
     <!-- Orden de tarjetas fijado por el usuario (no alfabetico): sigue el flujo
          CRM "quien" (Prospectos, Oportunidades) -> "que paso" (Interacciones) ->
          "pipeline" (Embudos, Etapas) -> "insumos de mensajeria" (Listas,
@@ -26859,6 +27404,7 @@ route('/datarocket', async (mount) => {
   `;
 
   drIndCargar();
+  grafSerieMontar('datarocket_interacciones');
 }, 'Datarocket');
 
 // ---- Indicadores del landing de Datarocket ----
@@ -39784,6 +40330,14 @@ route('/evolution', async (mount) => {
       <div class="page-subtitle">Motor de WhatsApp: mensajes registrados, canales conectados y consola de la plataforma.</div>
     </div>
 
+    <!-- Grafico de salida diaria (componente compartido con AWS y Telegram, ver
+         grafSerieTarjeta). Va ARRIBA de la grilla de modulos a proposito: lo
+         primero que tiene que ver el operador al entrar es si el motor esta
+         despachando y por que canales, no el menu de navegacion.
+         Devuelve '' si el usuario no puede consultar el ABM de Mensajes: de ahi
+         salen los numeros y el endpoint aplica el mismo gate. -->
+    ${grafSerieTarjeta('evolution')}
+
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/evolutionmensajes'">
         <span class="tile-icon">✉️</span>
@@ -39808,7 +40362,10 @@ route('/evolution', async (mount) => {
       </button>
     </div>
   `;
+
+  grafSerieMontar('evolution');
 }, 'Evolution API');
+
 
 // ------------------------- Vista: Evolution API > Mensajes (ABM) -------------------------
 const evoMsgFiltrosDefaults = {
@@ -42134,6 +42691,14 @@ route('/telegram', async (mount) => {
       <div class="page-subtitle">Motor de Telegram: bots dados de alta y mensajes enviados.</div>
     </div>
 
+    <!-- Grafico de salida diaria (componente compartido con Evolution y AWS,
+         ver grafSerieTarjeta). Va ARRIBA de la grilla de modulos a proposito: lo
+         primero que tiene que ver el operador al entrar es si el motor esta
+         despachando y por que canales, no el menu de navegacion.
+         Devuelve '' si el usuario no puede consultar el ABM de Mensajes: de ahi
+         salen los numeros y el endpoint aplica el mismo gate. -->
+    ${grafSerieTarjeta('telegram')}
+
     <div class="tile-grid">
       <button type="button" class="tile-card" onclick="location.hash='#/telegrambots'">
         <span class="tile-icon">🤖</span>
@@ -42158,6 +42723,8 @@ route('/telegram', async (mount) => {
       </button>
     </div>
   `;
+
+  grafSerieMontar('telegram');
 }, 'Telegram');
 
 // ------------------------- Vista: Telegram > Mensajes (ABM) -------------------------
