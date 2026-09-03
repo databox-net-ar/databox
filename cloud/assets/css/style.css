@@ -1467,8 +1467,30 @@ tbody tr.row-clickable { cursor: pointer; }
 .doc-grupo       { font-size: .72rem; font-weight: 700; letter-spacing: .04em;
                    text-transform: uppercase; color: var(--muted);
                    padding: 12px 8px 4px; display: flex; align-items: center; gap: 6px; }
-.doc-seccion     { font-size: .78rem; font-weight: 600; color: var(--text);
-                   padding: 8px 8px 4px; opacity: .75; }
+/* Sección plegable (un microservicio de v4, o la referencia del panel). El
+   encabezado es un botón: plegado, la lista se lee de un vistazo como el
+   catálogo de servicios, y se despliega sólo el que se está mirando. */
+.doc-seccion     { width: 100%; display: flex; align-items: center; gap: 7px;
+                   background: none; border: none; border-radius: 8px;
+                   font-family: inherit; font-size: .78rem; font-weight: 600;
+                   color: var(--text); text-align: left; cursor: pointer;
+                   padding: 7px 8px; margin-top: 2px; opacity: .8;
+                   transition: background .15s, opacity .15s; }
+.doc-seccion:hover      { background: var(--row-hover); opacity: 1; }
+.doc-seccion-nombre     { flex: 1; min-width: 0; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; }
+/* Conteo de ítems visibles: plegada, es lo único que dice si adentro hay algo
+   (y cuánto quedó tras el chip o la búsqueda). */
+.doc-seccion-conteo     { font-size: .7rem; color: var(--muted);
+                   font-variant-numeric: tabular-nums; }
+.doc-caret       { font-size: .6rem; width: 8px; flex-shrink: 0; text-align: center;
+                   color: var(--muted); transition: transform .15s; }
+.doc-seccion.abierta .doc-caret { transform: rotate(90deg); }
+.doc-seccion-items          { display: flex; flex-direction: column; }
+.doc-seccion-items[hidden]  { display: none; }
+/* Sangría de los ítems: los alinea bajo el nombre de su sección, no bajo el
+   caret, para que la jerarquía se vea sin líneas ni bordes. */
+.doc-seccion-items .doc-item { padding-left: 23px; }
 
 .doc-item        { width: 100%; display: flex; align-items: baseline; gap: 8px;
                    background: none; border: none; border-radius: 8px;

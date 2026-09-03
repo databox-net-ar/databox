@@ -836,15 +836,28 @@ sin perder de vista dónde está uno parado.
     </div>
     <div class="doc-aside-body">
       <div class="doc-grupo">🛰️ Microservicios v4</div>
-      <div class="doc-seccion">Datarocket</div>
-      <button type="button" class="doc-item active">
-        <span class="doc-dot ok"></span>
-        <span class="doc-item-nombre">prospectos</span>
+      <button type="button" class="doc-seccion abierta" aria-expanded="true">
+        <i class="fa-solid fa-chevron-right doc-caret"></i>
+        <span class="doc-seccion-nombre">Datarocket</span>
+        <span class="doc-seccion-conteo">2</span>
       </button>
-      <button type="button" class="doc-item vacio">
-        <span class="doc-dot sin"></span>
-        <span class="doc-item-nombre">interacciones</span>
+      <div class="doc-seccion-items">
+        <button type="button" class="doc-item active">
+          <span class="doc-dot ok"></span>
+          <span class="doc-item-nombre">prospectos</span>
+        </button>
+        <button type="button" class="doc-item vacio">
+          <span class="doc-dot sin"></span>
+          <span class="doc-item-nombre">interacciones</span>
+        </button>
+      </div>
+
+      <button type="button" class="doc-seccion" aria-expanded="false">
+        <i class="fa-solid fa-chevron-right doc-caret"></i>
+        <span class="doc-seccion-nombre">Movistar</span>
+        <span class="doc-seccion-conteo">1</span>
       </button>
+      <div class="doc-seccion-items" hidden>…</div>
     </div>
   </aside>
 
@@ -873,6 +886,21 @@ sin perder de vista dónde está uno parado.
 - Jerarquía del índice en tres niveles: `.doc-grupo` (mayúsculas, atenuado) →
   `.doc-seccion` → `.doc-item`. El activo se pinta con `--primary` sólido — es la
   excepción de acento del §1, igual que `.filter-chip.active`.
+- **La sección pliega; el grupo no.** `.doc-seccion` es un `<button>` con caret
+  (`.doc-caret`, que rota 90° con `.abierta`) y conteo a la derecha; sus ítems
+  van adentro de un `.doc-seccion-items` que se esconde con `hidden`. El índice
+  **arranca todo plegado**: con una docena de secciones y decenas de ítems, la
+  lista abierta obliga a scrollear para saber qué hay, y plegada se lee de una
+  como el catálogo de lo que existe. Se despliega sola la sección del documento
+  que se abre — un ítem activo escondido deja el índice sin marca y el panel
+  derecho mostrando un texto que parece no salir de ningún lado.
+- **El conteo de la sección cuenta lo visible, no el total.** Plegada, es lo
+  único que dice si adentro quedó algo después del chip o de la búsqueda.
+- **Buscar ignora el plegado guardado.** Con texto en el buscador, toda sección
+  con resultados se pinta abierta (el plegado pasa a un set aparte que se limpia
+  en cada tecleo). Si el resultado cayera dentro de una sección plegada, la
+  lista se vería vacía y el buscador parecería roto; al limpiar el filtro vuelve
+  el plegado que el usuario había dejado armado.
 - Debajo de **900px** los paneles se apilan y el índice pasa a `max-height: 320px`:
   en pantalla angosta lo que se viene a hacer es leer.
 

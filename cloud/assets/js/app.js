@@ -55128,9 +55128,16 @@ function mdAncla(txt) {
 let docIndice   = [];      // items del índice, tal cual vienen del backend
 let docRutas    = new Set(); // rutas `.md` conocidas — resuelve los enlaces entre documentos
 let docActual   = null;    // ruta del `.md` abierto
+let docIdActivo = null;    // id del ítem marcado en el índice (con o sin `.md`)
 let docFiltro   = 'todos'; // todos | documentado | sin_doc
 let docBusqueda = '';
 let docApiBase  = '';
+
+// Secciones plegadas, por clave `grupo | sección`. Son dos sets porque el
+// plegado tiene que significar cosas distintas con y sin búsqueda: ver
+// docSetPlegado().
+let docPlegados         = new Set();
+let docPlegadosBusqueda = new Set();
 
 /**
  * Plegado para buscar: minúsculas y sin acentos, en las dos puntas de la
@@ -55140,6 +55147,26 @@ let docApiBase  = '';
  */
 function docPlegar(s) {
   return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+/**
+ * Clave estable de una secci\u00f3n. Va con el grupo adelante porque el nombre solo
+ * no es \u00fanico entre grupos y plegar "Referencia del proyecto" no tiene por qu\u00e9
+ * plegar una secci\u00f3n hom\u00f3nima de otro grupo.
+ */
+function docClaveSeccion(it) { return it.grupo + ' | ' + it.seccion; }
+
+/**
+ * Qu\u00e9 set de plegados manda en el render actual.
+ *
+ * Con el buscador vac\u00edo es el estado que el usuario dej\u00f3 armado. Con texto
+ * escrito se usa otro set que arranca vac\u00edo en cada tecleo: si el resultado
+ * cayera dentro de una secci\u00f3n plegada de antes, la lista se ver\u00eda vac\u00eda y el
+ * buscador parecer\u00eda roto. Igual sigue siendo plegable durante la b\u00fasqueda \u2014
+ * lo que se pliega ah\u00ed se olvida al limpiar el filtro.
+ */
+function docSetPlegado() {
+  return docBusqueda === '' ? docPlegados : docPlegadosBusqueda;
 }
 
 route('/documentacion', async (mount) => {
@@ -55179,6 +55206,7 @@ route('/documentacion', async (mount) => {
 
   $('#docBuscar').addEventListener('input', (e) => {
     docBusqueda = e.target.value.trim();
+    docPlegadosBusqueda.clear();   // cada búsqueda abre todo lo que coincide
     docPintarArbol();
   });
   $$('.doc-aside .filter-chip').forEach((chip) => {
@@ -55215,6 +55243,13 @@ async function docCargarIndice() {
     docIndice  = data.data.items || [];
     docApiBase = data.data.api_base || '';
     docRutas   = new Set(docIndice.filter((i) => i.doc).map((i) => i.doc));
+
+    // Arranca todo plegado: son ~12 servicios y ~40 endpoints, y desplegados de
+    // entrada obligan a scrollear el índice para saber qué hay. Plegado se lee
+    // de una: la lista de microservicios con cuántos documentos tiene cada uno.
+    // La sección del documento que se abre solo la despliega docActivar().
+    docPlegados = new Set(docIndice.map(docClaveSeccion));
+    docPlegadosBusqueda.clear();
 
     const r = data.data.resumen;
     $('#docSubtitulo').innerHTML =
@@ -55258,19 +55293,48 @@ function docPintarArbol() {
     return;
   }
 
+  // Cuántos ítems VISIBLES quedan en cada sección. Es el número que va al lado
+  // del nombre: plegada, es lo único que dice si adentro hay algo — y con un
+  // chip o una búsqueda activa tiene que contar lo filtrado, no el total.
+  const conteos = new Map();
+  for (const it of items) {
+    const k = docClaveSeccion(it);
+    conteos.set(k, (conteos.get(k) || 0) + 1);
+  }
+  const plegados = docSetPlegado();
+
   // Agrupado grupo → sección preservando el orden en que vino el índice (el
   // backend ya lo entrega ordenado; reordenar acá sería decidir dos veces).
   const html = [];
-  let grupoActual = null, seccionActual = null;
+  let grupoActual = null, seccionActual = null, abierta = true;
+
+  // `cerrar()` va antes de cada encabezado nuevo y al final: el contenedor de
+  // ítems de una sección tiene que cerrarse también cuando lo que cambia es el
+  // grupo, o el encabezado del grupo siguiente queda adentro de la sección
+  // anterior y plegarla se lo lleva puesto.
+  const cerrar = () => { if (seccionActual !== null) html.push('</div>'); };
 
   for (const it of items) {
     if (it.grupo !== grupoActual) {
+      cerrar();
       grupoActual = it.grupo; seccionActual = null;
       html.push(`<div class="doc-grupo">${esc(it.icono || '')} ${esc(it.grupo)}</div>`);
     }
     if (it.seccion !== seccionActual) {
+      cerrar();
       seccionActual = it.seccion;
-      html.push(`<div class="doc-seccion">${esc(it.seccion)}</div>`);
+
+      const clave = docClaveSeccion(it);
+      abierta = !plegados.has(clave);
+      html.push(
+        `<button type="button" class="doc-seccion${abierta ? ' abierta' : ''}"`
+      + ` data-clave="${esc(clave)}" aria-expanded="${abierta}"`
+      + ` title="${esc(abierta ? 'Plegar ' + it.seccion : 'Desplegar ' + it.seccion)}">`
+      + `<i class="fa-solid fa-chevron-right doc-caret"></i>`
+      + `<span class="doc-seccion-nombre">${esc(it.seccion)}</span>`
+      + `<span class="doc-seccion-conteo">${conteos.get(clave)}</span></button>`
+      + `<div class="doc-seccion-items"${abierta ? '' : ' hidden'}>`
+      );
     }
 
     const dot = it.estado === 'documentado' ? 'ok' : (it.estado === 'sin_doc' ? 'sin' : 'ph');
@@ -55284,12 +55348,32 @@ function docPintarArbol() {
     + `<span class="doc-item-nombre">${esc(it.nombre)}</span></button>`
     );
   }
+  cerrar();
   cont.innerHTML = html.join('');
 
+  cont.querySelectorAll('.doc-seccion').forEach((b) => {
+    b.addEventListener('click', () => docPlegarSeccion(b.dataset.clave));
+  });
   cont.querySelectorAll('.doc-item').forEach((b) => {
     b.addEventListener('click', () => docSeleccionar(b.dataset.id));
   });
   docMarcarActivo();
+}
+
+/**
+ * Pliega o despliega una sección. Se repinta el árbol entero en vez de tocar el
+ * `hidden` del contenedor: el conteo, el `aria-expanded` y el estado quedan
+ * armados en un solo lugar, y el árbol son 40 nodos.
+ */
+function docPlegarSeccion(clave) {
+  const plegados = docSetPlegado();
+  if (!plegados.delete(clave)) plegados.add(clave);
+  docPintarArbol();
+
+  // El scroll salta si la sección plegada quedaba arriba del viewport; volver a
+  // dejarla a la vista es más barato que preservar el scroll a mano.
+  $(`#docArbol .doc-seccion[data-clave="${CSS.escape(clave)}"]`)
+    ?.scrollIntoView({ block: 'nearest' });
 }
 
 /**
@@ -55304,7 +55388,7 @@ function docSeleccionar(id) {
   if (it.doc) { docAbrir(it.doc); return; }
 
   docActual = null;
-  docMarcarActivo(id);
+  docActivar(id);
   $('#docTitulo').textContent = it.nombre;
   $('#docMeta').textContent   = it.endpoint || '';
   $('#docOnline').style.display = 'none';
@@ -55323,7 +55407,7 @@ function docSeleccionar(id) {
 
 async function docAbrir(ruta) {
   docActual = ruta;
-  docMarcarActivo();
+  docActivar((docIndice.find((i) => i.doc === ruta) || {}).id || null);
   $('#docCuerpo').innerHTML = '<div style="text-align:center;padding:60px 0"><div class="spin"></div></div>';
 
   try {
@@ -55360,12 +55444,24 @@ function docPintarEstado(icono, titulo, detalleHtml) {
   + `<div class="doc-estado-detalle">${detalleHtml}</div></div>`;
 }
 
-/** Marca el ítem abierto. `forzarId` sirve para los que no tienen `.md`. */
-function docMarcarActivo(forzarId = null) {
-  const activo = forzarId
-    || (docActual ? (docIndice.find((i) => i.doc === docActual) || {}).id : null);
+/**
+ * Marca un ítem como abierto. Despliega su sección si estaba plegada: un ítem
+ * activo escondido adentro de una sección cerrada deja el índice sin ninguna
+ * marca, y el panel derecho mostrando un documento que aparentemente no salió
+ * de ningún lado. Pasa al abrir un enlace entre documentos, que no viene de un
+ * click en la lista.
+ */
+function docActivar(id) {
+  docIdActivo = id || null;
+  const it = docIndice.find((x) => x.id === docIdActivo);
+  if (it && docSetPlegado().delete(docClaveSeccion(it))) docPintarArbol();
+  else docMarcarActivo();
+}
+
+/** Pinta la marca del ítem activo sobre el árbol ya renderizado. */
+function docMarcarActivo() {
   $$('#docArbol .doc-item').forEach((b) => {
-    b.classList.toggle('active', b.dataset.id === activo);
+    b.classList.toggle('active', b.dataset.id === docIdActivo);
   });
 }
 
