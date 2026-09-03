@@ -25353,6 +25353,8 @@ let dcbmMedios          = [];
 let dcbmMediosPorTipo   = {};
 let dcbmBusqueda        = '';
 let dcbmFiltroCodigo    = '';
+let dcbmFiltroDescripcion = '';
+let dcbmFiltroContraparte = '';
 let dcbmFiltroTipo      = '';
 let dcbmFiltroMedio     = '';
 let dcbmFiltroConc      = '';
@@ -25488,6 +25490,7 @@ route('/datacount_bancos_movimientos', async (mount) => {
               <th style="width:120px">Tipo</th>
               <th style="width:150px">Medio</th>
               <th>Descripción</th>
+              <th>Contraparte</th>
               <th style="width:130px">Referencia</th>
               <th style="width:140px;text-align:right">Importe</th>
               <th style="width:140px;text-align:right">Saldo</th>
@@ -25496,7 +25499,7 @@ route('/datacount_bancos_movimientos', async (mount) => {
             </tr>
           </thead>
           <tbody id="dcbmTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -25537,6 +25540,20 @@ route('/datacount_bancos_movimientos', async (mount) => {
               <select id="fDcbmMedio" onchange="onFiltroDcbm('medio', this.value)">
                 <option value="">— Todos —</option>
               </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Descripción</label>
+              <input type="text" id="fDcbmDescripcion" autocomplete="off"
+                     placeholder="Contiene…"
+                     oninput="onFiltroDcbm('descripcion', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Contraparte</label>
+              <input type="text" id="fDcbmContraparte" autocomplete="off"
+                     placeholder="Contiene…"
+                     oninput="onFiltroDcbm('contraparte', this.value)">
             </div>
           </div>
           <div class="form-row">
@@ -25628,7 +25645,7 @@ route('/datacount_bancos_movimientos', async (mount) => {
     dcbmMedios        = d.medios  || [];
     dcbmMediosPorTipo = d.medios_por_tipo || {};
   } catch (e) {
-    $('#dcbmTbody').innerHTML = `<tr><td colspan="10" class="table-empty">Error cargando cuentas: ${esc(e.message)}</td></tr>`;
+    $('#dcbmTbody').innerHTML = `<tr><td colspan="11" class="table-empty">Error cargando cuentas: ${esc(e.message)}</td></tr>`;
     return;
   }
 
@@ -25745,14 +25762,14 @@ function dcbmAbrirMenu(x, y, id) {
 async function cargarDcbm() {
   const tbody = $('#dcbmTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const cuentaId = dcbGetCuentaId();
   if (!cuentaId) {
     // Sin cuenta activa hay dos casos distintos y conviene no confundirlos:
     // la empresa no tiene ninguna cuenta cargada, o todavía no se eligió una.
     const sinCuentas = dcbmCuentas.length > 0 && dcbmCuentasDeEmpresa().length === 0;
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">${
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">${
       sinCuentas
         ? 'Esta empresa no tiene cuentas de fondos cargadas. Creá una desde Cuentas.'
         : 'Elegí una cuenta para ver su extracto.'
@@ -25767,6 +25784,8 @@ async function cargarDcbm() {
   const qs = new URLSearchParams();
   qs.set('cuenta', String(cuentaId));
   if (dcbmBusqueda)     qs.set('q',      dcbmBusqueda);
+  if (dcbmFiltroDescripcion) qs.set('descripcion', dcbmFiltroDescripcion);
+  if (dcbmFiltroContraparte) qs.set('contraparte', dcbmFiltroContraparte);
   if (dcbmFiltroTipo)   qs.set('tipo',   dcbmFiltroTipo);
   if (dcbmFiltroMedio)  qs.set('medio',  dcbmFiltroMedio);
   if (dcbmFiltroConc !== '')   qs.set('conciliado', dcbmFiltroConc);
@@ -25790,7 +25809,7 @@ async function cargarDcbm() {
     $('#dcbmStatSinConc').textContent = fmtNum(s.sin_conciliar ?? 0);
     renderDcbm();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -25798,7 +25817,7 @@ function renderDcbm() {
   const tbody = $('#dcbmTbody');
   if (!tbody) return;
   if (!dcbmItems.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin movimientos. Importá el extracto del mes para cargarlos.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin movimientos. Importá el extracto del mes para cargarlos.</td></tr>`;
     return;
   }
 
@@ -25808,7 +25827,7 @@ function renderDcbm() {
     filas = filas.filter((m) => m.id === cod);
   }
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -25823,6 +25842,7 @@ function renderDcbm() {
       <td>${esc(m.descripcion || '—')}${
         m.origen === 'manual'
           ? ' <span class="badge badge-warn" style="font-size:.62rem">manual</span>' : ''}</td>
+      <td>${esc(m.contraparte || '—')}</td>
       <td style="font-family:monospace;font-size:.8rem">${esc(m.referencia || '—')}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${m.tipo === 'ingreso' ? '#86efac' : '#fca5a5'}">
         ${m.tipo === 'ingreso' ? '+' : '−'} ${esc(dcbFmtMoney(m.importe, mon))}
@@ -25848,12 +25868,15 @@ function renderDcbm() {
 // ---- Modal de filtros ----
 function abrirModalFiltrosDcbm() {
   dcbmFiltrosSnapshot = {
-    codigo: dcbmFiltroCodigo, tipo: dcbmFiltroTipo, medio: dcbmFiltroMedio,
+    codigo: dcbmFiltroCodigo, descripcion: dcbmFiltroDescripcion,
+    contraparte: dcbmFiltroContraparte, tipo: dcbmFiltroTipo, medio: dcbmFiltroMedio,
     conc: dcbmFiltroConc, origen: dcbmFiltroOrigen, desde: dcbmFiltroDesde,
     hasta: dcbmFiltroHasta, limite: dcbmFiltroLimite,
     orden: dcbmFiltroOrden, dir: dcbmFiltroDir,
   };
   $('#fDcbmCodigo').value = dcbmFiltroCodigo || '';
+  $('#fDcbmDescripcion').value = dcbmFiltroDescripcion || '';
+  $('#fDcbmContraparte').value = dcbmFiltroContraparte || '';
   $('#fDcbmDesde').value  = dcbmFiltroDesde  || '';
   $('#fDcbmHasta').value  = dcbmFiltroHasta  || '';
   $('#fDcbmLimite').value = dcbmFiltroLimite || 100;
@@ -25873,7 +25896,8 @@ window.cerrarModalFiltrosDcbm = cerrarModalFiltrosDcbm;
 function cancelarFiltrosDcbm() {
   if (dcbmFiltrosSnapshot) {
     const s = dcbmFiltrosSnapshot;
-    dcbmFiltroCodigo = s.codigo; dcbmFiltroTipo = s.tipo;   dcbmFiltroMedio = s.medio;
+    dcbmFiltroCodigo = s.codigo; dcbmFiltroDescripcion = s.descripcion;
+    dcbmFiltroContraparte = s.contraparte; dcbmFiltroTipo = s.tipo; dcbmFiltroMedio = s.medio;
     dcbmFiltroConc   = s.conc;   dcbmFiltroOrigen = s.origen; dcbmFiltroDesde = s.desde;
     dcbmFiltroHasta  = s.hasta;  dcbmFiltroLimite = s.limite;
     dcbmFiltroOrden  = s.orden;  dcbmFiltroDir = s.dir;
@@ -25885,10 +25909,13 @@ function cancelarFiltrosDcbm() {
 window.cancelarFiltrosDcbm = cancelarFiltrosDcbm;
 
 function limpiarFiltrosDcbm() {
-  dcbmFiltroCodigo = ''; dcbmFiltroTipo = ''; dcbmFiltroMedio = '';
+  dcbmFiltroCodigo = ''; dcbmFiltroDescripcion = ''; dcbmFiltroContraparte = '';
+  dcbmFiltroTipo = ''; dcbmFiltroMedio = '';
   dcbmFiltroConc = ''; dcbmFiltroOrigen = ''; dcbmFiltroDesde = ''; dcbmFiltroHasta = '';
   dcbmFiltroLimite = 100; dcbmFiltroOrden = 'fecha'; dcbmFiltroDir = 'desc';
   $('#fDcbmCodigo').value = '';
+  $('#fDcbmDescripcion').value = '';
+  $('#fDcbmContraparte').value = '';
   $('#fDcbmDesde').value  = '';
   $('#fDcbmHasta').value  = '';
   $('#fDcbmLimite').value = 100;
@@ -25903,6 +25930,8 @@ window.limpiarFiltrosDcbm = limpiarFiltrosDcbm;
 
 function onFiltroDcbm(campo, valor) {
   if (campo === 'codigo') dcbmFiltroCodigo = (valor || '').trim();
+  if (campo === 'descripcion') dcbmFiltroDescripcion = (valor || '').trim();
+  if (campo === 'contraparte') dcbmFiltroContraparte = (valor || '').trim();
   if (campo === 'medio')  dcbmFiltroMedio  = valor || '';
   if (campo === 'desde')  dcbmFiltroDesde  = valor || '';
   if (campo === 'hasta')  dcbmFiltroHasta  = valor || '';
@@ -25926,6 +25955,8 @@ function dcbmSincronizarChips() {
 function dcbmActualizarBadgeFiltros() {
   let n = 0;
   if (dcbmFiltroCodigo)                 n++;
+  if (dcbmFiltroDescripcion)            n++;
+  if (dcbmFiltroContraparte)            n++;
   if (dcbmFiltroTipo)                   n++;
   if (dcbmFiltroMedio)                  n++;
   if (dcbmFiltroConc !== '')            n++;

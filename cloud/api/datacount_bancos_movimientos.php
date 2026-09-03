@@ -201,6 +201,8 @@ function sanitizePayloadMovBanco(PDO $pdo, array $in, bool $esAlta): array {
 function handleListMovBanco(PDO $pdo, array $q): void {
     $cuenta     = trim((string) ($q['cuenta']     ?? ''));
     $search     = trim((string) ($q['q']          ?? ''));
+    $descripcion = trim((string) ($q['descripcion'] ?? ''));
+    $contraparte = trim((string) ($q['contraparte'] ?? ''));
     $tipo       = trim((string) ($q['tipo']       ?? ''));
     $medio      = trim((string) ($q['medio']      ?? ''));
     $conciliado = trim((string) ($q['conciliado'] ?? ''));
@@ -223,6 +225,14 @@ function handleListMovBanco(PDO $pdo, array $q): void {
         $params[':s1'] = "%{$search}%";
         $params[':s2'] = "%{$search}%";
         $params[':s3'] = "%{$search}%";
+    }
+    if ($descripcion !== '') {
+        $where[] = 'descripcion LIKE :descripcion';
+        $params[':descripcion'] = "%{$descripcion}%";
+    }
+    if ($contraparte !== '') {
+        $where[] = 'contraparte LIKE :contraparte';
+        $params[':contraparte'] = "%{$contraparte}%";
     }
     if ($tipo !== '' && in_array($tipo, DCBM_TIPOS, true)) {
         $where[] = 'tipo = :tipo';
