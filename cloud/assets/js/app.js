@@ -1649,9 +1649,9 @@ function renderDashDatainfraEndpoints(ep) {
 
 // Bloque "Dominios por vencer" del dashboard. La API lo omite si el usuario no
 // tiene permiso `datainfra.dominios.consultar`; en ese caso no renderizamos
-// nada. Incluye dominios con `fecha_siguiente_renovacion` dentro de los proximos
-// 30 dias y tambien los ya vencidos. Fila roja para vencidos, amarilla para
-// proximos, y "Todo bien" cuando no hay ninguno.
+// nada. Incluye dominios con `fecha_vencimiento` dentro de los proximos 30 dias
+// y tambien los ya vencidos. Fila roja para vencidos, amarilla para proximos, y
+// "Todo bien" cuando no hay ninguno.
 function renderDashDatainfraDominios(dom) {
   if (!dom) return '';
   const porVencer = Number(dom.por_vencer) || 0;
@@ -1680,7 +1680,7 @@ function renderDashDatainfraDominios(dom) {
             <td class="td-id">#${esc(d.id)}</td>
             <td class="td-nombre" style="font-family:monospace">${esc(d.dominio || '—')}</td>
             <td style="color:var(--muted)">${esc(d.titular_dominio || '—')}</td>
-            <td>${esc(String(d.fecha_siguiente_renovacion || '—').substring(0,10))} ${badgeDias(d.dias)}</td>
+            <td>${esc(String(d.fecha_vencimiento || '—').substring(0,10))} ${badgeDias(d.dias)}</td>
             <td style="text-align:right;white-space:nowrap;font-family:monospace">${fmtCosto(d.costo_renovacion, d.moneda)}</td>
           </tr>
         `).join('')
@@ -7793,6 +7793,23 @@ async function abrirConsultarAwsMsg(id) {
   }
 }
 
+// Heuristica: decide si un cuerpo de mensaje es HTML mirando el contenido, sin
+// depender de la columna `formato` (que quedo en NULL en varios mensajes
+// historicos). La lista de tags es cerrada a proposito: un texto plano que
+// diga "3 < 5 y 7 > 2" NO tiene que dar positivo, asi que no alcanza con
+// buscar un "<" cualquiera — se exige un tag conocido bien formado, un
+// <!doctype> o un comentario condicional de Outlook (`<!--[if mso]>`), que es
+// como arrancan casi todas las plantillas de correo.
+const AWS_MSG_TAG_RE = new RegExp(
+  '<\\s*(?:!doctype|!--\\[if|/?\\s*(?:html|head|body|title|meta|style|link|table|thead|tbody|tr|td|th|'
+  + 'div|span|p|br|hr|a|img|ul|ol|li|h[1-6]|strong|em|b|i|u|font|center|blockquote|pre|small))\\b',
+  'i');
+
+function awsMsgPareceHtml(cuerpo) {
+  const s = String(cuerpo ?? '');
+  return s.trim() !== '' && AWS_MSG_TAG_RE.test(s);
+}
+
 function renderConsultaAwsMsg(m) {
   const card = (label, value, full = false, isCode = false) => {
     const empty = value == null || value === '';
@@ -7811,9 +7828,19 @@ function renderConsultaAwsMsg(m) {
       ${esc(titulo)}
     </div>`;
 
+  // El cuerpo se muestra SIEMPRE interpretado cuando es HTML — nunca el codigo
+  // crudo. `formato` no alcanza como unico criterio: hay mensajes historicos
+  // (los encolados por api/v4 y los del clone legacy) con formato NULL o
+  // 'texto' cuyo cuerpo es un correo HTML completo, y esos caian al <pre>.
+  // Por eso el iframe se decide por formato O por deteccion de marcado.
+  // El `sandbox` (sin valores) deja renderizar estilos e imagenes pero corta
+  // scripts y el acceso al origin del panel — mismo criterio que el preview de
+  // campanas: el cuerpo es contenido de terceros.
+  const cuerpoEsHtml = awsMsgPareceHtml(m.cuerpo)
+                    || ['html', 'h'].includes(String(m.formato ?? '').toLowerCase());
   const cuerpoHtml = m.cuerpo && String(m.cuerpo).trim() !== ''
-    ? (String(m.formato).toLowerCase() === 'html'
-        ? `<iframe srcdoc="${esc(m.cuerpo)}" style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
+    ? (cuerpoEsHtml
+        ? `<iframe srcdoc="${esc(m.cuerpo)}" sandbox style="width:100%;min-height:280px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>`
         : `<pre style="white-space:pre-wrap;font-family:monospace;background:color-mix(in srgb, var(--surface) 90%, #000);padding:14px;border-radius:8px;margin:0;font-size:.85rem;line-height:1.5">${esc(m.cuerpo)}</pre>`)
     : `<div style="color:var(--muted);font-style:italic">Sin cuerpo</div>`;
 
@@ -29130,8 +29157,10 @@ route('/datainfradominios', async (mount) => {
           <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
             Los dominios son los nombres DNS que Databox administra: cada fila
             registra el dominio, su titular WHOIS, la entidad registrante,
-            quién lo renueva (Databox o el cliente) y las fechas y el costo
-            del ciclo de renovación.
+            quién lo renueva (Databox o el cliente), el costo de renovación y
+            las dos fechas que importan — el <strong>vencimiento</strong> del
+            registro y la <strong>suspensión</strong>, el límite hasta el que
+            el registrador todavía lo deja recuperar.
           </div>
         </div>
       </div>
@@ -29182,7 +29211,8 @@ route('/datainfradominios', async (mount) => {
               ${thOrdenable('titular_dominio',            'Titular')}
               ${thOrdenable('entidad_registrante',        'Registrante',  'width:160px')}
               ${thOrdenable('responsable',                'Responsable',  'width:110px')}
-              ${thOrdenable('fecha_siguiente_renovacion', 'Próx. renov.', 'width:150px')}
+              ${thOrdenable('fecha_vencimiento',          'Vencimiento',  'width:150px')}
+              ${thOrdenable('fecha_suspension',           'Suspensión',   'width:110px')}
               ${thOrdenable('costo_renovacion',           'Costo',        'width:130px')}
               ${thOrdenable('actualizado',                'Actualizado',  'width:120px')}
               ${thOrdenable('en_uso',                     'En uso',       'width:70px;text-align:center')}
@@ -29190,7 +29220,7 @@ route('/datainfradominios', async (mount) => {
             </tr>
           </thead>
           <tbody id="didoTbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -29265,7 +29295,8 @@ route('/datainfradominios', async (mount) => {
                 <option value="entidad_registrante">Registrante</option>
                 <option value="responsable">Responsable</option>
                 <option value="fecha_registro">Fecha registro</option>
-                <option value="fecha_siguiente_renovacion">Vencimiento</option>
+                <option value="fecha_vencimiento">Vencimiento</option>
+                <option value="fecha_suspension">Suspensión</option>
                 <option value="costo_renovacion">Costo</option>
                 <option value="actualizado">Actualizado</option>
                 <option value="en_uso">En uso</option>
@@ -29406,7 +29437,7 @@ route('/datainfradominios', async (mount) => {
 async function cargarDido() {
   const tbody = $('#didoTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const qs = new URLSearchParams();
   if (didoBusqueda)          qs.set('q', didoBusqueda);
@@ -29422,7 +29453,7 @@ async function cargarDido() {
     pintarStatsDido(data.stats || {});
     renderDido();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -29439,7 +29470,7 @@ function renderDido() {
   if (!tbody) return;
   actualizarSortIndicadores($('#didoThead'), { order_by: didoFiltroOrden, dir: didoFiltroDir });
   if (!didoItems.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin dominios registrados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin dominios registrados.</td></tr>`;
     return;
   }
 
@@ -29450,12 +29481,12 @@ function renderDido() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = filas.map((e) => {
-    const venc = didoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
+    const venc = didoFechaVencimientoInfo(e.fecha_vencimiento);
     // Dominios por vencer o vencidos van con fondo tenue: rojo cuando los
     // renueva Databox (nuestro problema), azul cuando los renueva el Cliente
     // (visible para saber que se vence, pero no urgencia nuestra).
@@ -29473,6 +29504,7 @@ function renderDido() {
       <td style="font-size:.85rem;color:var(--muted)">${esc(e.entidad_registrante || '—')}</td>
       <td>${didoResponsableBadge(e.responsable)}</td>
       <td>${venc.html}</td>
+      <td style="font-size:.85rem;color:var(--muted)">${esc(didoFmtFecha(e.fecha_suspension))}</td>
       <td style="font-family:monospace;font-size:.85rem">${esc(didoFmtMoneda(e.costo_renovacion, e.moneda))}</td>
       <td style="font-size:.85rem">${didoFmtHace(e.actualizado)}</td>
       <td style="text-align:center">${simFmtEnUso(e.en_uso)}</td>
@@ -29621,12 +29653,12 @@ function abrirAltaEdicionDido(id) {
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label for="didoFechaUltima">Última renovación</label>
-            <input type="date" id="didoFechaUltima">
+            <label for="didoFechaVencimiento">Vencimiento</label>
+            <input type="date" id="didoFechaVencimiento">
           </div>
           <div class="form-group">
-            <label for="didoFechaSiguiente">Próxima renovación</label>
-            <input type="date" id="didoFechaSiguiente">
+            <label for="didoFechaSuspension">Suspensión</label>
+            <input type="date" id="didoFechaSuspension">
           </div>
         </div>
         <div class="form-row">
@@ -29648,15 +29680,15 @@ function abrirAltaEdicionDido(id) {
   `);
 
   if (editando && e) {
-    $('#didoDominio').value        = e.dominio             || '';
-    $('#didoTitular').value        = e.titular_dominio     || '';
-    $('#didoEntidad').value        = e.entidad_registrante || '';
-    $('#didoResponsable').value    = e.responsable         || 'Databox';
-    $('#didoFechaRegistro').value  = (e.fecha_registro             || '').substring(0, 10);
-    $('#didoFechaUltima').value    = (e.fecha_ultima_renovacion    || '').substring(0, 10);
-    $('#didoFechaSiguiente').value = (e.fecha_siguiente_renovacion || '').substring(0, 10);
-    $('#didoCosto').value          = e.costo_renovacion !== null && e.costo_renovacion !== undefined ? e.costo_renovacion : '';
-    $('#didoMoneda').value         = e.moneda || 'ARS';
+    $('#didoDominio').value          = e.dominio             || '';
+    $('#didoTitular').value          = e.titular_dominio     || '';
+    $('#didoEntidad').value          = e.entidad_registrante || '';
+    $('#didoResponsable').value      = e.responsable         || 'Databox';
+    $('#didoFechaRegistro').value    = (e.fecha_registro    || '').substring(0, 10);
+    $('#didoFechaVencimiento').value = (e.fecha_vencimiento || '').substring(0, 10);
+    $('#didoFechaSuspension').value  = (e.fecha_suspension  || '').substring(0, 10);
+    $('#didoCosto').value            = e.costo_renovacion !== null && e.costo_renovacion !== undefined ? e.costo_renovacion : '';
+    $('#didoMoneda').value           = e.moneda || 'ARS';
   } else {
     $('#didoResponsable').value = 'Databox';
     $('#didoMoneda').value      = 'ARS';
@@ -29676,12 +29708,20 @@ async function guardarDido() {
   const entidad_registrante        = $('#didoEntidad').value.trim();
   const responsable                = $('#didoResponsable').value;
   const fecha_registro             = $('#didoFechaRegistro').value;
-  const fecha_ultima_renovacion    = $('#didoFechaUltima').value;
-  const fecha_siguiente_renovacion = $('#didoFechaSiguiente').value;
+  const fecha_vencimiento          = $('#didoFechaVencimiento').value;
+  const fecha_suspension           = $('#didoFechaSuspension').value;
   const costoStr                   = $('#didoCosto').value.trim();
   const moneda                     = $('#didoMoneda').value;
 
   if (!dominio) { toast('El dominio es obligatorio', { error: true }); return; }
+
+  // La suspension es el plazo de gracia POSTERIOR al vencimiento: si viene
+  // antes, alguien cargo mal una de las dos y el aviso es mas util que dejarlo
+  // pasar (la API no lo valida — un PUT parcial puede traer solo una de las dos).
+  if (fecha_vencimiento && fecha_suspension && fecha_suspension < fecha_vencimiento) {
+    toast('La suspensión no puede ser anterior al vencimiento', { error: true });
+    return;
+  }
 
   const body = {
     dominio,
@@ -29689,8 +29729,8 @@ async function guardarDido() {
     entidad_registrante,
     responsable,
     fecha_registro,
-    fecha_ultima_renovacion,
-    fecha_siguiente_renovacion,
+    fecha_vencimiento,
+    fecha_suspension,
     costo_renovacion: costoStr === '' ? null : Number(costoStr),
     moneda,
   };
@@ -29724,7 +29764,7 @@ function abrirConsultaDido(id) {
     </div>
   `;
 
-  const venc = didoFechaVencimientoInfo(e.fecha_siguiente_renovacion);
+  const venc = didoFechaVencimientoInfo(e.fecha_vencimiento);
 
   openModal(`
     <div class="modal" style="max-width:720px">
@@ -29742,8 +29782,8 @@ function abrirConsultaDido(id) {
           ${card('Titular WHOIS',       esc(e.titular_dominio || '—'), 'full')}
           ${card('Entidad registrante', esc(e.entidad_registrante || '—'), 'full')}
           ${card('Fecha registro',      esc(didoFmtFecha(e.fecha_registro)))}
-          ${card('Última renovación',   esc(didoFmtFecha(e.fecha_ultima_renovacion)))}
-          ${card('Próxima renovación',  venc.html)}
+          ${card('Vencimiento',         venc.html)}
+          ${card('Suspensión',          esc(didoFmtFecha(e.fecha_suspension)))}
           ${card('Costo renovación',    `<span style="font-family:monospace">${esc(didoFmtMoneda(e.costo_renovacion, e.moneda))}</span>`)}
           ${card('En uso',              `${simFmtEnUso(e.en_uso)} <span style="margin-left:8px">${e.en_uso === 'si' ? 'Sí' : e.en_uso === 'no' ? 'No' : 'Sin definir'}</span>`)}
           ${card('Actualizado WHOIS',   didoFmtHace(e.actualizado))}
@@ -39331,13 +39371,16 @@ function dinfPfCardDominios(dom) {
     else if (dias < 0)        txt = `Vencido hace ${-dias} d`;
     else if (dias === 0)      txt = 'Vence hoy';
     else                      txt = `En ${dias} d`;
-    const fecha = String(d.fecha_siguiente_renovacion || '').substring(0, 10);
+    const fecha = String(d.fecha_vencimiento || '').substring(0, 10);
+    const susp  = String(d.fecha_suspension  || '').substring(0, 10);
     // Al title le va tambien el costo: es el dato que decide si se renueva o
     // se deja caer, y no entra en la fila sin apretar el nombre del dominio.
+    // La suspension solo aparece si esta cargada: es la fecha limite real para
+    // no perder el dominio, pero el WHOIS no la trae y suele estar vacia.
     const costo = d.costo_renovacion == null || d.costo_renovacion === ''
       ? '' : `\nCosto: ${d.moneda || 'ARS'} ${Number(d.costo_renovacion).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     return `
-      <div class="pf-item" title="${esc(`Renovación: ${fecha || '—'}${costo}`)}"
+      <div class="pf-item" title="${esc(`Vencimiento: ${fecha || '—'}${susp ? `\nSuspensión: ${susp}` : ''}${costo}`)}"
            onclick="location.hash='#/datainfradominios'">
         <span class="pf-item-main">
           <span class="pf-item-nombre" style="font-family:monospace">${esc(d.dominio || '—')}</span>

@@ -23,9 +23,9 @@
 //     Los inactivos (pausados a mano) y los `nunca` (recien creados, sin corrida
 //     todavia) NO son un problema — mismo criterio que el bloque homonimo del
 //     dashboard.
-//   * dominios: responsable operativo Databox y `fecha_siguiente_renovacion`
-//     dentro de los proximos 30 dias o ya pasada. Los de responsable 'Cliente'
-//     se ignoran porque no los renueva Databox.
+//   * dominios: responsable operativo Databox y `fecha_vencimiento` dentro de
+//     los proximos 30 dias o ya pasada. Los de responsable 'Cliente' se
+//     ignoran porque no los renueva Databox.
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/auth_check.php';
@@ -56,10 +56,10 @@ $dominios = null;
 if (hasPermission('datainfra.dominios.consultar')) {
     $agg = $pdo->query("
         SELECT COUNT(*)                                                       AS total,
-               SUM(CASE WHEN fecha_siguiente_renovacion < CURDATE()
+               SUM(CASE WHEN fecha_vencimiento < CURDATE()
                         THEN 1 ELSE 0 END)                                    AS vencidos,
-               SUM(CASE WHEN fecha_siguiente_renovacion >= CURDATE()
-                         AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+               SUM(CASE WHEN fecha_vencimiento >= CURDATE()
+                         AND fecha_vencimiento <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
                         THEN 1 ELSE 0 END)                                    AS por_vencer
           FROM datainfra_dominios
          WHERE responsable = 'Databox'
@@ -72,14 +72,14 @@ if (hasPermission('datainfra.dominios.consultar')) {
     if (($vencidos + $porVencer) > 0) {
         $items = $pdo->query("
             SELECT id, dominio, titular_dominio,
-                   fecha_siguiente_renovacion,
+                   fecha_vencimiento, fecha_suspension,
                    costo_renovacion, moneda,
-                   DATEDIFF(fecha_siguiente_renovacion, CURDATE()) AS dias
+                   DATEDIFF(fecha_vencimiento, CURDATE()) AS dias
               FROM datainfra_dominios
              WHERE responsable = 'Databox'
-               AND fecha_siguiente_renovacion IS NOT NULL
-               AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-             ORDER BY fecha_siguiente_renovacion ASC, id ASC
+               AND fecha_vencimiento IS NOT NULL
+               AND fecha_vencimiento <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+             ORDER BY fecha_vencimiento ASC, id ASC
              LIMIT " . DINF_MAX_ITEMS . "
         ")->fetchAll();
     }

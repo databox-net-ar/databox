@@ -9,9 +9,12 @@
 //   .ar  -> https://nic.ar/es/nic-argentina/dominios/<dominio>
 //   otro -> https://who.is/whois/<dominio>
 //
-// Guarda en la tabla: titular_dominio, fecha_registro,
-// fecha_siguiente_renovacion, entidad_registrante (si venia vacio),
-// costo_renovacion + moneda (si venia vacio) y `actualizado = NOW()`.
+// Guarda en la tabla: titular_dominio, fecha_registro, fecha_vencimiento,
+// entidad_registrante (si venia vacio), costo_renovacion + moneda (si venia
+// vacio) y `actualizado = NOW()`.
+//
+// `fecha_suspension` NO se toca: ni nic.ar ni who.is publican la fecha limite
+// de recuperacion (redemption), asi que es carga manual del operador.
 
 if (!function_exists('didoActualizarWhois')) {
 
@@ -85,10 +88,10 @@ function didoActualizarWhois(PDO $pdo, int $id, callable $log): array {
         $args[] = $datos['fecha_registro'];
         $resumenCambios[] = 'fecha_registro';
     }
-    if (!empty($datos['fecha_siguiente_renovacion'])) {
-        $sets[] = 'fecha_siguiente_renovacion = ?';
-        $args[] = $datos['fecha_siguiente_renovacion'];
-        $resumenCambios[] = 'fecha_siguiente_renovacion';
+    if (!empty($datos['fecha_vencimiento'])) {
+        $sets[] = 'fecha_vencimiento = ?';
+        $args[] = $datos['fecha_vencimiento'];
+        $resumenCambios[] = 'fecha_vencimiento';
     }
     if (($dom['entidad_registrante'] ?? '') === '' || $dom['entidad_registrante'] === null) {
         if (!empty($datos['entidad_registrante'])) {
@@ -252,15 +255,15 @@ function didoConsultarNicAr(string $dominio, callable $log): array {
         $log('  Fecha de vencimiento: ' . ($venc    ?: '(sin dato)'));
 
         return [
-            'ok'                         => true,
-            'fuente'                     => 'nic.ar',
-            'titular_dominio'            => didoATitleCase(didoNormalizarNombre($titular)),
-            'fecha_registro'             => didoParseFechaDMY($alta),
-            'fecha_siguiente_renovacion' => didoParseFechaDMY($venc),
-            'entidad_registrante'        => 'Nic Argentina',
-            'costo_renovacion'           => 25000,
-            'moneda'                     => 'ARS',
-            'crudo'                      => [
+            'ok'                  => true,
+            'fuente'              => 'nic.ar',
+            'titular_dominio'     => didoATitleCase(didoNormalizarNombre($titular)),
+            'fecha_registro'      => didoParseFechaDMY($alta),
+            'fecha_vencimiento'   => didoParseFechaDMY($venc),
+            'entidad_registrante' => 'Nic Argentina',
+            'costo_renovacion'    => 25000,
+            'moneda'              => 'ARS',
+            'crudo'               => [
                 'Nombre y Apellido'    => $titular,
                 'Fecha de Alta'        => $alta,
                 'Fecha de vencimiento' => $venc,
@@ -382,15 +385,15 @@ function didoConsultarWhoIs(string $dominio, callable $log): array {
     $log('  Expires On: '    . ($expira    ?: '(sin dato)'));
 
     return [
-        'ok'                         => true,
-        'fuente'                     => 'who.is',
-        'titular_dominio'            => $titularNorm,
-        'fecha_registro'             => didoParseFechaLibre($creado),
-        'fecha_siguiente_renovacion' => didoParseFechaLibre($expira),
-        'entidad_registrante'        => didoMapearEntidad($registrar),
-        'costo_renovacion'           => 35,
-        'moneda'                     => 'USD',
-        'crudo'                      => [
+        'ok'                  => true,
+        'fuente'              => 'who.is',
+        'titular_dominio'     => $titularNorm,
+        'fecha_registro'      => didoParseFechaLibre($creado),
+        'fecha_vencimiento'   => didoParseFechaLibre($expira),
+        'entidad_registrante' => didoMapearEntidad($registrar),
+        'costo_renovacion'    => 35,
+        'moneda'              => 'USD',
+        'crudo'               => [
             'Registrar'     => $registrar,
             'Registered On' => $creado,
             'Expires On'    => $expira,

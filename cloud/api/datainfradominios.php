@@ -4,8 +4,8 @@
 // definida en db/schema.sql — cada fila representa un dominio DNS
 // administrado por Databox con su titular WHOIS, entidad registrante,
 // responsable operativo (Databox / Cliente), fechas del ciclo de vida
-// (registro, ultima renovacion, proxima renovacion) y costo de renovacion
-// con su moneda ISO 4217.
+// (registro, vencimiento, suspension) y costo de renovacion con su moneda
+// ISO 4217.
 //
 //   GET    api/datainfradominios.php[?q=...&responsable=...&limite=100&orden=id&dir=desc]
 //                                      -> listado + stats por responsable
@@ -29,10 +29,10 @@ header('Content-Type: application/json; charset=utf-8');
 const DIDO_RESPONSABLES = ['Databox', 'Cliente'];
 const DIDO_MONEDAS      = ['ARS', 'USD', 'EUR', 'BRL', 'CLP', 'UYU'];
 const DIDO_ORDENES      = ['id', 'dominio', 'titular_dominio', 'entidad_registrante',
-                           'responsable', 'fecha_registro', 'fecha_siguiente_renovacion',
-                           'costo_renovacion', 'en_uso', 'actualizado'];
+                           'responsable', 'fecha_registro', 'fecha_vencimiento',
+                           'fecha_suspension', 'costo_renovacion', 'en_uso', 'actualizado'];
 const DIDO_COLS         = 'id, dominio, titular_dominio, entidad_registrante, responsable, '
-                        . 'fecha_registro, fecha_ultima_renovacion, fecha_siguiente_renovacion, '
+                        . 'fecha_registro, fecha_vencimiento, fecha_suspension, '
                         . 'costo_renovacion, moneda, en_uso, actualizado, fecha_creacion';
 
 try {
@@ -71,9 +71,9 @@ function normalizarFilaDominio(array $r): array {
         'titular_dominio'             => $r['titular_dominio']     !== null ? (string)$r['titular_dominio']     : null,
         'entidad_registrante'         => $r['entidad_registrante'] !== null ? (string)$r['entidad_registrante'] : null,
         'responsable'                 => (string)($r['responsable'] ?? 'Databox'),
-        'fecha_registro'              => $r['fecha_registro']              ?: null,
-        'fecha_ultima_renovacion'     => $r['fecha_ultima_renovacion']     ?: null,
-        'fecha_siguiente_renovacion'  => $r['fecha_siguiente_renovacion']  ?: null,
+        'fecha_registro'              => $r['fecha_registro']    ?: null,
+        'fecha_vencimiento'           => $r['fecha_vencimiento'] ?: null,
+        'fecha_suspension'            => $r['fecha_suspension']  ?: null,
         'costo_renovacion'            => $r['costo_renovacion'] !== null ? (float)$r['costo_renovacion'] : null,
         'moneda'                      => (string)($r['moneda'] ?? 'ARS'),
         'en_uso'                      => $r['en_uso'] !== null && $r['en_uso'] !== '' ? (string)$r['en_uso'] : null,
@@ -87,9 +87,9 @@ function sanitizePayloadDominio(array $in, bool $esAlta): array {
     $titular             = trim((string)($in['titular_dominio']     ?? ''));
     $entidad             = trim((string)($in['entidad_registrante'] ?? ''));
     $responsable         = trim((string)($in['responsable']         ?? ''));
-    $fechaRegistro       = trim((string)($in['fecha_registro']              ?? ''));
-    $fechaUltimaRenov    = trim((string)($in['fecha_ultima_renovacion']     ?? ''));
-    $fechaSiguienteRenov = trim((string)($in['fecha_siguiente_renovacion']  ?? ''));
+    $fechaRegistro       = trim((string)($in['fecha_registro']    ?? ''));
+    $fechaVencimiento    = trim((string)($in['fecha_vencimiento'] ?? ''));
+    $fechaSuspension     = trim((string)($in['fecha_suspension']  ?? ''));
     $moneda              = strtoupper(trim((string)($in['moneda'] ?? '')));
 
     $costoRaw = $in['costo_renovacion'] ?? null;
@@ -120,7 +120,7 @@ function sanitizePayloadDominio(array $in, bool $esAlta): array {
     if ($moneda !== '' && !in_array($moneda, DIDO_MONEDAS, true)) {
         jsonError('Moneda invalida.', 400);
     }
-    foreach (['fecha_registro' => $fechaRegistro, 'fecha_ultima_renovacion' => $fechaUltimaRenov, 'fecha_siguiente_renovacion' => $fechaSiguienteRenov] as $campo => $val) {
+    foreach (['fecha_registro' => $fechaRegistro, 'fecha_vencimiento' => $fechaVencimiento, 'fecha_suspension' => $fechaSuspension] as $campo => $val) {
         if ($val !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $val)) {
             jsonError("La {$campo} debe tener formato YYYY-MM-DD.", 400);
         }
@@ -134,9 +134,9 @@ function sanitizePayloadDominio(array $in, bool $esAlta): array {
         'titular_dominio'             => $titular === '' ? null : $titular,
         'entidad_registrante'         => $entidad === '' ? null : $entidad,
         'responsable'                 => $responsable,
-        'fecha_registro'              => $fechaRegistro       === '' ? null : $fechaRegistro,
-        'fecha_ultima_renovacion'     => $fechaUltimaRenov    === '' ? null : $fechaUltimaRenov,
-        'fecha_siguiente_renovacion'  => $fechaSiguienteRenov === '' ? null : $fechaSiguienteRenov,
+        'fecha_registro'              => $fechaRegistro    === '' ? null : $fechaRegistro,
+        'fecha_vencimiento'           => $fechaVencimiento === '' ? null : $fechaVencimiento,
+        'fecha_suspension'            => $fechaSuspension  === '' ? null : $fechaSuspension,
         'costo_renovacion'            => $costo,
         'moneda'                      => $moneda,
     ];
@@ -186,12 +186,12 @@ function handleListDominios(PDO $pdo, array $q): void {
         'databox'    => (int)$pdo->query("SELECT COUNT(*) FROM datainfra_dominios WHERE responsable = 'Databox'")->fetchColumn(),
         'cliente'    => (int)$pdo->query("SELECT COUNT(*) FROM datainfra_dominios WHERE responsable = 'Cliente'")->fetchColumn(),
         'por_vencer' => (int)$pdo->query('SELECT COUNT(*) FROM datainfra_dominios '
-                        . 'WHERE fecha_siguiente_renovacion IS NOT NULL '
-                        . 'AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) '
-                        . 'AND fecha_siguiente_renovacion >= CURDATE()')->fetchColumn(),
+                        . 'WHERE fecha_vencimiento IS NOT NULL '
+                        . 'AND fecha_vencimiento <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) '
+                        . 'AND fecha_vencimiento >= CURDATE()')->fetchColumn(),
         'vencidos'   => (int)$pdo->query('SELECT COUNT(*) FROM datainfra_dominios '
-                        . 'WHERE fecha_siguiente_renovacion IS NOT NULL '
-                        . 'AND fecha_siguiente_renovacion < CURDATE()')->fetchColumn(),
+                        . 'WHERE fecha_vencimiento IS NOT NULL '
+                        . 'AND fecha_vencimiento < CURDATE()')->fetchColumn(),
     ];
 
     jsonOk(['items' => $rows, 'stats' => $stats]);
@@ -215,23 +215,23 @@ function handleCreateDominio(PDO $pdo, array $body): void {
     $st = $pdo->prepare(
         'INSERT INTO datainfra_dominios
             (dominio, titular_dominio, entidad_registrante, responsable,
-             fecha_registro, fecha_ultima_renovacion, fecha_siguiente_renovacion,
+             fecha_registro, fecha_vencimiento, fecha_suspension,
              costo_renovacion, moneda)
          VALUES
             (:dominio, :titular, :entidad, :responsable,
-             :fecha_registro, :fecha_ultima_renovacion, :fecha_siguiente_renovacion,
+             :fecha_registro, :fecha_vencimiento, :fecha_suspension,
              :costo, :moneda)'
     );
     $st->execute([
-        ':dominio'                    => $p['dominio'],
-        ':titular'                    => $p['titular_dominio'],
-        ':entidad'                    => $p['entidad_registrante'],
-        ':responsable'                => $p['responsable'],
-        ':fecha_registro'             => $p['fecha_registro'],
-        ':fecha_ultima_renovacion'    => $p['fecha_ultima_renovacion'],
-        ':fecha_siguiente_renovacion' => $p['fecha_siguiente_renovacion'],
-        ':costo'                      => $p['costo_renovacion'],
-        ':moneda'                     => $p['moneda'],
+        ':dominio'           => $p['dominio'],
+        ':titular'           => $p['titular_dominio'],
+        ':entidad'           => $p['entidad_registrante'],
+        ':responsable'       => $p['responsable'],
+        ':fecha_registro'    => $p['fecha_registro'],
+        ':fecha_vencimiento' => $p['fecha_vencimiento'],
+        ':fecha_suspension'  => $p['fecha_suspension'],
+        ':costo'             => $p['costo_renovacion'],
+        ':moneda'            => $p['moneda'],
     ]);
 
     $id = (int)$pdo->lastInsertId();
@@ -278,13 +278,13 @@ function handleUpdateDominio(PDO $pdo, int $id, array $body): void {
         $sets[] = 'fecha_registro = :fecha_registro';
         $params[':fecha_registro'] = $p['fecha_registro'];
     }
-    if (array_key_exists('fecha_ultima_renovacion', $body)) {
-        $sets[] = 'fecha_ultima_renovacion = :fecha_ultima_renovacion';
-        $params[':fecha_ultima_renovacion'] = $p['fecha_ultima_renovacion'];
+    if (array_key_exists('fecha_vencimiento', $body)) {
+        $sets[] = 'fecha_vencimiento = :fecha_vencimiento';
+        $params[':fecha_vencimiento'] = $p['fecha_vencimiento'];
     }
-    if (array_key_exists('fecha_siguiente_renovacion', $body)) {
-        $sets[] = 'fecha_siguiente_renovacion = :fecha_siguiente_renovacion';
-        $params[':fecha_siguiente_renovacion'] = $p['fecha_siguiente_renovacion'];
+    if (array_key_exists('fecha_suspension', $body)) {
+        $sets[] = 'fecha_suspension = :fecha_suspension';
+        $params[':fecha_suspension'] = $p['fecha_suspension'];
     }
     if (array_key_exists('costo_renovacion', $body)) {
         $sets[] = 'costo_renovacion = :costo';

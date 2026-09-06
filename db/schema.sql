@@ -1899,6 +1899,13 @@ CREATE TABLE `datarocket_interacciones`  (
 -- ----------------------------
 -- Catalogo de dominios DNS administrados por Databox. Pertenece al modulo
 -- Sistemas > Datainfra (infraestructura), NO a Datarocket (motor de envios).
+--   * `fecha_vencimiento` es la fecha en que expira el registro del dominio
+--     (la "Fecha de vencimiento" de nic.ar / el "Expires On" de who.is). La
+--     completa el scraper WHOIS y es la que alimenta los contadores
+--     `por_vencer` / `vencidos` del ABM, del dashboard y de los indicadores.
+--   * `fecha_suspension` es la fecha limite hasta la que el registrar mantiene
+--     el dominio recuperable despues del vencimiento (redemption). Se carga a
+--     mano: varia por registrar y por TLD, y el WHOIS no la publica.
 DROP TABLE IF EXISTS `datainfra_dominios`;
 CREATE TABLE `datainfra_dominios`  (
   `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -1907,8 +1914,8 @@ CREATE TABLE `datainfra_dominios`  (
   `entidad_registrante` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `responsable` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'Databox',
   `fecha_registro` date NULL DEFAULT NULL,
-  `fecha_ultima_renovacion` date NULL DEFAULT NULL,
-  `fecha_siguiente_renovacion` date NULL DEFAULT NULL,
+  `fecha_vencimiento` date NULL DEFAULT NULL,
+  `fecha_suspension` date NULL DEFAULT NULL,
   `costo_renovacion` decimal(12, 2) NULL DEFAULT NULL,
   `moneda` varchar(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'ARS',
   `en_uso` varchar(2) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -1916,8 +1923,8 @@ CREATE TABLE `datainfra_dominios`  (
   `fecha_creacion` datetime(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uq_datainfra_dominios_dominio`(`dominio`) USING BTREE,
-  INDEX `idx_datainfra_dominios_prox_renov`(`fecha_siguiente_renovacion`) USING BTREE,
-  INDEX `idx_datainfra_dominios_responsable`(`responsable`) USING BTREE
+  INDEX `idx_datainfra_dominios_responsable`(`responsable`) USING BTREE,
+  INDEX `idx_datainfra_dominios_vencimiento`(`fecha_vencimiento`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------

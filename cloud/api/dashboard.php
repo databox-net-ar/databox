@@ -53,7 +53,7 @@ if (hasPermission('datainfra.endpoints.consultar')) {
 }
 
 // Datainfra dominios: bloque "dominios por vencer en los proximos 30 dias".
-// Incluye tambien los ya vencidos (fecha_siguiente_renovacion < hoy). Solo
+// Incluye tambien los ya vencidos (fecha_vencimiento < hoy). Solo
 // considera dominios cuyo responsable operativo es Databox — los de responsable
 // 'Cliente' se ignoran porque no los renueva Databox y no son un problema
 // nuestro. Se muestra solo si el usuario tiene permiso de ver el modulo
@@ -70,29 +70,29 @@ if (hasPermission('datainfra.dominios.consultar')) {
     $porVencer = (int)$pdo->query("
         SELECT COUNT(*) FROM datainfra_dominios
          WHERE responsable = 'Databox'
-           AND fecha_siguiente_renovacion IS NOT NULL
-           AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-           AND fecha_siguiente_renovacion >= CURDATE()
+           AND fecha_vencimiento IS NOT NULL
+           AND fecha_vencimiento <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+           AND fecha_vencimiento >= CURDATE()
     ")->fetchColumn();
 
     $vencidos = (int)$pdo->query("
         SELECT COUNT(*) FROM datainfra_dominios
          WHERE responsable = 'Databox'
-           AND fecha_siguiente_renovacion IS NOT NULL
-           AND fecha_siguiente_renovacion < CURDATE()
+           AND fecha_vencimiento IS NOT NULL
+           AND fecha_vencimiento < CURDATE()
     ")->fetchColumn();
 
     $items = [];
     if (($porVencer + $vencidos) > 0) {
         $stmt = $pdo->query("
             SELECT id, dominio, titular_dominio, responsable,
-                   fecha_siguiente_renovacion, costo_renovacion, moneda,
-                   DATEDIFF(fecha_siguiente_renovacion, CURDATE()) AS dias
+                   fecha_vencimiento, fecha_suspension, costo_renovacion, moneda,
+                   DATEDIFF(fecha_vencimiento, CURDATE()) AS dias
               FROM datainfra_dominios
              WHERE responsable = 'Databox'
-               AND fecha_siguiente_renovacion IS NOT NULL
-               AND fecha_siguiente_renovacion <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-             ORDER BY fecha_siguiente_renovacion ASC
+               AND fecha_vencimiento IS NOT NULL
+               AND fecha_vencimiento <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+             ORDER BY fecha_vencimiento ASC
              LIMIT 20
         ");
         $items = $stmt->fetchAll();
