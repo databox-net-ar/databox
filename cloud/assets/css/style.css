@@ -401,6 +401,87 @@ textarea { resize: vertical; min-height: 60px; }
                   display: flex; gap: 10px; justify-content: flex-end; align-items: center; }
 .modal.modal-wide { max-width: 760px; }
 
+/* 14-bis. Estandar de modales: barra de titulo en primary + barra de acciones.
+   ---------------------------------------------------------------------------
+   Formato nuevo (ABM.md): la barra de titulo va pintada en --primary y mas
+   baja, TODOS los botones viven en una barra propia debajo del titulo, y el
+   modal NO lleva .modal-footer.
+
+   ADOPCION PARCIAL: hasta el modulo Chequeras el panel entero usaba el formato
+   viejo (header gris + botones en el footer) y todavia lo usa. Por eso las
+   reglas de layout de abajo van scopeadas con :has() al modal que declara
+   .modal-header-primary, en vez de cambiar `.modal` a secas: un cambio global
+   del modo de scroll tocaria los ~40 modales existentes de una. A medida que
+   cada modal se migre, hereda el layout nuevo solo con pintar su header.
+   Si el navegador no soporta :has(), la regla se ignora entera y el modal
+   scrollea como antes -- se degrada, no se rompe. */
+
+/* Va JUNTO a .modal-header, no en su lugar. El radio superior tiene que
+   coincidir con el de .modal (14px): ahora la esquina la pinta el header. */
+.modal-header-primary {
+    background: var(--primary);
+    color: #fff;
+    border-bottom: none;              /* con el fondo pintado, la divisoria sobra */
+    border-radius: 14px 14px 0 0;
+    padding: 10px 24px;               /* mas baja que el header normal (20/24/16) */
+}
+/* Sobre el color de marca los hijos usan #fff y opacidades de blanco, nunca
+   --text / --muted / --border: esos tokens estan calibrados contra el gris del
+   modal y sobre el primary se ensucian. Misma regla que el sidebar y la topbar. */
+.modal-header-primary .modal-title       { color: #fff; }
+.modal-header-primary .modal-subtitle    { color: rgba(255,255,255,.75); }
+.modal-header-primary .btn-icon-sm,
+.modal-header-primary .btn-ghost         { color: #fff; }
+.modal-header-primary .btn-icon-sm:hover { background: rgba(255,255,255,.18); color: #fff; }
+
+/* Barra de acciones, pegada debajo del titulo. El padding vertical es el mismo
+   que el del titulo (10px): es lo que hace que las dos franjas se lean como una
+   sola cabecera y no como dos bloques apilados de alturas distintas. */
+.modal-menubar {
+    padding: 10px 24px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface) 94%, #000);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.modal-menubar .btn { white-space: nowrap; }
+.modal-menubar-end  { margin-left: auto; }   /* empuja un boton contra el borde derecho */
+.menubar-caret      { font-size: .7em; opacity: .65; margin-left: 2px; }
+
+/* El scroll es del CUERPO, no del modal entero: las dos barras quedan fijas.
+   Con la barra de acciones arriba, un modal scrolleable entero se lleva la
+   salida fuera de la vista justo cuando mas contenido hay.
+   `min-height: 0` en el cuerpo NO es opcional: un hijo flex no baja de su alto
+   de contenido, asi que sin esa linea el overflow-y nunca se activa. */
+.modal:has(> .modal-header-primary) {
+    overflow: hidden;                 /* recorta el scroll del cuerpo contra el radio */
+    display: flex; flex-direction: column;
+}
+.modal:has(> .modal-header-primary) > .modal-body {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+}
+.modal:has(> .modal-header-primary) > .modal-header,
+.modal:has(> .modal-header-primary) > .modal-menubar { flex: 0 0 auto; }
+
+/* Ficha alta: el scroll baja un nivel mas. El cuerpo deja de scrollear y
+   scrollea solo el bloque marcado con .modal-scroll, asi las tabs y las
+   tarjetas de arriba quedan quietas mientras se recorre una tabla larga
+   (movimientos, historial).
+   El alto fijo NO es decorativo: sin el no hay sobrante que repartir, el modal
+   crece con la tabla hasta el tope de max-height y el scroll vuelve al cuerpo.
+   Igual que arriba, `min-height: 0` es obligatorio en cada eslabon de la
+   cadena o el hijo nunca baja de su alto de contenido. */
+.modal-tall                 { height: 88vh; }
+/* El selector repite el :has() a proposito: la regla de arriba pone el cuerpo
+   en `overflow-y: auto` con especificidad (0,3,0) y hay que ganarle, no
+   depender del orden en la hoja. */
+.modal:has(> .modal-header-primary).modal-tall > .modal-body { overflow-y: hidden; }
+.modal-tall .modal-tabpanel { flex: 1 1 auto; min-height: 0; }
+/* Sobre una .table-card gana su `overflow-y: hidden` por orden en la hoja. */
+.modal-scroll               { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* Con el scroll adentro de la tabla el encabezado tiene que quedar pegado o se
+   pierde la referencia de columna a las pocas filas visibles. */
+.modal-scroll thead tr      { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+
 /* Tabs genericas para modales (Consultar con secciones, etc). */
 .modal-tabs      { display: flex; gap: 4px; border-bottom: 1px solid var(--border);
                    margin: -4px -4px 0; padding: 0 4px; }

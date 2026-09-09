@@ -573,6 +573,120 @@ CREATE TABLE `datacountcomprobantes`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 24682 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for datacount_bancos_cheques
+-- ----------------------------
+-- Cada fila es un cheque concreto emitido de una chequera. El modelo sale del
+-- ticket de "Emitir ECheq" del homebanking, que es el papel del que se
+-- transcriben los datos.
+--
+-- Las columnas siguen el orden en que se lee un cheque: de dónde salió
+-- (`chequera_id`), qué cheque es (`numero`), cuándo (`fecha_emision`,
+-- `fecha_pago`), cuánto (`importe`), a quién (`beneficiario_*`), por qué
+-- (`concepto`, `referencia`), cómo se libró (`modo`, `caracter`), en qué anda
+-- (`estado`) y el rastro (`operacion_numero`, `observaciones`).
+--
+-- `fecha_pago` es lo que el banco llama así y el uso corriente, vencimiento: la
+-- fecha a partir de la cual el cheque se puede presentar. En un diferido es
+-- futura; en un común coincide con la emisión. Va NOT NULL en los dos casos
+-- porque el banco siempre la imprime, y tenerla opcional obligaría a defender
+-- el NULL en cada reporte de vencimientos.
+--
+-- NO hay `moneda` ni `tipo` (común/diferido): la moneda es de la cuenta y el
+-- tipo es de la chequera. Un cheque no puede estar en una moneda distinta de su
+-- cuenta ni ser diferido si salió de un talonario de comunes; se leen por JOIN.
+--
+-- `empresa_id` SÍ está aunque también se pueda derivar (cheque → chequera →
+-- cuenta → empresa): es el filtro más usado del módulo y derivarlo cuesta tres
+-- saltos. Lo escribe el backend desde la chequera al dar de alta y al
+-- reasignar el cheque — el ABM no lo deja editar — así que no puede divergir.
+--
+-- El UNIQUE (chequera_id, numero) es la regla del talonario: dos cheques del
+-- mismo no pueden llevar el mismo número. Es lo que ataja el error típico de
+-- cargar dos veces el mismo cheque desde el ticket.
+--
+-- `modo` y `caracter` quedan como enum sin catálogo en `estados`: son binarios
+-- y los fija la ley de cheques (24.452), no una preferencia del operador.
+-- `estado`, en cambio, sí va a `estados` (campo
+-- `datacount_bancos_cheque_estado`): son seis valores y el circuito de cada
+-- empresa puede querer renombrarlos.
+DROP TABLE IF EXISTS `datacount_bancos_cheques`;
+CREATE TABLE `datacount_bancos_cheques`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `empresa_id` int(11) NULL DEFAULT NULL,
+  `chequera_id` int(11) UNSIGNED NOT NULL,
+  `numero` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `fecha_emision` date NOT NULL,
+  `fecha_pago` date NOT NULL,
+  `importe` decimal(14, 2) NOT NULL DEFAULT 0.00,
+  `beneficiario_razon` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `beneficiario_cuit` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `beneficiario_correo` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `concepto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `referencia` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `modo` enum('cruzado','no_cruzado') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'cruzado',
+  `caracter` enum('a_la_orden','no_a_la_orden') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'a_la_orden',
+  `estado` enum('emitido','entregado','depositado','pagado','rechazado','anulado') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'emitido',
+  `operacion_numero` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+  `observaciones` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_chequera_numero`(`chequera_id`, `numero`) USING BTREE,
+  INDEX `idx_empresa`(`empresa_id`) USING BTREE,
+  INDEX `idx_chequera`(`chequera_id`) USING BTREE,
+  INDEX `idx_fecha_pago`(`fecha_pago`) USING BTREE,
+  INDEX `idx_estado`(`estado`) USING BTREE,
+  INDEX `idx_beneficiario_cuit`(`beneficiario_cuit`) USING BTREE,
+  CONSTRAINT `fk_dcbq_chequera` FOREIGN KEY (`chequera_id`)
+    REFERENCES `datacount_bancos_chequeras` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for datacount_bancos_chequeras
+-- ----------------------------
+-- Las chequeras del módulo Datacount > Chequeras: una fila por talonario de
+-- cheques que el banco entrega contra una cuenta corriente.
+--
+-- Guarda DOS datos propios y nada más: contra qué cuenta se emitió
+-- (`cuenta_id`) y qué tipo de cheque trae. El nombre, el banco, el número de
+-- cuenta y la empresa NO se duplican acá — son atributos de la cuenta y se leen
+-- por JOIN a `datacount_bancos_cuentas`. Tenerlos copiados permitía estados
+-- imposibles (una chequera del Banco Galicia con el número de cuenta del Banco
+-- San Juan) que nada validaba, y obligaba a un backfill cada vez que se
+-- renombraba una cuenta.
+--
+-- `tipo` distingue COMÚN (se cobra a la vista, desde la emisión) de DIFERIDO
+-- (lleva fecha de pago futura y no se puede presentar antes). Vive en la
+-- chequera y no en el cheque porque el banco entrega talonarios separados para
+-- cada uno: una chequera nunca mezcla los dos. Es además lo que distingue dos
+-- chequeras de la misma cuenta. Además del enum, el catálogo se seedea en
+-- `estados` (campo `datacount_bancos_chequera_tipo`) para alimentar los combos
+-- desde Herramientas > Editor de estados — mismo patrón que
+-- `datacount_bancos_cuentas.tipo`.
+--
+-- El FK contra la cuenta es CASCADE, igual que el de
+-- `datacount_bancos_movimientos`: una chequera sin su cuenta corriente no
+-- significa nada. No hay UNIQUE (cuenta_id, tipo): una cuenta puede tener
+-- varias chequeras vigentes del mismo tipo (el talonario anterior sin agotar
+-- más el nuevo).
+DROP TABLE IF EXISTS `datacount_bancos_chequeras`;
+CREATE TABLE `datacount_bancos_chequeras`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `cuenta_id` int(11) UNSIGNED NOT NULL,
+  `tipo` enum('comun','diferido') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'comun',
+  `observaciones` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `activa` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_cuenta`(`cuenta_id`) USING BTREE,
+  INDEX `idx_tipo`(`tipo`) USING BTREE,
+  INDEX `idx_activa`(`activa`) USING BTREE,
+  CONSTRAINT `fk_dcbch_cuenta` FOREIGN KEY (`cuenta_id`)
+    REFERENCES `datacount_bancos_cuentas` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for datacount_comprobantes
 -- ----------------------------
 -- Clon snake_case de la legacy `datacountcomprobantes`. Es la tabla que usa

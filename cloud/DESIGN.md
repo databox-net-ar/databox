@@ -456,6 +456,101 @@ Si la stat-card es clickeable, agregale `.dash-link`:
 - `.modal-wide`: aumenta el `max-width` a 760px. Usar **solo** cuando el contenido sea un editor monoespaciado (JSON, logs, payloads) que necesita ancho real para no envolver — ver §23. Los formularios normales se quedan en el ancho base de 520px.
 - `.modal-subtitle`: chip secundario al lado del título (mismo bloque `.modal-title`) para identificar el recurso editado, por ejemplo `Configuración JSON · Nombre · <code>UID</code>`. No reemplaza al título, lo complementa.
 
+## 14-bis. Modales: barra de título en primary + barra de acciones
+
+Formato **nuevo**, definido en [ABM.md](ABM.md). Tres reglas duras:
+
+1. La barra de título va pintada en `var(--primary)` (`.modal-header-primary`, **junto a** `.modal-header`, no en su lugar) y es más baja: `padding: 10px 24px`.
+2. **Todos** los botones van arriba, en una `.modal-menubar` propia debajo del título.
+3. El modal **no lleva `.modal-footer`**.
+
+```html
+<div class="modal">
+  <div class="modal-header modal-header-primary">
+    <div class="modal-title">Consultar chequera</div>
+    <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+  </div>
+  <div class="modal-menubar" role="toolbar" aria-label="Acciones de la chequera">
+    <button class="btn btn-sm btn-ghost"   data-act="close">Cerrar</button>
+    <button class="btn btn-sm btn-primary" data-menu="acciones">
+      Acciones <i class="fa-solid fa-caret-down menubar-caret"></i>
+    </button>
+  </div>
+  <div class="modal-body">…</div>
+</div>
+```
+
+**Botones de la barra**, en orden fijo: la salida primero, `btn-ghost`, siempre directa (nunca dentro de un desplegable); todo lo demás en `btn-primary`; todos en `btn-sm`. Es la única excepción declarada a "una acción primaria por modal" y vale **solo** dentro de `.modal-menubar`: acá el color no marca jerarquía entre acciones, separa la salida de lo que el modal sabe hacer. El rótulo de la salida se hereda del footer que reemplaza — `Cerrar` en consulta y herramientas, `Cancelar` en formularios y en Filtros.
+
+| modal | barra |
+|---|---|
+| Consultar / ficha | `Cerrar` · `Listar ▾` *(si hay listados relacionados)* · `Acciones ▾` (Editar · — · Eliminar) |
+| Alta / Edición | `Cancelar` · `Guardar` |
+| Filtros | `Cancelar` · `Limpiar` · `Aplicar` |
+| Herramientas | `Cerrar` · las acciones propias |
+
+**La acción destructiva nunca es un botón directo de la barra**: va dentro del desplegable, al final, con divisor y `ctx-menu-danger`. `Editar` tampoco es directo en el modal de Consultar — va en `Acciones ▾`.
+
+**Los desplegables usan el menú contextual flotante** (`.ctx-menu` + `abrirCtxMenu()`), no un `<div>` absoluto dentro de la barra, y el `<div class="ctx-menu">` se declara **fuera del `.modal`** (hermano, hijo del backdrop). El modal de este formato lleva `overflow: hidden` y `transform`, así que recortaría el menú aun siendo `position: fixed`. El trigger debe llamar a `stopPropagation()` o el handler global que cierra el menú al clickear afuera lo cierra en el mismo click que lo abre.
+
+```css
+.modal-header-primary { background: var(--primary); color: #fff;
+                        border-bottom: none; border-radius: 14px 14px 0 0;
+                        padding: 10px 24px; }
+.modal-header-primary .modal-title    { color: #fff; }
+.modal-header-primary .modal-subtitle { color: rgba(255,255,255,.75); }
+.modal-header-primary .btn-icon-sm    { color: #fff; }
+.modal-header-primary .btn-icon-sm:hover { background: rgba(255,255,255,.18); color: #fff; }
+
+.modal-menubar { padding: 10px 24px; border-bottom: 1px solid var(--border);
+                 background: color-mix(in srgb, var(--surface) 94%, #000);
+                 display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.modal-menubar-end { margin-left: auto; }
+.menubar-caret     { font-size: .7em; opacity: .65; margin-left: 2px; }
+
+/* El scroll es del CUERPO, no del modal entero: las dos barras quedan fijas. */
+.modal:has(> .modal-header-primary)               { overflow: hidden;
+                                                    display: flex; flex-direction: column; }
+.modal:has(> .modal-header-primary) > .modal-body { flex: 1 1 auto; min-height: 0;
+                                                    overflow-y: auto; }
+.modal:has(> .modal-header-primary) > .modal-header,
+.modal:has(> .modal-header-primary) > .modal-menubar { flex: 0 0 auto; }
+```
+
+Sobre el primary los hijos usan `#fff` y opacidades de blanco, **nunca** `--text` / `--muted` / `--border`: esos tokens están calibrados contra el gris del modal y sobre el color de marca se ensucian. Es la misma regla que rige el sidebar y la topbar.
+
+`min-height: 0` en el cuerpo **no es opcional**: un hijo flex no baja de su alto de contenido, así que sin esa línea el `overflow-y` nunca se activa, el body empuja y la cabecera —con la salida adentro— se va fuera de la vista justo cuando más contenido hay.
+
+### Ficha alta: el scroll adentro de la tabla (`.modal-tall` + `.modal-scroll`)
+
+Cuando la ficha tiene una **tabla larga** adentro (movimientos, historial), el scroll baja un nivel más: el cuerpo deja de scrollear y scrollea únicamente el bloque marcado con `.modal-scroll`. Las tabs y las tarjetas de arriba quedan quietas mientras se recorre la tabla.
+
+```css
+.modal-tall                 { height: 88vh; }
+.modal:has(> .modal-header-primary).modal-tall > .modal-body { overflow-y: hidden; }
+.modal-tall .modal-tabpanel { flex: 1 1 auto; min-height: 0; }
+.modal-scroll               { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.modal-scroll thead tr      { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+```
+
+- **El alto fijo no es decorativo.** Sin él no hay sobrante que repartir: el modal crece con la tabla hasta `max-height` y el scroll vuelve al cuerpo.
+- **`min-height: 0` en cada eslabón** de la cadena `.modal-body` → `.modal-tabpanel` → `.modal-scroll`, por la misma razón de arriba.
+- **El selector del cuerpo repite el `:has()`** a propósito: la regla general lo deja en `overflow-y: auto` con especificidad (0,3,0) y hay que ganarle, no depender del orden en la hoja.
+- En un panel de tarjetas, el contenedor `.modal-scroll` va con `align-content: flex-start` o las filas del `flex-wrap` se estiran para llenar el alto.
+- `.modal-scroll` gana el `overflow-y: hidden` de `.table-card` por orden en la hoja.
+
+Aplicado en: Datacount > Empleados (ficha, tab *Movimientos*).
+
+### Estado de adopción
+
+**Migrado:** Datacount > Chequeras, Datacount > Chequeras > Cheques, Datacount > Bancos (cuentas + importador), Datacount > Bancos > Movimientos y Datacount > Empleados (los siete modales del módulo: Filtros, Alta/Edición, selector de cuenta, Consultar, Copiar a otra empresa, Pago pendiente y Pago realizado).
+
+**Sin migrar:** el resto del panel, que sigue en el formato de §14 (header gris + botones en el footer). Por eso las reglas de layout van scopeadas con `:has()` al modal que declara `.modal-header-primary`, en vez de cambiar `.modal` a secas: cambiar el modo de scroll globalmente tocaría los ~40 modales existentes de una. Cada modal que se migre hereda el layout nuevo solo con pintar su header.
+
+**No es migración parcial.** Pintar el header y dejar los botones abajo —o subirlos y dejar el header gris— produce un modal que no es ni el formato viejo ni el nuevo. El procedimiento completo, paso a paso, está en la skill `abm_design`.
+
+**Excepción única: el `confirmDialog`** (§15). Es una interrupción de una sola pregunta, no una pantalla: conserva su forma, sin barra de título pintada, sin barra de acciones y con sus dos botones abajo.
+
 ## 15. Confirm dialog (alerta de confirmación)
 
 Para "¿Seguro que querés borrar?" y similares.

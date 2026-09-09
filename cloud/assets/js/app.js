@@ -1249,8 +1249,11 @@ const ROUTE_PERMS = {
   '/datacount_comprobantes':    { perm:   'datacount.comprobantes.consultar' },
   '/datacount_pagos':           { perm:   'datacount.pagos.consultar' },
   '/datacount_asientos':        { perm:   'datacount.asientos.consultar' },
-  '/datacount_bancos':          { perm:   'datacount.bancos.cuentas.consultar' },
+  '/datacount_bancos':          { prefix: 'datacount.bancos.' },
+  '/datacount_bancos_cuentas':     { perm: 'datacount.bancos.cuentas.consultar' },
   '/datacount_bancos_movimientos': { perm: 'datacount.bancos.movimientos.consultar' },
+  '/datacount_bancos_chequeras':   { perm: 'datacount.bancos.chequeras.consultar' },
+  '/datacount_bancos_cheques':     { perm: 'datacount.bancos.cheques.consultar' },
   '/datacount_empleados':       { perm:   'datacount.empleados.consultar' },
   '/datacount_recurrentes':     { perm:   'datacount.recurrentes.consultar' },
   '/datacount_cuentas':         { perm:   'datacount.cuentas.consultar' },
@@ -11604,7 +11607,7 @@ route('/datacount', async (mount) => {
       <button type="button" class="tile-card" onclick="location.hash='#/datacount_bancos'">
         <span class="tile-icon">🏦</span>
         <span class="tile-title">Bancos</span>
-        <span class="tile-desc">Cuentas de fondos (bancos, billeteras virtuales, efectivo) y el extracto de movimientos de cada una.</span>
+        <span class="tile-desc">Cuentas de fondos (bancos, billeteras virtuales, efectivo) con su extracto de movimientos, sus chequeras y los cheques emitidos.</span>
       </button>
       <button type="button" class="tile-card" onclick="location.hash='#/datacount_asientos'">
         <span class="tile-icon">📖</span>
@@ -21552,10 +21555,10 @@ route('/datacount_empleados', async (mount) => {
       <button type="button" data-action="pago-realizado" role="menuitem">
         <i class="fa-solid fa-money-bill-transfer"></i><span>Registrar pago realizado</span>
       </button>
-      <div class="ctx-menu-sep"></div>
       <button type="button" data-action="copiar" role="menuitem">
-        <i class="fa-solid fa-copy"></i><span>Copiar</span>
+        <i class="fa-solid fa-copy"></i><span>Copiar a otra empresa</span>
       </button>
+      <div class="ctx-menu-sep"></div>
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
       </button>
@@ -21568,9 +21571,20 @@ route('/datacount_empleados', async (mount) => {
     <div class="modal-backdrop" id="filtrosDcmBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcm()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDcm()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcm()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost"   onclick="cancelarFiltrosDcm()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcm()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcm()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -21619,11 +21633,6 @@ route('/datacount_empleados', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcm()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcm()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcm()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -21929,9 +21938,17 @@ async function abrirAltaEdicionDcm(id) {
 
   openModal(`
     <div class="modal" style="max-width:640px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -22006,10 +22023,6 @@ async function abrirAltaEdicionDcm(id) {
           </label>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
-      </div>
     </div>
   `);
 
@@ -22072,22 +22085,30 @@ function dcmAbrirPickerCuenta() {
   wrap.id = 'dcmPickerRoot';
   wrap.style.zIndex = '160';
   wrap.innerHTML = `
-    <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
-      <div class="modal-header">
+    <div class="modal" style="max-width:560px;max-height:82vh">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Seleccionar cuenta</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
       </div>
-      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del selector">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="limpiar">
+          <i class="fa-solid fa-ban"></i> Sin cuenta
+        </button>
+      </div>
+      <!-- El buscador y el árbol no van en un .modal-body: el árbol es el único
+           que scrollea y el buscador tiene que quedar fijo arriba de él, así que
+           los dos declaran su propio flex (el :has() de la hoja sólo fija el
+           header y la barra). -->
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);flex:0 0 auto">
         <input type="search" id="dcmPickerSearch" class="search-input"
                style="width:100%;box-sizing:border-box"
                placeholder="🔍 Buscar por código o nombre…">
       </div>
       <div id="dcmPickerArbol"
-           style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="limpiar">Sin cuenta</button>
-        <button class="btn btn-ghost" data-act="close">Cancelar</button>
-      </div>
+           style="overflow-y:auto;flex:1 1 auto;min-height:240px;padding:6px;background:var(--bg)"></div>
     </div>
   `;
   document.body.appendChild(wrap);
@@ -22275,12 +22296,26 @@ function abrirConsultaDcm(id) {
     : '<span style="color:var(--muted)">—</span>';
 
   openModal(`
-    <div class="modal" style="max-width:680px">
-      <div class="modal-header">
+    <div class="modal modal-tall" style="max-width:920px">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
-          👤 <span class="modal-subtitle">Empleado #${r.id}</span>
+          👤 <span class="modal-subtitle">${r.nombre ? esc(r.nombre) + ' · ' : ''}Empleado #${r.id}</span>
         </div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del empleado">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        ${r.cuenta_id && hasPermission('datacount.asientos.consultar') ? `
+        <button class="btn btn-sm btn-primary" data-menu="listar">
+          <i class="fa-solid fa-list"></i> Listar
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>` : ''}
+        <button class="btn btn-sm btn-primary" data-menu="acciones">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -22290,7 +22325,7 @@ function abrirConsultaDcm(id) {
         </div>
 
         <div class="modal-tabpanel" data-panel="general">
-          <div style="display:flex;flex-wrap:wrap;gap:12px">
+          <div class="modal-scroll" style="display:flex;flex-wrap:wrap;align-content:flex-start;gap:12px">
             ${card('Nombre',        esc(r.nombre || '—'), 'full')}
             ${card('Documento',     r.documento ? `<code>${esc(r.documento)}</code>` : '<span style="color:var(--muted)">—</span>')}
             ${card('Nacimiento',    r.nacimiento ? esc(fmtFecha(r.nacimiento)) : '<span style="color:var(--muted)">—</span>')}
@@ -22303,7 +22338,7 @@ function abrirConsultaDcm(id) {
         </div>
 
         <div class="modal-tabpanel" data-panel="cuenta" hidden>
-          <div style="display:flex;flex-wrap:wrap;gap:12px">
+          <div class="modal-scroll" style="display:flex;flex-wrap:wrap;align-content:flex-start;gap:12px">
             ${card('Empresa',       esc(r.empresa_nombre || '#' + r.empresa_id), 'full')}
             ${card('Cuenta',        cuentaLabel, 'full')}
             ${card('Sueldo',        sueldoHtml)}
@@ -22314,24 +22349,82 @@ function abrirConsultaDcm(id) {
           </div>
         </div>
 
+        <!-- El box es el que reparte el alto sobrante del panel; adentro, la
+             .table-card se queda con .modal-scroll. Así el scroll de la ficha
+             vive dentro de la tabla y no en el modal. -->
         <div class="modal-tabpanel" data-panel="movimientos" hidden>
           <div id="dcmMovimientosBox" data-loaded="0"
+               style="flex:1 1 auto;min-height:0;display:flex;flex-direction:column"
                data-cuenta="${r.cuenta_id ? Number(r.cuenta_id) : ''}"
                data-empresa="${Number(r.empresa_id) || ''}">
             <div style="text-align:center;padding:24px"><div class="spin"></div></div>
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
+    </div>
+
+    <!-- Menús de la barra de acciones. Van FUERA del .modal a propósito: el
+         modal del formato nuevo lleva overflow:hidden (el scroll es del cuerpo)
+         y además transform para su animación, así que recortaría el menú aunque
+         sea position:fixed. Como hijos del backdrop no los recorta nadie. -->
+    <div id="dcmListarCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="asientos" role="menuitem">
+        <i class="fa-solid fa-book"></i><span>Asientos de la cuenta</span>
+      </button>
+    </div>
+
+    <div id="dcmConsultaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="pago-pendiente" role="menuitem">
+        <i class="fa-solid fa-hourglass-half"></i><span>Registrar pago pendiente</span>
+      </button>
+      <button type="button" data-action="pago-realizado" role="menuitem">
+        <i class="fa-solid fa-money-bill-transfer"></i><span>Registrar pago realizado</span>
+      </button>
+      <button type="button" data-action="copiar" role="menuitem">
+        <i class="fa-solid fa-copy"></i><span>Copiar a otra empresa</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
     </div>
   `);
 
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcm(id); }
+    // Cerrar con el menú desplegado dejaría `_ctxMenuActual` apuntando a un
+    // nodo que closeModal() está por remover del DOM.
+    if (ev.target.closest('[data-act="close"]')) { cerrarCtxMenu(); closeModal(); return; }
+
+    // Los triggers frenan la propagación: el handler global que cierra el menú
+    // al clickear afuera corre después y, sin esto, lo cerraría en el mismo
+    // click que lo abre.
+    const menuBtn = ev.target.closest('[data-menu]');
+    if (menuBtn) {
+      ev.stopPropagation();
+      const rc = menuBtn.getBoundingClientRect();
+      const el = menuBtn.dataset.menu === 'listar'
+        ? $('#dcmListarCtxMenu')
+        : $('#dcmConsultaCtxMenu');
+      abrirCtxMenu(el, rc.left, rc.bottom + 4, { id });
+      return;
+    }
+
+    const item = ev.target.closest('#dcmListarCtxMenu [data-action], #dcmConsultaCtxMenu [data-action]');
+    if (item) {
+      cerrarCtxMenu();
+      const accion = item.dataset.action;
+      if (accion === 'asientos')       { closeModal(); dcmVerAsientosDeCuenta(r); }
+      if (accion === 'editar')         { closeModal(); abrirAltaEdicionDcm(id); }
+      if (accion === 'pago-pendiente') { closeModal(); abrirPagoPendienteDcm(id); }
+      if (accion === 'pago-realizado') { closeModal(); abrirPagoRealizadoDcm(id); }
+      if (accion === 'copiar')         { closeModal(); abrirCopiarDcm(id); }
+      if (accion === 'eliminar')       { closeModal(); eliminarDcm(id); }
+      return;
+    }
 
     const tabBtn = ev.target.closest('#modalRoot [data-tab]');
     if (tabBtn) {
@@ -22341,6 +22434,21 @@ function abrirConsultaDcm(id) {
       if (target === 'movimientos') dcmCargarMovimientos();
     }
   });
+}
+
+// Salta al módulo de Asientos con el filtro por cuenta ya puesto en la cuenta
+// contable del empleado — la misma navegación cruzada que ofrece Bancos.
+function dcmVerAsientosDeCuenta(r) {
+  const cuentaId = Number(r?.cuenta_id) || 0;
+  if (!cuentaId) {
+    toast('Este empleado no tiene cuenta contable asociada', { error: true });
+    return;
+  }
+  dcaFiltroCuentaId     = cuentaId;
+  dcaFiltroCuentaNombre = r.cuenta_codigo
+    ? `${r.cuenta_codigo} — ${r.cuenta_nombre || ''}`.trim()
+    : `Cuenta #${cuentaId}`;
+  location.hash = '#/datacount_asientos';
 }
 
 // Carga (una sola vez) el historial de asientos que involucran a la cuenta
@@ -22396,8 +22504,10 @@ function dcmRenderMovimientos(box, asientos, cuentaId) {
     `;
   }).join('');
 
+  // El único scroll de la ficha vive acá adentro: la .table-card se queda con
+  // el alto sobrante del panel y el encabezado va sticky.
   box.innerHTML = `
-    <div class="table-card">
+    <div class="table-card modal-scroll">
       <table>
         <thead>
           <tr>
@@ -22432,9 +22542,17 @@ async function abrirCopiarDcm(id) {
 
   openModal(`
     <div class="modal" style="max-width:480px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">📋 <span class="modal-subtitle">Copiar empleado</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones de la copia">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="copiar">
+          <i class="fa-solid fa-copy"></i> Copiar
+        </button>
       </div>
       <div class="modal-body">
         <div style="margin-bottom:14px;font-size:.9rem">
@@ -22451,10 +22569,6 @@ async function abrirCopiarDcm(id) {
           las cuentas son específicas de cada empresa. Todos los demás campos se
           replican tal cual.
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="copiar">Copiar</button>
       </div>
     </div>
   `);
@@ -22572,9 +22686,17 @@ async function abrirPagoPendienteDcm(id) {
 
   openModal(`
     <div class="modal" style="max-width:480px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">⏳ <span class="modal-subtitle">Pago pendiente — ${esc(r.nombre)}</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del pago">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="aceptar">
+          <i class="fa-solid fa-check"></i> Aceptar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -22607,10 +22729,6 @@ async function abrirPagoPendienteDcm(id) {
           <strong>DEBE</strong> <code>${esc(cuentaSueldos.codigo)}</code> ${esc(cuentaSueldos.nombre)}
           <strong>a HABER</strong> <code>${esc(cuentaEmpleado.codigo)}</code> ${esc(cuentaEmpleado.nombre)}.
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="aceptar">Aceptar</button>
       </div>
     </div>
   `);
@@ -22675,9 +22793,17 @@ async function abrirPagoRealizadoDcm(id) {
 
   openModal(`
     <div class="modal" style="max-width:520px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">💸 <span class="modal-subtitle">Pago realizado — ${esc(r.nombre)}</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del pago">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="aceptar">
+          <i class="fa-solid fa-check"></i> Aceptar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -22715,10 +22841,6 @@ async function abrirPagoRealizadoDcm(id) {
           <strong>DEBE</strong> <code>${esc(cuentaEmpleado.codigo)}</code> ${esc(cuentaEmpleado.nombre)}
           <strong>a HABER</strong> la cuenta de Caja y Bancos que elijas.
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="aceptar">Aceptar</button>
       </div>
     </div>
   `);
@@ -24870,6 +24992,1869 @@ async function eliminarDct(id) {
   }
 }
 
+// ------------------------- Vista: Datacount > Chequeras (ABM) -------------------------
+// ABM de chequeras sobre `datacount_bancos_chequeras`. Cada fila es un
+// talonario de cheques emitido contra una cuenta corriente del módulo Bancos.
+//
+// La chequera tiene DOS datos propios: contra qué cuenta se emitió y si trae
+// cheques COMUNES (se cobran a la vista) o DIFERIDOS (con fecha de pago
+// futura). El nombre, el banco, el número de cuenta y la empresa NO se cargan
+// acá: salen de `datacount_bancos_cuentas` vía JOIN. Por eso el formulario
+// pide una sola cosa donde antes pedía tres, y renombrar una cuenta actualiza
+// sus chequeras sola.
+//
+// El tipo vive en la chequera y no en el cheque porque el banco entrega
+// talonarios distintos para cada uno: una chequera nunca mezcla los dos.
+
+const DCCH_API = 'api/datacount_chequeras.php';
+
+// Etiquetas y badges del tipo. El catalogo `estados`
+// (campo `datacount_bancos_chequera_tipo`) alimenta los chips del modal de
+// filtros; este mapa es el que pinta los badges del listado y la ficha.
+const DCCH_TIPO_META = {
+  comun:    { label: 'Común',    badge: 'badge-info' },
+  diferido: { label: 'Diferido', badge: 'badge-warn' },
+};
+
+let dcchItems           = [];
+let dcchBusqueda        = '';
+let dcchFiltroCodigo    = '';
+let dcchFiltroCuenta    = '';
+let dcchFiltroTipo      = '';   // '', 'comun', 'diferido'
+let dcchFiltroActiva    = '';   // '', '1' (activa), '0' (inactiva)
+let dcchFiltroLimite    = 100;
+let dcchFiltroOrden     = 'id';
+let dcchFiltroDir       = 'desc';
+let dcchEditandoId      = null;
+let dcchBuscadorTimer   = null;
+let dcchFiltrosSnapshot = null;
+let dcchLookupsCache    = null;
+let dcchLookupsPromesa  = null;
+
+async function dcchCargarLookups() {
+  if (dcchLookupsCache) return dcchLookupsCache;
+  if (dcchLookupsPromesa) return dcchLookupsPromesa;
+  dcchLookupsPromesa = (async () => {
+    const data = await apiGet(`${DCCH_API}?lookups=1`);
+    dcchLookupsCache = {
+      cuentas: data.cuentas || [],
+      tipos:   data.tipos   || [],
+    };
+    return dcchLookupsCache;
+  })();
+  try { return await dcchLookupsPromesa; }
+  finally { dcchLookupsPromesa = null; }
+}
+
+// Etiqueta del combo de cuentas: "<nombre> — <banco> · <número>". El banco y el
+// número son lo que el operador reconoce de la chequera en la mano, así que van
+// en la misma línea aunque el <select> no permita formato.
+function dcchEtiquetaCuenta(c) {
+  if (!c) return '—';
+  const partes = [];
+  if (c.banco_nombre) partes.push(c.banco_nombre);
+  if (c.numero)       partes.push(c.numero);
+  return partes.length ? `${c.nombre} — ${partes.join(' · ')}` : c.nombre;
+}
+
+// Cuentas de la empresa activa. El lookup trae todas (con su `empresa_id`) para
+// no invalidar el cache cada vez que se cambia de empresa en la toolbar.
+function dcchCuentasDeEmpresa(empresaId) {
+  const todas = dcchLookupsCache?.cuentas || [];
+  if (!empresaId) return todas;
+  return todas.filter((c) => c.empresa_id === Number(empresaId));
+}
+
+function dcchCuentaPorId(id) {
+  if (!id) return null;
+  return (dcchLookupsCache?.cuentas || []).find((c) => c.id === Number(id)) || null;
+}
+
+function dcchTipoBadge(v) {
+  const m = DCCH_TIPO_META[v] || { label: v || '—', badge: 'badge-info' };
+  return `<span class="badge ${m.badge}">${esc(m.label)}</span>`;
+}
+
+function dcchActivaBadge(v) {
+  return Number(v) === 1
+    ? `<span class="badge badge-success">Activa</span>`
+    : `<span class="badge badge-danger">Inactiva</span>`;
+}
+
+route('/datacount_bancos_chequeras', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      ${dcbHeaderHtml('📔', `
+        Las chequeras son los talonarios de cheques que el banco entrega contra una cuenta
+        corriente: cada una se emite sobre una cuenta del módulo Bancos —de ahí salen el
+        nombre, el banco y el número— y trae cheques comunes (se cobran a la vista) o
+        diferidos (con fecha de pago futura).
+      `)}
+
+      <div class="stats-bar" id="dcchStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="dcchStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Comunes</span><span class="stat-value" id="dcchStatComunes">—</span></div>
+        <div class="stat-card"><span class="stat-label">Diferidas</span><span class="stat-value" id="dcchStatDiferidas">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activas</span><span class="stat-value green" id="dcchStatActivas">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcchEmpresaSel" style="min-width:200px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcchSearch"
+                   placeholder="🔍 Buscar cuenta, número de cuenta o banco…">
+            <button class="search-clear" id="dcchSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcchFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcchFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcchRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcchNuevoBtn">+ Nueva chequera</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th>Cuenta</th>
+              <th style="width:200px">Banco</th>
+              <th style="width:170px">N.º de cuenta</th>
+              <th style="width:120px">Tipo</th>
+              <th style="width:110px">Estado</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcchTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dcchCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="toggle" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Desactivar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDcchBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcch()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header modal-header-primary">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcch()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost"   onclick="cancelarFiltrosDcch()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcch()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcch()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDcchCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDcch('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Cuenta</label>
+              <select id="fDcchCuenta" onchange="onFiltroDcch('cuenta', this.value)">
+                <option value="">— Todas —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Tipo de cheque</label>
+            <div id="fDcchTipoChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <div id="fDcchActivaChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-activa="">Todas</button>
+              <button type="button" class="filter-chip" data-activa="1">Activa</button>
+              <button type="button" class="filter-chip" data-activa="0">Inactiva</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcchLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDcch('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcchOrden" onchange="onFiltroDcch('orden', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Cuenta</option>
+                <option value="numero_cuenta">N.º de cuenta</option>
+                <option value="tipo">Tipo</option>
+                <option value="activa">Estado</option>
+                <option value="created_at">Fecha de alta</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcchDir" onchange="onFiltroDcch('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcchSearch');
+  const clr = $('#dcchSearchClear');
+  inp.value = dcchBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcchBusqueda = inp.value.trim();
+    clearTimeout(dcchBuscadorTimer);
+    dcchBuscadorTimer = setTimeout(cargarDcch, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcchBusqueda = ''; cargarDcch();
+  });
+
+  // Selector de empresa (contexto compartido con el resto de Datacount).
+  const selEmp = $('#dcchEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', async (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    // Las cuentas son por empresa: la que estuviera elegida en el filtro ya no
+    // aplica, así que el combo se repinta y el filtro se descarta si sobra.
+    dcchPintarComboCuentasFiltro();
+    dcchActualizarBadgeFiltros();
+    await cargarDcch();
+  });
+
+  $('#dcchFiltrosBtn').addEventListener('click', abrirModalFiltrosDcch);
+  $('#dcchRefrescarBtn').addEventListener('click', cargarDcch);
+  $('#dcchNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcch(null));
+
+  // Menú contextual + interacción con la fila.
+  $('#dcchCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'consultar') abrirConsultaDcch(data.id);
+    if (b.dataset.action === 'toggle')    alternarActivaDcch(data.id);
+    if (b.dataset.action === 'editar')    abrirAltaEdicionDcch(data.id);
+    if (b.dataset.action === 'eliminar')  eliminarDcch(data.id);
+  });
+
+  $('#dcchTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      dcchPrepararCtxMenu(id);
+      abrirCtxMenu($('#dcchCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcch(Number(tr.dataset.id));
+  });
+  $('#dcchTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    const id = Number(tr.dataset.id);
+    dcchPrepararCtxMenu(id);
+    abrirCtxMenu($('#dcchCtxMenu'), ev.clientX, ev.clientY, { id });
+  });
+
+  // Lookups + controles del modal de filtros. La empresa se maneja desde el
+  // selector de la toolbar (contexto compartido); el modal sólo lleva los
+  // filtros locales del módulo.
+  await dcchCargarLookups();
+
+  dcchPintarComboCuentasFiltro();
+
+  const chipsTipo = $('#fDcchTipoChips');
+  if (chipsTipo) {
+    chipsTipo.innerHTML =
+      `<button type="button" class="filter-chip" data-tipo="">Todos</button>` +
+      (dcchLookupsCache?.tipos || []).map((t) =>
+        `<button type="button" class="filter-chip" data-tipo="${esc(t.valor)}">${esc(DCCH_TIPO_META[t.valor]?.label || t.texto)}</button>`).join('');
+    chipsTipo.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      dcchFiltroTipo = b.dataset.tipo || '';
+      dcchSincronizarChipsTipo();
+      dcchActualizarBadgeFiltros();
+      cargarDcch();
+    });
+  }
+
+  const chipsAct = $('#fDcchActivaChips');
+  if (chipsAct) {
+    chipsAct.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      dcchFiltroActiva = b.dataset.activa || '';
+      dcchSincronizarChipsActiva();
+      dcchActualizarBadgeFiltros();
+      cargarDcch();
+    });
+  }
+
+  dcchActualizarBadgeFiltros();
+  await cargarDcch();
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Bancos'
+ + ' &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Chequeras');
+
+async function cargarDcch() {
+  const tbody = $('#dcchTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">No hay empresas registradas — creá una antes de dar de alta chequeras.</td></tr>`;
+    return;
+  }
+
+  // El listado depende del catálogo de cuentas para pintar el combo de filtros
+  // y el del formulario; se pide una sola vez y queda cacheado.
+  await dcchCargarLookups();
+
+  const qs = new URLSearchParams();
+  qs.set('empresa', String(empresaId));
+  if (dcchBusqueda)            qs.set('q',      dcchBusqueda);
+  if (dcchFiltroCuenta)        qs.set('cuenta', dcchFiltroCuenta);
+  if (dcchFiltroTipo)          qs.set('tipo',   dcchFiltroTipo);
+  if (dcchFiltroActiva !== '') qs.set('activa', dcchFiltroActiva);
+  if (dcchFiltroLimite)        qs.set('limite', dcchFiltroLimite);
+  if (dcchFiltroOrden)         qs.set('orden',  dcchFiltroOrden);
+  if (dcchFiltroDir)           qs.set('dir',    dcchFiltroDir);
+
+  try {
+    const data = await apiGet(DCCH_API + '?' + qs.toString());
+    dcchItems = data.items || [];
+    pintarStatsDcch(data.stats || {});
+    renderDcch();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcch(s) {
+  $('#dcchStatTotal').textContent     = fmtNum(s.total     ?? dcchItems.length);
+  $('#dcchStatComunes').textContent   = fmtNum(s.comunes   ?? 0);
+  $('#dcchStatDiferidas').textContent = fmtNum(s.diferidas ?? 0);
+  $('#dcchStatActivas').textContent   = fmtNum(s.activas   ?? 0);
+}
+
+function renderDcch() {
+  const tbody = $('#dcchTbody');
+  if (!tbody) return;
+  if (!dcchItems.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin chequeras registradas.</td></tr>`;
+    return;
+  }
+
+  // Filtro cliente por Código (el resto lo resuelve el server).
+  let filas = dcchItems;
+  if (dcchFiltroCodigo) {
+    const cod = Number(dcchFiltroCodigo);
+    filas = filas.filter((c) => c.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${c.id}</code></td>
+      <td style="font-weight:600">${esc(c.nombre || `Cuenta #${c.cuenta_id}`)}</td>
+      <td>${esc(c.banco_nombre || (c.banco_id ? `#${c.banco_id}` : '—'))}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(c.numero_cuenta || '—')}</td>
+      <td>${dcchTipoBadge(c.tipo)}</td>
+      <td>${dcchActivaBadge(c.activa)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// La etiqueta del toggle depende del estado de la fila, así que se resuelve
+// justo antes de abrir el menú (ABM.md: "actualizar su etiqueta dinámicamente").
+function dcchPrepararCtxMenu(id) {
+  const c = dcchItems.find((x) => x.id === id);
+  const lbl = document.querySelector('#dcchCtxMenu [data-action="toggle"] [data-label]');
+  if (lbl) lbl.textContent = Number(c?.activa) === 1 ? 'Desactivar' : 'Activar';
+}
+
+// Puebla el <select> de cuenta del modal de filtros con las cuentas de la
+// empresa activa. Si la cuenta que venía elegida (los filtros persisten entre
+// navegaciones) no pertenece a esta empresa, el filtro se descarta en vez de
+// quedar apuntando a una cuenta que el combo ya no lista.
+function dcchPintarComboCuentasFiltro() {
+  const sel = $('#fDcchCuenta');
+  if (!sel) return;
+  const cuentas = dcchCuentasDeEmpresa(dcGetEmpresaId());
+  if (dcchFiltroCuenta && !cuentas.some((c) => c.id === Number(dcchFiltroCuenta))) {
+    dcchFiltroCuenta = '';
+  }
+  sel.innerHTML = `<option value="">— Todas —</option>` +
+    cuentas.map((c) => `<option value="${c.id}">${esc(dcchEtiquetaCuenta(c))}</option>`).join('');
+  sel.value = dcchFiltroCuenta || '';
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDcch() {
+  dcchFiltrosSnapshot = {
+    codigo: dcchFiltroCodigo,
+    cuenta: dcchFiltroCuenta,
+    tipo:   dcchFiltroTipo,
+    activa: dcchFiltroActiva,
+    limite: dcchFiltroLimite,
+    orden:  dcchFiltroOrden,
+    dir:    dcchFiltroDir,
+  };
+  $('#fDcchCodigo').value = dcchFiltroCodigo || '';
+  $('#fDcchCuenta').value = dcchFiltroCuenta || '';
+  $('#fDcchLimite').value = dcchFiltroLimite || 100;
+  $('#fDcchOrden').value  = dcchFiltroOrden  || 'id';
+  $('#fDcchDir').value    = dcchFiltroDir    || 'desc';
+  dcchSincronizarChipsTipo();
+  dcchSincronizarChipsActiva();
+  document.getElementById('filtrosDcchBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDcch = abrirModalFiltrosDcch;
+
+function cerrarModalFiltrosDcch() {
+  document.getElementById('filtrosDcchBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDcch = cerrarModalFiltrosDcch;
+
+function cancelarFiltrosDcch() {
+  if (dcchFiltrosSnapshot) {
+    dcchFiltroCodigo = dcchFiltrosSnapshot.codigo;
+    dcchFiltroCuenta = dcchFiltrosSnapshot.cuenta;
+    dcchFiltroTipo   = dcchFiltrosSnapshot.tipo;
+    dcchFiltroActiva = dcchFiltrosSnapshot.activa;
+    dcchFiltroLimite = dcchFiltrosSnapshot.limite;
+    dcchFiltroOrden  = dcchFiltrosSnapshot.orden;
+    dcchFiltroDir    = dcchFiltrosSnapshot.dir;
+    dcchActualizarBadgeFiltros();
+    cargarDcch();
+  }
+  cerrarModalFiltrosDcch();
+}
+window.cancelarFiltrosDcch = cancelarFiltrosDcch;
+
+function limpiarFiltrosDcch() {
+  dcchFiltroCodigo = '';
+  dcchFiltroCuenta = '';
+  dcchFiltroTipo   = '';
+  dcchFiltroActiva = '';
+  dcchFiltroLimite = 100;
+  dcchFiltroOrden  = 'id';
+  dcchFiltroDir    = 'desc';
+  $('#fDcchCodigo').value = '';
+  $('#fDcchCuenta').value = '';
+  $('#fDcchLimite').value = 100;
+  $('#fDcchOrden').value  = 'id';
+  $('#fDcchDir').value    = 'desc';
+  dcchSincronizarChipsTipo();
+  dcchSincronizarChipsActiva();
+  dcchActualizarBadgeFiltros();
+  cargarDcch();
+}
+window.limpiarFiltrosDcch = limpiarFiltrosDcch;
+
+function onFiltroDcch(campo, valor) {
+  if (campo === 'codigo') dcchFiltroCodigo = (valor || '').trim();
+  if (campo === 'cuenta') dcchFiltroCuenta = valor || '';
+  if (campo === 'limite') dcchFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dcchFiltroOrden  = valor || 'id';
+  if (campo === 'dir')    dcchFiltroDir    = valor || 'desc';
+  dcchActualizarBadgeFiltros();
+  cargarDcch();
+}
+window.onFiltroDcch = onFiltroDcch;
+
+function dcchSincronizarChipsTipo() {
+  document.querySelectorAll('#fDcchTipoChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.tipo || '') === (dcchFiltroTipo || ''));
+  });
+}
+
+function dcchSincronizarChipsActiva() {
+  document.querySelectorAll('#fDcchActivaChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.activa || '') === (dcchFiltroActiva || ''));
+  });
+}
+
+function dcchActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcchFiltroCodigo)                 n++;
+  if (dcchFiltroCuenta)                 n++;
+  if (dcchFiltroTipo)                   n++;
+  if (dcchFiltroActiva !== '')          n++;
+  if (Number(dcchFiltroLimite) !== 100) n++;
+  if (dcchFiltroOrden !== 'id')         n++;
+  if (dcchFiltroDir   !== 'desc')       n++;
+  const badge = $('#dcchFiltrosBadge');
+  const btn   = $('#dcchFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDcch(id) {
+  dcchEditandoId = id;
+  const editando = !!id;
+  const c = editando ? dcchItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar chequera' : 'Nueva chequera';
+
+  await dcchCargarLookups();
+  const tipos = dcchLookupsCache?.tipos || [];
+
+  // Las cuentas se listan por empresa activa. En edición se agrega la cuenta
+  // actual aunque sea de otra empresa o esté dada de baja: si no, el <select>
+  // caería en la primera opción y guardar movería la chequera de cuenta sin
+  // que nadie lo pidiera.
+  const cuentas = dcchCuentasDeEmpresa(dcGetEmpresaId()).slice();
+  if (editando && c && !cuentas.some((x) => x.id === c.cuenta_id)) {
+    const actual = dcchCuentaPorId(c.cuenta_id);
+    if (actual) cuentas.unshift(actual);
+  }
+  const optsCuentas = `<option value="">— Elegí una cuenta —</option>` +
+    cuentas.map((x) => `<option value="${x.id}">${esc(dcchEtiquetaCuenta(x))}</option>`).join('');
+
+  // `tipo` es NOT NULL en la tabla: si alguien vació el catálogo `estados`
+  // desde Herramientas, el <select> cae a los dos valores del enum en vez de
+  // quedar sin opciones y mandar '' al guardar.
+  const tiposUsables = tipos.length
+    ? tipos
+    : Object.entries(DCCH_TIPO_META).map(([valor, m]) => ({ valor, texto: m.label }));
+  const optsTipos    = tiposUsables.map((t) =>
+    `<option value="${esc(t.valor)}">${esc(DCCH_TIPO_META[t.valor]?.label || t.texto)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="dcchCuenta">Cuenta *</label>
+          <select id="dcchCuenta">${optsCuentas}</select>
+          <span style="color:var(--muted);font-size:.78rem">
+            Cuenta del módulo Bancos contra la que el banco emitió la chequera. De ella salen
+            el nombre, el banco y el número: no se cargan acá.
+          </span>
+        </div>
+        <div class="form-group">
+          <label for="dcchTipo">Tipo de cheque *</label>
+          <select id="dcchTipo">${optsTipos}</select>
+          <span style="color:var(--muted);font-size:.78rem">
+            Común: se cobra a la vista. Diferido: lleva fecha de pago futura.
+          </span>
+        </div>
+        <div class="form-group">
+          <label for="dcchObservaciones">Observaciones</label>
+          <textarea id="dcchObservaciones" rows="4"
+                    placeholder="Rango de números del talonario, dónde está guardada, a quién se le entregó, etc."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="dcchActiva">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Activa</span>
+            <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+              — al desactivarla la chequera deja de ofrecerse para emitir cheques nuevos
+            </span>
+          </label>
+        </div>
+      </div>
+    </div>
+  `);
+
+  if (editando && c) {
+    $('#dcchCuenta').value        = c.cuenta_id != null ? String(c.cuenta_id) : '';
+    $('#dcchTipo').value          = c.tipo      || 'comun';
+    $('#dcchObservaciones').value = c.observaciones || '';
+    $('#dcchActiva').checked      = Number(c.activa) === 1;
+  } else {
+    $('#dcchTipo').value     = 'comun';
+    $('#dcchActiva').checked = true;
+  }
+
+  setTimeout(() => $('#dcchCuenta')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcch();
+  });
+}
+
+async function guardarDcch() {
+  const cuenta_id     = $('#dcchCuenta').value || '';
+  const tipo          = $('#dcchTipo').value || 'comun';
+  const observaciones = $('#dcchObservaciones').value.trim();
+  const activa        = $('#dcchActiva').checked ? 1 : 0;
+
+  if (!cuenta_id) { toast('Elegí la cuenta de la chequera', { error: true }); return; }
+
+  const body = { cuenta_id: Number(cuenta_id), tipo, observaciones, activa };
+
+  try {
+    if (dcchEditandoId) {
+      await apiSend(`${DCCH_API}?id=${dcchEditandoId}`, 'PUT', body);
+      toast('Chequera actualizada');
+    } else {
+      await apiSend(DCCH_API, 'POST', body);
+      toast('Chequera creada');
+    }
+    closeModal();
+    dcchEditandoId = null;
+    await cargarDcch();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDcch(id) {
+  const c = dcchItems.find((x) => x.id === id);
+  if (!c) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  openModal(`
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">
+          📔 <span class="modal-subtitle">${esc(c.nombre || `Cuenta #${c.cuenta_id}`)} · ${esc(DCCH_TIPO_META[c.tipo]?.label || c.tipo)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones de la chequera">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-menu="acciones">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',              `<code>${c.id}</code>`)}
+          ${card('Estado',              dcchActivaBadge(c.activa))}
+          ${card('Cuenta',              esc(c.nombre || `Cuenta #${c.cuenta_id}`), 'full')}
+          ${card('Banco',               esc(c.banco_nombre || (c.banco_id ? `#${c.banco_id}` : '—')))}
+          ${card('N.º de cuenta',       `<span style="font-family:monospace">${esc(c.numero_cuenta || '—')}</span>`)}
+          ${card('Tipo de cheque',      dcchTipoBadge(c.tipo))}
+          ${card('Empresa',             esc(c.empresa_nombre || '—'))}
+          ${card('Alta',                esc(c.created_at || '—'))}
+          ${card('Última modificación', esc(c.updated_at || '—'))}
+          ${card('Observaciones',
+            `<div style="white-space:pre-wrap;font-size:.85rem">${esc(c.observaciones || '—')}</div>`, 'full')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Menú de la barra de acciones. Va FUERA del .modal a propósito: el modal
+         del formato nuevo lleva overflow:hidden (el scroll es del cuerpo) y
+         además transform para su animación, así que recortaría el menú aunque
+         sea position:fixed. Como hijo del backdrop no lo recorta nadie. -->
+    <div id="dcchModalCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    // Cerrar con el menú desplegado dejaría `_ctxMenuActual` apuntando a un
+    // nodo que closeModal() está por remover del DOM.
+    if (ev.target.closest('[data-act="close"]')) { cerrarCtxMenu(); closeModal(); return; }
+
+    // El trigger del desplegable frena la propagación: el handler global que
+    // cierra el menú al clickear afuera corre después y, sin esto, lo cerraría
+    // en el mismo click que lo abre.
+    const menuBtn = ev.target.closest('[data-menu="acciones"]');
+    if (menuBtn) {
+      ev.stopPropagation();
+      const r = menuBtn.getBoundingClientRect();
+      abrirCtxMenu($('#dcchModalCtxMenu'), r.left, r.bottom + 4, { id });
+      return;
+    }
+
+    const item = ev.target.closest('#dcchModalCtxMenu [data-action]');
+    if (!item) return;
+    cerrarCtxMenu();
+    if (item.dataset.action === 'editar')   { closeModal(); abrirAltaEdicionDcch(id); }
+    if (item.dataset.action === 'eliminar') { closeModal(); eliminarDcch(id); }
+  });
+}
+
+async function alternarActivaDcch(id) {
+  const c = dcchItems.find((x) => x.id === id);
+  if (!c) return;
+  const activa = Number(c.activa) === 1 ? 0 : 1;
+  try {
+    await apiSend(`${DCCH_API}?id=${id}`, 'PUT', { activa });
+    toast(activa ? 'Chequera activada' : 'Chequera desactivada');
+    await cargarDcch();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDcch(id) {
+  const c = dcchItems.find((x) => x.id === id);
+  if (!c) return;
+  const ok = await confirmar({
+    title:       'Eliminar chequera',
+    message:     `¿Eliminás la chequera ${DCCH_TIPO_META[c.tipo]?.label || c.tipo} de "${c.nombre || '#' + c.cuenta_id}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCCH_API}?id=${id}`, 'DELETE');
+    toast('Chequera eliminada');
+    await cargarDcch();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datacount > Chequeras > Cheques (ABM) -------------------------
+// ABM de cheques sobre `datacount_bancos_cheques`. Cada fila es un cheque
+// concreto emitido de una chequera: número, fechas, importe, beneficiario,
+// concepto y en qué anda (`estado`).
+//
+// Lo que el cheque hereda de su origen NO se carga acá: el tipo
+// (común/diferido) es de la chequera, y la cuenta, el banco y la moneda son de
+// la cuenta de fondos. Todo eso llega por JOIN desde el endpoint.
+
+const DCQ_API           = 'api/datacount_bancos_cheques.php';
+const DCQ_CHEQUERA_LS_KEY = 'datacount:chequeraId';
+
+// Los seis estados del circuito visto desde el emisor. El catálogo `estados`
+// (campo `datacount_bancos_cheque_estado`) alimenta los chips del modal de
+// filtros; este mapa pinta los badges del listado y la ficha.
+const DCQ_ESTADO_META = {
+  emitido:    { label: 'Emitido',    badge: 'badge-info'    },
+  entregado:  { label: 'Entregado',  badge: 'badge-info'    },
+  depositado: { label: 'Depositado', badge: 'badge-warn'    },
+  pagado:     { label: 'Pagado',     badge: 'badge-success' },
+  rechazado:  { label: 'Rechazado',  badge: 'badge-danger'  },
+  anulado:    { label: 'Anulado',    badge: 'badge-danger'  },
+};
+
+// Un cheque sigue "en la calle" mientras no se debitó ni murió: es lo que suma
+// la stat "A pagar" y lo que habilita las acciones rápidas del menú.
+const DCQ_ESTADOS_PENDIENTES = ['emitido', 'entregado', 'depositado'];
+
+// Modo y carácter los fija la ley de cheques (24.452), no una preferencia del
+// operador: van como enum en la tabla y con rótulos acá, sin pasar por `estados`.
+const DCQ_MODO_META = {
+  cruzado:    'Cruzado',
+  no_cruzado: 'No cruzado',
+};
+const DCQ_CARACTER_META = {
+  a_la_orden:    'A la orden',
+  no_a_la_orden: 'No a la orden',
+};
+
+let dcqItems           = [];
+let dcqBusqueda        = '';
+let dcqFiltroCodigo    = '';
+let dcqFiltroEstado    = '';
+let dcqFiltroDesde     = '';
+let dcqFiltroHasta     = '';
+let dcqFiltroLimite    = 100;
+let dcqFiltroOrden     = 'fecha_pago';
+let dcqFiltroDir       = 'desc';
+let dcqEditandoId      = null;
+let dcqBuscadorTimer   = null;
+let dcqFiltrosSnapshot = null;
+let dcqLookupsCache    = null;
+let dcqLookupsPromesa  = null;
+
+async function dcqCargarLookups(force = false) {
+  if (!force && dcqLookupsCache) return dcqLookupsCache;
+  if (dcqLookupsPromesa) return dcqLookupsPromesa;
+  dcqLookupsPromesa = (async () => {
+    const data = await apiGet(`${DCQ_API}?lookups=1`);
+    dcqLookupsCache = {
+      chequeras: data.chequeras || [],
+      estados:   data.estados   || [],
+    };
+    return dcqLookupsCache;
+  })();
+  try { return await dcqLookupsPromesa; }
+  finally { dcqLookupsPromesa = null; }
+}
+
+// La chequera elegida en la toolbar persiste entre navegaciones, igual que la
+// cuenta del módulo Movimientos. Vacío = todas las de la empresa.
+function dcqGetChequeraId() {
+  const n = Number(localStorage.getItem(DCQ_CHEQUERA_LS_KEY));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function dcqSetChequeraId(id) {
+  const n = Number(id);
+  if (Number.isFinite(n) && n > 0) localStorage.setItem(DCQ_CHEQUERA_LS_KEY, String(n));
+  else localStorage.removeItem(DCQ_CHEQUERA_LS_KEY);
+}
+
+// Etiqueta del combo de chequeras: "<cuenta> · <banco> · <tipo>". El tipo entra
+// porque una cuenta suele tener dos chequeras — la de comunes y la de
+// diferidos — y sin él las dos opciones se leerían idénticas.
+function dcqEtiquetaChequera(ch) {
+  if (!ch) return '—';
+  const tipo = DCCH_TIPO_META[ch.tipo]?.label || ch.tipo;
+  const partes = [ch.cuenta_nombre];
+  if (ch.banco_nombre) partes.push(ch.banco_nombre);
+  partes.push(tipo);
+  return partes.join(' · ');
+}
+
+function dcqChequerasDeEmpresa(empresaId) {
+  const todas = dcqLookupsCache?.chequeras || [];
+  if (!empresaId) return todas;
+  return todas.filter((ch) => ch.empresa_id === Number(empresaId));
+}
+
+function dcqChequeraPorId(id) {
+  if (!id) return null;
+  return (dcqLookupsCache?.chequeras || []).find((ch) => ch.id === Number(id)) || null;
+}
+
+function dcqEstadoBadge(v) {
+  const m = DCQ_ESTADO_META[v] || { label: v || '—', badge: 'badge-info' };
+  return `<span class="badge ${m.badge}">${esc(m.label)}</span>`;
+}
+
+// Días calendario entre hoy y la fecha de pago: positivo = faltan, 0 = hoy,
+// negativo = ya pasó. Devuelve null si la fecha no viene o no es ISO.
+//
+// Las dos puntas se normalizan a medianoche UTC antes de restar. Sin eso la
+// cuenta depende de la hora del día (13:00 de hoy a 00:00 de mañana no llega a
+// 24 h y daría "0 días"), y en la franja horaria de Argentina —UTC-3— un
+// `new Date('2026-10-09')` se parsea como UTC y al leerlo en local retrocede al
+// día 8. Los dos errores se comen un día justo en el borde, que es cuando esta
+// columna importa.
+function dcqDiasHastaPago(fechaPago) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(fechaPago || ''));
+  if (!m) return null;
+  const objetivo = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const ahora    = new Date();
+  const hoy      = Date.UTC(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+  return Math.round((objetivo - hoy) / 86400000);
+}
+
+// Un cheque vencido y todavía sin debitar es lo que hay que ir a mirar.
+function dcqEstaVencido(c) {
+  if (!DCQ_ESTADOS_PENDIENTES.includes(c.estado)) return false;
+  const d = dcqDiasHastaPago(c.fecha_pago);
+  return d !== null && d < 0;
+}
+
+// Píldora al lado de la fecha de pago: cuánto falta o cuánto hace que pasó.
+//
+// En un cheque ya pagado no se muestra: el cheque se debitó, la cuenta de días
+// contra su fecha de pago no le dice nada a nadie y sólo mete ruido en la
+// columna. En cualquier otro estado sí aparece — incluso en `rechazado` y
+// `anulado`, donde sigue sirviendo para ubicar el cheque en el tiempo.
+//
+// El color lo decide el estado, no sólo la fecha: mientras el cheque está en la
+// calle escala de info a warn (última semana) y a danger (vencido); rechazado y
+// anulado van en gris, porque el dato sigue siendo cierto pero ya no es
+// accionable.
+function dcqPildoraPago(c) {
+  if (c.estado === 'pagado') return '';
+  const d = dcqDiasHastaPago(c.fecha_pago);
+  if (d === null) return '';
+
+  const plural = (n) => `${n} ${n === 1 ? 'día' : 'días'}`;
+  let texto, titulo;
+  if (d > 0)      { texto = `en ${plural(d)}`;   titulo = `${d === 1 ? 'Falta' : 'Faltan'} ${plural(d)} para la fecha de pago`; }
+  else if (d < 0) { texto = `hace ${plural(-d)}`; titulo = `La fecha de pago pasó hace ${plural(-d)}`; }
+  else            { texto = 'hoy';                titulo = 'La fecha de pago es hoy'; }
+
+  let badge = 'badge-muted';
+  if (DCQ_ESTADOS_PENDIENTES.includes(c.estado)) {
+    if (d < 0)       badge = 'badge-danger';
+    else if (d <= 7) badge = 'badge-warn';
+    else             badge = 'badge-info';
+  }
+  return `<span class="badge ${badge}" style="font-size:.7rem" title="${esc(titulo)}">${esc(texto)}</span>`;
+}
+
+route('/datacount_bancos_cheques', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      ${dcbHeaderHtml('📝', `
+        Los cheques son cada uno de los que se libraron de una chequera: número, fecha de
+        emisión, fecha de pago, importe y a quién van dirigidos. La cuenta, el banco y el
+        tipo (común o diferido) los hereda de su chequera, así que acá sólo se carga lo que
+        dice el cheque.
+      `)}
+
+      <div class="stats-bar" id="dcqStats">
+        <div class="stat-card"><span class="stat-label">Cheques</span><span class="stat-value orange" id="dcqStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Pendientes</span><span class="stat-value" id="dcqStatPend">—</span></div>
+        <div class="stat-card"><span class="stat-label">A pagar</span><span class="stat-value" style="color:#fca5a5" id="dcqStatAPagar">—</span></div>
+        <div class="stat-card"><span class="stat-label">Emitido total</span><span class="stat-value" id="dcqStatImporte">—</span></div>
+        <div class="stat-card"><span class="stat-label">Rechazados</span><span class="stat-value" id="dcqStatRech">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <select id="dcqEmpresaSel" style="min-width:190px" title="Empresa">
+            <option value="">— Cargando empresas… —</option>
+          </select>
+          <select id="dcqChequeraSel" style="min-width:280px" title="Chequera">
+            <option value="">— Cargando chequeras… —</option>
+          </select>
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="dcqSearch"
+                   placeholder="🔍 Buscar número, beneficiario, CUIT o concepto…">
+            <button class="search-clear" id="dcqSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="dcqFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="dcqFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="dcqRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="dcqNuevoBtn">+ Nuevo cheque</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Código</th>
+              <th style="width:120px">N.º</th>
+              <th style="width:105px">Emisión</th>
+              <th style="width:205px">Pago</th>
+              <th>Beneficiario</th>
+              <th style="width:130px">CUIT</th>
+              <th style="width:150px;text-align:right">Importe</th>
+              <th style="width:120px">Estado</th>
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="dcqTbody">
+            <tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="dcqCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="pagado" role="menuitem">
+        <i class="fa-solid fa-circle-check"></i><span>Marcar pagado</span>
+      </button>
+      <button type="button" data-action="rechazado" role="menuitem">
+        <i class="fa-solid fa-ban"></i><span>Marcar rechazado</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDcqBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDcq()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header modal-header-primary">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcq()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost"   onclick="cancelarFiltrosDcq()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcq()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcq()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Código</label>
+            <input type="number" id="fDcqCodigo" min="1" placeholder="ID …"
+                   oninput="onFiltroDcq('codigo', this.value)">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Pago desde</label>
+              <input type="date" id="fDcqDesde" onchange="onFiltroDcq('desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Pago hasta</label>
+              <input type="date" id="fDcqHasta" onchange="onFiltroDcq('hasta', this.value)">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado</label>
+            <div id="fDcqEstadoChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDcqLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDcq('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDcqOrden" onchange="onFiltroDcq('orden', this.value)">
+                <option value="fecha_pago">Fecha de pago</option>
+                <option value="id">Código</option>
+                <option value="numero">N.º de cheque</option>
+                <option value="fecha_emision">Fecha de emisión</option>
+                <option value="importe">Importe</option>
+                <option value="beneficiario_razon">Beneficiario</option>
+                <option value="estado">Estado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDcqDir" onchange="onFiltroDcq('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#dcqSearch');
+  const clr = $('#dcqSearchClear');
+  inp.value = dcqBusqueda;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    dcqBusqueda = inp.value.trim();
+    clearTimeout(dcqBuscadorTimer);
+    dcqBuscadorTimer = setTimeout(cargarDcq, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; dcqBusqueda = ''; cargarDcq();
+  });
+
+  try {
+    await dcqCargarLookups();
+  } catch (e) {
+    $('#dcqTbody').innerHTML = `<tr><td colspan="9" class="table-empty">Error cargando chequeras: ${esc(e.message)}</td></tr>`;
+    return;
+  }
+
+  // Selector de empresa (contexto compartido con el resto de Datacount). Va a
+  // la izquierda del de chequeras: elegir empresa acota cuáles se ofrecen.
+  const selEmp = $('#dcqEmpresaSel');
+  const empresas = await dcGetEmpresas();
+  const empresaId = await dcAsegurarEmpresaId();
+  if (empresas.length) {
+    selEmp.innerHTML = empresas.map((e) =>
+      `<option value="${e.id}">${esc(e.nombre)}</option>`).join('');
+    selEmp.value = String(empresaId || empresas[0].id);
+  } else {
+    selEmp.innerHTML = `<option value="">— Sin empresas —</option>`;
+    selEmp.disabled = true;
+  }
+  selEmp.addEventListener('change', async (ev) => {
+    dcSetEmpresaId(ev.target.value);
+    // La chequera persistida puede ser de la empresa anterior: se descarta.
+    dcqSetChequeraId(null);
+    dcqPoblarComboChequeras();
+    await cargarDcq();
+  });
+
+  dcqPoblarComboChequeras();
+  $('#dcqChequeraSel').addEventListener('change', async (ev) => {
+    dcqSetChequeraId(ev.target.value);
+    await cargarDcq();
+  });
+
+  $('#dcqFiltrosBtn').addEventListener('click', abrirModalFiltrosDcq);
+  $('#dcqRefrescarBtn').addEventListener('click', cargarDcq);
+  $('#dcqNuevoBtn').addEventListener('click', () => abrirAltaEdicionDcq(null));
+
+  // Menú contextual + interacción con la fila.
+  $('#dcqCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    const a = b.dataset.action;
+    if (a === 'consultar') abrirConsultaDcq(data.id);
+    if (a === 'pagado')    dcqCambiarEstado(data.id, 'pagado');
+    if (a === 'rechazado') dcqCambiarEstado(data.id, 'rechazado');
+    if (a === 'editar')    abrirAltaEdicionDcq(data.id);
+    if (a === 'eliminar')  eliminarDcq(data.id);
+  });
+
+  $('#dcqTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      dcqPrepararCtxMenu(id);
+      abrirCtxMenu($('#dcqCtxMenu'), r.right - 200, r.bottom + 4, { id });
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDcq(Number(tr.dataset.id));
+  });
+  $('#dcqTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    const id = Number(tr.dataset.id);
+    dcqPrepararCtxMenu(id);
+    abrirCtxMenu($('#dcqCtxMenu'), ev.clientX, ev.clientY, { id });
+  });
+
+  const chipsEst = $('#fDcqEstadoChips');
+  if (chipsEst) {
+    const estados = dcqLookupsCache?.estados?.length
+      ? dcqLookupsCache.estados
+      : Object.entries(DCQ_ESTADO_META).map(([valor, m]) => ({ valor, texto: m.label }));
+    chipsEst.innerHTML =
+      `<button type="button" class="filter-chip" data-estado="">Todos</button>` +
+      estados.map((e) =>
+        `<button type="button" class="filter-chip" data-estado="${esc(e.valor)}">${esc(DCQ_ESTADO_META[e.valor]?.label || e.texto)}</button>`).join('');
+    chipsEst.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      dcqFiltroEstado = b.dataset.estado || '';
+      dcqSincronizarChipsEstado();
+      dcqActualizarBadgeFiltros();
+      cargarDcq();
+    });
+  }
+
+  dcqActualizarBadgeFiltros();
+  await cargarDcq();
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Bancos'
+ + ' &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Cheques');
+
+// Puebla el <select> de chequera de la toolbar con las de la empresa activa. El
+// valor vacío ("Todas las chequeras") es el default: un cheque se busca por
+// beneficiario mucho más seguido que por talonario.
+function dcqPoblarComboChequeras() {
+  const sel = $('#dcqChequeraSel');
+  if (!sel) return;
+  const items = dcqChequerasDeEmpresa(dcGetEmpresaId());
+  const actual = dcqGetChequeraId();
+  if (actual && !items.some((ch) => ch.id === actual)) dcqSetChequeraId(null);
+  sel.innerHTML = `<option value="">— Todas las chequeras —</option>` +
+    items.map((ch) => `<option value="${ch.id}">${esc(dcqEtiquetaChequera(ch))}</option>`).join('');
+  sel.value = dcqGetChequeraId() ? String(dcqGetChequeraId()) : '';
+}
+
+async function cargarDcq() {
+  const tbody = $('#dcqTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  const empresaId = await dcAsegurarEmpresaId();
+  if (!empresaId) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">No hay empresas registradas — creá una antes de cargar cheques.</td></tr>`;
+    return;
+  }
+
+  const qs = new URLSearchParams();
+  qs.set('empresa', String(empresaId));
+  if (dcqBusqueda)         qs.set('q',        dcqBusqueda);
+  if (dcqGetChequeraId())  qs.set('chequera', String(dcqGetChequeraId()));
+  if (dcqFiltroEstado)     qs.set('estado',   dcqFiltroEstado);
+  if (dcqFiltroDesde)      qs.set('desde',    dcqFiltroDesde);
+  if (dcqFiltroHasta)      qs.set('hasta',    dcqFiltroHasta);
+  if (dcqFiltroLimite)     qs.set('limite',   dcqFiltroLimite);
+  if (dcqFiltroOrden)      qs.set('orden',    dcqFiltroOrden);
+  if (dcqFiltroDir)        qs.set('dir',      dcqFiltroDir);
+
+  try {
+    const data = await apiGet(DCQ_API + '?' + qs.toString());
+    dcqItems = data.items || [];
+    pintarStatsDcq(data.stats || {});
+    renderDcq();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function pintarStatsDcq(s) {
+  // La moneda sale de la cuenta de la chequera. Con "todas" seleccionado puede
+  // haber cuentas en pesos y en dólares mezcladas, así que el total se muestra
+  // en la moneda de la chequera elegida o en pesos si no hay una sola.
+  const ch = dcqChequeraPorId(dcqGetChequeraId());
+  const mon = ch?.moneda || 'P';
+  $('#dcqStatTotal').textContent   = fmtNum(s.total      ?? dcqItems.length);
+  $('#dcqStatPend').textContent    = fmtNum(s.pendientes ?? 0);
+  $('#dcqStatAPagar').textContent  = dcbFmtMoney(s.a_pagar ?? 0, mon);
+  $('#dcqStatImporte').textContent = dcbFmtMoney(s.importe ?? 0, mon);
+  $('#dcqStatRech').textContent    = fmtNum(s.rechazados ?? 0);
+}
+
+function renderDcq() {
+  const tbody = $('#dcqTbody');
+  if (!tbody) return;
+  if (!dcqItems.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin cheques registrados.</td></tr>`;
+    return;
+  }
+
+  // Filtro cliente por Código (el resto lo resuelve el server).
+  let filas = dcqItems;
+  if (dcqFiltroCodigo) {
+    const cod = Number(dcqFiltroCodigo);
+    filas = filas.filter((c) => c.id === cod);
+  }
+
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((c) => `
+    <tr data-id="${c.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${c.id}</code></td>
+      <td style="font-family:monospace;font-size:.85rem;font-weight:600">${esc(c.numero || '—')}</td>
+      <td style="white-space:nowrap">${esc(c.fecha_emision || '—')}</td>
+      <td style="white-space:nowrap">
+        <span style="display:inline-flex;align-items:center;gap:6px">
+          ${esc(c.fecha_pago || '—')}${dcqPildoraPago(c)}
+        </span>
+      </td>
+      <td style="font-weight:600">${esc(c.beneficiario_razon || '—')}</td>
+      <td style="font-family:monospace;font-size:.85rem">${esc(c.beneficiario_cuit || '—')}</td>
+      <td style="text-align:right;white-space:nowrap">${esc(dcbFmtMoney(c.importe, c.moneda))}</td>
+      <td>${dcqEstadoBadge(c.estado)}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${c.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// Las dos acciones rápidas sólo aplican a un cheque que todavía está en la
+// calle: marcarle "pagado" a uno anulado no significa nada, así que se ocultan
+// en vez de dejarlas apretables (ABM.md: el menú refleja el estado de la fila).
+function dcqPrepararCtxMenu(id) {
+  const c    = dcqItems.find((x) => x.id === id);
+  const menu = $('#dcqCtxMenu');
+  if (!menu) return;
+  const pendiente = !!c && DCQ_ESTADOS_PENDIENTES.includes(c.estado);
+  ['pagado', 'rechazado'].forEach((accion) => {
+    const btn = menu.querySelector(`[data-action="${accion}"]`);
+    if (btn) btn.style.display = pendiente ? '' : 'none';
+  });
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDcq() {
+  dcqFiltrosSnapshot = {
+    codigo: dcqFiltroCodigo,
+    estado: dcqFiltroEstado,
+    desde:  dcqFiltroDesde,
+    hasta:  dcqFiltroHasta,
+    limite: dcqFiltroLimite,
+    orden:  dcqFiltroOrden,
+    dir:    dcqFiltroDir,
+  };
+  $('#fDcqCodigo').value = dcqFiltroCodigo || '';
+  $('#fDcqDesde').value  = dcqFiltroDesde  || '';
+  $('#fDcqHasta').value  = dcqFiltroHasta  || '';
+  $('#fDcqLimite').value = dcqFiltroLimite || 100;
+  $('#fDcqOrden').value  = dcqFiltroOrden  || 'fecha_pago';
+  $('#fDcqDir').value    = dcqFiltroDir    || 'desc';
+  dcqSincronizarChipsEstado();
+  document.getElementById('filtrosDcqBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDcq = abrirModalFiltrosDcq;
+
+function cerrarModalFiltrosDcq() {
+  document.getElementById('filtrosDcqBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDcq = cerrarModalFiltrosDcq;
+
+function cancelarFiltrosDcq() {
+  if (dcqFiltrosSnapshot) {
+    dcqFiltroCodigo = dcqFiltrosSnapshot.codigo;
+    dcqFiltroEstado = dcqFiltrosSnapshot.estado;
+    dcqFiltroDesde  = dcqFiltrosSnapshot.desde;
+    dcqFiltroHasta  = dcqFiltrosSnapshot.hasta;
+    dcqFiltroLimite = dcqFiltrosSnapshot.limite;
+    dcqFiltroOrden  = dcqFiltrosSnapshot.orden;
+    dcqFiltroDir    = dcqFiltrosSnapshot.dir;
+    dcqActualizarBadgeFiltros();
+    cargarDcq();
+  }
+  cerrarModalFiltrosDcq();
+}
+window.cancelarFiltrosDcq = cancelarFiltrosDcq;
+
+function limpiarFiltrosDcq() {
+  dcqFiltroCodigo = '';
+  dcqFiltroEstado = '';
+  dcqFiltroDesde  = '';
+  dcqFiltroHasta  = '';
+  dcqFiltroLimite = 100;
+  dcqFiltroOrden  = 'fecha_pago';
+  dcqFiltroDir    = 'desc';
+  $('#fDcqCodigo').value = '';
+  $('#fDcqDesde').value  = '';
+  $('#fDcqHasta').value  = '';
+  $('#fDcqLimite').value = 100;
+  $('#fDcqOrden').value  = 'fecha_pago';
+  $('#fDcqDir').value    = 'desc';
+  dcqSincronizarChipsEstado();
+  dcqActualizarBadgeFiltros();
+  cargarDcq();
+}
+window.limpiarFiltrosDcq = limpiarFiltrosDcq;
+
+function onFiltroDcq(campo, valor) {
+  if (campo === 'codigo') dcqFiltroCodigo = (valor || '').trim();
+  if (campo === 'desde')  dcqFiltroDesde  = valor || '';
+  if (campo === 'hasta')  dcqFiltroHasta  = valor || '';
+  if (campo === 'limite') dcqFiltroLimite = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'orden')  dcqFiltroOrden  = valor || 'fecha_pago';
+  if (campo === 'dir')    dcqFiltroDir    = valor || 'desc';
+  dcqActualizarBadgeFiltros();
+  cargarDcq();
+}
+window.onFiltroDcq = onFiltroDcq;
+
+function dcqSincronizarChipsEstado() {
+  document.querySelectorAll('#fDcqEstadoChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.estado || '') === (dcqFiltroEstado || ''));
+  });
+}
+
+function dcqActualizarBadgeFiltros() {
+  let n = 0;
+  if (dcqFiltroCodigo)                     n++;
+  if (dcqFiltroEstado)                     n++;
+  if (dcqFiltroDesde)                      n++;
+  if (dcqFiltroHasta)                      n++;
+  if (Number(dcqFiltroLimite) !== 100)     n++;
+  if (dcqFiltroOrden !== 'fecha_pago')     n++;
+  if (dcqFiltroDir   !== 'desc')           n++;
+  const badge = $('#dcqFiltrosBadge');
+  const btn   = $('#dcqFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) {
+    badge.style.display = '';
+    badge.textContent   = n;
+    btn.classList.add('active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDcq(id) {
+  dcqEditandoId = id;
+  const editando = !!id;
+  const c = editando ? dcqItems.find((x) => x.id === id) : null;
+  const titulo = editando ? 'Editar cheque' : 'Nuevo cheque';
+
+  await dcqCargarLookups();
+
+  // En alta sólo se ofrecen las chequeras activas: cargar un cheque nuevo de un
+  // talonario dado de baja es casi siempre un error de selección. En edición se
+  // agrega la actual aunque esté inactiva o sea de otra empresa, para que
+  // guardar no mueva el cheque de chequera sin que nadie lo pida.
+  const chequeras = dcqChequerasDeEmpresa(dcGetEmpresaId()).filter((ch) => ch.activa === 1);
+  if (editando && c && !chequeras.some((x) => x.id === c.chequera_id)) {
+    const actual = dcqChequeraPorId(c.chequera_id);
+    if (actual) chequeras.unshift(actual);
+  }
+  const optsChequeras = `<option value="">— Elegí una chequera —</option>` +
+    chequeras.map((ch) => `<option value="${ch.id}">${esc(dcqEtiquetaChequera(ch))}</option>`).join('');
+
+  const estados = dcqLookupsCache?.estados?.length
+    ? dcqLookupsCache.estados
+    : Object.entries(DCQ_ESTADO_META).map(([valor, m]) => ({ valor, texto: m.label }));
+  const optsEstados = estados.map((e) =>
+    `<option value="${esc(e.valor)}">${esc(DCQ_ESTADO_META[e.valor]?.label || e.texto)}</option>`).join('');
+  const opts = (mapa) => Object.entries(mapa).map(([v, t]) =>
+    `<option value="${v}">${esc(t)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:700px">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">${esc(titulo)}</div>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="dcqChequera">Chequera *</label>
+          <select id="dcqChequera">${optsChequeras}</select>
+          <span style="color:var(--muted);font-size:.78rem">
+            De ella salen la cuenta, el banco, la moneda y el tipo (común o diferido).
+          </span>
+        </div>
+        <div class="form-row form-row-3">
+          <div class="form-group">
+            <label for="dcqNumero">N.º de cheque *</label>
+            <input type="text" id="dcqNumero" placeholder="85170756" maxlength="30" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcqFechaEmision">Fecha de emisión *</label>
+            <input type="date" id="dcqFechaEmision">
+          </div>
+          <div class="form-group">
+            <label for="dcqFechaPago">Fecha de pago *</label>
+            <input type="date" id="dcqFechaPago">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcqImporte">Importe *</label>
+            <input type="number" id="dcqImporte" step="0.01" min="0" placeholder="0.00" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcqEstado">Estado</label>
+            <select id="dcqEstado">${optsEstados}</select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="dcqBenefRazon">Beneficiario *</label>
+          <input type="text" id="dcqBenefRazon" placeholder="Razón social o nombre completo"
+                 maxlength="255" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcqBenefCuit">CUIT del beneficiario</label>
+            <input type="text" id="dcqBenefCuit" placeholder="30708559209" maxlength="20" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcqBenefCorreo">Correo del beneficiario</label>
+            <input type="email" id="dcqBenefCorreo" placeholder="pablo@empresa.com.ar"
+                   maxlength="100" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dcqConcepto">Concepto</label>
+            <input type="text" id="dcqConcepto" placeholder="Facturas" maxlength="255" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="dcqReferencia">Referencia</label>
+            <input type="text" id="dcqReferencia" placeholder="Texto libre del banco"
+                   maxlength="100" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row form-row-3">
+          <div class="form-group">
+            <label for="dcqModo">Modo</label>
+            <select id="dcqModo">${opts(DCQ_MODO_META)}</select>
+          </div>
+          <div class="form-group">
+            <label for="dcqCaracter">Carácter</label>
+            <select id="dcqCaracter">${opts(DCQ_CARACTER_META)}</select>
+          </div>
+          <div class="form-group">
+            <label for="dcqOperacion">N.º de operación</label>
+            <input type="text" id="dcqOperacion" placeholder="Del comprobante del homebanking"
+                   maxlength="64" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dcqObservaciones">Observaciones</label>
+          <textarea id="dcqObservaciones" rows="3"
+                    placeholder="A quién se entregó, contra qué factura se libró, etc."></textarea>
+        </div>
+      </div>
+    </div>
+  `);
+
+  if (editando && c) {
+    $('#dcqChequera').value      = c.chequera_id != null ? String(c.chequera_id) : '';
+    $('#dcqNumero').value        = c.numero              || '';
+    $('#dcqFechaEmision').value  = c.fecha_emision       || '';
+    $('#dcqFechaPago').value     = c.fecha_pago          || '';
+    $('#dcqImporte').value       = c.importe != null ? c.importe : '';
+    $('#dcqEstado').value        = c.estado              || 'emitido';
+    $('#dcqBenefRazon').value    = c.beneficiario_razon  || '';
+    $('#dcqBenefCuit').value     = c.beneficiario_cuit   || '';
+    $('#dcqBenefCorreo').value   = c.beneficiario_correo || '';
+    $('#dcqConcepto').value      = c.concepto            || '';
+    $('#dcqReferencia').value    = c.referencia          || '';
+    $('#dcqModo').value          = c.modo                || 'cruzado';
+    $('#dcqCaracter').value      = c.caracter            || 'a_la_orden';
+    $('#dcqOperacion').value     = c.operacion_numero    || '';
+    $('#dcqObservaciones').value = c.observaciones       || '';
+  } else {
+    // Alta: hereda la chequera del selector de la toolbar si hay una elegida, y
+    // arranca emitido hoy. La fecha de pago la completa dcqSincronizarFechaPago().
+    const preel = dcqGetChequeraId();
+    if (preel && chequeras.some((ch) => ch.id === preel)) $('#dcqChequera').value = String(preel);
+    $('#dcqFechaEmision').value = new Date().toISOString().slice(0, 10);
+    $('#dcqEstado').value       = 'emitido';
+    $('#dcqModo').value         = 'cruzado';
+    $('#dcqCaracter').value     = 'a_la_orden';
+    dcqSincronizarFechaPago();
+  }
+
+  // En una chequera de comunes el cheque se cobra a la vista: la fecha de pago
+  // es la de emisión y se copia sola. En una de diferidos se deja en blanco
+  // para que la ponga quien carga — no hay default sensato.
+  $('#dcqChequera').addEventListener('change', dcqSincronizarFechaPago);
+  $('#dcqFechaEmision').addEventListener('change', dcqSincronizarFechaPago);
+
+  setTimeout(() => $('#dcqChequera')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDcq();
+  });
+}
+
+// Copia la emisión a la fecha de pago cuando la chequera es de cheques comunes
+// y el campo todavía está vacío o venía espejando a la emisión. No pisa una
+// fecha cargada a mano.
+function dcqSincronizarFechaPago() {
+  const selCh = $('#dcqChequera');
+  const emi   = $('#dcqFechaEmision');
+  const pago  = $('#dcqFechaPago');
+  if (!selCh || !emi || !pago) return;
+  const ch = dcqChequeraPorId(selCh.value);
+  if (!ch || ch.tipo !== 'comun') return;
+  if (pago.value === '' || pago.value === pago.dataset.espejo) {
+    pago.value = emi.value;
+    pago.dataset.espejo = emi.value;
+  }
+}
+
+async function guardarDcq() {
+  const chequera_id   = $('#dcqChequera').value || '';
+  const numero        = $('#dcqNumero').value.trim();
+  const fecha_emision = $('#dcqFechaEmision').value || '';
+  const fecha_pago    = $('#dcqFechaPago').value || '';
+  const importe       = $('#dcqImporte').value || '';
+  const razon         = $('#dcqBenefRazon').value.trim();
+  const cuit          = $('#dcqBenefCuit').value.trim();
+  const correo        = $('#dcqBenefCorreo').value.trim();
+
+  if (!chequera_id)   { toast('Elegí la chequera del cheque', { error: true }); return; }
+  if (!numero)        { toast('El número de cheque es obligatorio', { error: true }); return; }
+  if (!fecha_emision) { toast('La fecha de emisión es obligatoria', { error: true }); return; }
+  if (!fecha_pago)    { toast('La fecha de pago es obligatoria', { error: true }); return; }
+  if (fecha_pago < fecha_emision) {
+    toast('La fecha de pago no puede ser anterior a la de emisión', { error: true }); return;
+  }
+  if (importe === '' || Number(importe) <= 0) {
+    toast('El importe debe ser mayor a cero', { error: true }); return;
+  }
+  if (!razon) { toast('El beneficiario es obligatorio', { error: true }); return; }
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
+    toast('El correo del beneficiario no es válido', { error: true }); return;
+  }
+
+  const body = {
+    chequera_id:         Number(chequera_id),
+    numero,
+    fecha_emision,
+    fecha_pago,
+    importe:             Number(importe),
+    beneficiario_razon:  razon,
+    beneficiario_cuit:   cuit,
+    beneficiario_correo: correo,
+    concepto:            $('#dcqConcepto').value.trim(),
+    referencia:          $('#dcqReferencia').value.trim(),
+    modo:                $('#dcqModo').value || 'cruzado',
+    caracter:            $('#dcqCaracter').value || 'a_la_orden',
+    estado:              $('#dcqEstado').value || 'emitido',
+    operacion_numero:    $('#dcqOperacion').value.trim(),
+    observaciones:       $('#dcqObservaciones').value.trim(),
+  };
+
+  try {
+    if (dcqEditandoId) {
+      await apiSend(`${DCQ_API}?id=${dcqEditandoId}`, 'PUT', body);
+      toast('Cheque actualizado');
+    } else {
+      await apiSend(DCQ_API, 'POST', body);
+      toast('Cheque creado');
+    }
+    closeModal();
+    dcqEditandoId = null;
+    await cargarDcq();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal Consulta ----
+function abrirConsultaDcq(id) {
+  const c = dcqItems.find((x) => x.id === id);
+  if (!c) return;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem">${valor}</div>
+    </div>
+  `;
+
+  const chequera = `${esc(c.cuenta_nombre || `Cuenta #${c.cuenta_id}`)}`
+    + (c.banco_nombre ? ` · ${esc(c.banco_nombre)}` : '')
+    + ` · ${esc(DCCH_TIPO_META[c.chequera_tipo]?.label || c.chequera_tipo || '—')}`;
+
+  // Las dos acciones de estado sólo entran al menú si el cheque sigue en la
+  // calle: marcarle "pagado" a uno anulado no significa nada. Misma regla que
+  // dcqPrepararCtxMenu() aplica en el menú de la fila.
+  const pendiente = DCQ_ESTADOS_PENDIENTES.includes(c.estado);
+
+  openModal(`
+    <div class="modal" style="max-width:700px">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">
+          📝 <span class="modal-subtitle">Cheque N.º ${esc(c.numero || c.id)} · ${esc(dcbFmtMoney(c.importe, c.moneda))}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del cheque">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-menu="acciones">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;flex-wrap:wrap;gap:12px">
+          ${card('Código',            `<code>${c.id}</code>`)}
+          ${card('Estado',            dcqEstadoBadge(c.estado) + (dcqEstaVencido(c)
+                                        ? ' <span class="badge badge-danger">Vencido</span>' : ''))}
+          ${card('Chequera',          chequera, 'full')}
+          ${card('N.º de cheque',     `<span style="font-family:monospace">${esc(c.numero || '—')}</span>`)}
+          ${card('Importe',           `<strong>${esc(dcbFmtMoney(c.importe, c.moneda))}</strong>`)}
+          ${card('Fecha de emisión',  esc(c.fecha_emision || '—'))}
+          ${card('Fecha de pago',     esc(c.fecha_pago || '—'))}
+          ${card('Beneficiario',      esc(c.beneficiario_razon || '—'), 'full')}
+          ${card('CUIT',              `<span style="font-family:monospace">${esc(c.beneficiario_cuit || '—')}</span>`)}
+          ${card('Correo',            esc(c.beneficiario_correo || '—'))}
+          ${card('Concepto',          esc(c.concepto || '—'))}
+          ${card('Referencia',        esc(c.referencia || '—'))}
+          ${card('Modo',              esc(DCQ_MODO_META[c.modo] || c.modo || '—'))}
+          ${card('Carácter',          esc(DCQ_CARACTER_META[c.caracter] || c.caracter || '—'))}
+          ${card('N.º de operación',  `<span style="font-family:monospace;font-size:.8rem;word-break:break-all">${esc(c.operacion_numero || '—')}</span>`)}
+          ${card('Empresa',           esc(c.empresa_nombre || '—'))}
+          ${card('Alta',              esc(c.created_at || '—'))}
+          ${card('Última modificación', esc(c.updated_at || '—'))}
+          ${card('Observaciones',
+            `<div style="white-space:pre-wrap;font-size:.85rem">${esc(c.observaciones || '—')}</div>`, 'full')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Menú de la barra de acciones. Va FUERA del .modal a propósito: el modal
+         del formato nuevo lleva overflow:hidden (el scroll es del cuerpo) y
+         además transform para su animación, así que recortaría el menú aunque
+         sea position:fixed. Como hijo del backdrop no lo recorta nadie. -->
+    <div id="dcqModalCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      ${pendiente ? `
+        <div class="ctx-menu-sep"></div>
+        <button type="button" data-action="pagado" role="menuitem">
+          <i class="fa-solid fa-circle-check"></i><span>Marcar pagado</span>
+        </button>
+        <button type="button" data-action="rechazado" role="menuitem">
+          <i class="fa-solid fa-ban"></i><span>Marcar rechazado</span>
+        </button>
+      ` : ''}
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    // Cerrar con el menú desplegado dejaría `_ctxMenuActual` apuntando a un
+    // nodo que closeModal() está por remover del DOM.
+    if (ev.target.closest('[data-act="close"]')) { cerrarCtxMenu(); closeModal(); return; }
+
+    // El trigger del desplegable frena la propagación: el handler global que
+    // cierra el menú al clickear afuera corre después y, sin esto, lo cerraría
+    // en el mismo click que lo abre.
+    const menuBtn = ev.target.closest('[data-menu="acciones"]');
+    if (menuBtn) {
+      ev.stopPropagation();
+      const r = menuBtn.getBoundingClientRect();
+      abrirCtxMenu($('#dcqModalCtxMenu'), r.left, r.bottom + 4, { id });
+      return;
+    }
+
+    const item = ev.target.closest('#dcqModalCtxMenu [data-action]');
+    if (!item) return;
+    cerrarCtxMenu();
+    const a = item.dataset.action;
+    if (a === 'editar')    { closeModal(); abrirAltaEdicionDcq(id); }
+    if (a === 'pagado')    { closeModal(); dcqCambiarEstado(id, 'pagado'); }
+    if (a === 'rechazado') { closeModal(); dcqCambiarEstado(id, 'rechazado'); }
+    if (a === 'eliminar')  { closeModal(); eliminarDcq(id); }
+  });
+}
+
+async function dcqCambiarEstado(id, estado) {
+  const c = dcqItems.find((x) => x.id === id);
+  if (!c) return;
+  try {
+    await apiSend(`${DCQ_API}?id=${id}`, 'PUT', { estado });
+    toast(`Cheque marcado ${DCQ_ESTADO_META[estado]?.label?.toLowerCase() || estado}`);
+    await cargarDcq();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDcq(id) {
+  const c = dcqItems.find((x) => x.id === id);
+  if (!c) return;
+  const ok = await confirmar({
+    title:       'Eliminar cheque',
+    message:     `¿Eliminás el cheque N.º ${c.numero || '#' + c.id} de ${dcbFmtMoney(c.importe, c.moneda)} a "${c.beneficiario_razon || '—'}"?`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DCQ_API}?id=${id}`, 'DELETE');
+    toast('Cheque eliminado');
+    await cargarDcq();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
 // ------------------------- Vista: Datacount > Bancos -------------------------
 // ABM de cuentas de fondos. Bancos y billeteras virtuales comparten modulo,
 // tabla y extracto porque son la misma entidad contable (disponibilidades):
@@ -24958,32 +26943,33 @@ function dcbFmtCbu(cbu) {
   return String(cbu).replace(/(.{4})/g, '$1 ').trim();
 }
 
-// Fila superior compartida por las dos vistas del módulo: botón de volver a
-// Datacount, el selector de sub-vista y la tarjeta de ayuda. Vive en una sola
-// función para que las dos rutas no se desincronicen — si mañana se suma una
-// tercera vista (conciliación, por ejemplo) se agrega acá y aparece en todas.
-//
-// `activa` es 'cuentas' | 'movimientos'. La tarjeta activa navega a su propio
-// hash, que no dispara hashchange: clickearla es un no-op, no un re-render.
-function dcbHeaderHtml(activa, emoji, ayuda) {
-  const card = (clave, ruta, icono, label) => `
-    <button type="button" class="subnav-card${activa === clave ? ' active' : ''}"
-            ${activa === clave ? 'aria-current="page"' : ''}
-            onclick="location.hash='#${ruta}'">
-      <span class="subnav-card-icon">${icono}</span>
-      <span class="subnav-card-label">${label}</span>
-    </button>
-  `;
+// Las cuatro sub-vistas del módulo Bancos, en el orden en que se recorren: la
+// cuenta primero, después su extracto, después los talonarios que se emiten
+// contra ella y por último los cheques de esos talonarios. Alimentan las
+// tarjetas de la portada, que es el único lugar desde donde se salta entre
+// vistas: sumar una quinta es agregar una entrada acá.
+const DCB_SUBVISTAS = [
+  { ruta: '/datacount_bancos_cuentas',     icono: '🏦', label: 'Cuentas',
+    desc: 'Cuentas de fondos —bancos, billeteras virtuales, efectivo— con titular, CBU, saldo y datos de acceso.' },
+  { ruta: '/datacount_bancos_movimientos', icono: '🔁', label: 'Movimientos',
+    desc: 'El extracto de cada cuenta: entradas y salidas de dinero, importadas del resumen del banco o cargadas a mano.' },
+  { ruta: '/datacount_bancos_chequeras',   icono: '📔', label: 'Chequeras',
+    desc: 'Los talonarios de cheques que el banco entrega contra una cuenta corriente, comunes o diferidos.' },
+  { ruta: '/datacount_bancos_cheques',     icono: '📝', label: 'Cheques',
+    desc: 'Cada cheque librado de una chequera: número, fechas, importe, beneficiario y en qué anda.' },
+];
+
+// Fila superior compartida por las cuatro vistas del módulo: botón de volver a
+// la portada de Bancos y la tarjeta de ayuda, nada más. En qué sección estás lo
+// dice el breadcrumb de la topbar, y el salto entre sub-vistas se hace desde la
+// portada.
+function dcbHeaderHtml(emoji, ayuda) {
   return `
     <div style="display:flex;gap:12px;margin-bottom:16px;align-items:stretch">
       <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
-              title="Volver a Datacount" onclick="location.hash='#/datacount'">
+              title="Volver a Bancos" onclick="location.hash='#/datacount_bancos'">
         <i class="fa-solid fa-chevron-left"></i>
       </button>
-      <div class="subnav-cards">
-        ${card('cuentas',     '/datacount_bancos',             '🏦', 'Cuentas')}
-        ${card('movimientos', '/datacount_bancos_movimientos', '🔁', 'Movimientos')}
-      </div>
       <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
         <div style="font-size:1.6rem;line-height:1">${emoji}</div>
         <div style="font-size:.88rem;color:var(--muted);line-height:1.45">${ayuda}</div>
@@ -24991,6 +26977,31 @@ function dcbHeaderHtml(activa, emoji, ayuda) {
     </div>
   `;
 }
+
+// ------------------------- Vista: Datacount > Bancos (landing) -------------------------
+// Portada del módulo: las cuatro sub-vistas como tarjetas. Mismo patrón que el
+// landing de Datacount y el de las plataformas — page-header + tile-grid.
+route('/datacount_bancos', async (mount) => {
+  mount.innerHTML = `
+    <div class="page-header">
+      <div class="page-title">Bancos</div>
+      <div class="page-subtitle">
+        Las disponibilidades de la empresa: dónde está la plata, cómo se movió,
+        con qué talonarios se paga y qué cheques están en la calle.
+      </div>
+    </div>
+
+    <div class="tile-grid">
+      ${DCB_SUBVISTAS.map((v) => `
+        <button type="button" class="tile-card" onclick="location.hash='#${v.ruta}'">
+          <span class="tile-icon">${v.icono}</span>
+          <span class="tile-title">${esc(v.label)}</span>
+          <span class="tile-desc">${esc(v.desc)}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}, 'Datacount &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Bancos');
 
 function dcbGetCuentaId() {
   const n = Number(localStorage.getItem(DCB_CUENTA_LS_KEY));
@@ -25003,10 +27014,10 @@ function dcbSetCuentaId(id) {
   else localStorage.removeItem(DCB_CUENTA_LS_KEY);
 }
 
-route('/datacount_bancos', async (mount) => {
+route('/datacount_bancos_cuentas', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      ${dcbHeaderHtml('cuentas', '🏦', `
+      ${dcbHeaderHtml('🏦', `
         Las cuentas de fondos son los lugares donde la empresa tiene su dinero: cuentas
         bancarias, billeteras virtuales, caja en efectivo, tarjetas y wallets cripto.
         Cada una guarda su CBU/CVU, titular, saldo y acceso, y lleva su propio extracto
@@ -25088,10 +27099,22 @@ route('/datacount_bancos', async (mount) => {
     </div>
 
     <!-- Menú contextual del modal Consultar (acciones extra del recurso) -->
-    <div id="dcbConsultaCtxMenu" class="ctx-menu" role="menu">
+    <!-- Los dos desplegables de la barra del modal de Consulta. Viven acá,
+         fuera del modal: el formato nuevo lleva overflow:hidden (el scroll es
+         del cuerpo) y recortaría un menú abierto desde su barra superior.
+         Listar son navegaciones a otros listados acotados a esta cuenta;
+         Acciones es lo que opera sobre la cuenta. -->
+    <div id="dcbListarCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="movimientos" role="menuitem">
-        <i class="fa-solid fa-right-left"></i><span>Ver movimientos</span>
+        <i class="fa-solid fa-right-left"></i><span>Movimientos de la cuenta</span>
       </button>
+    </div>
+
+    <div id="dcbConsultaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
       <button type="button" data-action="importar" role="menuitem">
         <i class="fa-solid fa-file-import"></i><span>Importar extracto</span>
       </button>
@@ -25101,15 +27124,30 @@ route('/datacount_bancos', async (mount) => {
       <button type="button" data-action="copiar-alias" role="menuitem">
         <i class="fa-solid fa-at"></i><span>Copiar alias</span>
       </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
     </div>
 
     <!-- Modal de filtros (ABM.md) -->
     <div class="modal-backdrop" id="filtrosDcbBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcb()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDcb()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcb()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost"   onclick="cancelarFiltrosDcb()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcb()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcb()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -25161,11 +27199,6 @@ route('/datacount_bancos', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcb()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcb()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcb()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -25242,6 +27275,19 @@ route('/datacount_bancos', async (mount) => {
 
   // Acciones extra del modal Consultar. Viven en un menú propio porque el
   // footer de Consultar sólo admite Cerrar + Editar (ABM.md).
+  $('#dcbListarCtxMenu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    if (b.dataset.action === 'movimientos') {
+      closeModal();
+      dcbSetCuentaId(data.id);
+      location.hash = '#/datacount_bancos_movimientos';
+    }
+  });
+
   $('#dcbConsultaCtxMenu').addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-action]');
     if (!b) return;
@@ -25250,11 +27296,8 @@ route('/datacount_bancos', async (mount) => {
     cerrarCtxMenu();
     const c = dcbItems.find((x) => x.id === data.id);
     const a = b.dataset.action;
-    if (a === 'movimientos') {
-      closeModal();
-      dcbSetCuentaId(data.id);
-      location.hash = '#/datacount_bancos_movimientos';
-    }
+    if (a === 'editar')   { closeModal(); abrirAltaEdicionDcb(data.id); return; }
+    if (a === 'eliminar') { closeModal(); eliminarDcb(data.id);         return; }
     if (a === 'importar') {
       closeModal();
       dcbSetCuentaId(data.id);
@@ -25510,9 +27553,17 @@ async function abrirAltaEdicionDcb(id) {
 
   openModal(`
     <div class="modal" style="max-width:660px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${editando ? 'Editar cuenta' : 'Nueva cuenta'}</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -25643,10 +27694,6 @@ async function abrirAltaEdicionDcb(id) {
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
-      </div>
     </div>
   `);
 
@@ -25764,11 +27811,24 @@ function abrirConsultaDcb(id) {
 
   openModal(`
     <div class="modal" style="max-width:660px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🏦 <span class="modal-subtitle">${esc(c.nombre || `#${c.id}`)}</span>
         </div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones de la cuenta">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-menu="listar">
+          <i class="fa-solid fa-list"></i> Listar
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
+        <button class="btn btn-sm btn-primary" data-menu="acciones">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -25824,25 +27884,25 @@ function abrirConsultaDcb(id) {
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost btn-icon" title="Más acciones" data-act="menu-consulta">
-          <i class="fa-solid fa-bars"></i>
-        </button>
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
     </div>
   `);
 
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcb(id); }
-    const men = ev.target.closest('[data-act="menu-consulta"]');
-    if (men) {
-      ev.stopPropagation();
-      const r = men.getBoundingClientRect();
-      abrirCtxMenu($('#dcbConsultaCtxMenu'), r.left, r.top - 100, { id });
-    }
+    // Cerrar con el menú desplegado dejaría `_ctxMenuActual` apuntando a un
+    // nodo que closeModal() está por remover del DOM.
+    if (ev.target.closest('[data-act="close"]')) { cerrarCtxMenu(); closeModal(); return; }
+
+    // Los triggers frenan la propagación: el handler global que cierra el menú
+    // al clickear afuera corre después y, sin esto, lo cerraría en el mismo
+    // click que lo abre.
+    const menuBtn = ev.target.closest('[data-menu]');
+    if (!menuBtn) return;
+    ev.stopPropagation();
+    const r  = menuBtn.getBoundingClientRect();
+    const el = menuBtn.dataset.menu === 'listar'
+      ? $('#dcbListarCtxMenu')
+      : $('#dcbConsultaCtxMenu');
+    abrirCtxMenu(el, r.left, r.bottom + 4, { id });
   });
 }
 
@@ -26002,7 +28062,7 @@ function dcbmMediosValidos(cuenta) {
 route('/datacount_bancos_movimientos', async (mount) => {
   mount.innerHTML = `
     <div class="section">
-      ${dcbHeaderHtml('movimientos', '🔁', `
+      ${dcbHeaderHtml('🔁', `
         Los movimientos son cada entrada y salida de dinero de una cuenta de fondos, tal
         como los informa el extracto del banco o de la billetera. Se cargan importando el
         resumen del mes (CSV, XLSX o PDF); las filas repetidas se detectan solas, así que
@@ -26088,9 +28148,20 @@ route('/datacount_bancos_movimientos', async (mount) => {
     <div class="modal-backdrop" id="filtrosDcbmBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcbm()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDcbm()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcbm()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost"   onclick="cancelarFiltrosDcbm()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcbm()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcbm()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -26178,11 +28249,6 @@ route('/datacount_bancos_movimientos', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcbm()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcbm()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcbm()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -26550,9 +28616,17 @@ function abrirAltaEdicionDcbm(id) {
 
   openModal(`
     <div class="modal" style="max-width:620px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${editando ? 'Editar movimiento' : 'Nuevo movimiento'}</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;
@@ -26625,10 +28699,6 @@ function abrirAltaEdicionDcbm(id) {
             <span class="toggle-label">Conciliado</span>
           </label>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -26715,9 +28785,18 @@ function abrirConsultaDcbm(id) {
 
   openModal(`
     <div class="modal" style="max-width:620px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">🔁 <span class="modal-subtitle">Movimiento #${m.id}</span></div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del movimiento">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-menu="acciones">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
       </div>
       <div class="modal-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px">
@@ -26745,16 +28824,51 @@ function abrirConsultaDcbm(id) {
           ${card('Observaciones', `<div style="white-space:pre-wrap;font-size:.85rem">${txt(m.observaciones)}</div>`, 'full')}
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
+    </div>
+
+    <!-- Menú de la barra de acciones. Va FUERA del .modal a propósito: el modal
+         del formato nuevo lleva overflow:hidden (el scroll es del cuerpo) y
+         además transform para su animación, así que recortaría el menú aunque
+         sea position:fixed. Como hijo del backdrop no lo recorta nadie. -->
+    <div id="dcbmModalCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="conciliar" role="menuitem">
+        <i class="fa-solid fa-check-double"></i>
+        <span>${Number(m.conciliado) === 1 ? 'Quitar conciliación' : 'Marcar conciliado'}</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
     </div>
   `);
 
   $('#modalRoot').addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-act="close"]'))  closeModal();
-    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDcbm(id); }
+    // Cerrar con el menú desplegado dejaría `_ctxMenuActual` apuntando a un
+    // nodo que closeModal() está por remover del DOM.
+    if (ev.target.closest('[data-act="close"]')) { cerrarCtxMenu(); closeModal(); return; }
+
+    // El trigger del desplegable frena la propagación: el handler global que
+    // cierra el menú al clickear afuera corre después y, sin esto, lo cerraría
+    // en el mismo click que lo abre.
+    const menuBtn = ev.target.closest('[data-menu="acciones"]');
+    if (menuBtn) {
+      ev.stopPropagation();
+      const r = menuBtn.getBoundingClientRect();
+      abrirCtxMenu($('#dcbmModalCtxMenu'), r.left, r.bottom + 4, { id });
+      return;
+    }
+
+    const item = ev.target.closest('#dcbmModalCtxMenu [data-action]');
+    if (!item) return;
+    cerrarCtxMenu();
+    const a = item.dataset.action;
+    if (a === 'editar')    { closeModal(); abrirAltaEdicionDcbm(id); }
+    if (a === 'conciliar') { closeModal(); dcbmToggleConciliado(id); }
+    if (a === 'eliminar')  { closeModal(); eliminarDcbm(id); }
   });
 }
 
@@ -26823,9 +28937,17 @@ function abrirImportadorDcb(cuentaId) {
 
   openModal(`
     <div class="modal" style="max-width:900px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title"><i class="fa-solid fa-file-import"></i> Importar extracto</div>
-        <button class="btn-icon-sm" data-act="close">×</button>
+        <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del importador">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" id="dcbiAnalizarBtn" disabled>
+          <i class="fa-solid fa-magnifying-glass-chart"></i> Analizar archivo
+        </button>
       </div>
       <div class="modal-body" id="dcbiBody">
         <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:10px;
@@ -26850,10 +28972,6 @@ function abrirImportadorDcb(cuentaId) {
           </div>
         </div>
         <div id="dcbiStatus" style="font-size:.82rem;color:var(--muted);min-height:1.2em;margin-top:8px"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" id="dcbiAnalizarBtn" disabled>Analizar archivo</button>
       </div>
     </div>
   `);
@@ -26984,14 +29102,24 @@ function dcbiRenderInterprete() {
     <div id="dcbiStatus" style="font-size:.82rem;color:var(--muted);min-height:1.2em;margin-top:10px"></div>
   `;
 
-  const footer = document.querySelector('#modalRoot .modal-footer');
-  footer.innerHTML = `
-    <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-    <button class="btn btn-ghost"   id="dcbiManualBtn" title="Ignorar el intérprete y mapear las columnas a mano">
-      Mapear a mano
+  // El paso 2 reemplaza los botones de la barra superior, no de un footer: el
+  // modal del formato nuevo no tiene footer. La salida sigue primera y en
+  // ghost; el resto va en primary, como el resto de las barras del proyecto.
+  const barra = document.querySelector('#modalRoot .modal-menubar');
+  barra.innerHTML = `
+    <button class="btn btn-sm btn-ghost" data-act="close">
+      <i class="fa-solid fa-xmark"></i> Cerrar
     </button>
-    <button class="btn btn-ghost"   id="dcbiVolverBtn">← Cambiar archivo</button>
-    <button class="btn btn-primary" id="dcbiImportarBtn">Importar ${fmtNum(i.total || 0)} movimiento(s)</button>
+    <button class="btn btn-sm btn-primary" id="dcbiVolverBtn">
+      <i class="fa-solid fa-arrow-left"></i> Cambiar archivo
+    </button>
+    <button class="btn btn-sm btn-primary" id="dcbiManualBtn"
+            title="Ignorar el intérprete y mapear las columnas a mano">
+      <i class="fa-solid fa-table-columns"></i> Mapear a mano
+    </button>
+    <button class="btn btn-sm btn-primary" id="dcbiImportarBtn">
+      <i class="fa-solid fa-file-import"></i> Importar ${fmtNum(i.total || 0)} movimiento(s)
+    </button>
   `;
   $('#dcbiVolverBtn').addEventListener('click', () => abrirImportadorDcb(dcbiCuentaId));
   $('#dcbiImportarBtn').addEventListener('click', dcbiImportar);
@@ -27161,11 +29289,17 @@ function dcbiRenderMapeo() {
     $('#dcbiModoUnico').hidden   = debcred;
   });
 
-  const footer = document.querySelector('#modalRoot .modal-footer');
-  footer.innerHTML = `
-    <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-    <button class="btn btn-ghost"   id="dcbiVolverBtn">← Cambiar archivo</button>
-    <button class="btn btn-primary" id="dcbiImportarBtn">Importar movimientos</button>
+  const barra = document.querySelector('#modalRoot .modal-menubar');
+  barra.innerHTML = `
+    <button class="btn btn-sm btn-ghost" data-act="close">
+      <i class="fa-solid fa-xmark"></i> Cerrar
+    </button>
+    <button class="btn btn-sm btn-primary" id="dcbiVolverBtn">
+      <i class="fa-solid fa-arrow-left"></i> Cambiar archivo
+    </button>
+    <button class="btn btn-sm btn-primary" id="dcbiImportarBtn">
+      <i class="fa-solid fa-file-import"></i> Importar movimientos
+    </button>
   `;
   $('#dcbiVolverBtn').addEventListener('click', () => abrirImportadorDcb(dcbiCuentaId));
   $('#dcbiImportarBtn').addEventListener('click', dcbiImportar);
@@ -27292,10 +29426,16 @@ function dcbiRenderResultado(d) {
       </div>` : ''}
   `;
 
-  const footer = document.querySelector('#modalRoot .modal-footer');
-  footer.innerHTML = `
-    <button class="btn btn-ghost"   id="dcbiOtroBtn">Importar otro archivo</button>
-    <button class="btn btn-primary" data-act="close">Listo</button>
+  // Paso final: acá la salida es la acción esperada ("Listo"), pero mantiene el
+  // lugar y el ghost que tiene en todas las barras del proyecto.
+  const barra = document.querySelector('#modalRoot .modal-menubar');
+  barra.innerHTML = `
+    <button class="btn btn-sm btn-ghost" data-act="close">
+      <i class="fa-solid fa-check"></i> Listo
+    </button>
+    <button class="btn btn-sm btn-primary" id="dcbiOtroBtn">
+      <i class="fa-solid fa-file-import"></i> Importar otro archivo
+    </button>
   `;
   $('#dcbiOtroBtn').addEventListener('click', () => abrirImportadorDcb(dcbiCuentaId));
 
