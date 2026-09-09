@@ -9694,9 +9694,20 @@ route('/datarocketplantillas', async (mount) => {
     <div class="modal-backdrop" id="filtrosDrPlBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDrPl()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrPl()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrPl()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrPl()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrPl()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrPl()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -9771,11 +9782,6 @@ route('/datarocketplantillas', async (mount) => {
             </div>
           </div>
         </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrPl()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrPl()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrPl()">Aplicar</button>
-        </div>
       </div>
     </div>
 
@@ -9788,17 +9794,21 @@ route('/datarocketplantillas', async (mount) => {
          style="z-index: 400"
          onclick="if(event.target===this) cerrarEditorHtmlDrPl()">
       <div class="modal modal-wide" style="max-width:1100px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-wand-magic-sparkles"></i> Editor visual del cuerpo</div>
           <button class="btn-icon-sm" onclick="cerrarEditorHtmlDrPl()">×</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+          <button class="btn btn-sm btn-ghost" onclick="cerrarEditorHtmlDrPl()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="aceptarEditorHtmlDrPl()">
+            <i class="fa-solid fa-check"></i> Aceptar
+          </button>
         </div>
         <div class="modal-body">
           <textarea id="drPlHtmlEditor"
                     style="width:100%;height:520px;font-family:monospace;font-size:.85rem;line-height:1.45"></textarea>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cerrarEditorHtmlDrPl()">Cancelar</button>
-          <button class="btn btn-primary" onclick="aceptarEditorHtmlDrPl()">Aceptar</button>
         </div>
       </div>
     </div>
@@ -10022,15 +10032,19 @@ window.cerrarModalFiltrosDrPl = cerrarModalFiltrosDrPl;
 async function abrirConsultarDrPl(id) {
   openModal(`
     <div class="modal" style="width:80vw;max-width:1000px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Plantilla Datarocket <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
@@ -10191,15 +10205,19 @@ async function abrirAltaEdicionDrPl(id) {
   const esEdicion = id != null;
   openModal(`
     <div class="modal modal-wide">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esEdicion ? `Editar plantilla <span class="modal-subtitle">#${id}</span>` : 'Nueva plantilla'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
 
@@ -29783,9 +29801,20 @@ route('/datarocketlistas', async (mount) => {
     <div class="modal-backdrop" id="filtrosDrLiBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDrLi()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrLi()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrLi()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrLi()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrLi()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrLi()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -29823,11 +29852,6 @@ route('/datarocketlistas', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrLi()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrLi()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrLi()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -30097,15 +30121,19 @@ async function abrirConsultarDrLi(id) {
   // la fecha se salia del card.
   openModal(`
     <div class="modal" style="width:90vw;max-width:1000px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Lista Datarocket <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
@@ -30633,11 +30661,16 @@ function abrirPickerProspectoDrLi() {
   backdrop.id = 'drLiPickerBackdrop';
   backdrop.innerHTML = `
     <div class="modal" style="width:90vw;max-width:820px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           <i class="fa-solid fa-user-plus"></i> Agregar prospecto
         </div>
         <button class="btn-icon-sm" data-picker="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-picker="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
       </div>
       <div class="modal-body">
         <div class="search-wrap" style="width:100%">
@@ -30664,9 +30697,6 @@ function abrirPickerProspectoDrLi() {
             </tbody>
           </table>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-picker="close">Cerrar</button>
       </div>
     </div>
   `;
@@ -30940,15 +30970,19 @@ async function abrirAltaEdicionDrLi(id) {
 
   openModal(`
     <div class="modal" style="width:90vw;max-width:1000px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esEdicion ? `Editar lista <span class="modal-subtitle">#${id}</span>` : 'Nueva lista'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
 
@@ -32370,9 +32404,20 @@ route('/datarocketprospectos', async (mount) => {
     <div class="modal-backdrop" id="filtrosDrPrBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDrPr()">
       <div class="modal" style="max-width:620px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrPr()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrPr()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrPr()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrPr()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrPr()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row form-row-3">
@@ -32475,11 +32520,6 @@ route('/datarocketprospectos', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrPr()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrPr()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrPr()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -32818,15 +32858,19 @@ window.cerrarModalFiltrosDrPr = cerrarModalFiltrosDrPr;
 async function abrirConsultarDrPr(id) {
   openModal(`
     <div class="modal" style="width:80vw;max-width:1000px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Prospecto Datarocket <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', async (ev) => {
@@ -33122,16 +33166,20 @@ async function abrirAltaEdicionDrPr(id) {
   const esEdicion = id != null;
   openModal(`
     <div class="modal" style="width:80vw;max-width:1000px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esEdicion ? `Editar prospecto <span class="modal-subtitle">#${id}</span>` : 'Nuevo prospecto'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
+      </div>
       <div class="modal-body">
         <div style="text-align:center;padding:40px"><div class="spin"></div></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
       </div>
     </div>
   `);
@@ -34113,9 +34161,20 @@ route('/datarocketinteracciones', async (mount) => {
     <div class="modal-backdrop" id="filtrosDrIntBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDrInt()">
       <div class="modal" style="max-width:620px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrInt()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrInt()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrInt()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrInt()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrInt()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -34208,11 +34267,6 @@ route('/datarocketinteracciones', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrInt()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrInt()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrInt()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -34356,9 +34410,17 @@ async function abrirAsignarDrInt(oportunidadId, asignadoActual) {
 
   openModal(`
     <div class="modal" style="max-width:460px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Asignar <span class="modal-subtitle">oportunidad #${esc(oportunidadId)}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -34369,10 +34431,6 @@ async function abrirAsignarDrInt(oportunidadId, asignadoActual) {
           El dueño se guarda en la oportunidad, no en la interacción: el cambio
           alcanza a todas las interacciones de ese negocio.
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -34730,9 +34788,17 @@ function abrirAltaEdicionDrInt(a) {
 
   openModal(`
     <div class="modal" style="width:80vw;max-width:800px;overflow-x:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${editando ? `Editar interacción <span class="modal-subtitle">#${a.id}</span>` : 'Nueva interacción'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
 
       <div class="modal-body">
@@ -34776,11 +34842,6 @@ function abrirAltaEdicionDrInt(a) {
           <label>Mensaje</label>
           <textarea id="drIntMensaje" rows="8" placeholder="Qué se dijo">${editando ? esc(a.mensaje || '') : ''}</textarea>
         </div>
-      </div>
-
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -34848,14 +34909,16 @@ async function abrirEditarDrInt(id) {
 async function abrirConsultarDrInt(id) {
   openModal(`
     <div class="modal" style="width:80vw;max-width:800px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Interacción <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cerrar</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
@@ -35056,9 +35119,20 @@ route('/datarocket_etiquetas', async (mount) => {
     <div class="modal-backdrop" id="filtrosDreBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDre()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDre()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDre()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDre()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDre()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDre()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -35094,11 +35168,6 @@ route('/datarocket_etiquetas', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDre()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDre()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDre()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -35330,9 +35399,17 @@ function abrirAltaEdicionDre(id, pre = null) {
 
   openModal(`
     <div class="modal" style="max-width:520px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -35356,10 +35433,6 @@ function abrirAltaEdicionDre(id, pre = null) {
           <textarea id="dreDescripcion" rows="3" maxlength="500"
                     placeholder="Cuándo aplica esta etiqueta (opcional)"></textarea>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -35473,11 +35546,19 @@ async function abrirConsultaDre(id) {
 
   openModal(`
     <div class="modal" style="max-width:640px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🏷️ <span class="modal-subtitle">${esc(e.nombre)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
       <div class="modal-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px">
@@ -35493,10 +35574,6 @@ async function abrirConsultaDre(id) {
           ${card('Alta',        esc(fmtFecha(e.fecha_creacion)))}
           ${card('Descripción', esc(e.descripcion || '—'), 'full')}
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -35693,9 +35770,20 @@ route('/datarocket_embudos', async (mount) => {
     <div class="modal-backdrop" id="filtrosDremBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDrem()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrem()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrem()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrem()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrem()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrem()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -35743,11 +35831,6 @@ route('/datarocket_embudos', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrem()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrem()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrem()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -36352,9 +36435,17 @@ function dremAbrirModalEtapa(id) {
   wrap.style.zIndex = '250';
   wrap.innerHTML = `
     <div class="modal" style="max-width:520px;overflow-x:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-etapa-mod-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-etapa-mod-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-etapa-mod-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-row">
@@ -36381,10 +36472,6 @@ function dremAbrirModalEtapa(id) {
             <input type="color" id="dremEtapaModalColor" value="#3b82f6" style="width:100%;height:40px;padding:2px;cursor:pointer">
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-etapa-mod-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-etapa-mod-act="guardar">Guardar</button>
       </div>
     </div>
   `;
@@ -36499,9 +36586,17 @@ function abrirAltaEdicionDrem(id) {
   // falta, sin propagarlo al modal.
   openModal(`
     <div class="modal" style="max-width:720px;overflow-x:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
 
       <div class="modal-body">
@@ -36555,11 +36650,6 @@ function abrirAltaEdicionDrem(id) {
         </div>
 
         ${dremEtapasPanelHtml(false)}
-      </div>
-
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -36670,11 +36760,19 @@ function abrirConsultaDrem(id) {
   // Consultar oportunidad, que embebe la misma clase de listado.
   openModal(`
     <div class="modal" style="max-width:820px;overflow-x:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🪣 <span class="modal-subtitle">${esc(e.nombre)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
 
       <div class="modal-body">
@@ -36723,11 +36821,6 @@ function abrirConsultaDrem(id) {
         ${dremEtapasPanelHtml(true)}
         ${dremOportunidadesPanelHtml()}
         ${dremInteraccionesPanelHtml()}
-      </div>
-
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -36978,9 +37071,20 @@ route('/datarocket_oportunidades', async (mount) => {
     <div class="modal-backdrop" id="filtrosOpBackdrop"
          onclick="if(event.target===this)cancelarFiltrosOp()">
       <div class="modal" style="max-width:640px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosOp()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosOp()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosOp()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosOp()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosOp()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -37056,11 +37160,6 @@ route('/datarocket_oportunidades', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosOp()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosOp()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosOp()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -37706,9 +37805,17 @@ function abrirAltaEdicionOp(id, prospectoPreseleccionadoId = null) {
   // tambien se computa `auto` y cualquier descendiente wider dispara scroll).
   openModal(`
     <div class="modal" style="max-width:820px;overflow-x:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
 
       <div class="modal-body">
@@ -37840,10 +37947,6 @@ function abrirAltaEdicionOp(id, prospectoPreseleccionadoId = null) {
           </div>
         </div>
 
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -38088,11 +38191,19 @@ async function abrirConsultaOp(id) {
   //     General a 100% de ancho.
   openModal(`
     <div class="modal" style="max-width:820px;overflow-x:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🎯 <span class="modal-subtitle">${esc(p.prospecto_nombre || '(sin nombre)')} — #${p.id}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
 
       <div class="modal-body">
@@ -38160,10 +38271,6 @@ async function abrirConsultaOp(id) {
           ${drIntTablaEmbebida(interacciones, 'Esta oportunidad no tiene interacciones registradas.')}
         </div>
 
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -38475,9 +38582,20 @@ route('/datarocket_redes_sociales', async (mount) => {
     <div class="modal-backdrop" id="filtrosDrrsBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDrrs()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrrs()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrrs()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrrs()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrrs()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrrs()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -38538,11 +38656,6 @@ route('/datarocket_redes_sociales', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrrs()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrrs()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrrs()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -38931,9 +39044,17 @@ async function abrirAltaEdicionDrrs(id) {
 
   openModal(`
     <div class="modal" style="max-width:680px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${editando ? 'Editar cuenta' : 'Nueva cuenta'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -39063,10 +39184,6 @@ async function abrirAltaEdicionDrrs(id) {
                       placeholder='{"chat_id": "-1001234567890"}'></textarea>
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -39227,12 +39344,24 @@ async function abrirConsultaDrrs(id) {
 
   openModal(`
     <div class="modal" style="max-width:680px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           ${DRRS_PLATAFORMA_EMOJI[r.plataforma] || '🌐'}
           <span class="modal-subtitle">${esc(r.nombre || `#${r.id}`)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="menu-consulta">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -39283,13 +39412,6 @@ async function abrirConsultaDrrs(id) {
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost btn-icon" title="Más acciones" data-act="menu-consulta">
-          <i class="fa-solid fa-bars"></i>
-        </button>
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
     </div>
   `);
 
@@ -39299,8 +39421,10 @@ async function abrirConsultaDrrs(id) {
     const men = ev.target.closest('[data-act="menu-consulta"]');
     if (men) {
       ev.stopPropagation();
+      // El trigger ahora vive en la barra de arriba, así que el menú despliega
+      // hacia abajo (antes salía del footer y había que levantarlo 160px).
       const rect = men.getBoundingClientRect();
-      abrirCtxMenu($('#drrsConsultaCtxMenu'), rect.left, rect.top - 160, { id });
+      abrirCtxMenu($('#drrsConsultaCtxMenu'), rect.left, rect.bottom + 4, { id });
     }
   });
 }
@@ -39741,9 +39865,20 @@ route('/datarocket_campanas', async (mount) => {
     <div class="modal-backdrop" id="filtrosDrcaBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDrca()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDrca()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrca()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrca()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrca()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrca()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -39803,11 +39938,6 @@ route('/datarocket_campanas', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDrca()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDrca()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDrca()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -40228,10 +40358,18 @@ async function abrirAltaEdicionDrca(id, clonarDe = null) {
 
   openModal(`
     <div class="modal" style="max-width:680px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${editando ? 'Editar campaña' : 'Nueva campaña'}${
           clonando ? ` <span class="modal-subtitle">(clonada de #${clonarDe})</span>` : ''}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         ${arrancada ? `
@@ -40330,10 +40468,6 @@ async function abrirAltaEdicionDrca(id, clonarDe = null) {
           <textarea id="drcaObservaciones" rows="3" maxlength="5000"></textarea>
         </div>
         <div class="field-error" id="drcaFormError" style="display:none"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -40616,12 +40750,24 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
 
   openModal(`
     <div class="modal" style="width:92vw;max-width:1040px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           ${DRCA_MEDIO_EMOJI[r.medio] || '📨'}
           <span class="modal-subtitle">${esc(r.nombre || `#${r.id}`)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="menu-consulta">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
       </div>
       <div class="modal-body">
         ${/* El orden cuenta la campaña de punta a punta: qué es (General), qué
@@ -40764,13 +40910,6 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost btn-icon" title="Más acciones" data-act="menu-consulta">
-          <i class="fa-solid fa-bars"></i>
-        </button>
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
-      </div>
     </div>
   `);
 
@@ -40796,8 +40935,10 @@ async function abrirConsultaDrca(id, tabInicial = 'general') {
     const men = ev.target.closest('[data-act="menu-consulta"]');
     if (men) {
       ev.stopPropagation();
+      // El trigger ahora vive en la barra de arriba, así que el menú despliega
+      // hacia abajo (antes salía del footer y había que levantarlo 160px).
       const rect = men.getBoundingClientRect();
-      abrirCtxMenu($('#drcaConsultaCtxMenu'), rect.left, rect.top - 160, { id });
+      abrirCtxMenu($('#drcaConsultaCtxMenu'), rect.left, rect.bottom + 4, { id });
     }
   });
 
@@ -41192,25 +41333,30 @@ async function drcaEjecutar(id) {
   wrap.id        = 'drcaEjecBackdrop';
   wrap.innerHTML = `
     <div class="modal" style="max-width:760px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           ⚡ <span class="modal-subtitle">${esc(r.nombre || '#' + r.id)}</span>
         </div>
         <button class="btn-icon-sm" onclick="drcaCerrarEjecutor()">×</button>
       </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" id="drcaEjecCerrar" onclick="drcaCerrarEjecutor()">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+      </div>
       <div class="modal-body">
         <pre class="terminal-log" id="drcaEjecLog" style="height:340px;overflow:auto;margin:0"></pre>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" id="drcaEjecCerrar" onclick="drcaCerrarEjecutor()">Cerrar</button>
       </div>
     </div>
   `;
   document.body.appendChild(wrap);
 
   _drcaEjecutando = true;
+  // innerHTML y no textContent: el botón vive en la barra de acciones y lleva
+  // ícono adelante — un textContent lo borraría.
   const btnCerrar = document.getElementById('drcaEjecCerrar');
-  btnCerrar.textContent = 'Cerrar y seguir en segundo plano';
+  const rotuloCerrar = (t) => `<i class="fa-solid fa-xmark"></i> ${t}`;
+  btnCerrar.innerHTML = rotuloCerrar('Cerrar y seguir en segundo plano');
 
   const es = new EventSource(`api/datarocket_campanas_ejecutar.php?id=${encodeURIComponent(id)}`,
                              { withCredentials: true });
@@ -41222,7 +41368,7 @@ async function drcaEjecutar(id) {
       _drcaEjecES = null;
     }
     _drcaEjecutando = false;
-    if (btnCerrar) btnCerrar.textContent = 'Cerrar';
+    if (btnCerrar) btnCerrar.innerHTML = rotuloCerrar('Cerrar');
   };
 
   es.onmessage = (ev) => {

@@ -543,7 +543,14 @@ Aplicado en: Datacount > Empleados (ficha, tab *Movimientos*).
 
 ### Estado de adopción
 
-**Migrado:** Datacount > Chequeras, Datacount > Chequeras > Cheques, Datacount > Bancos (cuentas + importador), Datacount > Bancos > Movimientos y Datacount > Empleados (los siete modales del módulo: Filtros, Alta/Edición, selector de cuenta, Consultar, Copiar a otra empresa, Pago pendiente y Pago realizado).
+**Migrado:** Datacount > Chequeras, Datacount > Chequeras > Cheques, Datacount > Bancos (cuentas + importador), Datacount > Bancos > Movimientos, Datacount > Empleados (los siete modales del módulo) y **el módulo Datarocket entero** — sus 32 modales, repartidos en Plantillas, Listas, Prospectos, Interacciones, Etiquetas, Embudos, Oportunidades, Redes sociales y Campañas.
+
+En Datarocket la migración fue de chrome, no de contenido: se pintó el header, los botones del footer subieron a la barra y el footer se borró, sin tocar campos, pestañas ni endpoints. Dos consecuencias del cambio de posición que sí hubo que resolver a mano:
+
+- En las fichas de **Redes sociales** y **Campañas**, el hamburguesa "Más acciones" del footer pasó a ser un botón `Acciones ▾` de la barra, y su menú flotante ahora despliega hacia abajo (`rect.bottom + 4`) en vez de levantarse 160px como cuando salía del pie.
+- El botón de salida del ejecutor de campañas cambia de rótulo en vivo; pasó de `textContent` a `innerHTML` porque ahora lleva ícono adelante y un `textContent` se lo comía.
+
+**Desvío consciente del estándar en Datarocket:** en los modales de Consultar, `Editar` quedó como botón directo de la barra en vez de vivir dentro de `Acciones ▾`. El pedido fue explícitamente mover los botones sin reestructurar; agrupar `Editar` en un desplegable implica crear un menú flotante por ficha. Queda pendiente para una pasada posterior.
 
 **Sin migrar:** el resto del panel, que sigue en el formato de §14 (header gris + botones en el footer). Por eso las reglas de layout van scopeadas con `:has()` al modal que declara `.modal-header-primary`, en vez de cambiar `.modal` a secas: cambiar el modo de scroll globalmente tocaría los ~40 modales existentes de una. Cada modal que se migre hereda el layout nuevo solo con pintar su header.
 
