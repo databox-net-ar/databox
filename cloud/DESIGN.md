@@ -543,16 +543,22 @@ Aplicado en: Datacount > Empleados (ficha, tab *Movimientos*).
 
 ### Estado de adopción
 
-**Migrado:** Datacount > Chequeras, Datacount > Chequeras > Cheques, Datacount > Bancos (cuentas + importador), Datacount > Bancos > Movimientos, Datacount > Empleados (los siete modales del módulo) y **el módulo Datarocket entero** — sus 32 modales, repartidos en Plantillas, Listas, Prospectos, Interacciones, Etiquetas, Embudos, Oportunidades, Redes sociales y Campañas.
+**Migrado — los dos módulos contables/CRM enteros, 85 modales en total:**
 
-En Datarocket la migración fue de chrome, no de contenido: se pintó el header, los botones del footer subieron a la barra y el footer se borró, sin tocar campos, pestañas ni endpoints. Dos consecuencias del cambio de posición que sí hubo que resolver a mano:
+- **Datacount** (53): Comprobantes, Órdenes de pago, Plan de cuentas, Empresas, Asientos, Movimientos recurrentes, Empleados, Clientes, Proveedores, Talonarios, Chequeras, Cheques, Bancos (cuentas + importador) y Bancos > Movimientos.
+- **Datarocket** (32): Plantillas, Listas, Prospectos, Interacciones, Etiquetas, Embudos, Oportunidades, Redes sociales y Campañas.
 
-- En las fichas de **Redes sociales** y **Campañas**, el hamburguesa "Más acciones" del footer pasó a ser un botón `Acciones ▾` de la barra, y su menú flotante ahora despliega hacia abajo (`rect.bottom + 4`) en vez de levantarse 160px como cuando salía del pie.
-- El botón de salida del ejecutor de campañas cambia de rótulo en vivo; pasó de `textContent` a `innerHTML` porque ahora lleva ícono adelante y un `textContent` se lo comía.
+En las dos pasadas la migración fue de chrome, no de contenido: se pintó el header, los botones del footer subieron a la barra y el footer se borró, sin tocar campos, pestañas ni endpoints. Lo que sí hubo que resolver a mano, porque cambiar de posición un botón no es sólo moverlo:
 
-**Desvío consciente del estándar en Datarocket:** en los modales de Consultar, `Editar` quedó como botón directo de la barra en vez de vivir dentro de `Acciones ▾`. El pedido fue explícitamente mover los botones sin reestructurar; agrupar `Editar` en un desplegable implica crear un menú flotante por ficha. Queda pendiente para una pasada posterior.
+- **Fichas de Redes sociales y Campañas** (Datarocket): el hamburguesa "Más acciones" del footer pasó a ser un `Acciones ▾` de la barra, y su menú flotante despliega hacia abajo (`rect.bottom + 4`) en vez de levantarse 160px como cuando salía del pie.
+- **Ejecutor de campañas** (Datarocket): su botón de salida cambia de rótulo en vivo; pasó de `textContent` a `innerHTML` porque ahora lleva ícono adelante y un `textContent` se lo comía.
+- **Ficha de Asientos** (Datacount): `Anular` es destructiva y la skill prohíbe que una destructiva sea botón directo de la barra, así que se fue adentro de un `Acciones ▾` con `ctx-menu-danger`. Es el único modal de esta pasada donde hubo que crear un menú flotante.
+- **Ficha de Órdenes de pago** (Datacount): el grupo `Anterior / Siguiente / Cambiar estado` (`.dcp-consulta-nav`) subió con el resto; su `margin-right: auto` pasó a `margin-left: auto` porque la barra alinea a la izquierda y el footer alineaba a la derecha.
+- **Ficha de Comprobantes** (Datacount): el `querySelector('#modalRoot .modal-footer [data-act="editar"]')` que oculta Editar fuera de Preparación ahora apunta a `.modal-menubar`.
 
-**Sin migrar:** el resto del panel, que sigue en el formato de §14 (header gris + botones en el footer). Por eso las reglas de layout van scopeadas con `:has()` al modal que declara `.modal-header-primary`, en vez de cambiar `.modal` a secas: cambiar el modo de scroll globalmente tocaría los ~40 modales existentes de una. Cada modal que se migre hereda el layout nuevo solo con pintar su header.
+**Desvío consciente del estándar en las dos pasadas:** en los modales de Consultar, `Editar` quedó como botón directo de la barra en vez de vivir dentro de `Acciones ▾`. El pedido fue explícitamente mover los botones sin reestructurar; agrupar `Editar` en un desplegable implica crear un menú flotante por ficha. Queda pendiente para una pasada posterior.
+
+**Sin migrar:** el resto del panel (Administración, AWS, Datainfra, Evolution, Telegram, Movistar, Claro, Arca, Mercadopago, Dolarhoy y OpenAI) — ~96 modales que siguen en el formato de §14 (header gris + botones en el footer). Por eso las reglas de layout van scopeadas con `:has()` al modal que declara `.modal-header-primary`, en vez de cambiar `.modal` a secas: cambiar el modo de scroll globalmente tocaría de una todos los modales que todavía no se migraron. Cada modal que se migre hereda el layout nuevo solo con pintar su header.
 
 **No es migración parcial.** Pintar el header y dejar los botones abajo —o subirlos y dejar el header gris— produce un modal que no es ni el formato viejo ni el nuevo. El procedimiento completo, paso a paso, está en la skill `abm_design`.
 

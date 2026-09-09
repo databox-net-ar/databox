@@ -13537,9 +13537,20 @@ route('/datacount_comprobantes', async (mount) => {
     <div class="modal-backdrop" id="filtrosDcCompBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcComp()">
       <div class="modal" style="max-width:860px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDcComp()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcComp()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDcComp()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcComp()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcComp()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <!-- Fila 1: Código / Proyecto (Empresa y Talonario viven en la toolbar) -->
@@ -13680,11 +13691,6 @@ route('/datacount_comprobantes', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcComp()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcComp()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcComp()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -14065,15 +14071,19 @@ window.cerrarModalFiltrosDcComp = cerrarModalFiltrosDcComp;
 async function abrirConsultarDcComp(id) {
   openModal(`
     <div class="modal" style="width:80vw;max-width:1400px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Comprobante <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
   $('#modalRoot').addEventListener('click', (ev) => {
@@ -14084,9 +14094,9 @@ async function abrirConsultarDcComp(id) {
   try {
     const c = await apiGet(`api/datacount_comprobantes.php?id=${id}`);
     $('#modalRoot .modal-body').innerHTML = renderConsultaDcComp(c);
-    // Solo mostramos el boton Editar del footer si el comprobante esta en
+    // Solo mostramos el boton Editar de la barra si el comprobante esta en
     // Preparacion — los demas estados son read-only desde la UI.
-    const btnEditar = document.querySelector('#modalRoot .modal-footer [data-act="editar"]');
+    const btnEditar = document.querySelector('#modalRoot .modal-menubar [data-act="editar"]');
     if (btnEditar && !dcCompEsEditable(c.estado)) btnEditar.style.display = 'none';
   } catch (e) {
     $('#modalRoot .modal-body').innerHTML = `<div class="table-empty">Error: ${esc(e.message)}</div>`;
@@ -14307,15 +14317,17 @@ function dcCompVerCaeResCompleto(txt) {
   wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999';
   wrap.innerHTML = `
     <div class="modal" style="width:min(680px,92vw)">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Respuesta CAE</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+      </div>
       <div class="modal-body">
         <textarea readonly style="width:100%;min-height:240px;font-family:monospace;font-size:.85rem;background:color-mix(in srgb, var(--surface) 90%, #000);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;resize:vertical">${esc(txt)}</textarea>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cerrar</button>
       </div>
     </div>`;
   document.body.appendChild(wrap);
@@ -14418,7 +14430,7 @@ async function imprimirDcComp(id) {
 
   // Doble candado: el ctx menu ya oculta la opcion cuando estado no es
   // Autorizado ('3') ni Aprobado ('5'), pero si alguien invoca imprimirDcComp()
-  // desde consola sobre un borrador el boton "Imprimir" del footer queda
+  // desde consola sobre un borrador el boton "Imprimir" de la barra queda
   // oculto tambien.
   const btnImprimir = document.getElementById('btnImprimirDcCompAceptar');
   if (btnImprimir) {
@@ -14628,21 +14640,25 @@ async function abrirAltaEdicionDcComp(id) {
   const defaults  = esEdicion ? {} : dcCompDefaultsNuevo();
   openModal(`
     <div class="modal modal-wide" style="width:min(90vw,1100px);max-width:1100px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           <i class="fa-solid fa-file-invoice"></i>
           ${esEdicion ? `Editar comprobante <span class="modal-subtitle">#${id}</span>` : 'Nuevo comprobante'}
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
+      </div>
       <div class="modal-body">
         ${esEdicion
           ? `<div style="text-align:center;padding:40px"><div class="spin"></div></div>`
           : formDcCompHtml(defaults)}
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
       </div>
     </div>
   `);
@@ -15005,21 +15021,25 @@ function dcCompAbrirPickerCliente() {
   wrap.style.zIndex = '160';
   wrap.innerHTML = `
     <div class="modal" style="width:min(92vw,820px);max-width:820px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title"><i class="fa-solid fa-address-book"></i> Seleccionar cliente</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="aceptar" id="dcCompClientePickerOk" disabled>
+          <i class="fa-solid fa-check"></i> Aceptar
+        </button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);flex:0 0 auto">
         <input type="search" id="dcCompClientePickerSearch" class="search-input"
                style="width:100%;box-sizing:border-box"
                placeholder="🔍 Buscar nombre, razón, CUIT, correo, celular o domicilio…">
       </div>
       <div id="dcCompClientePickerLista"
            style="overflow-y:auto;flex:1;min-height:260px;background:var(--bg)"></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="aceptar" id="dcCompClientePickerOk" disabled>Aceptar</button>
-      </div>
     </div>
   `;
   document.body.appendChild(wrap);
@@ -15340,18 +15360,22 @@ async function clonarDcComp(id) {
 async function abrirReversionDcComp(id) {
   openModal(`
     <div class="modal" style="max-width:620px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           <i class="fa-solid fa-rotate-left"></i> Reversión
           <span class="modal-subtitle">#${id}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="revertir" disabled>Generar nota de crédito</button>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="revertir" disabled>
+          <i class="fa-solid fa-rotate-left"></i> Generar nota de crédito
+        </button>
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `);
 
@@ -15879,9 +15903,20 @@ route('/datacount_pagos', async (mount) => {
     <div class="modal-backdrop" id="filtrosDcPagoBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcPago()">
       <div class="modal" style="max-width:620px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDcPago()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcPago()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDcPago()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcPago()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcPago()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -15965,11 +16000,6 @@ route('/datacount_pagos', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcPago()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcPago()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcPago()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -16216,11 +16246,19 @@ function abrirCambiarPeriodoDcPago(id) {
 
   openModal(`
     <div class="modal" style="max-width:520px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           Corregir período <span class="modal-subtitle">#${esc(p.id)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body" style="gap:14px">
         <div class="data-list">
@@ -16250,10 +16288,6 @@ function abrirCambiarPeriodoDcPago(id) {
           <input type="month" id="dcPagPerNuevo" value="${esc(sugerido || actual)}">
         </div>
         <div id="dcPagPerAviso"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -16784,8 +16818,8 @@ async function dcPagoAdjMagiaGuardar() {
   // dejarlo en "—" no debe borrar una empresa válida que ya estaba cargada.
   if (get('orden_empresa') !== '') setVal('dcPagEmpresa', get('orden_empresa'));
 
-  // Disparar el guardar del modal Editar (mismo boton que el usuario ve al pie
-  // del modal). Reusa validacion + PUT + toast + refresh de listado.
+  // Disparar el guardar del modal Editar (mismo boton que el usuario ve en la
+  // barra de acciones). Reusa validacion + PUT + toast + refresh de listado.
   const btnGuardar = document.querySelector('#modalRoot [data-act="guardar"]');
   if (btnGuardar) btnGuardar.click();
   return true;
@@ -17116,37 +17150,42 @@ async function abrirConsultarDcPago(id, { apilado = false } = {}) {
   dcPagoAdjuntosCache = [];
 
   // Posición del pago dentro del listado que quedó pintado detrás. Con ella se
-  // arma el grupo Anterior / Siguiente / cambio de estado que va pegado a la
-  // izquierda del footer. En modo `apilado` no se ofrece: ahí atrás no hay un
-  // listado sino un formulario a medio completar, igual que con "Editar".
+  // arma el grupo Anterior / Siguiente / cambio de estado, que va al extremo
+  // derecho de la barra de acciones. En modo `apilado` no se ofrece: ahí atrás
+  // no hay un listado sino un formulario a medio completar, igual que con
+  // "Editar".
   const idx = apilado ? -1 : dcPagoListadoIds.indexOf(Number(id));
   const navHtml = idx < 0 ? '' : `
         <div class="dcp-consulta-nav">
-          <button class="btn btn-ghost" data-act="anterior"
+          <button class="btn btn-sm btn-ghost" data-act="anterior"
                   ${idx <= 0 ? 'disabled' : ''} title="Registro anterior del listado">
             <i class="fa-solid fa-chevron-left"></i> Anterior
           </button>
-          <button class="btn btn-ghost" data-act="siguiente"
+          <button class="btn btn-sm btn-ghost" data-act="siguiente"
                   ${idx >= dcPagoListadoIds.length - 1 ? 'disabled' : ''} title="Registro siguiente del listado">
             Siguiente <i class="fa-solid fa-chevron-right"></i>
           </button>
-          <button class="btn btn-secondary" data-act="estado" disabled>
+          <button class="btn btn-sm btn-primary" data-act="estado" disabled>
             <i class="fa-solid fa-check-double"></i> Cambiar estado
           </button>
         </div>`;
 
   const html = `
     <div class="modal dcp-consulta-modal">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Orden de pago <span class="modal-subtitle">#${id}</span></div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
-      <div class="modal-footer">
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        ${apilado ? '' : `<button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>`}
         ${navHtml}
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        ${apilado ? '' : '<button class="btn btn-primary" data-act="editar">✏️ Editar</button>'}
       </div>
+      <div class="modal-body"><div style="text-align:center;padding:40px"><div class="spin"></div></div></div>
     </div>
   `;
 
@@ -17245,7 +17284,7 @@ function dcPagoSelloEstadoHtml(estado, contabilizado) {
   return dcPagoEstadoBadge(e, e === '2' && contabilizado ? fmtFechaAnio(contabilizado) : '');
 }
 
-// Repinta esa píldora sin releer el registro. La usa el botón del footer para
+// Repinta esa píldora sin releer el registro. La usa el botón de la barra de acciones para
 // que el estado cambie en el acto: el timestamp lo devuelve el propio endpoint
 // de cambio de estado, así que no hace falta un GET extra.
 function dcPagoPintarSelloEstado(root, estado, contabilizado) {
@@ -17253,7 +17292,7 @@ function dcPagoPintarSelloEstado(root, estado, contabilizado) {
   if (box) box.innerHTML = dcPagoSelloEstadoHtml(estado, contabilizado);
 }
 
-// Pinta el botón de contabilización del footer según el estado actual del pago.
+// Pinta el botón de contabilización de la barra según el estado actual del pago.
 // El destino es siempre el otro extremo del par Pendiente ('1') / Contabilizado
 // ('2'): sólo un pago Contabilizado ofrece volver a Pendiente, y cualquier otro
 // estado (Pendiente, Descartado o sin cargar) ofrece contabilizar.
@@ -17385,11 +17424,16 @@ async function abrirNuevoDesdeAdjuntoDcPago() {
   wrap.className = 'modal-backdrop';
   wrap.innerHTML = `
     <div class="modal" style="max-width:520px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           <i class="fa-solid fa-file-arrow-up"></i> Nueva orden de pago desde adjunto
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
       </div>
       <div class="modal-body">
         <button type="button" class="dcp-nuevo-adj-drop" id="dcpNuevoAdjDrop" disabled>
@@ -17400,9 +17444,6 @@ async function abrirNuevoDesdeAdjuntoDcPago() {
         <input type="file" id="dcpNuevoAdjInput" style="display:none">
         <div class="dcp-nuevo-adj-status" id="dcpNuevoAdjStatus">Creando la orden de pago…</div>
         <div class="field-error" id="dcpNuevoAdjError" hidden></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cancelar</button>
       </div>
     </div>
   `;
@@ -17517,16 +17558,20 @@ async function abrirAltaEdicionDcPago(id) {
   const esEdicion = id != null;
   openModal(`
     <div class="modal dcp-consulta-modal">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esEdicion ? `Editar orden de pago <span class="modal-subtitle">#${id}</span>` : 'Nueva orden de pago'}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
+      </div>
       <div class="modal-body" style="gap:12px">
         <div style="text-align:center;padding:40px"><div class="spin"></div></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">${esEdicion ? 'Guardar' : 'Crear'}</button>
       </div>
     </div>
   `);
@@ -18319,21 +18364,25 @@ function dccAbrirPickerPadre() {
   wrap.style.zIndex = '160';
   wrap.innerHTML = `
     <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Seleccionar cuenta padre</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="limpiar">
+          <i class="fa-solid fa-ban"></i> Sin padre (cuenta raíz)
+        </button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);flex:0 0 auto">
         <input type="search" id="dccParentPickerSearch" class="search-input"
                style="width:100%;box-sizing:border-box"
                placeholder="🔍 Buscar por código o nombre…">
       </div>
       <div id="dccParentPickerArbol"
            style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="limpiar">Sin padre (cuenta raíz)</button>
-        <button class="btn btn-ghost" data-act="close">Cancelar</button>
-      </div>
     </div>
   `;
   document.body.appendChild(wrap);
@@ -18460,9 +18509,17 @@ function abrirAltaEdicionDcc(id, parentIdPreseleccionado) {
 
   openModal(`
     <div class="modal" style="max-width:560px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-row">
@@ -18519,10 +18576,6 @@ function abrirAltaEdicionDcc(id, parentIdPreseleccionado) {
             <span class="toggle-label">Activa</span>
           </label>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -18616,12 +18669,20 @@ async function abrirConsultaDcc(id) {
 
   openModal(`
     <div class="modal" style="max-width:520px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           <code style="font-family:monospace">${esc(c.codigo)}</code>
           <span class="modal-subtitle">${esc(c.nombre)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:20px">
         <div style="text-align:center;padding:24px 16px;background:var(--bg);border-radius:12px;border:1px solid var(--border)">
@@ -18666,10 +18727,6 @@ async function abrirConsultaDcc(id) {
           <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">Descripción</div>
           <div style="color:var(--muted);font-size:.9rem;line-height:1.5">${esc(c.descripcion || '—')}</div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -18891,9 +18948,20 @@ route('/datacount_empresas', async (mount) => {
     <div class="modal-backdrop" id="filtrosDceBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDce()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDce()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDce()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDce()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDce()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDce()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -18932,11 +19000,6 @@ route('/datacount_empresas', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDce()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDce()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDce()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -19187,9 +19250,17 @@ async function abrirAltaEdicionDce(id) {
 
   openModal(`
     <div class="modal" style="max-width:640px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -19284,10 +19355,6 @@ async function abrirAltaEdicionDce(id) {
             </select>
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -19407,11 +19474,19 @@ function abrirConsultaDce(id) {
 
   openModal(`
     <div class="modal" style="max-width:620px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🏢 <span class="modal-subtitle">${esc(e.nombre)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -19456,10 +19531,6 @@ function abrirConsultaDce(id) {
             ${card('Certificado Arca', esc(e.certificado_nombre || '—'), 'full')}
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -19849,9 +19920,17 @@ function dcaAbrirModalAlta(tituloText, empresaObj) {
     : (dcaEditandoEmpresaId ? `🏢 #${dcaEditandoEmpresaId}` : '—');
   openModal(`
     <div class="modal modal-wide" style="max-width:960px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title" id="dcaModalTitulo">${esc(tituloText)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -19899,10 +19978,6 @@ function dcaAbrirModalAlta(tituloText, empresaObj) {
             </table>
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -20339,9 +20414,19 @@ async function abrirDetalleAsientoDca(id) {
     dcaAdjAsientoId = a.id;
     openModal(`
       <div class="modal dcp-consulta-modal" style="max-width:820px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title">Asiento N° ${a.numero}</div>
           <button class="btn-icon-sm" data-act="close">×</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones del asiento">
+          <button class="btn btn-sm btn-ghost" data-act="close">
+            <i class="fa-solid fa-xmark"></i> Cerrar
+          </button>
+          ${hasPermission('datacount.asientos.anular') ? `
+          <button class="btn btn-sm btn-primary" data-menu="acciones">
+            <i class="fa-solid fa-bolt"></i> Acciones
+            <i class="fa-solid fa-caret-down menubar-caret"></i>
+          </button>` : ''}
         </div>
         <div class="modal-body">
           ${dcaTabsHeaderHtml()}
@@ -20352,13 +20437,15 @@ async function abrirDetalleAsientoDca(id) {
             ${dcaRenderAdjuntosTabla(dcaAdjuntos, dcaAdjAsientoId)}
           </div>
         </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"  data-act="close">Cerrar</button>
-          ${hasPermission('datacount.asientos.anular') ? `
-          <button class="btn btn-danger" data-act="anular">
-            <i class="fa-solid fa-ban"></i> Anular
-          </button>` : ''}
-        </div>
+      </div>
+
+      <!-- Anular es destructiva: no puede ser un botón directo de la barra, va
+           adentro del desplegable. El menú se declara FUERA del .modal porque
+           éste lleva overflow:hidden y transform, y recortaría un flotante. -->
+      <div id="dcaConsultaCtxMenu" class="ctx-menu" role="menu">
+        <button type="button" data-action="anular" class="ctx-menu-danger" role="menuitem">
+          <i class="fa-solid fa-ban"></i><span>Anular</span>
+        </button>
       </div>
     `);
     // Precargar el primer adjunto asi al cambiar a la pestaña ya se ve.
@@ -20366,13 +20453,27 @@ async function abrirDetalleAsientoDca(id) {
 
     const modalRoot = $('#modalRoot');
     modalRoot.addEventListener('click', async (ev) => {
+      // El trigger frena la propagación: el handler global que cierra el menú
+      // al clickear afuera corre después y lo cerraría en el mismo click.
+      const menuBtn = ev.target.closest('[data-menu="acciones"]');
+      if (menuBtn) {
+        ev.stopPropagation();
+        const r = menuBtn.getBoundingClientRect();
+        abrirCtxMenu($('#dcaConsultaCtxMenu'), r.left, r.bottom + 4, { id: a.id });
+        return;
+      }
+      if (ev.target.closest('#dcaConsultaCtxMenu [data-action="anular"]')) {
+        cerrarCtxMenu();
+        closeModal();
+        await anularAsientoDca(a.id, a.numero);
+        return;
+      }
+
       const act = ev.target.closest('[data-act]');
       if (act) {
-        if (act.dataset.act === 'close') closeModal();
-        if (act.dataset.act === 'anular') {
-          closeModal();
-          await anularAsientoDca(a.id, a.numero);
-        }
+        // Cerrar con el menú desplegado dejaría `_ctxMenuActual` apuntando a un
+        // nodo que closeModal() está por remover del DOM.
+        if (act.dataset.act === 'close') { cerrarCtxMenu(); closeModal(); }
         return;
       }
       // Boton "+ Subir archivo" → dispara el <input type="file"> escondido.
@@ -20457,20 +20558,22 @@ function dcaAbrirPickerCuenta(lineaIdx) {
   wrap.style.zIndex = '160';
   wrap.innerHTML = `
     <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Seleccionar cuenta</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);flex:0 0 auto">
         <input type="search" id="dcaPickerSearch" class="search-input"
                style="width:100%;box-sizing:border-box"
                placeholder="🔍 Buscar por código o nombre…">
       </div>
       <div id="dcaPickerArbol"
            style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cancelar</button>
-      </div>
     </div>
   `;
   document.body.appendChild(wrap);
@@ -20721,9 +20824,20 @@ route('/datacount_recurrentes', async (mount) => {
     <div class="modal-backdrop" id="filtrosDcrBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcr()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDcr()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcr()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDcr()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcr()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcr()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -20771,11 +20885,6 @@ route('/datacount_recurrentes', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcr()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcr()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcr()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -21085,9 +21194,17 @@ async function abrirAltaEdicionDcr(id) {
 
   openModal(`
     <div class="modal" style="max-width:560px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -21135,10 +21252,6 @@ async function abrirAltaEdicionDcr(id) {
             <span class="toggle-label">Activo</span>
           </label>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -21198,20 +21311,22 @@ function dcrAbrirPickerCuenta() {
   wrap.style.zIndex = '160';
   wrap.innerHTML = `
     <div class="modal" style="max-width:560px;display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">Seleccionar cuenta</div>
         <button class="btn-icon-sm" data-act="close">×</button>
       </div>
-      <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del modal">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);flex:0 0 auto">
         <input type="search" id="dcrPickerSearch" class="search-input"
                style="width:100%;box-sizing:border-box"
                placeholder="🔍 Buscar por código o nombre…">
       </div>
       <div id="dcrPickerArbol"
            style="overflow-y:auto;flex:1;padding:6px;min-height:240px;background:var(--bg)"></div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" data-act="close">Cancelar</button>
-      </div>
     </div>
   `;
   document.body.appendChild(wrap);
@@ -21386,11 +21501,19 @@ function abrirConsultaDcr(id) {
 
   openModal(`
     <div class="modal" style="max-width:620px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🔁 <span class="modal-subtitle">Movimiento recurrente #${r.id}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
       <div class="modal-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px">
@@ -21404,10 +21527,6 @@ function abrirConsultaDcr(id) {
           ${card('Alta',     esc(fmtFecha(r.created_at)))}
           ${card('Modificación', esc(fmtFecha(r.updated_at)))}
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -23001,9 +23120,20 @@ route('/datacount_clientes', async (mount) => {
     <div class="modal-backdrop" id="filtrosDcclBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDccl()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDccl()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDccl()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDccl()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDccl()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDccl()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -23040,11 +23170,6 @@ route('/datacount_clientes', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDccl()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDccl()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDccl()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -23284,9 +23409,17 @@ function abrirAltaEdicionDccl(id) {
 
   openModal(`
     <div class="modal" style="max-width:720px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-row">
@@ -23335,10 +23468,6 @@ function abrirAltaEdicionDccl(id) {
                    style="font-family:monospace" autocomplete="off">
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -23411,11 +23540,19 @@ function abrirConsultaDccl(id) {
 
   openModal(`
     <div class="modal" style="max-width:720px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🧑‍💼 <span class="modal-subtitle">${esc(e.nombre)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
       <div class="modal-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px">
@@ -23431,10 +23568,6 @@ function abrirConsultaDccl(id) {
           ${card('CBU',              `<span style="font-family:monospace">${esc(e.cbu || '—')}</span>`, 'full')}
           ${card('Alta',             esc(fmtFecha(e.created_at)))}
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -23565,9 +23698,20 @@ route('/datacount_proveedores', async (mount) => {
     <div class="modal-backdrop" id="filtrosDcprBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDcpr()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDcpr()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDcpr()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDcpr()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDcpr()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDcpr()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -23604,11 +23748,6 @@ route('/datacount_proveedores', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDcpr()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDcpr()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDcpr()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -23848,9 +23987,17 @@ function abrirAltaEdicionDcpr(id) {
 
   openModal(`
     <div class="modal" style="max-width:720px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="form-row">
@@ -23899,10 +24046,6 @@ function abrirAltaEdicionDcpr(id) {
                    style="font-family:monospace" autocomplete="off">
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
       </div>
     </div>
   `);
@@ -23975,11 +24118,19 @@ function abrirConsultaDcpr(id) {
 
   openModal(`
     <div class="modal" style="max-width:720px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           🏭 <span class="modal-subtitle">${esc(e.nombre)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
       <div class="modal-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px">
@@ -23995,10 +24146,6 @@ function abrirConsultaDcpr(id) {
           ${card('CBU',              `<span style="font-family:monospace">${esc(e.cbu || '—')}</span>`, 'full')}
           ${card('Alta',             esc(fmtFecha(e.created_at)))}
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -24187,9 +24334,20 @@ route('/datacount_talonarios', async (mount) => {
     <div class="modal-backdrop" id="filtrosDctBackdrop"
          onclick="if(event.target===this)cancelarFiltrosDct()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header">
+        <div class="modal-header modal-header-primary">
           <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
-          <button class="btn btn-ghost" onclick="cancelarFiltrosDct()" title="Cerrar">✕</button>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDct()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDct()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDct()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDct()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
         </div>
         <div class="modal-body">
           <div class="form-group">
@@ -24234,11 +24392,6 @@ route('/datacount_talonarios', async (mount) => {
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost"   onclick="cancelarFiltrosDct()">Cerrar</button>
-          <button class="btn btn-ghost"   onclick="limpiarFiltrosDct()">Limpiar</button>
-          <button class="btn btn-primary" onclick="cerrarModalFiltrosDct()">Aplicar</button>
         </div>
       </div>
     </div>
@@ -24673,9 +24826,17 @@ async function abrirAltaEdicionDct(id) {
 
   openModal(`
     <div class="modal" style="max-width:640px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">${esc(titulo)}</div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -24820,10 +24981,6 @@ async function abrirAltaEdicionDct(id) {
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cancelar</button>
-        <button class="btn btn-primary" data-act="guardar">Guardar</button>
-      </div>
     </div>
   `);
 
@@ -24918,11 +25075,19 @@ function abrirConsultaDct(id) {
 
   openModal(`
     <div class="modal" style="max-width:640px">
-      <div class="modal-header">
+      <div class="modal-header modal-header-primary">
         <div class="modal-title">
           📇 <span class="modal-subtitle">${esc(t.nombre || `#${t.id}`)}</span>
         </div>
         <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
       </div>
       <div class="modal-body">
         <div class="modal-tabs" role="tablist">
@@ -24977,10 +25142,6 @@ function abrirConsultaDct(id) {
               'full')}
           </div>
         </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost"   data-act="close">Cerrar</button>
-        <button class="btn btn-primary" data-act="editar">✏️ Editar</button>
       </div>
     </div>
   `);
@@ -27292,7 +27453,7 @@ route('/datacount_bancos_cuentas', async (mount) => {
   });
 
   // Acciones extra del modal Consultar. Viven en un menú propio porque el
-  // footer de Consultar sólo admite Cerrar + Editar (ABM.md).
+  // barra de Consultar sólo admite Cerrar + Editar (ABM.md).
   $('#dcbListarCtxMenu').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-action]');
     if (!b) return;
@@ -36735,7 +36896,7 @@ function abrirConsultaDrem(id) {
   dremEtapasCache = [];
   dremEtapaEditandoId = null;
   // En Consulta las etapas se ven pero NO se editan — para modificar hay que
-  // ir al modal de Edicion via el boton "Editar" del footer. Mantiene la
+  // ir al modal de Edicion via el boton "Editar" de la barra. Mantiene la
   // convencion "Consulta = read-only" del abm_design skill.
   dremEtapasReadOnly = true;
   dremResetPanelesConsulta();
@@ -38364,7 +38525,7 @@ let drrsLookupsCache    = null;
 let drrsLookupsPromesa  = null;
 // Ficha completa (secretos en claro) del registro que esta abierto en el modal
 // de Consultar. La guardamos para que las acciones de copiado del menu
-// contextual del footer no tengan que volver a pedirla.
+// contextual de la barra no tengan que volver a pedirla.
 let drrsDetalleActual   = null;
 
 // Catalogos del formulario y del modal de filtros: proyectos internos +
@@ -38728,7 +38889,7 @@ route('/datarocket_redes_sociales', async (mount) => {
   });
 
   // Acciones extra del modal Consultar. Viven en un menú propio porque el
-  // footer de Consultar sólo admite Cerrar + Editar (ABM.md).
+  // barra de Consultar sólo admite Cerrar + Editar (ABM.md).
   $('#drrsConsultaCtxMenu').addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-action]');
     if (!b) return;
@@ -40003,7 +40164,7 @@ route('/datarocket_campanas', async (mount) => {
   });
 
   // Acciones extra del modal Consultar. Viven en un menú propio porque el
-  // footer de Consultar sólo admite Cerrar + Editar (ABM.md).
+  // barra de Consultar sólo admite Cerrar + Editar (ABM.md).
   $('#drcaConsultaCtxMenu').addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-action]');
     if (!b) return;
