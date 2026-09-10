@@ -11768,8 +11768,9 @@ route('/datacount', async (mount) => {
 //                 'F%') menos notas de crédito (tipo LIKE 'N%'), en una sola
 //                 barra por mes. Es la vista por defecto del módulo.
 //   - pagos:      `datacount_pagos` contabilizados.
-//   - resultados: cruce mes a mes de facturas (ingresos) contra órdenes de
-//                 pago (egresos).
+//   - resultados: cruce mes a mes de los ingresos (facturas netas de notas de
+//                 crédito, igual que la pestaña Facturación) contra las
+//                 órdenes de pago (egresos).
 //   - consistencia: cruce mes a mes de lo facturado (neto de notas de crédito)
 //                 contra lo efectivamente acreditado en las cuentas de fondos
 //                 del módulo Bancos. Sirve para detectar meses donde la plata
@@ -11815,7 +11816,7 @@ const DCA_TABS = [
     label: 'Resultados',
     icon: 'fa-scale-balanced',
     tipo: 'comparativa',
-    tituloChart: 'Ingresos vs. egresos mensuales',
+    tituloChart: 'Ingresos netos vs. egresos mensuales',
     chartComparativa: { keyA: 'ingresos', keyB: 'egresos',
                         colorA: 'var(--success)', colorB: 'var(--danger)' },
   },
@@ -12468,9 +12469,14 @@ function dcaRenderBarChartSerie(serie, anchoDisponible, opts) {
 // --------------------- Pestaña: Analíticas > Resultados ---------------------
 //
 // Única pestaña de dos series (`tipo: 'comparativa'`). Cruza mes a mes los
-// ingresos (facturas autorizadas, misma definición que la pestaña Facturas)
-// contra los egresos (órdenes de pago, misma definición que esa pestaña) y
-// muestra el resultado del período.
+// ingresos (facturas autorizadas MENOS notas de crédito, misma definición que
+// el neto de la pestaña Facturación) contra los egresos (órdenes de pago,
+// misma definición que esa pestaña) y muestra el resultado del período.
+//
+// Los ingresos vienen ya neteados del backend: una factura emitida por error y
+// anulada con una NC no debe pintar un pico que nunca existió. El bruto sigue
+// visible en el tooltip y en la nota al pie, que abren `ingresos` en sus dos
+// componentes (`facturado` y `notas`).
 //
 // Comparte con el resto los chips de rango + selector de año, pero tiene su
 // propio bloque de stats, un gráfico de barras agrupadas y una tabla mensual
@@ -12580,12 +12586,18 @@ async function dcaRenderTabResultados(panel, cfg) {
 
   dcaWirearRangoChips(panel, p, st, () => dcaCargarResultadosData(cfg));
 
+  // El desglose facturado / notas sólo se muestra en los meses que tuvieron
+  // alguna NC: en el resto sería una línea en cero repetida en todos los meses.
   dcaWirearTooltipComparativa(p, cfg, (s) => `
     <div style="font-weight:600;margin-bottom:2px">${esc(dcaMesLabel(s.mes))}</div>
-    <div style="color:var(--success)">Ingresos: <strong>$ ${dcaFmtMoney(s.ingresos)}</strong></div>
+    ${Number(s.notas) ? `
+      <div style="color:var(--muted);font-size:.78rem">Facturado: $ ${dcaFmtMoney(s.facturado)}</div>
+      <div style="color:var(--warn);font-size:.78rem">Notas de crédito: −$ ${dcaFmtMoney(s.notas)}</div>
+    ` : ''}
+    <div style="color:var(--success)">Ingresos: <strong>${dcaFmtMoneySigno(s.ingresos)}</strong></div>
     <div style="color:var(--danger)">Egresos: <strong>$ ${dcaFmtMoney(s.egresos)}</strong></div>
     <div style="margin-top:3px;padding-top:3px;border-top:1px solid var(--border);color:${dcaColorResultado(s.resultado)};font-weight:700">Resultado: ${dcaFmtMoneySigno(s.resultado)}</div>
-    <div style="color:var(--muted);font-size:.75rem">${fmtNum(s.cant_ingresos)} factura(s) · ${fmtNum(s.cant_egresos)} orden(es)</div>
+    <div style="color:var(--muted);font-size:.75rem">${fmtNum(s.cant_facturas)} factura(s)${Number(s.cant_notas) ? ` · ${fmtNum(s.cant_notas)} nota(s)` : ''} · ${fmtNum(s.cant_egresos)} orden(es)</div>
   `);
 
   await dcaCargarResultadosData(cfg);
@@ -12712,7 +12724,7 @@ async function dcaCargarResultadosData(cfg) {
 
     const r      = data.resumen || {};
     const margen = dcaMargen(r.ingresos_rango, r.resultado_rango);
-    document.getElementById(`${p}StatIngresos`).textContent = '$ ' + dcaFmtMoney(r.ingresos_rango ?? 0);
+    document.getElementById(`${p}StatIngresos`).textContent = dcaFmtMoneySigno(r.ingresos_rango ?? 0);
     document.getElementById(`${p}StatEgresos`).textContent  = '$ ' + dcaFmtMoney(r.egresos_rango  ?? 0);
     const elRes = document.getElementById(`${p}StatResultado`);
     elRes.textContent   = dcaFmtMoneySigno(r.resultado_rango ?? 0);
@@ -12744,13 +12756,20 @@ async function dcaCargarResultadosData(cfg) {
     if ((r.meses_positivos ?? 0) + (r.meses_negativos ?? 0) > 0) {
       avisos.push(`${fmtNum(r.meses_positivos ?? 0)} mes(es) en positivo · ${fmtNum(r.meses_negativos ?? 0)} en negativo`);
     }
-    const sinFecha = (r.sin_fecha_ingresos_cant ?? 0) + (r.sin_fecha_egresos_cant ?? 0);
+    const sinFechaCmp = (r.sin_fecha_facturas_cant ?? 0) + (r.sin_fecha_notas_cant ?? 0);
+    const sinFecha    = sinFechaCmp + (r.sin_fecha_egresos_cant ?? 0);
     let notasHtml = avisos.length ? avisos.join(' &nbsp;·&nbsp; ') : '';
+    // Por qué los ingresos no coinciden con lo facturado bruto. Sólo aparece
+    // cuando hubo notas en el rango: sin NC el neto y el bruto son el mismo
+    // número y la aclaración sobraría.
+    if ((r.notas_rango ?? 0) > 0) {
+      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> Ingresos netos de ${fmtNum(r.cant_notas_rango ?? 0)} nota(s) de crédito por <strong>$ ${dcaFmtMoney(r.notas_rango)}</strong> (facturado bruto del rango: $ ${dcaFmtMoney(r.facturado_rango ?? 0)}). Cada nota se imputa a su propio mes de emisión.`;
+    }
     if (piso) {
       notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> Se ignora todo lo anterior a ${esc(dcaMesLabel(piso))}: la carga de datos de esos años quedó incompleta y el cruce no sería representativo.`;
     }
     if (sinFecha > 0) {
-      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> ${fmtNum(r.sin_fecha_ingresos_cant ?? 0)} factura(s) y ${fmtNum(r.sin_fecha_egresos_cant ?? 0)} orden(es) de pago sin fecha de emisión (no se pueden ubicar respecto del piso, así que no suman en ningún total).`;
+      notasHtml += `${notasHtml ? '<br>' : ''}<i class="fa-solid fa-circle-info"></i> ${fmtNum(sinFechaCmp)} comprobante(s) y ${fmtNum(r.sin_fecha_egresos_cant ?? 0)} orden(es) de pago sin fecha de emisión (no se pueden ubicar respecto del piso, así que no suman en ningún total).`;
     }
     notas.innerHTML = notasHtml;
 
@@ -12787,9 +12806,10 @@ function dcaRenderBarChartComparativa(serie, anchoDisponible, opts) {
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
 
-  // Los valores negativos (posibles en Consistencia: un mes con más notas de
-  // crédito que facturas) se dibujan como barra vacía en vez de romper el
-  // `height` del rect. El número real igual aparece en el tooltip y la tabla.
+  // Los valores negativos —posibles en las dos pestañas de cruce cuando un mes
+  // tiene más notas de crédito que facturas— se dibujan como barra vacía en vez
+  // de romper el `height` del rect. El número real igual aparece en el tooltip
+  // y en la tabla.
   const val = (s, k) => Math.max(0, Number(s[k]) || 0);
 
   const maxVal = serie.reduce((m, s) => Math.max(m, val(s, o.keyA), val(s, o.keyB)), 0);
@@ -12848,6 +12868,11 @@ function dcaRenderBarChartComparativa(serie, anchoDisponible, opts) {
 // Filas de la tabla mensual + fila de totales. Los meses sin ningún
 // movimiento se atenúan para que el padding del rango no compita
 // visualmente con los meses que sí tienen datos.
+//
+// La columna Ingresos va con `dcaFmtMoneySigno` porque puede dar negativa: un
+// mes que sólo tuvo notas de crédito (la factura que anulan se emitió antes)
+// resta sin sumar nada. Esos meses se marcan en `--warn` para que se lean como
+// una corrección y no como un error de carga.
 function dcaRenderFilasResultados(serie, resumen) {
   let acumulado = 0;
   const filas = serie.map((s) => {
@@ -12855,11 +12880,11 @@ function dcaRenderFilasResultados(serie, resumen) {
     const egr = Number(s.egresos)   || 0;
     const res = Number(s.resultado) || 0;
     acumulado += res;
-    const vacio = (s.cant_ingresos === 0 && s.cant_egresos === 0);
+    const vacio = (s.cant_facturas === 0 && s.cant_notas === 0 && s.cant_egresos === 0);
     return `
       <tr${vacio ? ' style="opacity:.45"' : ''}>
         <td class="td-nombre">${esc(dcaMesLabel(s.mes))}</td>
-        <td style="text-align:right">$ ${dcaFmtMoney(ing)}</td>
+        <td style="text-align:right${ing < 0 ? ';color:var(--warn)' : ''}">${dcaFmtMoneySigno(ing)}</td>
         <td style="text-align:right">$ ${dcaFmtMoney(egr)}</td>
         <td style="text-align:right;font-weight:600;color:${dcaColorResultado(res)}">${dcaFmtMoneySigno(res)}</td>
         <td style="text-align:right;color:${dcaColorResultado(acumulado)}">${dcaFmtMoneySigno(acumulado)}</td>
@@ -12874,7 +12899,7 @@ function dcaRenderFilasResultados(serie, resumen) {
   const total = `
     <tr style="background:var(--bg);font-weight:700">
       <td>Total del rango</td>
-      <td style="text-align:right">$ ${dcaFmtMoney(tIng)}</td>
+      <td style="text-align:right">${dcaFmtMoneySigno(tIng)}</td>
       <td style="text-align:right">$ ${dcaFmtMoney(tEgr)}</td>
       <td style="text-align:right;color:${dcaColorResultado(tRes)}">${dcaFmtMoneySigno(tRes)}</td>
       <td style="text-align:right;color:${dcaColorResultado(tRes)}">${dcaFmtMoneySigno(tRes)}</td>

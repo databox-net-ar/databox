@@ -33,17 +33,20 @@
 //          rango: { ... }, anios: [...] }
 //
 //   GET api/datacount_analiticas.php?action=resultados   (mismos filtros)
-//     -> { serie: [{ mes: 'YYYY-MM', ingresos: N, egresos: N, resultado: N,
-//                    cant_ingresos: N, cant_egresos: N }, ...],
-//          resumen: { ingresos_rango, egresos_rango, resultado_rango,
-//                     cant_ingresos_rango, cant_egresos_rango,
-//                     ingresos, egresos, resultado,
-//                     cant_ingresos, cant_egresos,
+//     -> { serie: [{ mes: 'YYYY-MM', facturado: N, notas: N, ingresos: N,
+//                    egresos: N, resultado: N,
+//                    cant_facturas: N, cant_notas: N, cant_egresos: N }, ...],
+//          resumen: { facturado_rango, notas_rango, ingresos_rango,
+//                     egresos_rango, resultado_rango,
+//                     cant_facturas_rango, cant_notas_rango, cant_egresos_rango,
+//                     facturado, notas, ingresos, egresos, resultado,
+//                     cant_facturas, cant_notas, cant_egresos,
 //                     primero, ultimo, meses,
 //                     mejor_mes: {mes, resultado}|null,
 //                     peor_mes:  {mes, resultado}|null,
 //                     meses_positivos, meses_negativos,
-//                     sin_fecha_ingresos_cant, sin_fecha_egresos_cant },
+//                     sin_fecha_facturas_cant, sin_fecha_notas_cant,
+//                     sin_fecha_egresos_cant },
 //          rango: { ..., piso: 'YYYY-MM', recortado?: true },
 //          anios: [...] }
 //
@@ -77,11 +80,11 @@
 //     valor = monto * cotizacion). La cotizacion para pagos en dolares
 //     se backfillea desde `dolarhoy_cotizaciones` y `valor` se recalcula
 //     via migraciones 20260802_1400_... y 20260802_1500_...
-//   - resultados: cruce mes a mes de las dos anteriores. Ingresos =
-//     comprobantes autorizados con tipo LIKE 'F%'; egresos = misma definicion
-//     que "Ordenes de pago". Las notas de credito NO se restan: a diferencia
-//     de `facturacion`, esta pestana mide el flujo bruto emitido contra el
-//     pagado.
+//   - resultados: cruce mes a mes de las dos anteriores. Ingresos = facturas
+//     autorizadas (tipo LIKE 'F%') MENOS notas de credito (tipo LIKE 'N%'),
+//     igual que el `neto` de `facturacion`; egresos = misma definicion que
+//     "Ordenes de pago". Las tres acciones que netean lo hacen con la misma
+//     regla: la NC se imputa a su propio mes de emision.
 //     Piso historico: solo cuenta lo emitido desde 2025-01 (ver
 //     DCA_CRUCE_MES_MIN). Los registros sin fecha de emision quedan
 //     fuera de los totales — no se pueden ubicar respecto del piso — y solo
@@ -91,10 +94,9 @@
 //     Sirve para detectar meses donde el dinero que entro no se parece a lo
 //     que se emitio: facturacion sin cobrar, cobranzas sin facturar, o carga
 //     incompleta de alguno de los dos lados.
-//     A diferencia de `resultados`, aca el facturado SI va neto de notas de
-//     credito: una NC anula parte de una factura y esa plata nunca se
-//     acredita, asi que dejarla adentro generaria un desvio permanente que
-//     no es una inconsistencia real.
+//     El facturado va neto de notas de credito: una NC anula parte de una
+//     factura y esa plata nunca se acredita, asi que dejarla adentro generaria
+//     un desvio permanente que no es una inconsistencia real.
 //     Mismo piso historico que `resultados`.
 //
 // Respuesta siempre {ok: true, data: ...} u {ok: false, error: '...'}.
@@ -436,17 +438,30 @@ function dcaResumenFacturacion(array $serie, float $facHist, int $facCantHist, f
 // Handler de resultados (ingresos vs. egresos).
 // ----------------------------------------------------------------------------
 //
-// Cruza mes a mes las dos fuentes que ya alimentan las pestanas existentes:
-//   - Ingresos: `datacount_comprobantes` autorizados (estado='3') con
-//     tipo LIKE 'F%'  -> identico a la pestana "Facturas".
+// Cruza mes a mes las fuentes que ya alimentan las pestanas existentes:
+//   - Ingresos: `datacount_comprobantes` autorizados (estado='3'), facturas
+//     (tipo LIKE 'F%') menos notas de credito (tipo LIKE 'N%') -> identico al
+//     `neto` de la pestana "Facturacion".
 //   - Egresos:  `datacount_pagos` sin filtro de estado, sumando `valor`
 //     -> identico a la pestana "Ordenes de pago".
 //
-// El resultado de cada mes es `ingresos - egresos`. Deliberadamente NO se
-// restan las notas de credito: la pestana es un cruce de las dos pestanas
-// mencionadas y nada mas, para que los numeros cierren contra ellas.
+// El resultado de cada mes es `ingresos - egresos`.
 //
-// Todo lo emitido antes de DCA_RESULTADOS_MES_MIN se descarta en la query,
+// POR QUE LAS NC SE RESTAN
+// ------------------------
+// Una factura emitida por error y anulada con una nota de credito no es plata
+// que entro: dejarla en bruto pinta un mes con un pico que nunca existio (caso
+// real: agosto 2026). El bruto sigue disponible — la serie devuelve `facturado`
+// y `notas` por separado, y la pestana "Facturacion" muestra las dos curvas.
+//
+// La NC se imputa a SU PROPIO mes de emision, no al de la factura que anula.
+// Es la misma regla que ya usan `facturacion` y `consistencia`, asi que las
+// tres pestanas dan el mismo neto para un mismo mes. Contrapartida conocida:
+// si la NC se emite en un mes posterior al de la factura, el pico se corrige en
+// el mes de la NC y no en el de la factura — un mes puede quedar en ingresos
+// negativos si solo tuvo anulaciones.
+//
+// Todo lo emitido antes de DCA_CRUCE_FECHA_MIN se descarta en la query,
 // asi que el piso rige por igual para la serie, los totales del rango, los
 // historicos y la lista de anios elegibles.
 
@@ -459,21 +474,14 @@ function handleResultados(PDO $pdo, array $q): void {
     $modo = (string)($q['rango'] ?? 'all');
     $anio = isset($q['anio']) ? (int)$q['anio'] : 0;
 
-    // --- Ingresos (facturas autorizadas) ---
-    $ingPorMes = dcaComprobantesPorMes($pdo, $empresaId, 'F%', DCA_CRUCE_FECHA_MIN);
+    // --- Ingresos (facturas autorizadas, netas de notas de credito) ---
+    $facPorMes = dcaComprobantesPorMes($pdo, $empresaId, 'F%', DCA_CRUCE_FECHA_MIN);
+    $ncPorMes  = dcaComprobantesPorMes($pdo, $empresaId, 'N%', DCA_CRUCE_FECHA_MIN);
 
     // Registros sin fecha de emision: no se pueden ubicar respecto del piso,
     // asi que no suman en ningun total. Se cuentan solo para avisar en la UI.
-    $st = $pdo->prepare("
-        SELECT COUNT(*) AS n
-          FROM datacount_comprobantes
-         WHERE empresa = :emp
-           AND estado  = :est
-           AND tipo    LIKE :tipo
-           AND emision IS NULL
-    ");
-    $st->execute([':emp' => $empresaId, ':est' => DCA_ESTADO_AUTORIZADO, ':tipo' => 'F%']);
-    $ingSinFechaN = (int)(($st->fetch() ?: ['n' => 0])['n'] ?? 0);
+    $facSinFechaN = dcaComprobantesSinFecha($pdo, $empresaId, 'F%')['cant'];
+    $ncSinFechaN  = dcaComprobantesSinFecha($pdo, $empresaId, 'N%')['cant'];
 
     // --- Egresos (ordenes de pago) ---
     $st = $pdo->prepare("
@@ -505,13 +513,18 @@ function handleResultados(PDO $pdo, array $q): void {
     $egrSinFechaN = (int)(($st->fetch() ?: ['n' => 0])['n'] ?? 0);
 
     // --- Historicos (ya acotados al piso por la query) ---
-    $ingTotalHist = 0.0; $ingCantHist = 0;
-    foreach ($ingPorMes as $m) { $ingTotalHist += $m['total']; $ingCantHist += $m['cantidad']; }
-    $egrTotalHist = 0.0; $egrCantHist = 0;
-    foreach ($egrPorMes as $m) { $egrTotalHist += $m['total']; $egrCantHist += $m['cantidad']; }
+    $hist = ['fac' => 0.0, 'cant_fac' => 0, 'nc' => 0.0, 'cant_nc' => 0,
+             'egr' => 0.0, 'cant_egr' => 0];
+    foreach ($facPorMes as $m) { $hist['fac'] += $m['total']; $hist['cant_fac'] += $m['cantidad']; }
+    foreach ($ncPorMes  as $m) { $hist['nc']  += $m['total']; $hist['cant_nc']  += $m['cantidad']; }
+    foreach ($egrPorMes as $m) { $hist['egr'] += $m['total']; $hist['cant_egr'] += $m['cantidad']; }
 
-    // --- Rango: la union de los meses de ambas fuentes ---
-    $mesesUnion = array_keys($ingPorMes + $egrPorMes);
+    $sinFecha = ['fac' => $facSinFechaN, 'nc' => $ncSinFechaN, 'egr' => $egrSinFechaN];
+
+    // --- Rango: la union de los meses de las tres fuentes ---
+    // Las notas de credito entran en la union: un mes con solo anulaciones (la
+    // factura se emitio antes) mueve el resultado y no puede quedar fuera del eje.
+    $mesesUnion = array_keys($facPorMes + $ncPorMes + $egrPorMes);
     sort($mesesUnion);
     $primero = $mesesUnion ? $mesesUnion[0] : null;
     $ultimo  = $mesesUnion ? $mesesUnion[count($mesesUnion) - 1] : null;
@@ -522,8 +535,7 @@ function handleResultados(PDO $pdo, array $q): void {
     if ($rango['desde'] === null) {
         jsonOk([
             'serie'   => [],
-            'resumen' => dcaResumenResultados([], $ingTotalHist, $ingCantHist, $egrTotalHist, $egrCantHist,
-                                              $primero, $ultimo, $ingSinFechaN, $egrSinFechaN),
+            'resumen' => dcaResumenResultados([], $hist, $primero, $ultimo, $sinFecha),
             'rango'   => $rangoInfo,
             'anios'   => dcaAniosDeMeses($mesesUnion),
         ]);
@@ -531,48 +543,62 @@ function handleResultados(PDO $pdo, array $q): void {
 
     $serie = [];
     foreach (dcaMesesEntre($rango['desde'], $rango['hasta']) as $k) {
-        $ing = $ingPorMes[$k]['total'] ?? 0.0;
+        $fac = $facPorMes[$k]['total'] ?? 0.0;
+        $nc  = $ncPorMes[$k]['total']  ?? 0.0;
         $egr = $egrPorMes[$k]['total'] ?? 0.0;
+        $ing = $fac - $nc;
         $serie[] = [
             'mes'           => $k,
+            'facturado'     => $fac,
+            'notas'         => $nc,
             'ingresos'      => $ing,
             'egresos'       => $egr,
             'resultado'     => $ing - $egr,
-            'cant_ingresos' => $ingPorMes[$k]['cantidad'] ?? 0,
+            'cant_facturas' => $facPorMes[$k]['cantidad'] ?? 0,
+            'cant_notas'    => $ncPorMes[$k]['cantidad']  ?? 0,
             'cant_egresos'  => $egrPorMes[$k]['cantidad'] ?? 0,
         ];
     }
 
     jsonOk([
         'serie'   => $serie,
-        'resumen' => dcaResumenResultados($serie, $ingTotalHist, $ingCantHist, $egrTotalHist, $egrCantHist,
-                                          $primero, $ultimo, $ingSinFechaN, $egrSinFechaN),
+        'resumen' => dcaResumenResultados($serie, $hist, $primero, $ultimo, $sinFecha),
         'rango'   => $rangoInfo,
         'anios'   => dcaAniosDeMeses($mesesUnion),
     ]);
 }
 
-// Arma el bloque `resumen` de la pestana Resultados: totales del rango,
-// totales historicos, mejor/peor mes por resultado y conteo de meses en
-// positivo / negativo. Con `$serie` vacia devuelve todo en cero pero
-// conserva los historicos (que pueden venir solo de registros sin fecha).
-function dcaResumenResultados(array $serie, float $ingHist, int $ingCantHist, float $egrHist, int $egrCantHist,
-                              ?string $primero, ?string $ultimo, int $ingSinFecha, int $egrSinFecha): array {
-    $ingRango = 0.0; $egrRango = 0.0;
-    $ingCant  = 0;   $egrCant  = 0;
+// Arma el bloque `resumen` de la pestana Resultados: totales del rango (bruto,
+// notas y neto por separado), totales historicos, mejor/peor mes por resultado
+// y conteo de meses en positivo / negativo. Con `$serie` vacia devuelve todo en
+// cero pero conserva los historicos.
+//
+// `$hist` trae los totales historicos ya acotados al piso con las claves
+// fac / cant_fac / nc / cant_nc / egr / cant_egr; `$sinFecha`, los conteos de
+// registros sin `emision` con las claves fac / nc / egr.
+function dcaResumenResultados(array $serie, array $hist,
+                              ?string $primero, ?string $ultimo, array $sinFecha): array {
+    $facRango = 0.0; $ncRango = 0.0; $egrRango = 0.0;
+    $facCant  = 0;   $ncCant  = 0;   $egrCant  = 0;
     $positivos = 0;  $negativos = 0;
     $mejor = null;   $peor = null;
 
     foreach ($serie as $s) {
-        $ingRango += $s['ingresos'];
+        $facRango += $s['facturado'];
+        $ncRango  += $s['notas'];
         $egrRango += $s['egresos'];
-        $ingCant  += $s['cant_ingresos'];
+        $facCant  += $s['cant_facturas'];
+        $ncCant   += $s['cant_notas'];
         $egrCant  += $s['cant_egresos'];
 
-        // Los meses sin movimiento (ingresos y egresos en cero) no cuentan
-        // como positivos ni negativos, ni compiten por mejor/peor mes:
-        // ensuciarian el resumen con el padding de meses vacios.
-        if ($s['cant_ingresos'] === 0 && $s['cant_egresos'] === 0) continue;
+        // Los meses sin movimiento (sin una sola factura, nota ni orden de
+        // pago) no cuentan como positivos ni negativos, ni compiten por
+        // mejor/peor mes: ensuciarian el resumen con el padding de meses
+        // vacios. Un mes de solo notas de credito SI cuenta — mueve el
+        // resultado igual que cualquier otro.
+        if ($s['cant_facturas'] === 0 && $s['cant_notas'] === 0 && $s['cant_egresos'] === 0) {
+            continue;
+        }
 
         if ($s['resultado'] >= 0) $positivos++; else $negativos++;
         if ($mejor === null || $s['resultado'] > $mejor['resultado']) {
@@ -583,17 +609,26 @@ function dcaResumenResultados(array $serie, float $ingHist, int $ingCantHist, fl
         }
     }
 
+    $ingRango = $facRango - $ncRango;
+    $ingHist  = $hist['fac'] - $hist['nc'];
+
     return [
+        'facturado_rango'         => $facRango,
+        'notas_rango'             => $ncRango,
         'ingresos_rango'          => $ingRango,
         'egresos_rango'           => $egrRango,
         'resultado_rango'         => $ingRango - $egrRango,
-        'cant_ingresos_rango'     => $ingCant,
+        'cant_facturas_rango'     => $facCant,
+        'cant_notas_rango'        => $ncCant,
         'cant_egresos_rango'      => $egrCant,
+        'facturado'               => $hist['fac'],
+        'notas'                   => $hist['nc'],
         'ingresos'                => $ingHist,
-        'egresos'                 => $egrHist,
-        'resultado'               => $ingHist - $egrHist,
-        'cant_ingresos'           => $ingCantHist,
-        'cant_egresos'            => $egrCantHist,
+        'egresos'                 => $hist['egr'],
+        'resultado'               => $ingHist - $hist['egr'],
+        'cant_facturas'           => $hist['cant_fac'],
+        'cant_notas'              => $hist['cant_nc'],
+        'cant_egresos'            => $hist['cant_egr'],
         'primero'                 => $primero,
         'ultimo'                  => $ultimo,
         'meses'                   => count($serie),
@@ -601,8 +636,9 @@ function dcaResumenResultados(array $serie, float $ingHist, int $ingCantHist, fl
         'peor_mes'                => $peor,
         'meses_positivos'         => $positivos,
         'meses_negativos'         => $negativos,
-        'sin_fecha_ingresos_cant' => $ingSinFecha,
-        'sin_fecha_egresos_cant'  => $egrSinFecha,
+        'sin_fecha_facturas_cant' => $sinFecha['fac'],
+        'sin_fecha_notas_cant'    => $sinFecha['nc'],
+        'sin_fecha_egresos_cant'  => $sinFecha['egr'],
     ];
 }
 
