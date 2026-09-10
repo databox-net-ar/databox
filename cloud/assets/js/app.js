@@ -1582,6 +1582,7 @@ route('/dashboard', async (mount) => {
     ${renderDashDatainfraDominios(data.datainfra_dominios)}
     ${renderDashAwsCuentas(data.aws_cuentas)}
     ${renderDashEvolutionCanales(data.evolution_canales)}
+    ${renderDashDatacountCheques(data.datacount_cheques)}
   `;
 }, 'Dashboard');
 
@@ -1812,6 +1813,90 @@ function renderDashEvolutionCanales(evo) {
             <th>Celular</th>
             <th>Latido</th>
             <th>Actualizado</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+// Bloque "Cheques por entrar" del dashboard. La API lo omite si el usuario no
+// tiene permiso `datacount.bancos.cheques.consultar`; en ese caso no
+// renderizamos nada.
+//
+// Entra en la lista el cheque que todavía está en la calle (emitido,
+// entregado o depositado) y cuya `fecha_pago` —la fecha desde la cual se puede
+// presentar, o sea cuando golpea la cuenta— cae dentro de los próximos 7 días
+// o ya pasó. Los pagados, rechazados y anulados no aparecen: el primero ya se
+// debitó y los otros dos no van a entrar nunca.
+//
+// El color de la fila es la urgencia: amarilla mientras falta (incluido el que
+// entra hoy) y roja cuando la fecha ya pasó y el cheque sigue sin debitarse,
+// que es el caso que hay que ir a mirar. Misma escala que la píldora de la
+// columna "Pago" del ABM de cheques, para que las dos vistas se lean igual.
+function renderDashDatacountCheques(chq) {
+  if (!chq) return '';
+  const porEntrar = Number(chq.por_entrar) || 0;
+  const vencidos  = Number(chq.vencidos)   || 0;
+  const items     = chq.items || [];
+
+  const plural = (n) => `${n} ${n === 1 ? 'día' : 'días'}`;
+  const badgeDias = (dias) => {
+    const d = Number(dias);
+    if (!isFinite(d)) return '';
+    if (d < 0)   return `<span class="badge badge-danger">Venció hace ${plural(-d)}</span>`;
+    if (d === 0) return `<span class="badge badge-warn">Entra hoy</span>`;
+    return `<span class="badge badge-warn">En ${plural(d)}</span>`;
+  };
+
+  const filas = items.length
+    ? items.map((c) => {
+        const d      = Number(c.dias);
+        const vencido = isFinite(d) && d < 0;
+        const fondo  = vencido ? 'rgba(230,42,42,.12)' : 'rgba(245,158,11,.12)';
+        return `
+          <tr class="row-clickable" onclick="location.hash='#/datacount_bancos_cheques'"
+              style="background:${fondo}">
+            <td class="td-id">#${esc(c.id)}</td>
+            <td style="white-space:nowrap">
+              <span style="display:inline-flex;align-items:center;gap:6px">
+                ${dcqClasePildora(c.chequera_clase)}
+                <span style="font-family:monospace;font-size:.85rem;font-weight:600">${esc(c.numero || '—')}</span>
+              </span>
+            </td>
+            <td style="color:var(--muted)">${esc(c.empresa_nombre || '—')}</td>
+            <td style="white-space:nowrap">${esc(String(c.fecha_pago || '—').substring(0,10))} ${badgeDias(c.dias)}</td>
+            <td style="font-weight:600">${dcqBeneficiarioHtml(c.beneficiario_razon)}</td>
+            <td style="text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(dcbFmtMoney(c.importe, c.moneda))}</td>
+            <td>${dcqEstadoBadge(c.estado)}</td>
+          </tr>
+        `;
+      }).join('')
+    : `<tr><td colspan="7" class="table-empty">Todo bien.</td></tr>`;
+
+  // Dos badges y no uno solo: "vencido" y "por entrar" son dos urgencias
+  // distintas y sumarlas escondería cuántos ya se pasaron de fecha.
+  const badgeHeader =
+    (vencidos  ? `<span class="badge badge-danger" style="margin-left:6px">${vencidos} vencido${vencidos === 1 ? '' : 's'}</span>` : '') +
+    (porEntrar ? `<span class="badge badge-warn" style="margin-left:6px">${porEntrar} por entrar</span>` : '');
+
+  return `
+    <div class="table-card" style="margin-top:16px">
+      <div class="dash-table-header">
+        <span>📝 Cheques por entrar (7 días) ${badgeHeader}</span>
+        <span class="dash-ver-mas" onclick="location.hash='#/datacount_bancos_cheques'" style="cursor:pointer">Ver más</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>N.º</th>
+            <th>Empresa</th>
+            <th>Pago</th>
+            <th>Beneficiario</th>
+            <th style="text-align:right">Importe</th>
+            <th>Estado</th>
           </tr>
         </thead>
         <tbody>${filas}</tbody>
@@ -25175,17 +25260,28 @@ async function eliminarDct(id) {
 // ABM de chequeras sobre `datacount_bancos_chequeras`. Cada fila es un
 // talonario de cheques emitido contra una cuenta corriente del módulo Bancos.
 //
-// La chequera tiene DOS datos propios: contra qué cuenta se emitió y si trae
+// La chequera tiene TRES datos propios: contra qué cuenta se emitió, en qué
+// soporte viene el talonario (clase: PAPEL o ELECTRÓNICA / ECHEQ) y si trae
 // cheques COMUNES (se cobran a la vista) o DIFERIDOS (con fecha de pago
 // futura). El nombre, el banco, el número de cuenta y la empresa NO se cargan
 // acá: salen de `datacount_bancos_cuentas` vía JOIN. Por eso el formulario
 // pide una sola cosa donde antes pedía tres, y renombrar una cuenta actualiza
 // sus chequeras sola.
 //
-// El tipo vive en la chequera y no en el cheque porque el banco entrega
-// talonarios distintos para cada uno: una chequera nunca mezcla los dos.
+// Clase y tipo son ejes independientes —existe la chequera electrónica de
+// diferidos igual que la de papel de comunes—, y los dos viven en la chequera y
+// no en el cheque porque el banco entrega talonarios distintos para cada
+// combinación: una chequera nunca los mezcla.
 
 const DCCH_API = 'api/datacount_chequeras.php';
+
+// Etiquetas y badges de la clase. Mismo patrón que el tipo: el catálogo
+// `estados` (campo `datacount_bancos_chequera_clase`) alimenta el combo del
+// formulario y este mapa pinta las etiquetas y los badges de la ficha.
+const DCCH_CLASE_META = {
+  electronica: { label: 'Electrónica', badge: 'badge-info'  },
+  papel:       { label: 'Papel',       badge: 'badge-muted' },
+};
 
 // Etiquetas y badges del tipo. El catalogo `estados`
 // (campo `datacount_bancos_chequera_tipo`) alimenta los chips del modal de
@@ -25217,6 +25313,7 @@ async function dcchCargarLookups() {
     const data = await apiGet(`${DCCH_API}?lookups=1`);
     dcchLookupsCache = {
       cuentas: data.cuentas || [],
+      clases:  data.clases  || [],
       tipos:   data.tipos   || [],
     };
     return dcchLookupsCache;
@@ -25236,6 +25333,19 @@ function dcchEtiquetaCuenta(c) {
   return partes.length ? `${c.nombre} — ${partes.join(' · ')}` : c.nombre;
 }
 
+// Nombre con el que se identifica una chequera en títulos, subtítulos y
+// confirmaciones: "<cuenta> · <clase> · <tipo>". Los dos ejes entran porque una
+// misma cuenta puede tener hasta cuatro chequeras —papel/electrónica ×
+// comunes/diferidos— y sólo con la cuenta no se distinguen entre sí.
+function dcchEtiquetaChequera(c) {
+  if (!c) return '—';
+  return [
+    c.nombre || `Cuenta #${c.cuenta_id}`,
+    DCCH_CLASE_META[c.clase]?.label || c.clase,
+    DCCH_TIPO_META[c.tipo]?.label   || c.tipo,
+  ].filter(Boolean).join(' · ');
+}
+
 // Cuentas de la empresa activa. El lookup trae todas (con su `empresa_id`) para
 // no invalidar el cache cada vez que se cambia de empresa en la toolbar.
 function dcchCuentasDeEmpresa(empresaId) {
@@ -25247,6 +25357,11 @@ function dcchCuentasDeEmpresa(empresaId) {
 function dcchCuentaPorId(id) {
   if (!id) return null;
   return (dcchLookupsCache?.cuentas || []).find((c) => c.id === Number(id)) || null;
+}
+
+function dcchClaseBadge(v) {
+  const m = DCCH_CLASE_META[v] || { label: v || '—', badge: 'badge-muted' };
+  return `<span class="badge ${m.badge}">${esc(m.label)}</span>`;
 }
 
 function dcchTipoBadge(v) {
@@ -25308,13 +25423,14 @@ route('/datacount_bancos_chequeras', async (mount) => {
               <th>Cuenta</th>
               <th style="width:200px">Banco</th>
               <th style="width:170px">N.º de cuenta</th>
+              <th style="width:130px">Clase</th>
               <th style="width:120px">Tipo</th>
               <th style="width:110px">Estado</th>
               <th style="width:60px;text-align:center">Acciones</th>
             </tr>
           </thead>
           <tbody id="dcchTbody">
-            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+            <tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -25530,11 +25646,11 @@ route('/datacount_bancos_chequeras', async (mount) => {
 async function cargarDcch() {
   const tbody = $('#dcchTbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
 
   const empresaId = await dcAsegurarEmpresaId();
   if (!empresaId) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">No hay empresas registradas — creá una antes de dar de alta chequeras.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">No hay empresas registradas — creá una antes de dar de alta chequeras.</td></tr>`;
     return;
   }
 
@@ -25558,7 +25674,7 @@ async function cargarDcch() {
     pintarStatsDcch(data.stats || {});
     renderDcch();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -25573,7 +25689,7 @@ function renderDcch() {
   const tbody = $('#dcchTbody');
   if (!tbody) return;
   if (!dcchItems.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin chequeras registradas.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin chequeras registradas.</td></tr>`;
     return;
   }
 
@@ -25585,7 +25701,7 @@ function renderDcch() {
   }
 
   if (!filas.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
     return;
   }
 
@@ -25595,6 +25711,7 @@ function renderDcch() {
       <td style="font-weight:600">${esc(c.nombre || `Cuenta #${c.cuenta_id}`)}</td>
       <td>${esc(c.banco_nombre || (c.banco_id ? `#${c.banco_id}` : '—'))}</td>
       <td style="font-family:monospace;font-size:.85rem">${esc(c.numero_cuenta || '—')}</td>
+      <td>${dcchClaseBadge(c.clase)}</td>
       <td>${dcchTipoBadge(c.tipo)}</td>
       <td>${dcchActivaBadge(c.activa)}</td>
       <td style="text-align:center">
@@ -25745,10 +25862,18 @@ async function abrirAltaEdicionDcch(id) {
   dcchEditandoId = id;
   const editando = !!id;
   const c = editando ? dcchItems.find((x) => x.id === id) : null;
-  const titulo = editando ? 'Editar chequera' : 'Nueva chequera';
+
+  // En edición el título nombra la chequera igual que la ficha de Consultar
+  // —"<cuenta> · <clase> · <tipo>"—: una cuenta puede tener hasta cuatro y sin
+  // los dos ejes no se sabe cuál se está editando. En el alta no hay nada que
+  // nombrar todavía.
+  const titulo = editando
+    ? `Editar chequera — ${dcchEtiquetaChequera(c)}`
+    : 'Nueva chequera';
 
   await dcchCargarLookups();
-  const tipos = dcchLookupsCache?.tipos || [];
+  const clases = dcchLookupsCache?.clases || [];
+  const tipos  = dcchLookupsCache?.tipos  || [];
 
   // Las cuentas se listan por empresa activa. En edición se agrega la cuenta
   // actual aunque sea de otra empresa o esté dada de baja: si no, el <select>
@@ -25762,9 +25887,15 @@ async function abrirAltaEdicionDcch(id) {
   const optsCuentas = `<option value="">— Elegí una cuenta —</option>` +
     cuentas.map((x) => `<option value="${x.id}">${esc(dcchEtiquetaCuenta(x))}</option>`).join('');
 
-  // `tipo` es NOT NULL en la tabla: si alguien vació el catálogo `estados`
-  // desde Herramientas, el <select> cae a los dos valores del enum en vez de
-  // quedar sin opciones y mandar '' al guardar.
+  // `clase` y `tipo` son NOT NULL en la tabla: si alguien vació el catálogo
+  // `estados` desde Herramientas, los <select> caen a los dos valores del enum
+  // en vez de quedar sin opciones y mandar '' al guardar.
+  const clasesUsables = clases.length
+    ? clases
+    : Object.entries(DCCH_CLASE_META).map(([valor, m]) => ({ valor, texto: m.label }));
+  const optsClases    = clasesUsables.map((t) =>
+    `<option value="${esc(t.valor)}">${esc(DCCH_CLASE_META[t.valor]?.label || t.texto)}</option>`).join('');
+
   const tiposUsables = tipos.length
     ? tipos
     : Object.entries(DCCH_TIPO_META).map(([valor, m]) => ({ valor, texto: m.label }));
@@ -25795,6 +25926,14 @@ async function abrirAltaEdicionDcch(id) {
           </span>
         </div>
         <div class="form-group">
+          <label for="dcchClase">Clase *</label>
+          <select id="dcchClase">${optsClases}</select>
+          <span style="color:var(--muted);font-size:.78rem">
+            Papel: el talonario físico. Electrónica: el ECHEQ, que se libra y se endosa
+            desde el homebanking y nunca se imprime.
+          </span>
+        </div>
+        <div class="form-group">
           <label for="dcchTipo">Tipo de cheque *</label>
           <select id="dcchTipo">${optsTipos}</select>
           <span style="color:var(--muted);font-size:.78rem">
@@ -25822,10 +25961,12 @@ async function abrirAltaEdicionDcch(id) {
 
   if (editando && c) {
     $('#dcchCuenta').value        = c.cuenta_id != null ? String(c.cuenta_id) : '';
+    $('#dcchClase').value         = c.clase     || 'papel';
     $('#dcchTipo').value          = c.tipo      || 'comun';
     $('#dcchObservaciones').value = c.observaciones || '';
     $('#dcchActiva').checked      = Number(c.activa) === 1;
   } else {
+    $('#dcchClase').value    = 'papel';
     $('#dcchTipo').value     = 'comun';
     $('#dcchActiva').checked = true;
   }
@@ -25840,13 +25981,14 @@ async function abrirAltaEdicionDcch(id) {
 
 async function guardarDcch() {
   const cuenta_id     = $('#dcchCuenta').value || '';
+  const clase         = $('#dcchClase').value || 'papel';
   const tipo          = $('#dcchTipo').value || 'comun';
   const observaciones = $('#dcchObservaciones').value.trim();
   const activa        = $('#dcchActiva').checked ? 1 : 0;
 
   if (!cuenta_id) { toast('Elegí la cuenta de la chequera', { error: true }); return; }
 
-  const body = { cuenta_id: Number(cuenta_id), tipo, observaciones, activa };
+  const body = { cuenta_id: Number(cuenta_id), clase, tipo, observaciones, activa };
 
   try {
     if (dcchEditandoId) {
@@ -25869,6 +26011,11 @@ function abrirConsultaDcch(id) {
   const c = dcchItems.find((x) => x.id === id);
   if (!c) return;
 
+  // El botón "Listar" sólo tiene sentido si el usuario puede entrar al ABM de
+  // cheques: sin el permiso el router lo rebota igual, así que la barra se arma
+  // sin él en vez de ofrecer un salto que termina en un cartel de "sin acceso".
+  const puedeVerCheques = hasPermission('datacount.bancos.cheques.consultar');
+
   const card = (label, valor, ancho) => `
     <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
                 background:color-mix(in srgb, var(--surface) 90%, #000);
@@ -25882,7 +26029,7 @@ function abrirConsultaDcch(id) {
     <div class="modal" style="max-width:640px">
       <div class="modal-header modal-header-primary">
         <div class="modal-title">
-          📔 <span class="modal-subtitle">${esc(c.nombre || `Cuenta #${c.cuenta_id}`)} · ${esc(DCCH_TIPO_META[c.tipo]?.label || c.tipo)}</span>
+          📔 <span class="modal-subtitle">${esc(dcchEtiquetaChequera(c))}</span>
         </div>
         <button class="btn-icon-sm" data-act="close" aria-label="Cerrar">×</button>
       </div>
@@ -25890,6 +26037,11 @@ function abrirConsultaDcch(id) {
         <button class="btn btn-sm btn-ghost" data-act="close">
           <i class="fa-solid fa-xmark"></i> Cerrar
         </button>
+        ${puedeVerCheques ? `
+        <button class="btn btn-sm btn-primary" data-menu="listar">
+          <i class="fa-solid fa-list"></i> Listar
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>` : ''}
         <button class="btn btn-sm btn-primary" data-menu="acciones">
           <i class="fa-solid fa-bolt"></i> Acciones
           <i class="fa-solid fa-caret-down menubar-caret"></i>
@@ -25902,6 +26054,7 @@ function abrirConsultaDcch(id) {
           ${card('Cuenta',              esc(c.nombre || `Cuenta #${c.cuenta_id}`), 'full')}
           ${card('Banco',               esc(c.banco_nombre || (c.banco_id ? `#${c.banco_id}` : '—')))}
           ${card('N.º de cuenta',       `<span style="font-family:monospace">${esc(c.numero_cuenta || '—')}</span>`)}
+          ${card('Clase',               dcchClaseBadge(c.clase))}
           ${card('Tipo de cheque',      dcchTipoBadge(c.tipo))}
           ${card('Empresa',             esc(c.empresa_nombre || '—'))}
           ${card('Alta',                esc(c.created_at || '—'))}
@@ -25912,10 +26065,16 @@ function abrirConsultaDcch(id) {
       </div>
     </div>
 
-    <!-- Menú de la barra de acciones. Va FUERA del .modal a propósito: el modal
-         del formato nuevo lleva overflow:hidden (el scroll es del cuerpo) y
-         además transform para su animación, así que recortaría el menú aunque
-         sea position:fixed. Como hijo del backdrop no lo recorta nadie. -->
+    <!-- Menús de la barra. Van FUERA del .modal a propósito: el modal del
+         formato nuevo lleva overflow:hidden (el scroll es del cuerpo) y además
+         transform para su animación, así que recortaría el menú aunque sea
+         position:fixed. Como hijos del backdrop no los recorta nadie. -->
+    <div id="dcchModalListarMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="cheques" role="menuitem">
+        <i class="fa-solid fa-money-check"></i><span>Cheques</span>
+      </button>
+    </div>
+
     <div id="dcchModalCtxMenu" class="ctx-menu" role="menu">
       <button type="button" data-action="editar" role="menuitem">
         <i class="fa-solid fa-pen"></i><span>Editar</span>
@@ -25932,14 +26091,24 @@ function abrirConsultaDcch(id) {
     // nodo que closeModal() está por remover del DOM.
     if (ev.target.closest('[data-act="close"]')) { cerrarCtxMenu(); closeModal(); return; }
 
-    // El trigger del desplegable frena la propagación: el handler global que
-    // cierra el menú al clickear afuera corre después y, sin esto, lo cerraría
-    // en el mismo click que lo abre.
-    const menuBtn = ev.target.closest('[data-menu="acciones"]');
+    // Los triggers de los desplegables frenan la propagación: el handler global
+    // que cierra el menú al clickear afuera corre después y, sin esto, lo
+    // cerraría en el mismo click que lo abre.
+    const menuBtn = ev.target.closest('[data-menu]');
     if (menuBtn) {
       ev.stopPropagation();
-      const r = menuBtn.getBoundingClientRect();
-      abrirCtxMenu($('#dcchModalCtxMenu'), r.left, r.bottom + 4, { id });
+      const r  = menuBtn.getBoundingClientRect();
+      const el = menuBtn.dataset.menu === 'listar'
+        ? $('#dcchModalListarMenu')
+        : $('#dcchModalCtxMenu');
+      abrirCtxMenu(el, r.left, r.bottom + 4, { id });
+      return;
+    }
+
+    const listar = ev.target.closest('#dcchModalListarMenu [data-action]');
+    if (listar) {
+      cerrarCtxMenu();
+      if (listar.dataset.action === 'cheques') { closeModal(); dcchListarCheques(id); }
       return;
     }
 
@@ -25949,6 +26118,38 @@ function abrirConsultaDcch(id) {
     if (item.dataset.action === 'editar')   { closeModal(); abrirAltaEdicionDcch(id); }
     if (item.dataset.action === 'eliminar') { closeModal(); eliminarDcch(id); }
   });
+}
+
+// Salta al ABM de cheques con esta chequera ya elegida en la toolbar. El módulo
+// de cheques persiste la chequera en localStorage y la lee al montar, así que
+// alcanza con dejarla puesta antes de cambiar el hash.
+function dcchListarCheques(id) {
+  const c = dcchItems.find((x) => x.id === id);
+  if (!c) return;
+
+  // dcqPoblarComboChequeras() descarta la chequera preseleccionada si no es de
+  // la empresa activa. En la práctica siempre coinciden —el listado de chequeras
+  // ya viene filtrado por empresa— pero mover la empresa primero evita que, si
+  // alguna vez dejaran de coincidir, el salto caiga en "Todas las chequeras".
+  if (c.empresa_id && Number(dcGetEmpresaId()) !== Number(c.empresa_id)) {
+    dcSetEmpresaId(c.empresa_id);
+  }
+  dcqSetChequeraId(c.id);
+
+  // Los filtros del ABM de cheques persisten entre navegaciones: sin limpiarlos,
+  // "listar los cheques de esta chequera" mostraría la intersección con lo que
+  // hubiera filtrado la última visita y parecería que a la chequera le faltan
+  // cheques. Se dejan en los mismos defaults que limpiarFiltrosDcq().
+  dcqBusqueda     = '';
+  dcqFiltroCodigo = '';
+  dcqFiltroEstado = '';
+  dcqFiltroDesde  = '';
+  dcqFiltroHasta  = '';
+  dcqFiltroLimite = 100;
+  dcqFiltroOrden  = 'fecha_pago';
+  dcqFiltroDir    = 'desc';
+
+  location.hash = '#/datacount_bancos_cheques';
 }
 
 async function alternarActivaDcch(id) {
@@ -25969,7 +26170,7 @@ async function eliminarDcch(id) {
   if (!c) return;
   const ok = await confirmar({
     title:       'Eliminar chequera',
-    message:     `¿Eliminás la chequera ${DCCH_TIPO_META[c.tipo]?.label || c.tipo} de "${c.nombre || '#' + c.cuenta_id}"?`,
+    message:     `¿Eliminás la chequera "${dcchEtiquetaChequera(c)}"?`,
     confirmText: 'Eliminar',
     danger:      true,
   });
@@ -26065,16 +26266,17 @@ function dcqSetChequeraId(id) {
   else localStorage.removeItem(DCQ_CHEQUERA_LS_KEY);
 }
 
-// Etiqueta del combo de chequeras: "<cuenta> · <banco> · <tipo>". El tipo entra
-// porque una cuenta suele tener dos chequeras — la de comunes y la de
-// diferidos — y sin él las dos opciones se leerían idénticas.
+// Etiqueta del combo de chequeras: "<cuenta> · <banco> · <clase> · <tipo>".
+// Clase y tipo entran porque una misma cuenta puede tener hasta cuatro
+// chequeras —papel/electrónica × comunes/diferidos— y sin los dos ejes las
+// opciones se leerían idénticas y elegir la correcta sería imposible.
 function dcqEtiquetaChequera(ch) {
   if (!ch) return '—';
-  const tipo = DCCH_TIPO_META[ch.tipo]?.label || ch.tipo;
   const partes = [ch.cuenta_nombre];
   if (ch.banco_nombre) partes.push(ch.banco_nombre);
-  partes.push(tipo);
-  return partes.join(' · ');
+  partes.push(DCCH_CLASE_META[ch.clase]?.label || ch.clase);
+  partes.push(DCCH_TIPO_META[ch.tipo]?.label   || ch.tipo);
+  return partes.filter(Boolean).join(' · ');
 }
 
 function dcqChequerasDeEmpresa(empresaId) {
@@ -26116,6 +26318,39 @@ function dcqEstaVencido(c) {
   if (!DCQ_ESTADOS_PENDIENTES.includes(c.estado)) return false;
   const d = dcqDiasHastaPago(c.fecha_pago);
   return d !== null && d < 0;
+}
+
+// Cómo se muestra el beneficiario. Vacío no es un dato que falte cargar: el
+// cheque va AL PORTADOR y se cobra por simple entrega, así que se rotula con
+// todas las letras. En gris e itálica para que no se lea como una razón social
+// más ni como el "—" de un campo sin completar.
+function dcqBeneficiarioHtml(razon) {
+  const r = (razon || '').trim();
+  return r ? esc(r) : `<span style="color:var(--muted);font-style:italic">Al portador</span>`;
+}
+
+// Misma idea en texto plano, para los diálogos de confirmación.
+function dcqBeneficiarioTexto(razon) {
+  const r = (razon || '').trim();
+  return r ? `a "${r}"` : 'al portador';
+}
+
+// Etiquetas de la clase, en masculino: acá lo que se rotula es el cheque
+// ("cheque electrónico" / ECHEQ), mientras que en el ABM de chequeras el mismo
+// valor rotula al talonario ("chequera electrónica"). Los colores salen de
+// DCCH_CLASE_META para que las dos vistas pinten igual el mismo dato.
+const DCQ_CLASE_LABEL = { electronica: 'Electrónico', papel: 'Papel' };
+
+// Píldora a la izquierda del número de cheque. La clase no es del cheque sino
+// de su chequera —un talonario de papel no libra ECHEQ ni al revés— y por eso
+// llega por JOIN en `chequera_clase`; va pegada al número porque es lo que
+// distingue de un vistazo el cheque que existe en papel del que sólo vive en el
+// homebanking. Si el dato no vino (respuesta vieja en cache), no se pinta nada.
+function dcqClasePildora(v) {
+  const m = DCCH_CLASE_META[v];
+  if (!m) return '';
+  const label = DCQ_CLASE_LABEL[v] || m.label;
+  return `<span class="badge ${m.badge}" style="font-size:.7rem">${esc(label)}</span>`;
 }
 
 // Píldora al lado de la fecha de pago: cuánto falta o cuánto hace que pasó.
@@ -26198,7 +26433,7 @@ route('/datacount_bancos_cheques', async (mount) => {
           <thead>
             <tr>
               <th style="width:80px">Código</th>
-              <th style="width:120px">N.º</th>
+              <th style="width:210px">N.º</th>
               <th style="width:105px">Emisión</th>
               <th style="width:205px">Pago</th>
               <th>Beneficiario</th>
@@ -26501,14 +26736,19 @@ function renderDcq() {
   tbody.innerHTML = filas.map((c) => `
     <tr data-id="${c.id}" class="row-clickable">
       <td><code style="font-size:.82rem">${c.id}</code></td>
-      <td style="font-family:monospace;font-size:.85rem;font-weight:600">${esc(c.numero || '—')}</td>
+      <td style="white-space:nowrap">
+        <span style="display:inline-flex;align-items:center;gap:6px">
+          ${dcqClasePildora(c.chequera_clase)}
+          <span style="font-family:monospace;font-size:.85rem;font-weight:600">${esc(c.numero || '—')}</span>
+        </span>
+      </td>
       <td style="white-space:nowrap">${esc(c.fecha_emision || '—')}</td>
       <td style="white-space:nowrap">
         <span style="display:inline-flex;align-items:center;gap:6px">
           ${esc(c.fecha_pago || '—')}${dcqPildoraPago(c)}
         </span>
       </td>
-      <td style="font-weight:600">${esc(c.beneficiario_razon || '—')}</td>
+      <td style="font-weight:600">${dcqBeneficiarioHtml(c.beneficiario_razon)}</td>
       <td style="font-family:monospace;font-size:.85rem">${esc(c.beneficiario_cuit || '—')}</td>
       <td style="text-align:right;white-space:nowrap">${esc(dcbFmtMoney(c.importe, c.moneda))}</td>
       <td>${dcqEstadoBadge(c.estado)}</td>
@@ -26717,9 +26957,13 @@ async function abrirAltaEdicionDcq(id) {
         </div>
 
         <div class="form-group">
-          <label for="dcqBenefRazon">Beneficiario *</label>
-          <input type="text" id="dcqBenefRazon" placeholder="Razón social o nombre completo"
+          <label for="dcqBenefRazon">Beneficiario</label>
+          <input type="text" id="dcqBenefRazon" placeholder="Razón social o nombre completo — vacío = al portador"
                  maxlength="255" autocomplete="off">
+          <span style="color:var(--muted);font-size:.78rem">
+            Dejalo vacío si el cheque se libró al portador: se cobra por simple entrega y no
+            va a nombre de nadie.
+          </span>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -26846,7 +27090,7 @@ async function guardarDcq() {
   if (importe === '' || Number(importe) <= 0) {
     toast('El importe debe ser mayor a cero', { error: true }); return;
   }
-  if (!razon) { toast('El beneficiario es obligatorio', { error: true }); return; }
+  // El beneficiario no se valida: vacío significa que el cheque va al portador.
   if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
     toast('El correo del beneficiario no es válido', { error: true }); return;
   }
@@ -26901,7 +27145,8 @@ function abrirConsultaDcq(id) {
 
   const chequera = `${esc(c.cuenta_nombre || `Cuenta #${c.cuenta_id}`)}`
     + (c.banco_nombre ? ` · ${esc(c.banco_nombre)}` : '')
-    + ` · ${esc(DCCH_TIPO_META[c.chequera_tipo]?.label || c.chequera_tipo || '—')}`;
+    + ` · ${esc(DCCH_CLASE_META[c.chequera_clase]?.label || c.chequera_clase || '—')}`
+    + ` · ${esc(DCCH_TIPO_META[c.chequera_tipo]?.label   || c.chequera_tipo   || '—')}`;
 
   // Las dos acciones de estado sólo entran al menú si el cheque sigue en la
   // calle: marcarle "pagado" a uno anulado no significa nada. Misma regla que
@@ -26935,7 +27180,7 @@ function abrirConsultaDcq(id) {
           ${card('Importe',           `<strong>${esc(dcbFmtMoney(c.importe, c.moneda))}</strong>`)}
           ${card('Fecha de emisión',  esc(c.fecha_emision || '—'))}
           ${card('Fecha de pago',     esc(c.fecha_pago || '—'))}
-          ${card('Beneficiario',      esc(c.beneficiario_razon || '—'), 'full')}
+          ${card('Beneficiario',      dcqBeneficiarioHtml(c.beneficiario_razon), 'full')}
           ${card('CUIT',              `<span style="font-family:monospace">${esc(c.beneficiario_cuit || '—')}</span>`)}
           ${card('Correo',            esc(c.beneficiario_correo || '—'))}
           ${card('Concepto',          esc(c.concepto || '—'))}
@@ -27020,7 +27265,7 @@ async function eliminarDcq(id) {
   if (!c) return;
   const ok = await confirmar({
     title:       'Eliminar cheque',
-    message:     `¿Eliminás el cheque N.º ${c.numero || '#' + c.id} de ${dcbFmtMoney(c.importe, c.moneda)} a "${c.beneficiario_razon || '—'}"?`,
+    message:     `¿Eliminás el cheque N.º ${c.numero || '#' + c.id} de ${dcbFmtMoney(c.importe, c.moneda)} ${dcqBeneficiarioTexto(c.beneficiario_razon)}?`,
     confirmText: 'Eliminar',
     danger:      true,
   });

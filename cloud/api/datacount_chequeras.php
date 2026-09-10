@@ -4,9 +4,12 @@
 // `datacount_bancos_chequeras` definida en db/schema.sql — cada fila es un
 // talonario de cheques emitido contra una cuenta corriente del módulo Bancos.
 //
-// La chequera guarda DOS cosas propias: contra que cuenta se emitio
-// (`cuenta_id`) y si trae cheques comunes (a la vista) o diferidos (con fecha
-// de pago futura). Todo lo demas -- nombre, banco, numero de cuenta, empresa --
+// La chequera guarda TRES cosas propias: contra que cuenta se emitio
+// (`cuenta_id`), en que soporte viene el talonario (`clase`: papel o
+// electronica/ECHEQ) y si trae cheques comunes (a la vista) o diferidos (con
+// fecha de pago futura). Los dos ultimos son ejes ortogonales: existe la
+// chequera electronica de diferidos igual que la de papel de comunes.
+// Todo lo demas -- nombre, banco, numero de cuenta, empresa --
 // sale del JOIN a `datacount_bancos_cuentas` y por eso no se duplica acá:
 // renombrar una cuenta actualiza sus chequeras sin backfill, y no hay forma de
 // que una chequera quede con el banco de una cuenta y el numero de otra.
@@ -36,12 +39,13 @@ header('Content-Type: application/json; charset=utf-8');
 // ordenar por la cuenta, y el ORDER BY se arma con el alias correspondiente.
 const DCCH_ORDENES = ['id', 'nombre', 'numero_cuenta', 'tipo', 'activa', 'created_at'];
 const DCCH_TIPOS   = ['comun', 'diferido'];
+const DCCH_CLASES  = ['electronica', 'papel'];
 
 // El banco sale de la legacy `datacountbancos` (sin guion bajo), el catalogo de
 // instituciones del grupo — el mismo al que apunta
 // `datacount_bancos_cuentas.banco_id`. No existe ninguna `datacount_bancos`.
 const DCCH_SELECT = "
-    SELECT ch.id, ch.cuenta_id, ch.tipo, ch.observaciones, ch.activa,
+    SELECT ch.id, ch.cuenta_id, ch.clase, ch.tipo, ch.observaciones, ch.activa,
            ch.created_at, ch.updated_at,
            cu.nombre     AS nombre,
            cu.numero     AS numero_cuenta,
@@ -100,6 +104,7 @@ function normalizarFilaChequera(array $r): array {
         'banco_id'       => $r['banco_id']       !== null ? (int)$r['banco_id']          : null,
         'banco_nombre'   => $r['banco_nombre']   !== null ? (string)$r['banco_nombre']   : null,
         // Propios de la chequera.
+        'clase'          => (string)($r['clase'] ?? 'papel'),
         'tipo'           => (string)($r['tipo'] ?? 'comun'),
         'observaciones'  => $r['observaciones']  !== null ? (string)$r['observaciones']  : null,
         'activa'         => (int)($r['activa'] ?? 1),
@@ -109,6 +114,7 @@ function normalizarFilaChequera(array $r): array {
 }
 
 function sanitizePayloadChequera(array $in, bool $esAlta): array {
+    $clase  = trim((string)($in['clase']         ?? ''));
     $tipo   = trim((string)($in['tipo']          ?? ''));
     $observ = trim((string)($in['observaciones'] ?? ''));
 
@@ -120,9 +126,13 @@ function sanitizePayloadChequera(array $in, bool $esAlta): array {
 
     if ($esAlta) {
         if ($cuentaId === null) jsonError('La cuenta es obligatoria.', 400);
+        if ($clase === '')      $clase = 'papel';
         if ($tipo === '')       $tipo = 'comun';
     }
 
+    if ($clase !== '' && !in_array($clase, DCCH_CLASES, true)) {
+        jsonError('La clase solo admite "electronica" o "papel".', 400);
+    }
     if ($tipo !== '' && !in_array($tipo, DCCH_TIPOS, true)) {
         jsonError('El tipo solo admite "comun" o "diferido".', 400);
     }
@@ -133,6 +143,7 @@ function sanitizePayloadChequera(array $in, bool $esAlta): array {
 
     return [
         'cuenta_id'     => $cuentaId,
+        'clase'         => $clase  === '' ? null : $clase,
         'tipo'          => $tipo   === '' ? null : $tipo,
         'observaciones' => $observ === '' ? null : $observ,
         'activa'        => $activa,
@@ -238,6 +249,7 @@ function handleGetOneChequera(PDO $pdo, int $id): void {
 // - cuentas: `datacount_bancos_cuentas` con su banco y empresa ya resueltos,
 //   para que el ABM arme la etiqueta del combo y filtre por la empresa activa
 //   sin invalidar el cache al cambiar de empresa.
+// - clases: catalogo `estados` con campo=`datacount_bancos_chequera_clase`.
 // - tipos: catalogo `estados` con campo=`datacount_bancos_chequera_tipo`.
 function handleLookupsChequera(PDO $pdo): void {
     $cuentas = $pdo->query(
@@ -248,6 +260,12 @@ function handleLookupsChequera(PDO $pdo): void {
            FROM datacount_bancos_cuentas cu
            LEFT JOIN datacountbancos b ON b.id = cu.banco_id
           ORDER BY cu.nombre ASC, cu.id ASC"
+    )->fetchAll();
+
+    $clases = $pdo->query(
+        "SELECT valor, texto FROM estados
+          WHERE campo = 'datacount_bancos_chequera_clase'
+          ORDER BY orden ASC, id ASC"
     )->fetchAll();
 
     $tipos = $pdo->query(
@@ -268,6 +286,10 @@ function handleLookupsChequera(PDO $pdo): void {
             'banco_id'     => $r['banco_id']     !== null ? (int)$r['banco_id']        : null,
             'banco_nombre' => $r['banco_nombre'] !== null ? (string)$r['banco_nombre'] : null,
         ], $cuentas),
+        'clases' => array_map(fn($r) => [
+            'valor' => (string)($r['valor'] ?? ''),
+            'texto' => (string)($r['texto'] ?? ''),
+        ], $clases),
         'tipos' => array_map(fn($r) => [
             'valor' => (string)($r['valor'] ?? ''),
             'texto' => (string)($r['texto'] ?? ''),
@@ -281,12 +303,13 @@ function handleCreateChequera(PDO $pdo, array $body): void {
 
     $st = $pdo->prepare(
         'INSERT INTO datacount_bancos_chequeras
-            (cuenta_id, tipo, observaciones, activa)
+            (cuenta_id, clase, tipo, observaciones, activa)
          VALUES
-            (:cuenta_id, :tipo, :observaciones, :activa)'
+            (:cuenta_id, :clase, :tipo, :observaciones, :activa)'
     );
     $st->execute([
         ':cuenta_id'     => $p['cuenta_id'],
+        ':clase'         => $p['clase'] ?? 'papel',
         ':tipo'          => $p['tipo'] ?? 'comun',
         ':observaciones' => $p['observaciones'],
         ':activa'        => $p['activa'],
@@ -294,7 +317,7 @@ function handleCreateChequera(PDO $pdo, array $body): void {
 
     $id = (int)$pdo->lastInsertId();
     registrarSuceso($pdo, 'datacount_bancos_chequeras', 'info',
-        "Alta chequera #{$id} — cuenta #{$p['cuenta_id']} ({$p['tipo']})");
+        "Alta chequera #{$id} — cuenta #{$p['cuenta_id']} ({$p['clase']}/{$p['tipo']})");
 
     handleGetOneChequera($pdo, $id);
 }
@@ -310,11 +333,16 @@ function handleUpdateChequera(PDO $pdo, int $id, array $body): void {
     $sets   = [];
     $params = [':id' => $id];
 
-    // `cuenta_id` y `tipo` son NOT NULL: un '' del formulario no puede vaciarlos.
+    // `cuenta_id`, `clase` y `tipo` son NOT NULL: un '' del formulario no puede
+    // vaciarlos.
     if (array_key_exists('cuenta_id', $body) && $p['cuenta_id'] !== null) {
         asegurarCuentaChequera($pdo, $p['cuenta_id']);
         $sets[] = 'cuenta_id = :cuenta_id';
         $params[':cuenta_id'] = $p['cuenta_id'];
+    }
+    if (array_key_exists('clase', $body) && $p['clase'] !== null) {
+        $sets[] = 'clase = :clase';
+        $params[':clase'] = $p['clase'];
     }
     if (array_key_exists('tipo', $body) && $p['tipo'] !== null) {
         $sets[] = 'tipo = :tipo';

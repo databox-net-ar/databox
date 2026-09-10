@@ -50,6 +50,7 @@ const DCQ_SELECT = "
            q.beneficiario_razon, q.beneficiario_cuit, q.beneficiario_correo,
            q.concepto, q.referencia, q.modo, q.caracter, q.estado,
            q.operacion_numero, q.observaciones, q.created_at, q.updated_at,
+           ch.clase      AS chequera_clase,
            ch.tipo       AS chequera_tipo,
            ch.cuenta_id  AS cuenta_id,
            cu.nombre     AS cuenta_nombre,
@@ -105,7 +106,9 @@ function normalizarFilaCheque(array $r): array {
         'fecha_emision'       => $r['fecha_emision']       !== null ? (string)$r['fecha_emision'] : null,
         'fecha_pago'          => $r['fecha_pago']          !== null ? (string)$r['fecha_pago']    : null,
         'importe'             => (float)($r['importe'] ?? 0),
-        'beneficiario_razon'  => (string)($r['beneficiario_razon'] ?? ''),
+        // null = al portador, no "falta cargarlo". Se deja pasar tal cual para
+        // que el ABM lo distinga de un texto vacio.
+        'beneficiario_razon'  => $r['beneficiario_razon']  !== null ? (string)$r['beneficiario_razon']  : null,
         'beneficiario_cuit'   => $r['beneficiario_cuit']   !== null ? (string)$r['beneficiario_cuit']   : null,
         'beneficiario_correo' => $r['beneficiario_correo'] !== null ? (string)$r['beneficiario_correo'] : null,
         'concepto'            => $r['concepto']            !== null ? (string)$r['concepto']            : null,
@@ -116,6 +119,7 @@ function normalizarFilaCheque(array $r): array {
         'operacion_numero'    => $r['operacion_numero']    !== null ? (string)$r['operacion_numero']    : null,
         'observaciones'       => $r['observaciones']       !== null ? (string)$r['observaciones']       : null,
         // Heredados de la chequera y de su cuenta — solo lectura.
+        'chequera_clase'      => $r['chequera_clase']      !== null ? (string)$r['chequera_clase']      : null,
         'chequera_tipo'       => $r['chequera_tipo']       !== null ? (string)$r['chequera_tipo']       : null,
         'cuenta_id'           => $r['cuenta_id']           !== null ? (int)$r['cuenta_id']              : null,
         'cuenta_nombre'       => $r['cuenta_nombre']       !== null ? (string)$r['cuenta_nombre']       : null,
@@ -141,6 +145,16 @@ function fechaOpcionalCheque($v, string $etiqueta): ?string {
         jsonError("La {$etiqueta} no es una fecha válida.", 400);
     }
     return $s;
+}
+
+// Como se nombra al beneficiario en los sucesos. Devuelve la frase entera —con
+// preposicion incluida— porque las dos ramas la piden distinta: `a "Fulano"`
+// pero `al portador`. Sin beneficiario nominado el cheque es AL PORTADOR:
+// decirlo con todas las letras evita que el log quede con un `a ""` que se lee
+// como un bug.
+function beneficiarioTextoCheque(?string $razon): string {
+    $razon = trim((string)$razon);
+    return $razon === '' ? 'al portador' : "a \"{$razon}\"";
 }
 
 function sanitizePayloadCheque(array $in, bool $esAlta): array {
@@ -181,7 +195,8 @@ function sanitizePayloadCheque(array $in, bool $esAlta): array {
         if ($emision   === null)  jsonError('La fecha de emisión es obligatoria.', 400);
         if ($pago      === null)  jsonError('La fecha de pago es obligatoria.', 400);
         if ($importe   === null)  jsonError('El importe es obligatorio.', 400);
-        if ($razon     === '')    jsonError('La razón social del beneficiario es obligatoria.', 400);
+        // `beneficiario_razon` NO se valida: vacío es un valor con significado
+        // propio —el cheque va AL PORTADOR— y no un campo sin completar.
         if ($modo      === '')    $modo     = 'cruzado';
         if ($caracter  === '')    $caracter = 'a_la_orden';
         if ($estado    === '')    $estado   = 'emitido';
@@ -351,7 +366,7 @@ function handleGetOneCheque(PDO $pdo, int $id): void {
 // - estados: catalogo `estados` con campo=`datacount_bancos_cheque_estado`.
 function handleLookupsCheque(PDO $pdo): void {
     $chequeras = $pdo->query(
-        "SELECT ch.id, ch.tipo, ch.activa,
+        "SELECT ch.id, ch.clase, ch.tipo, ch.activa,
                 cu.id AS cuenta_id, cu.empresa_id, cu.numero AS cuenta_numero, cu.moneda,
                 COALESCE(NULLIF(TRIM(cu.nombre), ''), CONCAT('Cuenta #', cu.id)) AS cuenta_nombre,
                 NULLIF(TRIM(COALESCE(b.nombre, '')), '') AS banco_nombre
@@ -370,6 +385,7 @@ function handleLookupsCheque(PDO $pdo): void {
     jsonOk([
         'chequeras' => array_map(fn($r) => [
             'id'            => (int)$r['id'],
+            'clase'         => (string)$r['clase'],
             'tipo'          => (string)$r['tipo'],
             'activa'        => (int)$r['activa'],
             'cuenta_id'     => (int)$r['cuenta_id'],
@@ -432,7 +448,7 @@ function handleCreateCheque(PDO $pdo, array $body): void {
 
     $id = (int)$pdo->lastInsertId();
     registrarSuceso($pdo, 'datacount_bancos_cheques', 'info',
-        "Alta cheque #{$id} — N.º {$p['numero']} a \"{$p['beneficiario_razon']}\"");
+        "Alta cheque #{$id} — N.º {$p['numero']} " . beneficiarioTextoCheque($p['beneficiario_razon']));
 
     handleGetOneCheque($pdo, $id);
 }
@@ -471,14 +487,17 @@ function handleUpdateCheque(PDO $pdo, int $id, array $body): void {
 
     // Columnas NOT NULL: un '' del formulario no puede vaciarlas.
     foreach (['numero', 'fecha_emision', 'fecha_pago', 'importe',
-              'beneficiario_razon', 'modo', 'caracter', 'estado'] as $campo) {
+              'modo', 'caracter', 'estado'] as $campo) {
         if (array_key_exists($campo, $body) && $p[$campo] !== null) {
             $sets[] = "{$campo} = :{$campo}";
             $params[":{$campo}"] = $p[$campo];
         }
     }
     // Columnas nullables: se pisan tal cual vengan, '' incluido (= limpiar).
-    foreach (['beneficiario_cuit', 'beneficiario_correo', 'concepto',
+    // `beneficiario_razon` está acá y no arriba a propósito: vaciarlo es la
+    // forma de pasar un cheque nominado a AL PORTADOR, así que el '' tiene que
+    // llegar hasta la base en vez de ignorarse como en las NOT NULL.
+    foreach (['beneficiario_razon', 'beneficiario_cuit', 'beneficiario_correo', 'concepto',
               'referencia', 'operacion_numero', 'observaciones'] as $campo) {
         if (array_key_exists($campo, $body)) {
             $sets[] = "{$campo} = :{$campo}";
@@ -515,7 +534,7 @@ function handleDeleteCheque(PDO $pdo, int $id): void {
     $sd->execute([':id' => $id]);
 
     registrarSuceso($pdo, 'datacount_bancos_cheques', 'info',
-        "Baja cheque #{$id} — N.º {$prev['numero']} a \"{$prev['beneficiario_razon']}\"");
+        "Baja cheque #{$id} — N.º {$prev['numero']} " . beneficiarioTextoCheque($prev['beneficiario_razon']));
 
     jsonOk(['id' => $id]);
 }

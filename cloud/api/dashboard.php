@@ -179,6 +179,73 @@ if (hasPermission('plataformas.evolution.canales.consultar')) {
     ];
 }
 
+// Datacount cheques: bloque "cheques por entrar en los proximos 7 dias".
+// `fecha_pago` es la fecha desde la cual el cheque se puede presentar, o sea
+// cuando entra al banco y golpea la cuenta. Solo cuentan los que todavia estan
+// en la calle (emitido / entregado / depositado): un cheque pagado ya se
+// debito, y uno rechazado o anulado no va a entrar nunca, asi que ninguno de
+// los tres necesita que se lo avise.
+//
+// Incluye tambien los ya vencidos (fecha_pago < hoy y sin debitar): esos son
+// justamente los mas urgentes, porque el cheque esta habilitado para
+// presentarse y la cuenta todavia no lo acuso. El UI los pinta en rojo y a los
+// proximos en amarillo. Se muestra solo si el usuario tiene permiso de ver el
+// modulo Cheques; si no hay ninguno, `items` viene vacio y se renderiza
+// "Todo bien".
+$datacountCheques = null;
+if (hasPermission('datacount.bancos.cheques.consultar')) {
+    $pdo = $pdo ?? db();
+
+    $pendientes = (int)$pdo->query(
+        "SELECT COUNT(*) FROM datacount_bancos_cheques
+          WHERE estado IN ('emitido','entregado','depositado')"
+    )->fetchColumn();
+
+    $porEntrar = (int)$pdo->query("
+        SELECT COUNT(*) FROM datacount_bancos_cheques
+         WHERE estado IN ('emitido','entregado','depositado')
+           AND fecha_pago >= CURDATE()
+           AND fecha_pago <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+    ")->fetchColumn();
+
+    $vencidos = (int)$pdo->query("
+        SELECT COUNT(*) FROM datacount_bancos_cheques
+         WHERE estado IN ('emitido','entregado','depositado')
+           AND fecha_pago < CURDATE()
+    ")->fetchColumn();
+
+    $items = [];
+    if (($porEntrar + $vencidos) > 0) {
+        // Misma cadena de JOINs que api/datacount_bancos_cheques.php: la moneda
+        // es de la cuenta y la clase (papel / electronico) es de la chequera —
+        // el cheque no las guarda.
+        $stmt = $pdo->query("
+            SELECT q.id, q.numero, q.fecha_pago, q.importe, q.estado,
+                   q.beneficiario_razon,
+                   ch.clase  AS chequera_clase,
+                   cu.moneda AS moneda,
+                   NULLIF(TRIM(COALESCE(e.nombre, '')), '') AS empresa_nombre,
+                   DATEDIFF(q.fecha_pago, CURDATE()) AS dias
+              FROM datacount_bancos_cheques          q
+              INNER JOIN datacount_bancos_chequeras ch ON ch.id = q.chequera_id
+              INNER JOIN datacount_bancos_cuentas   cu ON cu.id = ch.cuenta_id
+              LEFT  JOIN datacount_empresas         e  ON e.id  = q.empresa_id
+             WHERE q.estado IN ('emitido','entregado','depositado')
+               AND q.fecha_pago <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+             ORDER BY q.fecha_pago ASC, q.id ASC
+             LIMIT 20
+        ");
+        $items = $stmt->fetchAll();
+    }
+
+    $datacountCheques = [
+        'pendientes' => $pendientes,
+        'por_entrar' => $porEntrar,
+        'vencidos'   => $vencidos,
+        'items'      => $items,
+    ];
+}
+
 $data = [
     'stats' => [
         'correos_hoy'       => 12840,
@@ -190,6 +257,7 @@ $data = [
     'datainfra_dominios'            => $datainfraDominios,
     'aws_cuentas'                   => $awsCuentas,
     'evolution_canales'             => $evolutionCanales,
+    'datacount_cheques'             => $datacountCheques,
 ];
 
 echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE);

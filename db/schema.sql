@@ -604,6 +604,11 @@ CREATE TABLE `datacountcomprobantes`  (
 -- mismo no pueden llevar el mismo número. Es lo que ataja el error típico de
 -- cargar dos veces el mismo cheque desde el ticket.
 --
+-- `beneficiario_razon` es NULLABLE y su NULL significa AL PORTADOR: el cheque
+-- librado así se cobra por simple entrega y en el papel no lleva a nombre de
+-- quién. No es un dato que falte cargar, es la ausencia de beneficiario. Se usa
+-- NULL y no la cadena vacía para que haya una sola forma de representarlo.
+--
 -- `modo` y `caracter` quedan como enum sin catálogo en `estados`: son binarios
 -- y los fija la ley de cheques (24.452), no una preferencia del operador.
 -- `estado`, en cambio, sí va a `estados` (campo
@@ -618,7 +623,7 @@ CREATE TABLE `datacount_bancos_cheques`  (
   `fecha_emision` date NOT NULL,
   `fecha_pago` date NOT NULL,
   `importe` decimal(14, 2) NOT NULL DEFAULT 0.00,
-  `beneficiario_razon` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `beneficiario_razon` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `beneficiario_cuit` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `beneficiario_correo` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `concepto` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
@@ -647,32 +652,42 @@ CREATE TABLE `datacount_bancos_cheques`  (
 -- Las chequeras del módulo Datacount > Chequeras: una fila por talonario de
 -- cheques que el banco entrega contra una cuenta corriente.
 --
--- Guarda DOS datos propios y nada más: contra qué cuenta se emitió
--- (`cuenta_id`) y qué tipo de cheque trae. El nombre, el banco, el número de
--- cuenta y la empresa NO se duplican acá — son atributos de la cuenta y se leen
--- por JOIN a `datacount_bancos_cuentas`. Tenerlos copiados permitía estados
--- imposibles (una chequera del Banco Galicia con el número de cuenta del Banco
--- San Juan) que nada validaba, y obligaba a un backfill cada vez que se
--- renombraba una cuenta.
+-- Guarda TRES datos propios y nada más: contra qué cuenta se emitió
+-- (`cuenta_id`), en qué soporte viene el talonario (`clase`) y qué tipo de
+-- cheque trae (`tipo`). El nombre, el banco, el número de cuenta y la empresa
+-- NO se duplican acá — son atributos de la cuenta y se leen por JOIN a
+-- `datacount_bancos_cuentas`. Tenerlos copiados permitía estados imposibles
+-- (una chequera del Banco Galicia con el número de cuenta del Banco San Juan)
+-- que nada validaba, y obligaba a un backfill cada vez que se renombraba una
+-- cuenta.
+--
+-- `clase` distingue PAPEL (el talonario físico de toda la vida) de ELECTRÓNICA
+-- (el ECHEQ: se libra y se endosa desde el homebanking y nunca se imprime).
 --
 -- `tipo` distingue COMÚN (se cobra a la vista, desde la emisión) de DIFERIDO
 -- (lleva fecha de pago futura y no se puede presentar antes). Vive en la
 -- chequera y no en el cheque porque el banco entrega talonarios separados para
--- cada uno: una chequera nunca mezcla los dos. Es además lo que distingue dos
--- chequeras de la misma cuenta. Además del enum, el catálogo se seedea en
--- `estados` (campo `datacount_bancos_chequera_tipo`) para alimentar los combos
--- desde Herramientas > Editor de estados — mismo patrón que
+-- cada uno: una chequera nunca mezcla los dos.
+--
+-- Los dos ejes son ortogonales — existe la chequera electrónica de diferidos
+-- igual que la de papel de comunes — y por eso son columnas separadas y no un
+-- único enum de cuatro valores. Juntos son además lo que distingue dos
+-- chequeras de la misma cuenta. Además del enum, ambos catálogos se seedean en
+-- `estados` (campos `datacount_bancos_chequera_clase` y
+-- `datacount_bancos_chequera_tipo`) para alimentar los combos desde
+-- Herramientas > Editor de estados — mismo patrón que
 -- `datacount_bancos_cuentas.tipo`.
 --
 -- El FK contra la cuenta es CASCADE, igual que el de
 -- `datacount_bancos_movimientos`: una chequera sin su cuenta corriente no
--- significa nada. No hay UNIQUE (cuenta_id, tipo): una cuenta puede tener
--- varias chequeras vigentes del mismo tipo (el talonario anterior sin agotar
--- más el nuevo).
+-- significa nada. No hay UNIQUE (cuenta_id, clase, tipo): una cuenta puede
+-- tener varias chequeras vigentes de la misma clase y tipo (el talonario
+-- anterior sin agotar más el nuevo).
 DROP TABLE IF EXISTS `datacount_bancos_chequeras`;
 CREATE TABLE `datacount_bancos_chequeras`  (
   `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
   `cuenta_id` int(11) UNSIGNED NOT NULL,
+  `clase` enum('electronica','papel') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'papel',
   `tipo` enum('comun','diferido') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'comun',
   `observaciones` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
   `activa` tinyint(1) NOT NULL DEFAULT 1,
@@ -680,6 +695,7 @@ CREATE TABLE `datacount_bancos_chequeras`  (
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_cuenta`(`cuenta_id`) USING BTREE,
+  INDEX `idx_clase`(`clase`) USING BTREE,
   INDEX `idx_tipo`(`tipo`) USING BTREE,
   INDEX `idx_activa`(`activa`) USING BTREE,
   CONSTRAINT `fk_dcbch_cuenta` FOREIGN KEY (`cuenta_id`)
