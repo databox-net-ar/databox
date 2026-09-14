@@ -558,6 +558,12 @@ En las dos pasadas la migración fue de chrome, no de contenido: se pintó el he
 
 **Desvío consciente del estándar en las dos pasadas:** en los modales de Consultar, `Editar` quedó como botón directo de la barra en vez de vivir dentro de `Acciones ▾`. El pedido fue explícitamente mover los botones sin reestructurar; agrupar `Editar` en un desplegable implica crear un menú flotante por ficha. Queda pendiente para una pasada posterior.
 
+**Nacidos en el formato nuevo (no cuentan como migración):** los módulos creados después de esas dos pasadas ya arrancan con header pintado, barra de acciones y sin footer — hoy, Datarocket &rsaquo; Expertos (5 modales: Filtros, Alta/Edición, Consultar y los dos chats, **Mejorar** y **Conversar**). No hay nada que migrarles; se listan acá para que el conteo de "sin migrar" no los incluya por omisión.
+
+Los dos chats son además modales apilados (`.modal-apilado`, §14): backdrop propio montado en `<body>` en vez de `openModal()`, que destruiría lo que quedó abajo — el formulario a medio completar en el caso de **Mejorar**, la ficha de Consultar en el de **Conversar**. Su cuerpo anula el `overflow-y` del estándar (`.drex-chat-body`, §28) para que scrollee el hilo y no el cuerpo entero: si scrollease el cuerpo, el compositor se iría de la vista justo cuando la conversación se hace larga.
+
+Los dos comparten las clases `.drex-chat-*` y se distinguen sólo por quién habla del otro lado — **Mejorar** le habla a un redactor de prompts que edita la definición del experto; **Conversar** le habla al experto mismo, montado con su contexto crudo como prompt de sistema. Es la diferencia entre escribir la definición y ejecutarla.
+
 **Sin migrar:** el resto del panel (Administración, AWS, Datainfra, Evolution, Telegram, Movistar, Claro, Arca, Mercadopago, Dolarhoy y OpenAI) — ~96 modales que siguen en el formato de §14 (header gris + botones en el footer). Por eso las reglas de layout van scopeadas con `:has()` al modal que declara `.modal-header-primary`, en vez de cambiar `.modal` a secas: cambiar el modo de scroll globalmente tocaría de una todos los modales que todavía no se migraron. Cada modal que se migre hereda el layout nuevo solo con pintar su header.
 
 **No es migración parcial.** Pintar el header y dejar los botones abajo —o subirlos y dejar el header gris— produce un modal que no es ni el formato viejo ni el nuevo. El procedimiento completo, paso a paso, está en la skill `abm_design`.

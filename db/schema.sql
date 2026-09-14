@@ -2397,6 +2397,42 @@ CREATE TABLE `datarocket_campanas_mensajes`  (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for datarocket_expertos
+-- ----------------------------
+-- Creada por la migracion 20260914_1000_datarocket_expertos_modulo.sql.
+--
+-- Cada fila es UN EXPERTO: la personalidad con la que una IA responde las
+-- consultas de los interesados en un proyecto del grupo.
+--
+-- `contexto` es el prompt de sistema que se le antepone al modelo, guardado en
+-- MARKDOWN CRUDO y mandado tal cual (el panel lo renderiza con mdRender() solo
+-- para mostrarlo). Es MEDIUMTEXT y no TEXT porque un prompt con catalogo de
+-- productos pasa los 64 KB sin esfuerzo y el truncado de MySQL es silencioso.
+--
+-- `slug` es el identificador estable (UNIQUE global): es lo que referencian los
+-- canales de entrada para pedir "contesta con este experto".
+--
+-- `proyecto_id` va NULLABLE y SIN foreign key, igual que en
+-- `datarocket_redes_sociales`: `proyectos` es compartida con las apps legacy y
+-- ninguna tabla Datarocket nueva lleva FK contra ella. NULL = experto
+-- transversal al grupo.
+DROP TABLE IF EXISTS `datarocket_expertos`;
+CREATE TABLE `datarocket_expertos`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `proyecto_id` int(11) NULL DEFAULT NULL,
+  `slug` varchar(60) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `nombre` varchar(150) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `contexto` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  `activo` tinyint(1) NOT NULL DEFAULT 1,
+  `fecha_creacion` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `fecha_modificacion` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uq_drex_slug`(`slug`) USING BTREE,
+  INDEX `idx_drex_proyecto`(`proyecto_id`) USING BTREE,
+  INDEX `idx_drex_activo`(`activo`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for datarocketcampanas
 -- ----------------------------
 -- LEGACY: reemplazada por `datarocket_campanas` (migracion 20260828_1000).

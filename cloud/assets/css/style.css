@@ -1693,3 +1693,65 @@ tbody tr.row-clickable { cursor: pointer; }
    roto que al tocarlo no hace nada. */
 .md-ruta        { font-family: monospace; font-size: .82em; color: var(--muted);
                   border-bottom: 1px dotted var(--border); cursor: help; }
+
+/* ---------------------------------------------------------------------
+   28. Chat de IA (Datarocket > Expertos > Mejorar)
+
+   Modal apilado sobre el de Alta/Edición del experto. El operador le pide
+   en lenguaje natural que incorpore conocimiento al contexto y el modelo
+   devuelve el Markdown completo actualizado como PROPUESTA — nada se
+   escribe hasta que se aprieta "Aplicar al contexto".
+
+   La conversación ocupa el alto disponible y scrollea sola: el compositor
+   queda siempre a la vista, que es donde está la mano del operador. Por eso
+   el cuerpo del modal es un flex vertical y NO scrollea él (el `overflow-y`
+   del `.modal-body` del estándar se anula acá a propósito).
+   --------------------------------------------------------------------- */
+/* El selector va con el mismo prefijo `:has()` que la regla de §14-bis a la que
+   le gana por especificidad: `.modal:has(> .modal-header-primary) > .modal-body`
+   le pone `overflow-y: auto` al cuerpo de todo modal del formato nuevo, y acá
+   el que scrollea tiene que ser el hilo, no el cuerpo. Con `.drex-chat-body` a
+   secas la regla de arriba gana y el compositor se va de la vista al crecer la
+   conversación. */
+.modal:has(> .modal-header-primary) > .modal-body.drex-chat-body,
+.drex-chat-body    { display: flex; flex-direction: column; gap: 12px;
+                     overflow: hidden; }
+.drex-chat-hilo    { flex: 1 1 auto; min-height: 240px; overflow-y: auto;
+                     display: flex; flex-direction: column; gap: 12px;
+                     padding-right: 4px; }
+
+.drex-chat-msg     { max-width: 88%; border-radius: 12px; padding: 10px 14px;
+                     font-size: .86rem; line-height: 1.6; word-break: break-word; }
+/* El turno del operador va en primary y alineado a la derecha; el del modelo
+   en el gris de las tarjetas de consulta, a la izquierda. Es la convención de
+   cualquier chat y no hace falta rótulo para leer quién habló. */
+.drex-chat-user    { align-self: flex-end; background: var(--primary); color: #fff; }
+.drex-chat-ia      { align-self: flex-start;
+                     background: color-mix(in srgb, var(--surface) 90%, #000);
+                     color: var(--text); }
+.drex-chat-sys     { align-self: center; max-width: 100%; text-align: center;
+                     font-size: .78rem; color: var(--muted); padding: 2px 0; }
+.drex-chat-error   { align-self: flex-start; background: color-mix(in srgb, var(--danger) 18%, var(--surface));
+                     color: var(--text); border: 1px solid var(--danger); }
+
+/* Tarjeta que anuncia que ese turno trajo una propuesta de contexto nueva.
+   Va DENTRO de la burbuja del modelo: la propuesta es parte de lo que
+   contestó, no un evento aparte. */
+.drex-chat-prop    { margin-top: 10px; border-radius: 10px; padding: 8px 10px;
+                     background: var(--bg); border: 1px solid var(--border);
+                     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                     font-size: .78rem; color: var(--muted); }
+.drex-chat-prop b  { color: var(--text); font-weight: 600; }
+
+.drex-chat-compositor { flex: 0 0 auto; display: flex; gap: 8px; align-items: flex-end; }
+.drex-chat-compositor textarea { flex: 1; min-height: 58px; max-height: 180px;
+                                 font-size: .86rem; line-height: 1.5; }
+
+/* Los tres puntos de "está pensando". Un modelo de razonamiento puede tardar
+   varios segundos y el hilo tiene que decir que sigue vivo. */
+.drex-chat-typing  { display: inline-flex; gap: 4px; align-items: center; }
+.drex-chat-typing i { width: 6px; height: 6px; border-radius: 50%;
+                      background: var(--muted); animation: drexBlink 1.2s infinite; }
+.drex-chat-typing i:nth-child(2) { animation-delay: .2s; }
+.drex-chat-typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes drexBlink { 0%, 60%, 100% { opacity: .25 } 30% { opacity: 1 } }

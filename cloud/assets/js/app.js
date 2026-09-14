@@ -1272,6 +1272,7 @@ const ROUTE_PERMS = {
   '/datarocket_oportunidades':  { perm:   'datarocket.oportunidades.consultar' },
   '/datarocket_campanas':      { perm:   'datarocket.campanas.consultar' },
   '/datarocket_redes_sociales': { perm:   'datarocket.redes_sociales.consultar' },
+  '/datarocket_expertos':      { perm:   'datarocket.expertos.consultar' },
 
   '/datainfra':                { prefix: 'datainfra.' },
   '/datainfradominios':        { perm:   'datainfra.dominios.consultar' },
@@ -29966,7 +29967,7 @@ route('/datarocket', async (mount) => {
          CRM "quien" (Prospectos, Oportunidades) -> "que paso" (Interacciones) ->
          "pipeline" (Embudos, Etapas) -> "insumos de mensajeria" (Listas,
          Etiquetas, Plantillas) -> "el envio en si" (Campanas) -> "canales de
-         publicacion" (Redes sociales).
+         publicacion" (Redes sociales) -> "quien contesta" (Expertos).
          Campanas va DESPUES de Plantillas porque consume los tres insumos
          anteriores: lista + plantilla + canal.
          NO reordenar a alfabetico sin acuerdo. -->
@@ -30015,6 +30016,11 @@ route('/datarocket', async (mount) => {
         <span class="tile-icon">📱</span>
         <span class="tile-title">Redes sociales</span>
         <span class="tile-desc">Cuentas de redes sociales de cada proyecto con sus credenciales, tokens y vínculo con Postiz para automatizar las publicaciones.</span>
+      </button>
+      <button type="button" class="tile-card" onclick="location.hash='#/datarocket_expertos'">
+        <span class="tile-icon">🧠</span>
+        <span class="tile-title">Expertos</span>
+        <span class="tile-desc">Personalidades con las que la IA responde las consultas de los interesados en cada proyecto: un prompt de contexto en Markdown por experto.</span>
       </button>
     </div>
   `;
@@ -39887,6 +39893,1512 @@ async function eliminarDrrs(id) {
     await apiSend(`${DRRS_API}?id=${id}`, 'DELETE');
     toast('Cuenta eliminada');
     await cargarDrrs();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ------------------------- Vista: Datarocket > Expertos (ABM) -------------------------
+// Cada fila es UN EXPERTO: la personalidad con la que una IA responde las
+// consultas de los interesados en un proyecto del grupo. Lo que define al
+// experto es su `contexto` — el prompt de sistema que se le antepone al modelo
+// antes de la consulta: quién es, qué producto representa, qué sabe, qué tono
+// usa y qué no debe contestar.
+//
+// El contexto se guarda en MARKDOWN CRUDO y se manda al modelo tal cual (la
+// justificación está en la migración
+// cloud/sql/migrations/20260914_1000_datarocket_expertos_modulo.sql). La vista
+// previa del formulario y la pestaña Contexto del modal de Consultar lo pintan
+// con `mdRender()` — el mismo renderizador propio que usa la vista
+// Documentación, que escapa antes de formatear.
+//
+// CONTEXTO EN EL LISTADO: el endpoint NO devuelve el prompt entero en la lista
+// (puede pesar decenas de KB por fila). Manda `contexto_largo` y
+// `contexto_extracto`, que es lo único que la tabla necesita. El texto completo
+// sale del GET por id, así que Consultar y Editar arrancan pidiendo la ficha en
+// vez de reusar la fila que ya está en `drexItems`.
+const DREX_API = 'api/datarocket_expertos.php';
+
+// Espeja DREX_CONTEXTO_MAX del endpoint. Sirve para avisar antes de perder el
+// formulario en un 400.
+const DREX_CONTEXTO_MAX = 200000;
+
+const drexFiltrosDefaults = {
+  q: '', codigo: '', proyecto: '', activo: '',
+  limite: 100, order_by: 'id', dir: 'desc',
+};
+const drexFiltros = { ...drexFiltrosDefaults };
+
+let drexItems           = [];
+let drexEditandoId      = null;
+let drexBuscadorTimer   = null;
+let drexFiltrosSnapshot = null;
+let drexLookupsCache    = null;
+let drexLookupsPromesa  = null;
+// Ficha completa (contexto incluido) del registro abierto en el modal de
+// Consultar. La guardamos para que las acciones de copiado del menú de la barra
+// no tengan que volver a pedirla.
+let drexDetalleActual   = null;
+
+// Catálogo de proyectos internos para el formulario y el modal de filtros. Se
+// pide una sola vez por vida de la página; son pocas filas y cambian muy rara vez.
+async function drexCargarLookups() {
+  if (drexLookupsCache) return drexLookupsCache;
+  if (drexLookupsPromesa) return drexLookupsPromesa;
+  drexLookupsPromesa = (async () => {
+    const d = await apiGet(`${DREX_API}?lookups=1`);
+    drexLookupsCache = { proyectos: d.proyectos || [] };
+    return drexLookupsCache;
+  })();
+  try { return await drexLookupsPromesa; }
+  finally { drexLookupsPromesa = null; }
+}
+
+// Mirror JS de drexSlugify() (cloud/api/datarocket_expertos.php).
+// Autocompleta el input `slug` mientras el operador tipea el nombre.
+function drexSlugify(s) {
+  if (!s) return '';
+  const pares = { 'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+                  'à':'a','è':'e','ì':'i','ò':'o','ù':'u',
+                  'ä':'a','ë':'e','ï':'i','ö':'o','ü':'u',
+                  'Á':'a','É':'e','Í':'i','Ó':'o','Ú':'u',
+                  'ñ':'n','Ñ':'n','ç':'c','Ç':'c' };
+  let out = String(s).trim();
+  out = out.replace(/[áéíóúàèìòùäëïöüÁÉÍÓÚñÑçÇ]/g, (c) => pares[c] || c);
+  out = out.toLowerCase();
+  out = out.replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, '');
+  return out.slice(0, 60);
+}
+
+function drexActivoBadge(v) {
+  return Number(v) === 1
+    ? `<span class="badge badge-success">Activo</span>`
+    : `<span class="badge badge-danger">Inactivo</span>`;
+}
+
+// Un experto sin contexto no puede contestar nada: el badge lo marca en warn
+// para que se vea de un vistazo cuáles quedaron a medio cargar.
+function drexContextoBadge(n) {
+  const largo = Number(n) || 0;
+  return largo > 0
+    ? `<span class="badge badge-info">${fmtNum(largo)} car.</span>`
+    : `<span class="badge badge-warn">Sin contexto</span>`;
+}
+
+// Ficha completa, con el contexto entero.
+async function drexObtener(id) {
+  return await apiGet(`${DREX_API}?id=${id}`);
+}
+
+async function drexCopiar(valor, etiqueta) {
+  if (!valor) { toast(`Este experto no tiene ${etiqueta}`, { error: true }); return; }
+  try {
+    await navigator.clipboard.writeText(String(valor));
+    toast(`${etiqueta} copiado`);
+  } catch {
+    toast('No se pudo copiar al portapapeles', { error: true });
+  }
+}
+
+route('/datarocket_expertos', async (mount) => {
+  mount.innerHTML = `
+    <div class="section">
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start">
+        <button type="button" class="btn btn-primary" style="width:44px;padding:0;justify-content:center;flex-shrink:0"
+                title="Volver a Datarocket" onclick="location.hash='#/datarocket'">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="module-help" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;flex:1;margin-bottom:0">
+          <div style="font-size:1.6rem;line-height:1">🧠</div>
+          <div style="font-size:.88rem;color:var(--muted);line-height:1.45">
+            Los expertos son las personalidades con las que la IA responde las consultas de
+            los interesados en cada proyecto del grupo. Cada uno guarda un prompt de contexto
+            en Markdown —quién es, qué representa, qué sabe y qué tono usa— que se le antepone
+            al modelo antes de la consulta.
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="drexStats">
+        <div class="stat-card"><span class="stat-label">Total</span><span class="stat-value orange" id="drexStatTotal">—</span></div>
+        <div class="stat-card"><span class="stat-label">Activos</span><span class="stat-value green" id="drexStatActivos">—</span></div>
+        <div class="stat-card"><span class="stat-label">Con contexto</span><span class="stat-value" id="drexStatContexto">—</span></div>
+        <div class="stat-card"><span class="stat-label">Proyectos</span><span class="stat-value" id="drexStatProyectos">—</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-left" style="gap:8px;flex-wrap:wrap">
+          <div class="search-wrap">
+            <input type="search" class="search-input" id="drexSearch"
+                   placeholder="🔍 Buscar nombre, slug o contexto…">
+            <button class="search-clear" id="drexSearchClear" style="display:none">×</button>
+          </div>
+          <button class="btn btn-ghost btn-icon" id="drexFiltrosBtn" title="Filtros">
+            <i class="fa-solid fa-filter"></i>
+            <span class="btn-icon-badge" id="drexFiltrosBadge" style="display:none">0</span>
+          </button>
+          <button class="btn btn-ghost btn-icon" id="drexRefrescarBtn" title="Refrescar">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-primary" id="drexNuevoBtn">+ Nuevo experto</button>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <!-- Proyecto va inmediatamente despues de Codigo: el listado se lee
+               por proyecto. No es ordenable porque DREX_ORDENES (el allowlist
+               de columnas del endpoint) no la incluye.
+               Sin backticks en este comentario: vive dentro de un template
+               literal y cerrarian el string. -->
+          <thead id="drexThead">
+            <tr>
+              ${thOrdenable('id',     'Código',   'width:80px')}
+              <th style="width:150px">Proyecto</th>
+              ${thOrdenable('nombre', 'Nombre',   'width:220px')}
+              <th>Contexto</th>
+              ${thOrdenable('activo', 'Estado',   'width:100px')}
+              ${thOrdenable('fecha_modificacion', 'Modificado', 'width:150px')}
+              <th style="width:60px;text-align:center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="drexTbody">
+            <tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Menú contextual único de la sección -->
+    <div id="drexCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="consultar" role="menuitem">
+        <i class="fa-solid fa-eye"></i><span>Consultar</span>
+      </button>
+      <button type="button" data-action="conversar" role="menuitem">
+        <i class="fa-solid fa-comments"></i><span>Conversar</span>
+      </button>
+      <button type="button" data-action="copiar-contexto" role="menuitem">
+        <i class="fa-solid fa-clipboard"></i><span>Copiar contexto</span>
+      </button>
+      <button type="button" data-action="activo" role="menuitem">
+        <i class="fa-solid fa-power-off"></i><span data-label>Desactivar</span>
+      </button>
+      <div class="ctx-menu-sep"></div>
+      <button type="button" data-action="editar" role="menuitem">
+        <i class="fa-solid fa-pen"></i><span>Editar</span>
+      </button>
+      <button type="button" data-action="eliminar" class="ctx-menu-danger" role="menuitem">
+        <i class="fa-solid fa-trash"></i><span>Eliminar</span>
+      </button>
+    </div>
+
+    <!-- Menú contextual del modal Consultar (acciones extra del recurso) -->
+    <div id="drexConsultaCtxMenu" class="ctx-menu" role="menu">
+      <button type="button" data-action="conversar" role="menuitem">
+        <i class="fa-solid fa-comments"></i><span>Conversar</span>
+      </button>
+      <button type="button" data-action="copiar-slug" role="menuitem">
+        <i class="fa-solid fa-hashtag"></i><span>Copiar slug</span>
+      </button>
+      <button type="button" data-action="copiar-contexto" role="menuitem">
+        <i class="fa-solid fa-clipboard"></i><span>Copiar contexto</span>
+      </button>
+    </div>
+
+    <!-- Modal de filtros (ABM.md) -->
+    <div class="modal-backdrop" id="filtrosDrexBackdrop"
+         onclick="if(event.target===this)cancelarFiltrosDrex()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header modal-header-primary">
+          <div class="modal-title"><i class="fa-solid fa-filter"></i> Filtros</div>
+          <button class="btn-icon-sm" onclick="cancelarFiltrosDrex()" title="Cerrar">✕</button>
+        </div>
+        <div class="modal-menubar" role="toolbar" aria-label="Acciones de los filtros">
+          <button class="btn btn-sm btn-ghost" onclick="cancelarFiltrosDrex()">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="limpiarFiltrosDrex()">
+            <i class="fa-solid fa-eraser"></i> Limpiar
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="cerrarModalFiltrosDrex()">
+            <i class="fa-solid fa-check"></i> Aplicar
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Código</label>
+              <input type="number" id="fDrexCodigo" min="1" placeholder="ID …"
+                     oninput="onFiltroDrex('codigo', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Proyecto</label>
+              <select id="fDrexProyecto" onchange="onFiltroDrex('proyecto', this.value)">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estado del registro</label>
+            <div id="fDrexActivoChips" style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="filter-chip" data-activo="">Todos</button>
+              <button type="button" class="filter-chip" data-activo="1">Activo</button>
+              <button type="button" class="filter-chip" data-activo="0">Inactivo</button>
+            </div>
+          </div>
+          <div class="form-row form-row-3">
+            <div class="form-group">
+              <label>Límite</label>
+              <input type="number" id="fDrexLimite" min="1" max="1000" value="100"
+                     onchange="onFiltroDrex('limite', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Ordenar por</label>
+              <select id="fDrexOrden" onchange="onFiltroDrex('order_by', this.value)">
+                <option value="id">Código</option>
+                <option value="nombre">Nombre</option>
+                <option value="slug">Slug</option>
+                <option value="activo">Estado</option>
+                <option value="fecha_creacion">Fecha de alta</option>
+                <option value="fecha_modificacion">Última modificación</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Dirección</label>
+              <select id="fDrexDir" onchange="onFiltroDrex('dir', this.value)">
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#drexSearch');
+  const clr = $('#drexSearchClear');
+  inp.value = drexFiltros.q;
+  clr.style.display = inp.value ? '' : 'none';
+  inp.addEventListener('input', () => {
+    clr.style.display = inp.value ? '' : 'none';
+    drexFiltros.q = inp.value.trim();
+    clearTimeout(drexBuscadorTimer);
+    drexBuscadorTimer = setTimeout(cargarDrex, 250);
+  });
+  clr.addEventListener('click', () => {
+    inp.value = ''; clr.style.display = 'none'; drexFiltros.q = ''; cargarDrex();
+  });
+
+  $('#drexFiltrosBtn').addEventListener('click', abrirModalFiltrosDrex);
+  $('#drexRefrescarBtn').addEventListener('click', cargarDrex);
+  $('#drexNuevoBtn').addEventListener('click', () => abrirAltaEdicionDrex(null));
+
+  activarSortEnThead($('#drexThead'), drexFiltros, () => cargarDrex());
+
+  $('#drexCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    const data = getCtxMenuData();
+    if (!data) return;
+    cerrarCtxMenu();
+    const a = b.dataset.action;
+    if (a === 'consultar') abrirConsultaDrex(data.id);
+    if (a === 'conversar') drexAbrirConversar(data.id);
+    if (a === 'editar')    abrirAltaEdicionDrex(data.id);
+    if (a === 'eliminar')  eliminarDrex(data.id);
+    if (a === 'activo')    drexToggleActivo(data.id);
+    // El listado sólo trae el extracto del contexto, así que copiarlo obliga a
+    // pedir la ficha por id — que es la única que devuelve el prompt entero.
+    if (a === 'copiar-contexto') {
+      try {
+        const ficha = await drexObtener(data.id);
+        await drexCopiar(ficha.contexto, 'El contexto');
+      } catch (err) { toast(err.message, { error: true }); }
+    }
+  });
+
+  $('#drexTbody').addEventListener('click', (ev) => {
+    const ham = ev.target.closest('[data-act="menu"]');
+    if (ham) {
+      ev.stopPropagation();
+      const id = Number(ham.dataset.id);
+      const r  = ham.getBoundingClientRect();
+      drexAbrirMenu(r.right - 220, r.bottom + 4, id);
+      return;
+    }
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    abrirConsultaDrex(Number(tr.dataset.id));
+  });
+  $('#drexTbody').addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr) return;
+    ev.preventDefault();
+    drexAbrirMenu(ev.clientX, ev.clientY, Number(tr.dataset.id));
+  });
+
+  // Acciones extra del modal Consultar. Viven en un menú propio porque la barra
+  // de Consultar sólo lleva Cerrar + Editar directos (ABM.md).
+  $('#drexConsultaCtxMenu').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-action]');
+    if (!b) return;
+    cerrarCtxMenu();
+    const d = drexDetalleActual;
+    if (!d) return;
+    const a = b.dataset.action;
+    if (a === 'conversar')       drexAbrirConversar(d.id);
+    if (a === 'copiar-slug')     await drexCopiar(d.slug,     'El slug');
+    if (a === 'copiar-contexto') await drexCopiar(d.contexto, 'El contexto');
+  });
+
+  await drexCargarLookups();
+  const L = drexLookupsCache || {};
+
+  const selProy = $('#fDrexProyecto');
+  if (selProy) {
+    selProy.innerHTML = `<option value="">— Todos —</option>` +
+      (L.proyectos || []).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+  }
+
+  const chipsAct = $('#fDrexActivoChips');
+  if (chipsAct) {
+    chipsAct.addEventListener('click', (ev) => {
+      const b = ev.target.closest('.filter-chip');
+      if (!b) return;
+      drexFiltros.activo = b.dataset.activo || '';
+      drexSincronizarChipsActivo();
+      drexActualizarBadgeFiltros();
+      cargarDrex();
+    });
+  }
+
+  drexActualizarBadgeFiltros();
+  await cargarDrex();
+}, 'Datarocket &nbsp;&nbsp;<i class="fa-solid fa-caret-right"></i>&nbsp;&nbsp; Expertos');
+
+// El label del toggle Activar/Desactivar depende del estado de la fila, así que
+// se resuelve al abrir el menú (regla del menú contextual en ABM.md).
+function drexAbrirMenu(x, y, id) {
+  const r   = drexItems.find((c) => c.id === id);
+  const lbl = $('#drexCtxMenu')?.querySelector('[data-action="activo"] [data-label]');
+  if (lbl) lbl.textContent = Number(r?.activo) === 1 ? 'Desactivar' : 'Activar';
+  abrirCtxMenu($('#drexCtxMenu'), x, y, { id });
+}
+
+async function cargarDrex() {
+  const tbody = $('#drexTbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px"><div class="spin"></div></td></tr>`;
+
+  // `codigo` no viaja al server (el endpoint no lo acepta): se filtra en
+  // cliente sobre lo que ya vino, igual que el resto de los ABMs.
+  const qs = new URLSearchParams();
+  if (drexFiltros.q)             qs.set('q',        drexFiltros.q);
+  if (drexFiltros.proyecto)      qs.set('proyecto', drexFiltros.proyecto);
+  if (drexFiltros.activo !== '') qs.set('activo',   drexFiltros.activo);
+  qs.set('limite', drexFiltros.limite);
+  qs.set('orden',  drexFiltros.order_by);
+  qs.set('dir',    drexFiltros.dir);
+
+  try {
+    const data = await apiGet(DREX_API + '?' + qs.toString());
+    drexItems = data.items || [];
+    const s = data.stats || {};
+    $('#drexStatTotal').textContent     = fmtNum(s.total        ?? drexItems.length);
+    $('#drexStatActivos').textContent   = fmtNum(s.activos      ?? 0);
+    $('#drexStatContexto').textContent  = fmtNum(s.con_contexto ?? 0);
+    $('#drexStatProyectos').textContent = fmtNum(s.proyectos    ?? 0);
+    actualizarSortIndicadores($('#drexThead'), drexFiltros);
+    renderDrex();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderDrex() {
+  const tbody = $('#drexTbody');
+  if (!tbody) return;
+  if (!drexItems.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin expertos registrados.</td></tr>`;
+    return;
+  }
+
+  let filas = drexItems;
+  if (drexFiltros.codigo) {
+    const cod = Number(drexFiltros.codigo);
+    filas = filas.filter((r) => r.id === cod);
+  }
+  if (!filas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">Sin resultados con los filtros actuales.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filas.map((r) => `
+    <tr data-id="${r.id}" class="row-clickable">
+      <td><code style="font-size:.82rem">${r.id}</code></td>
+      <td>${esc(r.proyecto_nombre || (r.proyecto_id ? `#${r.proyecto_id}` : '—'))}</td>
+      <td>
+        <div style="font-weight:600">${esc(r.nombre || '—')}</div>
+        <div style="color:var(--muted);font-size:.75rem"><code>${esc(r.slug || '')}</code></div>
+      </td>
+      <td>
+        <div style="margin-bottom:4px">${drexContextoBadge(r.contexto_largo)}</div>
+        <div style="color:var(--muted);font-size:.75rem;line-height:1.4">${esc(r.contexto_extracto || '')}</div>
+      </td>
+      <td>${drexActivoBadge(r.activo)}</td>
+      <td style="font-size:.8rem">${esc(fmtFechaAnio(r.fecha_modificacion))}</td>
+      <td style="text-align:center">
+        <div class="actions" style="justify-content:center">
+          <button class="btn-icon-sm" title="Más acciones" data-act="menu" data-id="${r.id}">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ---- Modal de filtros ----
+function abrirModalFiltrosDrex() {
+  drexFiltrosSnapshot = { ...drexFiltros };
+  $('#fDrexCodigo').value   = drexFiltros.codigo   || '';
+  $('#fDrexProyecto').value = drexFiltros.proyecto || '';
+  $('#fDrexLimite').value   = drexFiltros.limite   || 100;
+  $('#fDrexOrden').value    = drexFiltros.order_by || 'id';
+  $('#fDrexDir').value      = drexFiltros.dir      || 'desc';
+  drexSincronizarChipsActivo();
+  document.getElementById('filtrosDrexBackdrop').classList.add('open');
+}
+window.abrirModalFiltrosDrex = abrirModalFiltrosDrex;
+
+function cerrarModalFiltrosDrex() {
+  document.getElementById('filtrosDrexBackdrop').classList.remove('open');
+}
+window.cerrarModalFiltrosDrex = cerrarModalFiltrosDrex;
+
+function cancelarFiltrosDrex() {
+  if (drexFiltrosSnapshot) {
+    Object.assign(drexFiltros, drexFiltrosSnapshot);
+    drexActualizarBadgeFiltros();
+    cargarDrex();
+  }
+  cerrarModalFiltrosDrex();
+}
+window.cancelarFiltrosDrex = cancelarFiltrosDrex;
+
+function limpiarFiltrosDrex() {
+  // La búsqueda rápida vive en la toolbar, no en el modal: `Limpiar` resetea los
+  // filtros del modal y deja el texto tipeado como está.
+  const q = drexFiltros.q;
+  Object.assign(drexFiltros, drexFiltrosDefaults, { q });
+  $('#fDrexCodigo').value   = '';
+  $('#fDrexProyecto').value = '';
+  $('#fDrexLimite').value   = 100;
+  $('#fDrexOrden').value    = 'id';
+  $('#fDrexDir').value      = 'desc';
+  drexSincronizarChipsActivo();
+  drexActualizarBadgeFiltros();
+  cargarDrex();
+}
+window.limpiarFiltrosDrex = limpiarFiltrosDrex;
+
+function onFiltroDrex(campo, valor) {
+  if (campo === 'codigo')   drexFiltros.codigo   = (valor || '').trim();
+  if (campo === 'proyecto') drexFiltros.proyecto = valor || '';
+  if (campo === 'limite')   drexFiltros.limite   = Math.max(1, Math.min(1000, Number(valor) || 100));
+  if (campo === 'order_by') drexFiltros.order_by = valor || 'id';
+  if (campo === 'dir')      drexFiltros.dir      = valor || 'desc';
+  drexActualizarBadgeFiltros();
+  cargarDrex();
+}
+window.onFiltroDrex = onFiltroDrex;
+
+function drexSincronizarChipsActivo() {
+  document.querySelectorAll('#fDrexActivoChips .filter-chip').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.activo || '') === (drexFiltros.activo || ''));
+  });
+}
+
+function drexActualizarBadgeFiltros() {
+  let n = 0;
+  if (drexFiltros.codigo)                 n++;
+  if (drexFiltros.proyecto)               n++;
+  if (drexFiltros.activo !== '')          n++;
+  if (Number(drexFiltros.limite) !== 100) n++;
+  if (drexFiltros.order_by !== 'id')      n++;
+  if (drexFiltros.dir      !== 'desc')    n++;
+  const badge = $('#drexFiltrosBadge');
+  const btn   = $('#drexFiltrosBtn');
+  if (!badge || !btn) return;
+  if (n > 0) { badge.style.display = ''; badge.textContent = n; btn.classList.add('active'); }
+  else       { badge.style.display = 'none'; btn.classList.remove('active'); }
+}
+
+function drexCambiarTab(tab) {
+  document.querySelectorAll('#modalRoot .modal-tab[data-drex-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.drexTab === tab);
+  });
+  document.querySelectorAll('#modalRoot .modal-tabpanel[data-drex-tab]').forEach((p) => {
+    p.hidden = p.dataset.drexTab !== tab;
+  });
+}
+window.drexCambiarTab = drexCambiarTab;
+
+// ---- Editor de Markdown del formulario ----
+// Dos modos sobre el mismo campo: `editar` muestra el textarea con el Markdown
+// crudo (que es lo que se guarda y lo que se le manda al modelo) y `previa` lo
+// pinta con mdRender(). La previa se re-renderiza en cada cambio de modo, no en
+// cada tecla: el render es barato pero el prompt puede tener miles de líneas.
+function drexModoContexto(modo) {
+  const ta  = $('#drexContexto');
+  const pre = $('#drexContextoPreview');
+  if (!ta || !pre) return;
+  const previa = modo === 'previa';
+  if (previa) pre.innerHTML = ta.value.trim()
+    ? mdRender(ta.value)
+    : `<p style="color:var(--muted)">El contexto está vacío — todavía no hay nada que previsualizar.</p>`;
+  ta.style.display  = previa ? 'none' : '';
+  pre.style.display = previa ? '' : 'none';
+  // El modo activo se marca cambiando la variante del botón y no con una clase
+  // `.active`: el CSS global sólo estila `.btn.btn-icon.active` (el de Filtros),
+  // así que sobre un `btn-ghost` con texto no se vería nada.
+  document.querySelectorAll('#modalRoot [data-drex-modo]').forEach((b) => {
+    const esteActivo = b.dataset.drexModo === modo;
+    b.classList.toggle('btn-primary', esteActivo);
+    b.classList.toggle('btn-ghost',  !esteActivo);
+  });
+}
+window.drexModoContexto = drexModoContexto;
+
+// Contador de caracteres del prompt. Se pinta en rojo al pasarse del tope del
+// endpoint, para que el aviso llegue mientras se escribe y no en el 400.
+function drexContarContexto() {
+  const ta  = $('#drexContexto');
+  const out = $('#drexContextoCount');
+  if (!ta || !out) return;
+  const n = ta.value.length;
+  out.textContent = `${fmtNum(n)} / ${fmtNum(DREX_CONTEXTO_MAX)} caracteres`;
+  out.style.color = n > DREX_CONTEXTO_MAX ? 'var(--danger)' : 'var(--muted)';
+}
+window.drexContarContexto = drexContarContexto;
+
+// ---- Modal Alta / Edición ----
+async function abrirAltaEdicionDrex(id) {
+  drexEditandoId = id;
+  const editando = !!id;
+
+  await drexCargarLookups();
+  const L = drexLookupsCache || {};
+
+  // En edición la ficha se pide por id: el listado sólo trae el extracto del
+  // contexto y guardar el formulario con eso truncaría el prompt.
+  let r = null;
+  if (editando) {
+    try { r = await drexObtener(id); }
+    catch (err) { toast(err.message, { error: true }); return; }
+  }
+
+  const optsProy = `<option value="">— Sin proyecto —</option>` +
+    (L.proyectos || []).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('');
+
+  openModal(`
+    <div class="modal" style="max-width:820px">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">${editando ? 'Editar experto' : 'Nuevo experto'}</div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <!-- Mejorar va como botón DIRECTO de la barra y no adentro de un
+           desplegable Acciones: es la vía principal para redactar el contexto,
+           no una acción accesoria del formulario.
+           Sin backticks en este comentario: vive dentro de un template literal
+           y cerrarian el string. -->
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del formulario">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cancelar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="guardar">
+          <i class="fa-solid fa-floppy-disk"></i> Guardar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="mejorar"
+                title="Pedirle a la IA que incorpore conocimiento al contexto">
+          <i class="fa-solid fa-wand-magic-sparkles"></i> Mejorar
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-drex-tab="general"
+                  onclick="drexCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-drex-tab="contexto"
+                  onclick="drexCambiarTab('contexto')"><i class="fa-solid fa-brain"></i> Contexto</button>
+        </div>
+
+        <div class="modal-tabpanel" data-drex-tab="general" role="tabpanel">
+          <div class="form-group">
+            <label for="drexNombre">Nombre *</label>
+            <input type="text" id="drexNombre" maxlength="150" autocomplete="off"
+                   placeholder="Ej: Databox | Asesor comercial">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="drexProyecto">Proyecto</label>
+              <select id="drexProyecto">${optsProy}</select>
+            </div>
+            <div class="form-group">
+              <label for="drexSlug">Slug
+                <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                  — identificador estable, único
+                </span>
+              </label>
+              <input type="text" id="drexSlug" maxlength="60" autocomplete="off"
+                     style="font-family:monospace" placeholder="databox-comercial">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="toggle-switch">
+              <input type="checkbox" id="drexActivo">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Activo</span>
+              <span style="color:var(--muted);font-weight:normal;font-size:.85em">
+                — al desactivarlo deja de ofrecerse para responder consultas
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drex-tab="contexto" role="tabpanel" hidden>
+          <div style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:.82rem;color:var(--muted)">
+            El contexto es el <strong>prompt de sistema</strong> que se le antepone al modelo antes
+            de la consulta del interesado: quién es el experto, qué producto representa, qué sabe,
+            qué tono usa y qué no debe contestar. Se guarda en <strong>Markdown</strong> y se manda
+            tal cual — encabezados, listas y tablas le dan estructura al prompt sin gastar tokens
+            en markup.
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+            <button type="button" class="btn btn-sm btn-primary" data-drex-modo="editar"
+                    onclick="drexModoContexto('editar')"><i class="fa-solid fa-pen"></i> Editar</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-drex-modo="previa"
+                    onclick="drexModoContexto('previa')"><i class="fa-solid fa-eye"></i> Vista previa</button>
+            <span id="drexContextoCount" style="margin-left:auto;font-size:.78rem;color:var(--muted)"></span>
+          </div>
+          <textarea id="drexContexto" rows="20" spellcheck="false"
+                    style="font-family:monospace;font-size:.82rem;line-height:1.6;width:100%"
+                    oninput="drexContarContexto()"
+                    placeholder="# Quién sos&#10;&#10;Sos el asesor comercial de …&#10;&#10;## Qué ofrecemos&#10;&#10;- Producto A — …&#10;- Producto B — …&#10;&#10;## Cómo respondés&#10;&#10;- En español rioplatense, en dos o tres oraciones.&#10;- Si no sabés algo, lo decís y derivás a un humano."></textarea>
+          <div id="drexContextoPreview" class="md-body"
+               style="display:none;background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:14px 18px;max-height:520px;overflow-y:auto"></div>
+        </div>
+      </div>
+    </div>
+  `);
+
+  if (editando && r) {
+    $('#drexNombre').value   = r.nombre   || '';
+    $('#drexProyecto').value = r.proyecto_id != null ? String(r.proyecto_id) : '';
+    $('#drexSlug').value     = r.slug     || '';
+    $('#drexContexto').value = r.contexto || '';
+    $('#drexActivo').checked = Number(r.activo) === 1;
+  } else {
+    $('#drexActivo').checked = true;
+    // En el alta el slug se autocompleta desde el nombre mientras se tipea;
+    // deja de hacerlo en cuanto el operador lo edita a mano. En edición no se
+    // toca nunca: es un identificador estable y re-derivarlo rompería las
+    // referencias externas que el slug justamente evita.
+    const inpNom  = $('#drexNombre');
+    const inpSlug = $('#drexSlug');
+    inpSlug.addEventListener('input', () => { inpSlug.dataset.manual = '1'; });
+    inpNom.addEventListener('input', () => {
+      if (inpSlug.dataset.manual === '1') return;
+      inpSlug.value = drexSlugify(inpNom.value);
+    });
+  }
+
+  drexContarContexto();
+  // El chat arranca limpio en cada apertura del formulario: una conversación es
+  // sobre EL contexto que se está editando, y arrastrarla de un experto al
+  // siguiente le daría al modelo el documento de otro como referencia.
+  drexChatReiniciarEstado();
+  setTimeout(() => $('#drexNombre')?.focus(), 50);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))   closeModal();
+    if (ev.target.closest('[data-act="guardar"]')) guardarDrex();
+    if (ev.target.closest('[data-act="mejorar"]')) drexAbrirChat();
+  });
+}
+
+async function guardarDrex() {
+  const nombre = $('#drexNombre').value.trim();
+  if (!nombre) { toast('El nombre es obligatorio', { error: true }); return; }
+
+  const slug = $('#drexSlug').value.trim().toLowerCase() || drexSlugify(nombre);
+  if (!slug) { toast('No se pudo derivar un slug del nombre — cargalo a mano', { error: true }); return; }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+    toast('El slug sólo admite minúsculas, dígitos y guiones (kebab-case)', { error: true });
+    return;
+  }
+
+  // El contexto puede quedar vacío a propósito (experto dado de alta antes de
+  // redactarle el prompt), así que no se valida su presencia — sólo el tope,
+  // que acá se avisa antes de perder el formulario en un 400.
+  const contexto = $('#drexContexto').value;
+  if (contexto.length > DREX_CONTEXTO_MAX) {
+    toast(`El contexto no puede superar los ${fmtNum(DREX_CONTEXTO_MAX)} caracteres`, { error: true });
+    return;
+  }
+
+  const body = {
+    nombre,
+    slug,
+    proyecto_id: $('#drexProyecto').value || null,
+    contexto,
+    activo:      $('#drexActivo').checked ? 1 : 0,
+  };
+
+  try {
+    if (drexEditandoId) {
+      await apiSend(`${DREX_API}?id=${drexEditandoId}`, 'PUT', body);
+      toast('Experto actualizado');
+    } else {
+      await apiSend(DREX_API, 'POST', body);
+      toast('Experto creado');
+    }
+    closeModal();
+    drexEditandoId = null;
+    await cargarDrex();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+// ---- Modal "Mejorar": chat con IA que redacta el contexto ----
+//
+// El operador le pide en lenguaje natural que incorpore conocimiento y el
+// modelo devuelve el Markdown COMPLETO actualizado como PROPUESTA. Nada se
+// escribe solo: la propuesta entra al campo recién cuando se aprieta "Aplicar
+// al contexto", y a la base recién cuando se aprieta Guardar en el formulario
+// de atrás. Son dos confirmaciones humanas entre la IA y el dato guardado.
+//
+// VA COMO MODAL APILADO (`modal-apilado`, backdrop propio montado en <body>) y
+// NO con openModal(), que destruiría el modal de alta/edición que está abajo y
+// se llevaría puesto el formulario a medio completar — mismo patrón que el
+// picker de prospectos de Datarocket > Listas.
+const DREX_API_MEJORAR = 'api/datarocket_expertos_mejorar.php';
+
+// Turnos del chat: { rol: 'user' | 'assistant' | 'error', texto, propuesta, meta }.
+// `propuesta` es el Markdown completo que trajo ESE turno (null si no trajo).
+let drexChatMensajes  = [];
+// Última propuesta sin aplicar. Es la base sobre la que se pide el turno
+// siguiente, así los pedidos se encadenan sin tener que aplicar cada uno.
+let drexChatPropuesta = null;
+let drexChatOcupado   = false;
+let drexChatBackdrop  = null;
+// Identidad del experto, para que el prompt del servidor sepa a quién le está
+// redactando. Se toma al abrir el chat y no en cada turno: el formulario queda
+// tapado por esta capa, así que nadie puede cambiarla en el medio.
+let drexChatNombre    = '';
+let drexChatProyecto  = '';
+
+function drexChatReiniciarEstado() {
+  drexChatMensajes  = [];
+  drexChatPropuesta = null;
+  drexChatOcupado   = false;
+}
+
+// El contexto sobre el que trabaja el turno siguiente: la propuesta pendiente
+// si la hay, si no lo que esté tipeado en el campo. Después de aplicar, la
+// propuesta se limpia y se vuelve a leer el textarea — que es donde el operador
+// puede haber seguido editando a mano.
+function drexChatBase() {
+  return drexChatPropuesta != null ? drexChatPropuesta : ($('#drexContexto')?.value || '');
+}
+
+// Dominio de una URL, para nombrar una fuente sin volcar la dirección entera en
+// la burbuja. Si no parsea se devuelve tal cual: mostrar algo raro es mejor que
+// no mostrar de qué página se está hablando.
+function drexChatDominio(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); }
+  catch { return String(url || ''); }
+}
+
+// Títulos de nivel 1-3 del Markdown, en orden. Es el índice del documento y lo
+// que le permite al operador pedir "agregalo en Precios" en vez de describir
+// dónde va. Se saca en cliente y no pidiéndoselo al modelo: es una regex sobre
+// texto que ya tenemos, no vale una llamada ni la espera.
+function drexChatSecciones(md) {
+  const out = [];
+  String(md || '').split('\n').forEach((l) => {
+    const m = /^(#{1,3})\s+(.+?)\s*#*$/.exec(l);
+    if (m) out.push(m[2].trim());
+  });
+  return out;
+}
+
+// Primer turno del hilo: deja a la vista de qué contexto parte la conversación.
+// Sin esto el chat abre en blanco y no hay forma de saber si el modelo está
+// viendo el prompt guardado o arrancando de cero — que es justo lo que hace que
+// pedirle algo se sienta a ciegas.
+function drexChatSembrarInicio() {
+  if (drexChatMensajes.length) return;   // se reabrió un chat ya empezado
+  const base = drexChatBase();
+
+  if (!base.trim()) {
+    drexChatMensajes.push({
+      rol:   'inicio',
+      texto: `${drexChatNombre || 'Este experto'} todavía no tiene contexto cargado, así que arrancamos de cero. `
+           + 'Contame quién es, qué producto representa, qué tiene que saber y en qué tono habla, y te armo el documento.',
+      doc:   null, propuesta: null, meta: '',
+    });
+    return;
+  }
+
+  const secs = drexChatSecciones(base);
+  drexChatMensajes.push({
+    rol:   'inicio',
+    texto: `Estoy viendo el contexto actual de ${drexChatNombre || 'este experto'}. `
+         + 'Decime qué querés incorporar, corregir o sacar y te devuelvo el documento completo actualizado.',
+    doc:   base,
+    secciones: secs,
+    propuesta: null, meta: '',
+  });
+}
+
+function drexAbrirChat() {
+  if (drexChatBackdrop) return;
+
+  const nombre = ($('#drexNombre')?.value || '').trim();
+  const selP   = $('#drexProyecto');
+  const proy   = selP && selP.value ? selP.options[selP.selectedIndex].text : '';
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop modal-apilado';
+  backdrop.id = 'drexChatBackdrop';
+  // Alto fijo (no `max-height`): sin sobrante que repartir, el flex no tiene
+  // qué distribuir y el hilo no scrollea — crece y empuja el compositor fuera.
+  backdrop.innerHTML = `
+    <div class="modal" style="width:92vw;max-width:860px;height:min(86vh,760px)">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">
+          <i class="fa-solid fa-wand-magic-sparkles"></i> Mejorar contexto
+          <span class="modal-subtitle">${esc(nombre || 'experto nuevo')}</span>
+        </div>
+        <button class="btn-icon-sm" data-chat="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del chat">
+        <button class="btn btn-sm btn-ghost" data-chat="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-chat="aplicar" disabled>
+          <i class="fa-solid fa-check"></i> Aplicar al contexto
+        </button>
+        <button class="btn btn-sm btn-primary" data-chat="reiniciar">
+          <i class="fa-solid fa-rotate-left"></i> Reiniciar
+        </button>
+      </div>
+      <div class="modal-body drex-chat-body">
+        <div class="drex-chat-hilo" id="drexChatHilo"></div>
+        <div class="drex-chat-compositor">
+          <textarea id="drexChatInput" rows="2" spellcheck="false"
+                    placeholder="Ej: el plan Pro sale USD 90/mes con soporte 24×7 — o pegá una URL y la leo…"></textarea>
+          <button class="btn btn-primary" data-chat="enviar" title="Enviar (Enter)">
+            <i class="fa-solid fa-paper-plane"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  drexChatBackdrop = backdrop;
+  requestAnimationFrame(() => backdrop.classList.add('open'));
+
+  // Escape cierra sólo esta capa. stopImmediatePropagation (y no
+  // stopPropagation) porque los otros listeners de Escape también cuelgan de
+  // `document` y stopPropagation no frena a los hermanos del mismo nodo.
+  const onKey = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.stopImmediatePropagation();
+    drexCerrarChat();
+  };
+  document.addEventListener('keydown', onKey, true);
+  backdrop._onKey = onKey;
+
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop || ev.target.closest('[data-chat="close"]')) { drexCerrarChat(); return; }
+    if (ev.target.closest('[data-chat="enviar"]'))    { drexChatEnviar(); return; }
+    if (ev.target.closest('[data-chat="aplicar"]'))   { drexChatAplicar(); return; }
+    if (ev.target.closest('[data-chat="reiniciar"]')) {
+      drexChatReiniciarEstado();
+      drexChatSembrarInicio();   // el hilo nuevo vuelve a arrancar mostrando de dónde parte
+      drexChatPintar();
+      return;
+    }
+    const ver = ev.target.closest('[data-chat-ver]');
+    if (ver) drexChatVerPropuesta(Number(ver.dataset.chatVer));
+  });
+
+  const inp = backdrop.querySelector('#drexChatInput');
+  // Enter manda, Shift+Enter hace salto de línea. Es lo que espera cualquiera
+  // que venga de un chat, y las instrucciones acá son de una o dos líneas.
+  inp.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); drexChatEnviar(); }
+  });
+
+  drexChatNombre   = nombre;
+  drexChatProyecto = proy;
+  drexChatSembrarInicio();
+  drexChatPintar();
+  setTimeout(() => inp.focus(), 60);
+}
+
+function drexCerrarChat() {
+  const b = drexChatBackdrop;
+  if (!b) return;
+  document.removeEventListener('keydown', b._onKey, true);
+  drexChatBackdrop = null;
+  b.classList.remove('open');
+  setTimeout(() => b.remove(), 200);
+}
+
+function drexChatPintar(pensando = false) {
+  const b = drexChatBackdrop;
+  if (!b) return;
+  const hilo = b.querySelector('#drexChatHilo');
+
+  // Tarjeta de documento adjunto a una burbuja: el contexto del que se parte
+  // (turno de apertura) o el que propuso ese turno. En los dos casos el
+  // Markdown queda a un click, sin salir del chat.
+  const docCard = (i, etiqueta, md) => `
+      <div class="drex-chat-prop">
+        <i class="fa-solid fa-file-lines"></i>
+        <span>${etiqueta}</span>
+        <button class="btn btn-sm btn-ghost" style="margin-left:auto" data-chat-ver="${i}">
+          <i class="fa-solid fa-eye"></i> Ver
+        </button>
+      </div>
+      <div class="md-body" id="drexChatDoc${i}" style="display:none;margin-top:10px;background:var(--bg);border-radius:10px;padding:12px 14px;max-height:340px;overflow-y:auto"></div>`;
+
+  const turnos = drexChatMensajes.map((m, i) => {
+    if (m.rol === 'sys') {
+      return `<div class="drex-chat-sys">${esc(m.texto)}</div>`;
+    }
+    if (m.rol === 'user') {
+      return `<div class="drex-chat-msg drex-chat-user" style="white-space:pre-wrap">${esc(m.texto)}</div>`;
+    }
+
+    // Turno de apertura: qué contexto está viendo el modelo, cuánto pesa y qué
+    // secciones tiene. El índice de secciones es lo que hace que el pedido
+    // siguiente pueda ser "sumalo en Precios" en vez de describir dónde va.
+    if (m.rol === 'inicio') {
+      const secs = m.secciones || [];
+      const chips = secs.length ? `
+        <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+          ${secs.slice(0, 12).map((s) =>
+            `<span class="badge badge-info">${esc(s)}</span>`).join('')}
+          ${secs.length > 12 ? `<span class="badge badge-muted">+${secs.length - 12}</span>` : ''}
+        </div>` : '';
+      const doc = m.doc == null ? '' : docCard(i,
+        `Contexto actual: <b>${fmtNum(m.doc.length)}</b> caracteres · <b>${secs.length}</b> ${secs.length === 1 ? 'sección' : 'secciones'}`,
+        m.doc);
+      return `<div class="drex-chat-msg drex-chat-ia">
+                <div style="white-space:pre-wrap">${esc(m.texto)}</div>${chips}${doc}
+              </div>`;
+    }
+
+    const clase = m.rol === 'error' ? 'drex-chat-error' : 'drex-chat-ia';
+    // La propuesta se anuncia DENTRO de la burbuja: es parte de lo que
+    // contestó ese turno, no un evento aparte del hilo.
+    const prop = m.propuesta == null ? '' : docCard(i,
+      `Propuso un contexto de <b>${fmtNum(m.propuesta.length)}</b> caracteres `
+      + `(${m.delta >= 0 ? '+' : ''}${fmtNum(m.delta)})`,
+      m.propuesta);
+    // Acuse de las URLs que trajo la instrucción: cuáles se leyeron y cuáles
+    // no. Sin esto, una página que falló pasa desapercibida y lo que contestó
+    // el modelo parece basado en material que nunca llegó.
+    const fuentes = !(m.fuentes || []).length ? '' : `
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:4px;font-size:.74rem">
+        ${m.fuentes.map((f) => f.ok
+          ? `<div style="color:var(--muted)">
+               <i class="fa-solid fa-link" style="color:var(--success)"></i>
+               Leyó <b>${esc(f.titulo || drexChatDominio(f.url))}</b>
+               — ${fmtNum(f.largo)} car.${f.truncada ? ' (recortada)' : ''}
+             </div>`
+          : `<div style="color:var(--muted)">
+               <i class="fa-solid fa-link-slash" style="color:var(--danger)"></i>
+               No pudo leer <b>${esc(drexChatDominio(f.url))}</b> — ${esc(f.error || 'error')}
+             </div>`).join('')}
+      </div>`;
+    const meta = m.meta ? `<div style="margin-top:8px;font-size:.72rem;color:var(--muted)">${esc(m.meta)}</div>` : '';
+    return `<div class="drex-chat-msg ${clase}">
+              <div style="white-space:pre-wrap">${esc(m.texto)}</div>${prop}${fuentes}${meta}
+            </div>`;
+  }).join('');
+
+  const typing = pensando ? `
+    <div class="drex-chat-msg drex-chat-ia">
+      <span class="drex-chat-typing"><i></i><i></i><i></i></span>
+    </div>` : '';
+
+  hilo.innerHTML = turnos + typing;
+  hilo.scrollTop = hilo.scrollHeight;
+
+  const btnAplicar = b.querySelector('[data-chat="aplicar"]');
+  if (btnAplicar) btnAplicar.disabled = drexChatPropuesta == null || drexChatOcupado;
+  const btnEnviar = b.querySelector('[data-chat="enviar"]');
+  if (btnEnviar) btnEnviar.disabled = drexChatOcupado;
+}
+
+// Render perezoso del documento de una burbuja (el contexto de partida o la
+// propuesta de ese turno): el Markdown se pinta la primera vez que se abre y
+// después sólo se muestra/oculta. Un documento largo no tiene por qué
+// re-renderizarse en cada repintado del hilo.
+function drexChatVerPropuesta(i) {
+  const cont = drexChatBackdrop?.querySelector(`#drexChatDoc${i}`);
+  const m    = drexChatMensajes[i];
+  const md   = m?.propuesta ?? m?.doc ?? null;
+  if (!cont || md == null) return;
+  if (cont.style.display === 'none') {
+    if (!cont.dataset.pintado) { cont.innerHTML = mdRender(md); cont.dataset.pintado = '1'; }
+    cont.style.display = '';
+  } else {
+    cont.style.display = 'none';
+  }
+}
+
+async function drexChatEnviar() {
+  if (drexChatOcupado) return;
+  const b   = drexChatBackdrop;
+  const inp = b?.querySelector('#drexChatInput');
+  if (!inp) return;
+
+  const instruccion = inp.value.trim();
+  if (!instruccion) { inp.focus(); return; }
+
+  drexChatMensajes.push({ rol: 'user', texto: instruccion, propuesta: null, meta: '' });
+  inp.value = '';
+  drexChatOcupado = true;
+  drexChatPintar(true);
+
+  const base = drexChatBase();
+
+  try {
+    const d = await apiSend(DREX_API_MEJORAR, 'POST', {
+      experto_id:  drexEditandoId || 0,
+      nombre:      drexChatNombre,
+      proyecto:    drexChatProyecto,
+      contexto:    base,
+      instruccion,
+      // Historial sin el turno que acabamos de apilar: ése viaja aparte, con
+      // el contexto adjunto, en `instruccion`.
+      //
+      // Sólo van los turnos de conversación real. El de apertura, los avisos
+      // del panel ('sys') y los errores son ruido del cliente: el modelo nunca
+      // los dijo y darle como propias frases que no escribió lo lleva a
+      // contradecirse. El contexto de partida no se pierde por dejarlos afuera
+      // — viaja completo en `contexto`, cada turno.
+      mensajes:    drexChatMensajes.slice(0, -1)
+                     .filter((m) => m.rol === 'user' || m.rol === 'assistant')
+                     .map((m) => ({ rol: m.rol, texto: m.texto })),
+    });
+
+    if (d.contexto != null) drexChatPropuesta = d.contexto;
+
+    drexChatMensajes.push({
+      rol:       'assistant',
+      texto:     d.respuesta || 'Listo.',
+      propuesta: d.contexto ?? null,
+      delta:     d.contexto != null ? d.contexto.length - base.length : 0,
+      fuentes:   d.fuentes || [],
+      meta:      `${d.modelo || ''} · ${fmtNum((d.tokens_entrada || 0) + (d.tokens_salida || 0))} tokens`,
+    });
+  } catch (err) {
+    drexChatMensajes.push({ rol: 'error', texto: err.message, propuesta: null, meta: '' });
+  } finally {
+    drexChatOcupado = false;
+    drexChatPintar();
+    setTimeout(() => b?.querySelector('#drexChatInput')?.focus(), 30);
+  }
+}
+
+// Vuelca la última propuesta al campo del formulario de atrás. NO guarda: el
+// operador todavía tiene que apretar Guardar, y hasta entonces puede seguir
+// editando a mano o deshacer cerrando el formulario.
+function drexChatAplicar() {
+  if (drexChatPropuesta == null) return;
+  const ta = $('#drexContexto');
+  if (!ta) { toast('El formulario del experto ya no está abierto', { error: true }); return; }
+
+  ta.value = drexChatPropuesta;
+  drexContarContexto();
+  // Si el operador había dejado el formulario en Vista previa, se re-renderiza
+  // para que vea lo que acaba de aplicar y no la versión anterior congelada.
+  const pre = $('#drexContextoPreview');
+  if (pre && pre.style.display !== 'none') drexModoContexto('previa');
+
+  // La propuesta ya es el contenido del campo: el turno siguiente vuelve a
+  // partir del textarea, que es donde el operador puede seguir editando.
+  drexChatPropuesta = null;
+  // Va como aviso del panel ('sys') y no como turno del modelo: es algo que
+  // hizo el operador, no algo que dijo la IA — y como 'assistant' viajaría en
+  // el historial del turno siguiente como si el modelo lo hubiera afirmado.
+  drexChatMensajes.push({
+    rol: 'sys', texto: 'Contexto aplicado al formulario. Acordate de apretar Guardar.',
+    propuesta: null, meta: '',
+  });
+  drexChatPintar();
+  toast('Contexto actualizado en el formulario');
+}
+
+// ---- Modal "Conversar": hablar CON el experto ----
+//
+// El otro chat (Mejorar) le habla a un redactor de prompts para que cambie el
+// documento. Éste monta al experto tal como va a atender a un interesado y le
+// hace preguntas: es el banco de pruebas de la definición.
+//
+// El contexto se manda como prompt de sistema CRUDO, sin envoltorio nuestro (ver
+// el encabezado de api/datarocket_expertos_chat.php): lo que se ve acá es
+// exactamente lo que va a contestar cuando lo consuma un canal real.
+//
+// La conversación NO se guarda en ningún lado — vive en memoria del navegador y
+// se pierde al cerrar. Es una prueba, no un canal de atención.
+const DREX_API_CHAT = 'api/datarocket_expertos_chat.php';
+
+let drexTalkId       = null;
+let drexTalkFicha    = null;
+let drexTalkMensajes = [];
+let drexTalkOcupado  = false;
+let drexTalkBackdrop = null;
+
+async function drexAbrirConversar(id) {
+  if (drexTalkBackdrop) return;
+
+  let r;
+  try { r = await drexObtener(id); }
+  catch (err) { toast(err.message, { error: true }); return; }
+
+  // El hilo se conserva sólo si se vuelve al MISMO experto: reabrir el chat
+  // después de cerrarlo sin querer no debería costar la conversación, pero
+  // arrastrarla a otro experto mostraría respuestas de una definición distinta.
+  if (drexTalkId !== id) { drexTalkMensajes = []; drexTalkId = id; }
+  drexTalkFicha   = r;
+  drexTalkOcupado = false;
+
+  const sinContexto = !(r.contexto || '').trim();
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop modal-apilado';
+  backdrop.id = 'drexTalkBackdrop';
+  backdrop.innerHTML = `
+    <div class="modal" style="width:92vw;max-width:780px;height:min(86vh,760px)">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">
+          🧠 Conversar
+          <span class="modal-subtitle">${esc(r.nombre || `#${r.id}`)}${
+            r.proyecto_nombre ? ' · ' + esc(r.proyecto_nombre) : ''}</span>
+        </div>
+        <button class="btn-icon-sm" data-talk="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones de la conversación">
+        <button class="btn btn-sm btn-ghost" data-talk="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-talk="reiniciar">
+          <i class="fa-solid fa-rotate-left"></i> Reiniciar
+        </button>
+        <button class="btn btn-sm btn-primary" data-talk="editar"
+                title="Editar la definición de este experto">
+          <i class="fa-solid fa-pen"></i> Editar contexto
+        </button>
+      </div>
+      <div class="modal-body drex-chat-body">
+        <div class="drex-chat-hilo" id="drexTalkHilo"></div>
+        <div class="drex-chat-compositor">
+          <textarea id="drexTalkInput" rows="2" spellcheck="false" ${sinContexto ? 'disabled' : ''}
+                    placeholder="${sinContexto
+                      ? 'Este experto todavía no puede responder…'
+                      : 'Preguntale lo que le preguntaría un interesado…'}"></textarea>
+          <button class="btn btn-primary" data-talk="enviar" title="Enviar (Enter)" ${sinContexto ? 'disabled' : ''}>
+            <i class="fa-solid fa-paper-plane"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  drexTalkBackdrop = backdrop;
+  requestAnimationFrame(() => backdrop.classList.add('open'));
+
+  // Escape cierra sólo esta capa (puede haber un modal de Consultar abajo).
+  const onKey = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.stopImmediatePropagation();
+    drexCerrarConversar();
+  };
+  document.addEventListener('keydown', onKey, true);
+  backdrop._onKey = onKey;
+
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop || ev.target.closest('[data-talk="close"]')) { drexCerrarConversar(); return; }
+    if (ev.target.closest('[data-talk="enviar"]'))    { drexTalkEnviar(); return; }
+    if (ev.target.closest('[data-talk="reiniciar"]')) { drexTalkMensajes = []; drexTalkPintar(); return; }
+    if (ev.target.closest('[data-talk="editar"]'))    {
+      const eid = drexTalkId;
+      drexCerrarConversar();
+      // closeModal() por si se entró desde la ficha de Consultar: el formulario
+      // de edición usa #modalRoot y no puede convivir con ella.
+      closeModal();
+      setTimeout(() => abrirAltaEdicionDrex(eid), 220);
+      return;
+    }
+  });
+
+  const inp = backdrop.querySelector('#drexTalkInput');
+  inp.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); drexTalkEnviar(); }
+  });
+
+  drexTalkPintar();
+  if (!sinContexto) setTimeout(() => inp.focus(), 60);
+}
+
+function drexCerrarConversar() {
+  const b = drexTalkBackdrop;
+  if (!b) return;
+  document.removeEventListener('keydown', b._onKey, true);
+  drexTalkBackdrop = null;
+  b.classList.remove('open');
+  setTimeout(() => b.remove(), 200);
+}
+
+function drexTalkPintar(pensando = false) {
+  const b = drexTalkBackdrop;
+  if (!b) return;
+  const hilo = b.querySelector('#drexTalkHilo');
+  const r    = drexTalkFicha || {};
+  const largo = Number(r.contexto_largo) || 0;
+
+  // Cabecera del hilo: con qué definición está respondiendo. Los dos avisos son
+  // los que explican un resultado raro antes de que el operador crea que el
+  // experto "no anda": sin contexto no hay nada que probar, y uno inactivo
+  // contesta igual acá pero no se ofrece a los canales.
+  const avisos = [];
+  if (largo === 0) {
+    avisos.push('Este experto no tiene contexto cargado, así que no hay nada que probar: '
+              + 'sin prompt de sistema el modelo contestaría como un asistente genérico. '
+              + 'Cargáselo desde Editar contexto.');
+  } else {
+    avisos.push(`Estás hablando con ${r.nombre || 'el experto'} tal como le respondería a un interesado: `
+              + `usa su contexto guardado (${fmtNum(largo)} caracteres) como prompt de sistema, sin agregados nuestros.`);
+  }
+  if (Number(r.activo) !== 1) {
+    avisos.push('Ojo: el experto está INACTIVO. Acá contesta igual, pero no se ofrece para atender consultas reales.');
+  }
+
+  const cabecera = `
+    <div class="drex-chat-msg drex-chat-ia">
+      <div style="white-space:pre-wrap">${esc(avisos.join('\n\n'))}</div>
+    </div>`;
+
+  const turnos = drexTalkMensajes.map((m) => {
+    if (m.rol === 'user') {
+      return `<div class="drex-chat-msg drex-chat-user" style="white-space:pre-wrap">${esc(m.texto)}</div>`;
+    }
+    const clase = m.rol === 'error' ? 'drex-chat-error' : 'drex-chat-ia';
+    const meta  = m.meta ? `<div style="margin-top:8px;font-size:.72rem;color:var(--muted)">${esc(m.meta)}</div>` : '';
+    // Texto plano con `pre-wrap` y NO Markdown renderizado: el experto contesta
+    // por canales (WhatsApp, correo) que tampoco lo renderizan, así que verlo
+    // formateado acá mostraría algo mejor de lo que le va a llegar al interesado.
+    return `<div class="drex-chat-msg ${clase}">
+              <div style="white-space:pre-wrap">${esc(m.texto)}</div>${meta}
+            </div>`;
+  }).join('');
+
+  const typing = pensando ? `
+    <div class="drex-chat-msg drex-chat-ia">
+      <span class="drex-chat-typing"><i></i><i></i><i></i></span>
+    </div>` : '';
+
+  hilo.innerHTML = cabecera + turnos + typing;
+  hilo.scrollTop = hilo.scrollHeight;
+
+  const btn = b.querySelector('[data-talk="enviar"]');
+  if (btn) btn.disabled = drexTalkOcupado || largo === 0;
+}
+
+async function drexTalkEnviar() {
+  if (drexTalkOcupado) return;
+  const b   = drexTalkBackdrop;
+  const inp = b?.querySelector('#drexTalkInput');
+  if (!inp) return;
+
+  const pregunta = inp.value.trim();
+  if (!pregunta) { inp.focus(); return; }
+
+  drexTalkMensajes.push({ rol: 'user', texto: pregunta, meta: '' });
+  inp.value = '';
+  drexTalkOcupado = true;
+  drexTalkPintar(true);
+
+  try {
+    const d = await apiSend(DREX_API_CHAT, 'POST', {
+      experto_id: drexTalkId,
+      // Los errores no viajan: son del panel, no de la conversación. Si se
+      // mandaran, el modelo los leería como turnos propios.
+      mensajes:   drexTalkMensajes
+                    .filter((m) => m.rol === 'user' || m.rol === 'assistant')
+                    .map((m) => ({ rol: m.rol, texto: m.texto })),
+    });
+    drexTalkMensajes.push({
+      rol:   'assistant',
+      texto: d.respuesta || '',
+      meta:  `${d.modelo || ''} · ${fmtNum((d.tokens_entrada || 0) + (d.tokens_salida || 0))} tokens`,
+    });
+  } catch (err) {
+    drexTalkMensajes.push({ rol: 'error', texto: err.message, meta: '' });
+  } finally {
+    drexTalkOcupado = false;
+    drexTalkPintar();
+    setTimeout(() => b?.querySelector('#drexTalkInput')?.focus(), 30);
+  }
+}
+
+// ---- Modal Consulta ----
+// Alterna la pestaña Contexto entre el Markdown renderizado y el crudo. El
+// crudo es lo que se copia y lo que ve el modelo, así que tiene que poder
+// mirarse tal cual, no sólo formateado.
+function drexConsultaCrudo() {
+  const html = $('#drexConsHtml');
+  const raw  = $('#drexConsRaw');
+  const btn  = $('#drexConsCrudoBtn');
+  if (!html || !raw) return;
+  const verCrudo = raw.style.display === 'none';
+  raw.style.display  = verCrudo ? '' : 'none';
+  html.style.display = verCrudo ? 'none' : '';
+  if (btn) btn.innerHTML = verCrudo
+    ? '<i class="fa-solid fa-eye"></i> Ver renderizado'
+    : '<i class="fa-solid fa-code"></i> Ver Markdown';
+}
+window.drexConsultaCrudo = drexConsultaCrudo;
+
+async function abrirConsultaDrex(id) {
+  let r;
+  try { r = await drexObtener(id); }
+  catch (err) { toast(err.message, { error: true }); return; }
+  drexDetalleActual = r;
+
+  const card = (label, valor, ancho) => `
+    <div style="flex:${ancho === 'full' ? '1 1 100%' : '1 1 calc(50% - 6px)'};
+                background:color-mix(in srgb, var(--surface) 90%, #000);
+                border:none;border-radius:12px;padding:12px 14px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+      <div style="font-size:.92rem;word-break:break-word">${valor}</div>
+    </div>
+  `;
+  const txt = (v) => esc(v != null && v !== '' ? String(v) : '—');
+
+  const contexto  = r.contexto || '';
+  const ctxHtml   = contexto.trim()
+    ? mdRender(contexto)
+    : `<p style="color:var(--muted)">Este experto todavía no tiene contexto cargado — no puede responder consultas.</p>`;
+
+  openModal(`
+    <div class="modal" style="max-width:820px">
+      <div class="modal-header modal-header-primary">
+        <div class="modal-title">
+          🧠 <span class="modal-subtitle">${esc(r.nombre || `#${r.id}`)}</span>
+        </div>
+        <button class="btn-icon-sm" data-act="close">×</button>
+      </div>
+      <div class="modal-menubar" role="toolbar" aria-label="Acciones del registro">
+        <button class="btn btn-sm btn-ghost" data-act="close">
+          <i class="fa-solid fa-xmark"></i> Cerrar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="editar">
+          <i class="fa-solid fa-pen"></i> Editar
+        </button>
+        <button class="btn btn-sm btn-primary" data-act="menu-consulta">
+          <i class="fa-solid fa-bolt"></i> Acciones
+          <i class="fa-solid fa-caret-down menubar-caret"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs" role="tablist">
+          <button type="button" class="modal-tab active" role="tab" data-drex-tab="general"
+                  onclick="drexCambiarTab('general')"><i class="fa-solid fa-circle-info"></i> General</button>
+          <button type="button" class="modal-tab" role="tab" data-drex-tab="contexto"
+                  onclick="drexCambiarTab('contexto')"><i class="fa-solid fa-brain"></i> Contexto</button>
+        </div>
+
+        <div class="modal-tabpanel" data-drex-tab="general" role="tabpanel">
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            ${card('Código',   `<code>${r.id}</code>`)}
+            ${card('Estado',   drexActivoBadge(r.activo))}
+            ${card('Nombre',   txt(r.nombre), 'full')}
+            ${card('Proyecto', txt(r.proyecto_nombre || (r.proyecto_id ? `#${r.proyecto_id}` : null)))}
+            ${card('Slug',     `<code style="font-size:.82rem">${esc(r.slug || '—')}</code>`)}
+            ${card('Contexto', drexContextoBadge(r.contexto_largo))}
+            ${card('Alta',     esc(fmtFechaAnio(r.fecha_creacion)))}
+            ${card('Última modificación', esc(fmtFechaAnio(r.fecha_modificacion)), 'full')}
+          </div>
+        </div>
+
+        <div class="modal-tabpanel" data-drex-tab="contexto" role="tabpanel" hidden>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+            <button type="button" class="btn btn-sm btn-ghost" id="drexConsCrudoBtn"
+                    onclick="drexConsultaCrudo()"><i class="fa-solid fa-code"></i> Ver Markdown</button>
+            <span style="margin-left:auto;font-size:.78rem;color:var(--muted)">${fmtNum(r.contexto_largo || 0)} caracteres</span>
+          </div>
+          <div id="drexConsHtml" class="md-body"
+               style="background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:14px 18px">${ctxHtml}</div>
+          <pre id="drexConsRaw" style="display:none;margin:0;white-space:pre-wrap;word-break:break-word;
+               background:color-mix(in srgb, var(--surface) 90%, #000);border-radius:12px;padding:14px 18px;
+               font-family:monospace;font-size:.82rem;line-height:1.6">${esc(contexto || '—')}</pre>
+        </div>
+      </div>
+    </div>
+  `);
+
+  $('#modalRoot').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]'))  closeModal();
+    if (ev.target.closest('[data-act="editar"]')) { closeModal(); abrirAltaEdicionDrex(id); }
+    const men = ev.target.closest('[data-act="menu-consulta"]');
+    if (men) {
+      ev.stopPropagation();
+      const rect = men.getBoundingClientRect();
+      abrirCtxMenu($('#drexConsultaCtxMenu'), rect.left, rect.bottom + 4, { id });
+    }
+  });
+}
+
+async function drexToggleActivo(id) {
+  const r = drexItems.find((x) => x.id === id);
+  if (!r) return;
+  const nuevo = Number(r.activo) === 1 ? 0 : 1;
+  try {
+    await apiSend(`${DREX_API}?id=${id}`, 'PUT', { activo: nuevo });
+    toast(nuevo === 1 ? 'Experto activado' : 'Experto desactivado');
+    await cargarDrex();
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+}
+
+async function eliminarDrex(id) {
+  const r = drexItems.find((x) => x.id === id);
+  if (!r) return;
+  const ok = await confirmar({
+    title:       'Eliminar experto',
+    message:     `¿Eliminás el experto "${r.nombre || '#' + r.id}"? Se borra también su prompt de contexto.`,
+    confirmText: 'Eliminar',
+    danger:      true,
+  });
+  if (!ok) return;
+  try {
+    await apiSend(`${DREX_API}?id=${id}`, 'DELETE');
+    toast('Experto eliminado');
+    await cargarDrex();
   } catch (err) {
     toast(err.message, { error: true });
   }
