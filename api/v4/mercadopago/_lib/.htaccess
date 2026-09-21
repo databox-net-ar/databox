@@ -1,0 +1,10 @@
+# api/v4/mercadopago/_lib/.htaccess
+#
+# Carpeta interna: son librerias que incluyen los endpoints, no recursos
+# publicados. Nadie tiene que poder pedirlas por HTTP.
+#
+# OJO — NO agregar directivas de rewrite aca. mod_rewrite NO hereda: un
+# `RewriteRule` en este archivo descartaria las reglas de `api/.htaccess` para
+# esta carpeta. `Require all denied` no es una directiva de rewrite, asi que
+# convive sin romper nada. Ver el encabezado de api/.htaccess.
+Require all denied

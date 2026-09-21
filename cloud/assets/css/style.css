@@ -1734,6 +1734,16 @@ tbody tr.row-clickable { cursor: pointer; }
 .drex-chat-error   { align-self: flex-start; background: color-mix(in srgb, var(--danger) 18%, var(--surface));
                      color: var(--text); border: 1px solid var(--danger); }
 
+/* Pie de acciones de la burbuja del modelo: hoy sólo "copiar". Va alineado a la
+   derecha y pegado al borde inferior de la burbuja, donde no le compite a la
+   respuesta por la lectura. */
+.drex-chat-acciones { display: flex; justify-content: flex-end; margin-top: 6px; }
+.drex-chat-copiar  { background: none; border: 0; cursor: pointer; padding: 2px 4px;
+                     line-height: 1; font-size: .82rem; color: var(--muted);
+                     border-radius: 6px; transition: color .15s, background .15s; }
+.drex-chat-copiar:hover { color: var(--text);
+                          background: color-mix(in srgb, var(--text) 10%, transparent); }
+
 /* Tarjeta que anuncia que ese turno trajo una propuesta de contexto nueva.
    Va DENTRO de la burbuja del modelo: la propuesta es parte de lo que
    contestó, no un evento aparte. */

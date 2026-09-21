@@ -1,0 +1,51 @@
+-- Corrige la expresion cron de la tarea `dolarhoy_cotizacion_actualizar`, que
+-- quedo con los campos corridos y por eso la serie dejo de cargarse.
+--
+-- EL BUG
+-- El valor que tenia prod era:
+--
+--     0 * 8-20 * 1,2,3,4,5
+--     │ │  │   │     │
+--     │ │  │   │     └─ dia de semana: lunes a viernes
+--     │ │  │   └─────── mes: todos
+--     │ │  └─────────── dia del MES: 8 al 20        <-- el rango horario cayo aca
+--     │ └────────────── hora: todas
+--     └──────────────── minuto: 0
+--
+-- La intencion era `0 8-20 * * 1-5` (de 08 a 20 hs, lunes a viernes) — el mismo
+-- cron que tiene la tarea legacy `dolarhoyActualizar` (id 36). El rango de horas
+-- se escribio en el campo de dia del mes, asi que la tarea sola corria los dias
+-- 8 al 20 de cada mes y solo si caian en dia habil.
+--
+-- Sintoma: la ultima corrida fue el 2026-09-18 23:00 (dia 18, viernes). El 19 y
+-- 20 quedaron afuera por ser fin de semana y del 21 en adelante por el rango de
+-- dia del mes. La proxima corrida hubiera sido el 2026-10-08.
+--
+-- Esto tambien explica el hueco 2026-08-21 .. 2026-09-07 de la serie (dias 21 a
+-- 31 y 1 a 7, todos fuera del rango) — ver la migracion 20260921_1100 que lo
+-- rellena.
+--
+-- OJO: el scheduler propio (cloud/jobs/_scheduler.php, cronMatch) hace AND de
+-- los 5 campos. NO implementa el OR entre dia-del-mes y dia-de-semana del cron
+-- POSIX, donde `0 * 8-20 * 1-5` si hubiera corrido todos los dias habiles.
+--
+-- CADENCIA QUE QUEDA
+--   0 8-20 * * 1-5   -> lunes a viernes, cada hora en punto de 08 a 20 hs.
+--
+-- Reemplaza a `0 * * * *`, que era lo que habia fijado
+-- 20260814_1600_tarea_dolarhoy_cotizacion_cada_hora.sql y que despues alguien
+-- edito a mano desde el Programador. Esa migracion queda historica: no se toca
+-- (ya esta aplicada y cambiarla le moveria el hash), esta la pisa.
+--
+-- Consecuencia buscada: de aca en adelante la serie tiene fila solo los dias
+-- habiles, alineada con el alcance que ya habia declarado
+-- 20260814_1500_dolarhoy_cotizaciones_backfill_dias_habiles.sql.
+--
+-- Idempotente: fija un valor absoluto, no incremental. Se puede aplicar N veces.
+--
+-- Compatible con MySQL 8.0 (dev) y MariaDB 10.11 (prod).
+
+UPDATE `tareas`
+   SET `cron_expr`   = '0 8-20 * * 1-5',
+       `descripcion` = 'Scrapea la cotizacion del dolar oficial de dolarhoy.com y refresca la fila del dia en `dolarhoy_cotizaciones`. Lunes a viernes, cada hora en punto de 08 a 20 hs. Ver cloud/jobs/dolarhoy_cotizacion_actualizar.php.'
+ WHERE `nombre` = 'dolarhoy_cotizacion_actualizar';

@@ -41144,6 +41144,8 @@ async function drexAbrirConversar(id) {
     if (ev.target === backdrop || ev.target.closest('[data-talk="close"]')) { drexCerrarConversar(); return; }
     if (ev.target.closest('[data-talk="enviar"]'))    { drexTalkEnviar(); return; }
     if (ev.target.closest('[data-talk="reiniciar"]')) { drexTalkMensajes = []; drexTalkPintar(); return; }
+    const copiar = ev.target.closest('[data-talk="copiar"]');
+    if (copiar) { drexTalkCopiar(Number(copiar.dataset.i)); return; }
     if (ev.target.closest('[data-talk="editar"]'))    {
       const eid = drexTalkId;
       drexCerrarConversar();
@@ -41171,6 +41173,17 @@ function drexCerrarConversar() {
   drexTalkBackdrop = null;
   b.classList.remove('open');
   setTimeout(() => b.remove(), 200);
+}
+
+// Copia al portapapeles el texto de un turno del modelo. Se copia EXACTAMENTE
+// lo que muestra la burbuja (texto plano, sin Markdown renderizado), que es lo
+// mismo que le llegaría al interesado por el canal.
+async function drexTalkCopiar(i) {
+  const m = drexTalkMensajes[i];
+  if (!m) return;
+  if (!navigator.clipboard) { toast('El navegador no permite copiar.', { error: true }); return; }
+  try { await navigator.clipboard.writeText(m.texto || ''); toast('Respuesta copiada.'); }
+  catch { toast('No se pudo copiar.', { error: true }); }
 }
 
 function drexTalkPintar(pensando = false) {
@@ -41202,17 +41215,27 @@ function drexTalkPintar(pensando = false) {
       <div style="white-space:pre-wrap">${esc(avisos.join('\n\n'))}</div>
     </div>`;
 
-  const turnos = drexTalkMensajes.map((m) => {
+  const turnos = drexTalkMensajes.map((m, i) => {
     if (m.rol === 'user') {
       return `<div class="drex-chat-msg drex-chat-user" style="white-space:pre-wrap">${esc(m.texto)}</div>`;
     }
     const clase = m.rol === 'error' ? 'drex-chat-error' : 'drex-chat-ia';
-    const meta  = m.meta ? `<div style="margin-top:8px;font-size:.72rem;color:var(--muted)">${esc(m.meta)}</div>` : '';
+    // La respuesta es lo que se va a pegar en el canal real o en la ficha del
+    // experto, así que tiene que poder llevarse tal cual — sin seleccionarla a
+    // mano, que con `pre-wrap` y scroll del hilo sale mal más veces de las que
+    // sale bien.
+    const acciones = m.rol === 'assistant' ? `
+      <div class="drex-chat-acciones">
+        <button class="drex-chat-copiar" data-talk="copiar" data-i="${i}"
+                title="Copiar la respuesta" aria-label="Copiar la respuesta">
+          <i class="fa-solid fa-clipboard"></i>
+        </button>
+      </div>` : '';
     // Texto plano con `pre-wrap` y NO Markdown renderizado: el experto contesta
     // por canales (WhatsApp, correo) que tampoco lo renderizan, así que verlo
     // formateado acá mostraría algo mejor de lo que le va a llegar al interesado.
     return `<div class="drex-chat-msg ${clase}">
-              <div style="white-space:pre-wrap">${esc(m.texto)}</div>${meta}
+              <div style="white-space:pre-wrap">${esc(m.texto)}</div>${acciones}
             </div>`;
   }).join('');
 
@@ -41251,11 +41274,9 @@ async function drexTalkEnviar() {
                     .filter((m) => m.rol === 'user' || m.rol === 'assistant')
                     .map((m) => ({ rol: m.rol, texto: m.texto })),
     });
-    drexTalkMensajes.push({
-      rol:   'assistant',
-      texto: d.respuesta || '',
-      meta:  `${d.modelo || ''} · ${fmtNum((d.tokens_entrada || 0) + (d.tokens_salida || 0))} tokens`,
-    });
+    // Sin pie de modelo/tokens: acá se prueba QUÉ contesta el experto, no cuánto
+    // costó la prueba. El consumo se mira en el módulo de OpenAI.
+    drexTalkMensajes.push({ rol: 'assistant', texto: d.respuesta || '', meta: '' });
   } catch (err) {
     drexTalkMensajes.push({ rol: 'error', texto: err.message, meta: '' });
   } finally {
