@@ -1,6 +1,6 @@
 # `/v4/datarocket/suscripcion`
 
-> Documentacion online: <https://api.databox.net.ar/v4/datarocket/suscripcion.md>
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/datarocket/suscripcion.md>
 
 Microservicio del **CRM Datarocket** que hace en **una sola llamada** lo que hoy
 lleva tres: registrar un prospecto, suscribirlo a una lista **por su slug** y

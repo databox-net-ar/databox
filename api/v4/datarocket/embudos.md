@@ -1,6 +1,6 @@
 # `/v4/datarocket/embudos`
 
-> Documentacion online: <https://api.databox.net.ar/v4/datarocket/embudos.md>
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/datarocket/embudos.md>
 
 Microservicio del **CRM Datarocket** sobre la tabla `datarocket_embudos` — el
 catalogo de pipelines de venta / captacion. Cada oportunidad vive en un embudo y

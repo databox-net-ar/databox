@@ -1,6 +1,6 @@
 # `/v4/datarocket/etiquetas`
 
-> Documentacion online: <https://api.databox.net.ar/v4/datarocket/etiquetas.md>
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/datarocket/etiquetas.md>
 
 Microservicio del **CRM Datarocket** sobre la tabla `datarocket_etiquetas` — el
 catalogo de etiquetas reutilizables que se aplican a los prospectos a traves de

@@ -137,7 +137,7 @@ function handleGetOne(PDO $pdo, int $id): void {
 // Genera una API key aleatoria de 43 caracteres (base64url de 32 bytes).
 // random_bytes() usa la fuente CSPRNG del sistema; el `strtr` reemplaza los
 // caracteres no url-safe para que la key sea segura de pegar en un header
-// `X-Api-Key` o en un query string sin urlencode.
+// `Authorization: Bearer <apikey>` o en un query string sin urlencode.
 function nuevaApiKey(): string {
     $raw = random_bytes(32);
     return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');

@@ -1,6 +1,6 @@
 # `/v4/datarocket/prospectos`
 
-> Documentacion online: <https://api.databox.net.ar/v4/datarocket/prospectos.md>
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/datarocket/prospectos.md>
 
 Microservicio del **CRM Datarocket** sobre la tabla `datarocket_prospectos`
 (ver [db/schema.sql](../../../db/schema.sql)). Un unico archivo `.php`
@@ -1799,5 +1799,5 @@ caller necesita limpiar historial, tiene que hacerlo aparte.
 - ABM de oportunidades del panel (mover de etapa, cerrar, listar): [cloud/api/datarocket_oportunidades.php](../../../cloud/api/datarocket_oportunidades.php).
 - Catalogos de `canal` y `origen`: tabla `estados`, campos `datarocket_interaccion_canal` y `datarocket_oportunidad_origen` (panel > Herramientas > Editor de estados).
 - Indices de la busqueda de duplicados: migracion `20260818_1300_datarocket_prospectos_indices_correo_celular.sql`.
-- Helper de auth por Bearer: [cloud/api/lib/apikey_auth.php](../../../cloud/api/lib/apikey_auth.php) (el v4 rueda la logica inline para no arrastrar dependencias, pero el shape es identico).
+- Helper de auth por Bearer: [cloud/api/lib/apikey_auth.php](../../../cloud/api/lib/apikey_auth.php) — `requireAppApikey()` es la unica implementacion de la auth por apikey del stack; este endpoint la llama, no la reimplementa.
 - Microservicios hermanos del mismo `v4/`: [/v4/evolution/mensajes](../evolution/mensajes.md), [/v4/datacount/comprobantes](../datacount/comprobantes.md).

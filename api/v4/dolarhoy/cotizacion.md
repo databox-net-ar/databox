@@ -1,4 +1,4 @@
-# /v4/dolarhoy/cotizacion
+# `/v4/dolarhoy/cotizacion`
 
 > URL pública de esta documentación: <https://api.databox.net.ar/v4/dolarhoy/cotizacion.md>
 

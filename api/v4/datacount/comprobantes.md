@@ -1,4 +1,6 @@
-# POST /v4/datacount/comprobantes
+# `/v4/datacount/comprobantes`
+
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/datacount/comprobantes.md>
 
 Da de alta un comprobante en `datacount_comprobantes` (+ sus renglones en
 `datacount_comprobantes_renglones`) usando el **id de talonario** como unica
@@ -162,6 +164,19 @@ de los microservicios `/v4`).
 ```
 Authorization: Bearer <apikey>
 ```
+
+Cualquier apikey habilitada pasa — no hay scope por endpoint. Cada llamada
+exitosa incrementa `aplicaciones.usos` (best-effort).
+
+| Codigo | Cuerpo                                               |
+| ------ | ---------------------------------------------------- |
+| 401    | `{"ok": false, "error": "Bearer token ausente"}`     |
+| 401    | `{"ok": false, "error": "API key desconocida"}`      |
+| 401    | `{"ok": false, "error": "Aplicacion deshabilitada"}` |
+
+Apache no siempre propaga `Authorization` — el handler chequea
+`HTTP_AUTHORIZATION`, `REDIRECT_HTTP_AUTHORIZATION` y como ultimo recurso
+`getallheaders()`.
 
 ## Request
 

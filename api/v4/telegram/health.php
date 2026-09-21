@@ -26,43 +26,26 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
 require_once dirname(__DIR__) . '/_lib/telegram.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/apikey_auth.php';
 
 // ---------------------------------------------------------------------------
-// Auth (mirror de mensajes.php)
+// Auth
 // ---------------------------------------------------------------------------
-
-function readBearer(): string {
-    $auth = trim((string)($_SERVER['HTTP_AUTHORIZATION']
-                       ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
-                       ?? ''));
-    if ($auth === '' && function_exists('getallheaders')) {
-        foreach (getallheaders() as $k => $v) {
-            if (strcasecmp($k, 'Authorization') === 0) { $auth = trim((string)$v); break; }
-        }
-    }
-    return stripos($auth, 'Bearer ') === 0 ? trim(substr($auth, 7)) : '';
-}
-
-function requireApp(): array {
-    $token = readBearer();
-    if ($token === '') jsonError('Bearer token ausente', 401);
-
-    $pdo = db();
-    $st  = $pdo->prepare("SELECT id, nombre, habilitada FROM aplicaciones WHERE apikey = :k LIMIT 1");
-    $st->execute([':k' => $token]);
-    $app = $st->fetch();
-    if (!$app)                              jsonError('API key desconocida', 401);
-    if ((string)$app['habilitada'] !== '1') jsonError('Aplicacion deshabilitada', 401);
-
-    return $app;
-}
+// Puerta unica del stack: requireAppApikey() vive en
+// cloud/api/lib/apikey_auth.php. Lee `Authorization: Bearer <apikey>`, valida
+// contra la tabla `aplicaciones`, rechaza con 401 (token ausente / apikey
+// desconocida / aplicacion deshabilitada) e incrementa `aplicaciones.usos`.
+//
+// Hasta la consolidacion cada microservicio arrastraba su propia copia de este
+// bloque (8 variantes con nombres prefijados). Si hace falta tocar la auth
+// -- scope por aplicacion, rate limit, rotacion de apikey -- se toca la lib.
 
 // ---------------------------------------------------------------------------
 // Ruteo
 // ---------------------------------------------------------------------------
 
 try {
-    requireApp();
+    requireAppApikey();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'POST') {

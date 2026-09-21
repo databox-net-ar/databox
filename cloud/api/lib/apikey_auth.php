@@ -1,11 +1,23 @@
 <?php
 // api/lib/apikey_auth.php
-// Helper de autenticacion por API key contra la tabla `aplicaciones`.
-// Todo endpoint que consuma un agente externo (openclaw, kernel, integraciones,
+// PUERTA UNICA de autenticacion por API key contra la tabla `aplicaciones`.
+// Es la unica implementacion del stack: no hay copias por endpoint. Todo
+// endpoint que consuma un agente externo (openclaw, kernel, integraciones,
 // etc.) via Bearer estatico debe empezar con:
 //
+//   // desde cloud/api/*.php
 //   require_once __DIR__ . '/lib/apikey_auth.php';
+//   // desde api/v4/<modulo>/*.php
+//   require_once dirname(__DIR__, 3) . '/cloud/api/lib/apikey_auth.php';
+//
 //   $app = requireAppApikey();  // 401 si falta bearer / apikey desconocida / deshabilitada
+//
+// Hasta la consolidacion cada microservicio de `api/v4` traia su propia copia
+// de este bloque (8 variantes con nombres prefijados: readBearer, ubiReadBearer,
+// embReadBearer, ...). Eran byte a byte iguales salvo que la de `arca` se habia
+// olvidado el contador de `usos`, que es exactamente como divergen las copias.
+// Si hay que tocar la auth --scope por aplicacion, rate limit, rotacion de
+// apikey-- se toca ACA y vale para los 20 endpoints.
 //
 // Las apikeys se administran desde el ABM de aplicaciones (api/aplicaciones.php).
 // Cada llamada exitosa incrementa `aplicaciones.usos` para dar visibilidad de
@@ -47,7 +59,7 @@ function requireAppApikey(): array {
     try {
         $pdo->prepare("UPDATE aplicaciones SET usos = COALESCE(usos,0)+1 WHERE id = :id")
             ->execute([':id' => (int)$app['id']]);
-    } catch (Throwable $e) { /* ignore */ }
+    } catch (Throwable) { /* ignore */ }
 
     return $app;
 }

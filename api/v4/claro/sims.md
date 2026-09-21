@@ -1,4 +1,4 @@
-# /v4/claro/sims
+# `/v4/claro/sims`
 
 > URL pública de esta documentación: <https://api.databox.net.ar/v4/claro/sims.md>
 

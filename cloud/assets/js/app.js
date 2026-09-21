@@ -4424,8 +4424,9 @@ route('/aplicaciones', async (mount) => {
         <div class="module-help-text">
           Las aplicaciones son sistemas externos que consumen datos de Databox
           via API key. Cada aplicacion tiene una clave unica que se envia en el
-          header <code>X-Api-Key</code>. Podes habilitarlas o deshabilitarlas en
-          cualquier momento.
+          header <code>Authorization: Bearer &lt;apikey&gt;</code>. Podes
+          habilitarlas o deshabilitarlas en cualquier momento: una aplicacion
+          deshabilitada recibe <code>401</code> en todos los microservicios.
         </div>
       </div>
 

@@ -18,7 +18,7 @@
 // 4xx repetido. v4LogApp() devuelve la misma fila que recibe, asi que se
 // encadena sin tocar el resto:
 //
-//     $app = v4LogApp(embRequireApp());
+//     $app = v4LogApp(requireAppApikey());
 //
 // ---------------------------------------------------------------------------
 // COMO FUNCIONA
@@ -93,7 +93,7 @@ function v4InitLog(string $origen): void {
  * para que el suceso diga quien provoco el error. Devuelve la misma fila que
  * recibe para poder envolver la llamada existente:
  *
- *     $app = v4LogApp(etqRequireApp());
+ *     $app = v4LogApp(requireAppApikey());
  */
 function v4LogApp(array $app): array {
     $nombre = trim((string)($app['nombre'] ?? ''));

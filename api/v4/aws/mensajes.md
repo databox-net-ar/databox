@@ -161,7 +161,7 @@ curl -X POST https://api.databox.net.ar/v4/aws/mensajes \
 Devuelve un listado paginado de mensajes de la cola / historial de AWS SES,
 filtrable por cualquier combinacion de columnas. **Es el endpoint natural
 para buscar por `resultado`** — asincronico, se puebla desde las
-notificaciones SNS ([/v4/aws/eventos](eventos.md)).
+notificaciones SNS (`/v4/aws/eventos`).
 
 **Query params (todos opcionales, combinables con `AND`):**
 
@@ -264,7 +264,7 @@ pueda hacer polling sin acceso directo a la BD.
 setea el sender worker en el momento del envio, asi que sale `null` mientras
 el mensaje esta `pendiente`/`enviando`, y se popula al pasar a `enviado`.
 Es la clave con la que las notificaciones asincronicas de SNS
-([/v4/aws/eventos](eventos.md)) cruzan de vuelta contra este mensaje.
+(`/v4/aws/eventos`) cruzan de vuelta contra este mensaje.
 
 `estado` viene de la tabla `aws_mensajes` (varchar 20) y tiene 5 valores
 posibles alineados con el catalogo `estados.campo = 'aws_mensaje_estado'`:
@@ -281,7 +281,7 @@ posibles alineados con el catalogo `estados.campo = 'aws_mensaje_estado'`:
 
 `resultado` es el **desenlace end-to-end** del mensaje una vez despachado —
 se popula de forma **asincronica** desde las notificaciones SNS de SES
-(webhook [/v4/aws/eventos](eventos.md)). Empieza en `null` (mientras SES no
+(webhook `/v4/aws/eventos`). Empieza en `null` (mientras SES no
 haya emitido ningun evento) y avanza segun los callbacks que llegan. Nunca
 hace downgrade: una vez que el mensaje llego a `rebotado` no vuelve a
 `entregado`. Los seis valores posibles (alineados con `estados.campo = 'aws_mensaje_resultado'`):

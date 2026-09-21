@@ -41,53 +41,22 @@ header('Content-Type: application/json; charset=utf-8');
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/lib/evolution_mensajes.php';
 require_once dirname(__DIR__) . '/_lib/log.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/apikey_auth.php';
 
 // Todo error de este endpoint queda registrado en `sucesos` (Visor de sucesos
 // del panel). Va antes de la auth para que los 401 tambien caigan adentro.
 v4InitLog('v4/evolution.mensajes');
-
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
-// db() / jsonOk() / jsonError() / readJsonBody() vienen del panel cloud via
-// el require_once de arriba (cloud/api/lib/evolution_mensajes.php -> cloud/api/db.php).
-// Aca solo agregamos los helpers propios del microservicio: lectura del Bearer
-// y validacion del apikey contra la tabla `aplicaciones`.
-
-// Apache no siempre propaga Authorization a $_SERVER (depende de mod_rewrite
-// y CGIPassAuth). Chequeamos $_SERVER, REDIRECT_HTTP_AUTHORIZATION y como
-// ultimo recurso getallheaders().
-function readBearer(): string {
-    $auth = trim((string)($_SERVER['HTTP_AUTHORIZATION']
-                       ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
-                       ?? ''));
-    if ($auth === '' && function_exists('getallheaders')) {
-        foreach (getallheaders() as $k => $v) {
-            if (strcasecmp($k, 'Authorization') === 0) { $auth = trim((string)$v); break; }
-        }
-    }
-    return stripos($auth, 'Bearer ') === 0 ? trim(substr($auth, 7)) : '';
-}
-
-function requireApp(): array {
-    $token = readBearer();
-    if ($token === '') jsonError('Bearer token ausente', 401);
-
-    $pdo = db();
-    $st  = $pdo->prepare("SELECT id, nombre, habilitada FROM aplicaciones WHERE apikey = :k LIMIT 1");
-    $st->execute([':k' => $token]);
-    $app = $st->fetch();
-    if (!$app)                              jsonError('API key desconocida', 401);
-    if ((string)$app['habilitada'] !== '1') jsonError('Aplicacion deshabilitada', 401);
-
-    // Contador de uso — best effort, un fallo aca no debe tumbar el request.
-    try {
-        $pdo->prepare("UPDATE aplicaciones SET usos = COALESCE(usos,0)+1 WHERE id = :id")
-            ->execute([':id' => (int)$app['id']]);
-    } catch (Throwable) { /* ignore */ }
-
-    return $app;
-}
+// Puerta unica del stack: requireAppApikey() vive en
+// cloud/api/lib/apikey_auth.php. Lee `Authorization: Bearer <apikey>`, valida
+// contra la tabla `aplicaciones`, rechaza con 401 (token ausente / apikey
+// desconocida / aplicacion deshabilitada) e incrementa `aplicaciones.usos`.
+//
+// Hasta la consolidacion cada microservicio arrastraba su propia copia de este
+// bloque (8 variantes con nombres prefijados). Si hace falta tocar la auth
+// -- scope por aplicacion, rate limit, rotacion de apikey -- se toca la lib.
 
 // Etiquetas de estado alineadas con la tabla `estados` (evolution_mensaje_estado).
 // Solo se usan para el campo `estado_label` de conveniencia — la fuente de
@@ -107,7 +76,7 @@ const EVO_MSG_ESTADO_LABEL = [
 // ---------------------------------------------------------------------------
 
 try {
-    v4LogApp(requireApp());
+    v4LogApp(requireAppApikey());
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'POST') {

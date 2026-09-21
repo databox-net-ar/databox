@@ -28,7 +28,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once dirname(__DIR__, 3) . '/env.php';
 require_once dirname(__DIR__, 3) . '/cloud/api/db.php';
-require_once __DIR__ . '/_lib/auth.php';
+require_once dirname(__DIR__, 3) . '/cloud/api/lib/apikey_auth.php';
 require_once __DIR__ . '/_lib/log.php';
 require_once __DIR__ . '/_lib/afip_factory.php';
 
@@ -49,7 +49,7 @@ const ARCA_CATALOGOS = [
 ];
 
 try {
-    arcaRequireApp();
+    requireAppApikey();
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     if ($method !== 'GET') jsonError('Metodo no soportado', 405);
 

@@ -1,6 +1,6 @@
 # `/v4/databox/ubicaciones`
 
-> Documentacion online: <https://api.databox.net.ar/v4/databox/ubicaciones.md>
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/databox/ubicaciones.md>
 
 Microservicio de consulta del **catalogo geografico**: `paises`, `provincias` y
 `localidades` (ver [db/schema.sql](../../../db/schema.sql)). Un unico archivo
@@ -296,5 +296,5 @@ sin ubicacion, no falla.
 
 - Tablas: `paises`, `provincias`, `localidades` — schema en [db/schema.sql](../../../db/schema.sql).
 - Consumidor principal: [/v4/datarocket/prospectos](../datarocket/prospectos.md).
-- Helper de auth por Bearer: [cloud/api/lib/apikey_auth.php](../../../cloud/api/lib/apikey_auth.php) (el v4 rueda la logica inline para no arrastrar dependencias, pero el shape es identico).
+- Helper de auth por Bearer: [cloud/api/lib/apikey_auth.php](../../../cloud/api/lib/apikey_auth.php) — `requireAppApikey()` es la unica implementacion de la auth por apikey del stack; este endpoint la llama, no la reimplementa.
 - Los mismos catalogos, para la UI interna del panel (auth por sesion, no por apikey): [cloud/api/datarocketprospectos.php](../../../cloud/api/datarocketprospectos.php) — `?lookups=1`, `?provincias=<pais_id>`, `?localidades=<provincia_id>`.

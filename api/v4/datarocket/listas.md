@@ -1,6 +1,6 @@
 # `/v4/datarocket/listas`
 
-> Documentacion online: <https://api.databox.net.ar/v4/datarocket/listas.md>
+> URL pública de esta documentación: <https://api.databox.net.ar/v4/datarocket/listas.md>
 
 Microservicio del **CRM Datarocket** sobre la tabla `datarocket_listas` — el
 catalogo de listas de suscripcion. Cada lista agrupa prospectos a traves de la

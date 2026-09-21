@@ -1,4 +1,4 @@
-# /v4/telegram/mensajes
+# `/v4/telegram/mensajes`
 
 > URL pública de esta documentación: <https://api.databox.net.ar/v4/telegram/mensajes.md>
 
