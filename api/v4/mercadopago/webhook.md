@@ -16,6 +16,35 @@ Se configura en el panel de vendedor de Mercado Pago, en *Tus integraciones >
 Webhooks*. El `?cta=` es lo que le dice al servicio de qué cuenta es la
 notificación.
 
+## Quién lo llama
+
+**Superficie externa.** Lo llama Mercado Pago, server-to-server. Es el endpoint
+más importante del módulo: cerró **15.530 de los 15.617** pagos aprobados que
+hay en la base.
+
+De los siete endpoints del módulo, sólo **tres** los invoca un tercero. Los
+otros cuatro son plomería interna del circuito del navegador: nadie los
+configura ni los escribe a mano.
+
+| Endpoint | Lo llama | Se entera de la URL por |
+| -------- | -------- | ----------------------- |
+| **[`pagar`](pagar.md)** | El navegador del comprador | El link que arma el sistema origen |
+| **[`webhook`](webhook.md)** | Mercado Pago, server-to-server | Se carga a mano en el panel de vendedor de MP |
+| **[`suscripcionCrear`](suscripcionCrear.md)** | El servidor del sistema origen | Esta documentación |
+| [`procesar`](procesar.md) | *interno* — el JS de la página de `pagar` | El `fetch()` del HTML |
+| [`aprobado`](aprobado.md) · [`pendiente`](pendiente.md) · [`rechazado`](rechazado.md) | *interno* — el navegador, redirigido por Mercado Pago | Las `back_urls` de la preferencia |
+
+> **"Interno" es por integración, no por exposición.** Los cuatro son URLs
+> públicas y sin autenticación, alcanzables desde internet por cualquiera. Por
+> eso [`aprobado`](aprobado.md) no escribe el estado del pago: si lo hiciera,
+> cualquiera acreditaría una factura abriendo esa URL con el
+> `external_reference` correcto. Este webhook sí escribe, y por eso **nunca
+> toma el dato del body** — lo relee de la API de Mercado Pago.
+
+**Al migrar de `/v2/` a `/v4/` sólo hay que tocar esos tres.** Éste es el que
+más fácil se olvida, porque no se cambia en el código sino en el panel de
+vendedor de Mercado Pago, cuenta por cuenta.
+
 ## Autenticación
 
 **Ninguna, y es deliberado.**

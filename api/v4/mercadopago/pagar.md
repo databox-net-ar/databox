@@ -18,6 +18,33 @@ la resuelve contra el `.php` correspondiente:
 GET https://api.databox.net.ar/v4/mercadopago/pagar
 ```
 
+## Quién lo llama
+
+**Superficie externa.** Lo abre el navegador del comprador, desde un link que
+arma el sistema origen.
+
+De los siete endpoints del módulo, sólo **tres** los invoca un tercero. Los
+otros cuatro son plomería interna del circuito del navegador: nadie los
+configura ni los escribe a mano.
+
+| Endpoint | Lo llama | Se entera de la URL por |
+| -------- | -------- | ----------------------- |
+| **[`pagar`](pagar.md)** | El navegador del comprador | El link que arma el sistema origen |
+| **[`webhook`](webhook.md)** | Mercado Pago, server-to-server | Se carga a mano en el panel de vendedor de MP |
+| **[`suscripcionCrear`](suscripcionCrear.md)** | El servidor del sistema origen | Esta documentación |
+| [`procesar`](procesar.md) | *interno* — el JS de esta misma página | El `fetch()` del HTML |
+| [`aprobado`](aprobado.md) · [`pendiente`](pendiente.md) · [`rechazado`](rechazado.md) | *interno* — el navegador, redirigido por Mercado Pago | Las `back_urls` de la preferencia |
+
+> **"Interno" es por integración, no por exposición.** Los cuatro son URLs
+> públicas y sin autenticación, alcanzables desde internet por cualquiera. Por
+> eso [`aprobado`](aprobado.md) no escribe el estado del pago: si lo hiciera,
+> cualquiera acreditaría una factura abriendo esa URL con el
+> `external_reference` correcto.
+
+**Al migrar de `/v2/` a `/v4/` sólo hay que tocar esos tres.** Los cuatro
+internos no requieren acción de nadie: las `back_urls` se regeneran en cada
+preferencia y el `fetch()` del HTML ya apunta a `/v4/`.
+
 ## Autenticación
 
 **Ninguna.** Lo abre el navegador del comprador desde un link que le mandó el

@@ -16,6 +16,30 @@ POST https://api.databox.net.ar/v4/mercadopago/suscripcionCrear
 > mayúsculas. Renombrarlo obligaría a cada cliente a cambiar más que el número
 > de versión, que es justo lo que este port quiere evitar.
 
+## Quién lo llama
+
+**Superficie externa.** Lo llama el servidor del sistema origen, con apikey.
+
+De los siete endpoints del módulo, sólo **tres** los invoca un tercero. Los
+otros cuatro son plomería interna del circuito del navegador: nadie los
+configura ni los escribe a mano.
+
+| Endpoint | Lo llama | Se entera de la URL por |
+| -------- | -------- | ----------------------- |
+| **[`pagar`](pagar.md)** | El navegador del comprador | El link que arma el sistema origen |
+| **[`webhook`](webhook.md)** | Mercado Pago, server-to-server | Se carga a mano en el panel de vendedor de MP |
+| **[`suscripcionCrear`](suscripcionCrear.md)** | El servidor del sistema origen | Esta documentación |
+| [`procesar`](procesar.md) | *interno* — el JS de la página de `pagar` | El `fetch()` del HTML |
+| [`aprobado`](aprobado.md) · [`pendiente`](pendiente.md) · [`rechazado`](rechazado.md) | *interno* — el navegador, redirigido por Mercado Pago | Las `back_urls` de la preferencia |
+
+**Éste es el único endpoint del módulo que pide apikey**, y no es casualidad:
+es el único al que lo llama un servidor, o sea lo único que puede guardar un
+secreto. A [`pagar`](pagar.md) lo abre un navegador y a [`webhook`](webhook.md)
+lo llama Mercado Pago; ninguno de los dos puede sostener una credencial.
+
+**Al migrar de `/v2/` a `/v4/` sólo hay que tocar esos tres**, y éste sólo si
+el cliente da de alta suscripciones.
+
 ## Autenticación
 
 Acepta **las dos formas**. Un cliente que hoy llama al legacy cambia `/v2/` por
