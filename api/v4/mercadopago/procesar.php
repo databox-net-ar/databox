@@ -2,6 +2,9 @@
 /**
  * api/v4/mercadopago/procesar.php
  *
+ * @interno  Lo llama el JS que sirve `pagar`, no un integrador. Fuera del
+ *           navegador de Documentacion; el circuito esta explicado en pagar.md.
+ *
  *   POST /v4/mercadopago/procesar     (JSON body)  -> {"id": "<preference_id>"}
  *
  * Endpoint AJAX que invoca la propia pagina del boton (`pagar`) cuando el

@@ -59921,9 +59921,24 @@ function mdTabla(cabecera, filas, ctx) {
        + `<thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
 }
 
-/** Formato en línea sobre texto YA ESCAPADO. */
-function mdInline(txt, ctx) {
-  const cods = [];
+/**
+ * Formato en línea sobre texto YA ESCAPADO.
+ *
+ * `cods` es el depósito de los fragmentos de código en línea, y se PASA a la
+ * llamada recursiva que formatea el texto de un enlace. No es un detalle de
+ * implementación: con un depósito nuevo por llamada, el patrón de enlace con
+ * el texto entre backticks — el que usan los `.md` de todo el árbol para
+ * linkear a otro endpoint — salía como un enlace VACÍO. El backtick se tokeniza acá
+ * arriba, el token viaja adentro del texto del enlace, y la recursión lo
+ * intentaba resolver contra su propio array (vacío), así que terminaba en `''`
+ * y el `<a>` quedaba sin contenido.
+ *
+ * Sólo la llamada raíz (`cods === null`) restaura los tokens; las anidadas los
+ * dejan pasar para que los resuelva ella.
+ */
+function mdInline(txt, ctx, cods = null) {
+  const raiz = (cods === null);
+  if (raiz) cods = [];
   let s = String(txt);
 
   // Código en línea primero: adentro no se aplica ningún otro formato (un
@@ -59940,15 +59955,18 @@ function mdInline(txt, ctx) {
   // no quede un `[alt](src)` suelto pareciendo un enlace roto.
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt) => alt);
 
-  // Enlace `[texto](destino)`.
+  // Enlace `[texto](destino)`. El `cods` va explícito: ver el encabezado.
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, texto, destino) =>
-    mdEnlace(mdDesescapar(destino), mdInline(texto, ctx), ctx));
+    mdEnlace(mdDesescapar(destino), mdInline(texto, ctx, cods), ctx));
 
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   // Itálica solo con `*`, nunca con `_`: estos documentos están llenos de
   // identificadores snake_case sueltos en la prosa (`extraccion_url`,
   // `lista_ids`) y tomarlos como itálica se come el texto del medio.
   s = s.replace(/(^|[\s(])\*([^\s*][^*]*)\*(?=$|[\s.,;:)])/g, '$1<em>$2</em>');
+
+  // Las llamadas anidadas devuelven los tokens intactos: los restaura la raíz.
+  if (!raiz) return s;
 
   return s.replace(/\u0000C(\d+)\u0000/g, (_m, i) => cods[Number(i)] ?? '');
 }

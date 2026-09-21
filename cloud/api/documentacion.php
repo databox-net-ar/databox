@@ -51,6 +51,40 @@
  *     contenedor (docker-compose monta `cloud`, `www`, `robot`, `api`, `env.php`
  *     y `certs`, no la raiz), asi que desde el panel son ilegibles. Listarlos
  *     seria ofrecer un link que siempre da 404.
+ *   * Los `.php` que se declaran INTERNOS con `@interno` (ver abajo).
+ *
+ * ---------------------------------------------------------------------------
+ * `@interno`: ENDPOINTS QUE NO SON SUPERFICIE DE INTEGRACION
+ * ---------------------------------------------------------------------------
+ * Hasta aca el escaneo daba por sentado que todo `.php` de `api/v4/<carpeta>/`
+ * es un servicio que alguien consume. No siempre: un microservicio puede
+ * publicar endpoints que existen solo para su propio circuito y que ningun
+ * integrador llama ni configura nunca.
+ *
+ * El caso que lo motivo es `mercadopago`. De sus siete endpoints, un tercero
+ * llama tres (`pagar`, `webhook`, `suscripcionCrear`). Los otros cuatro son
+ * plomeria del circuito del navegador: `procesar` lo invoca el JS que sirve
+ * `pagar`, y `aprobado`/`pendiente`/`rechazado` los abre el navegador porque
+ * Mercado Pago lo redirige ahi — sus URLs las emite `procesar` en las
+ * `back_urls` de la preferencia y no figuran en ningun otro lado. Listarlos al
+ * lado de los otros tres hace que el navegador prometa una superficie de
+ * integracion de siete endpoints cuando son tres, y manda a documentar (y a
+ * mantener) cuatro documentos que nadie tiene por que leer.
+ *
+ * Un `.php` se declara interno con una linea de comentario en su encabezado:
+ *
+ *     // @interno  <motivo en una linea>
+ *
+ * Los internos NO aparecen en el indice, ni con doc ni sin ella, y tampoco
+ * cuentan en el resumen del encabezado. Siguen publicados y siguen
+ * respondiendo: `@interno` habla de la documentacion, no del ruteo.
+ *
+ * La marca va en el `.php` y no en el `.md` a proposito: un endpoint interno
+ * normalmente NO tiene `.md` — es justo el punto — asi que el `.md` no sirve
+ * como lugar donde declararlo. Y va en el archivo y no en una constante de
+ * este modulo por la misma razon que el resto del indice se arma escaneando:
+ * un catalogo central se desincroniza el primer dia que alguien renombra un
+ * endpoint y se olvida de anotarlo.
  *
  * ---------------------------------------------------------------------------
  * `estado`: LA COLUMNA QUE HACE UTIL EL LISTADO
@@ -210,6 +244,10 @@ function docEscanearV4(array $fuente): array {
             $bytesPhp = $hayPhp ? (int)filesize($absPhp) : 0;
             $hayMd    = is_file($absMd) && filesize($absMd) > 0;
 
+            // Endpoint declarado interno: no es superficie de integracion y no
+            // entra al indice. Ver "`@interno`" en el encabezado.
+            if ($hayPhp && docEsInterno($absPhp)) continue;
+
             // La ruta publica va SIN `.php`: es como se documenta y como la
             // llaman los integradores (lo resuelve el .htaccess de `api/`).
             $endpoint = '/v4/' . $carpeta . '/' . $nombre;
@@ -228,6 +266,25 @@ function docEscanearV4(array $fuente): array {
         }
     }
     return $items;
+}
+
+/**
+ * ¿El `.php` se declara interno? Ver "`@interno`" en el encabezado.
+ *
+ * Se leen solo los primeros 4 KB: la marca va en el comentario de cabecera del
+ * archivo, que es lo primero que hay. Leer 100 KB de `prospectos.php` entero
+ * para buscar una linea que vive en el renglon 12 convertiria un escaneo
+ * barato en uno que no se puede dejar sin cachear.
+ *
+ * La marca tiene que estar en una linea de COMENTARIO (`//`, `*` o `#`) para
+ * que un `@interno` adentro de una cadena o de un texto de error no de un
+ * falso positivo y haga desaparecer un endpoint del navegador sin que nadie
+ * entienda por que.
+ */
+function docEsInterno(string $absPhp): bool {
+    $cabeza = (string)@file_get_contents($absPhp, false, null, 0, 4096);
+    if ($cabeza === '') return false;
+    return (bool)preg_match('~^\s*(?://|\*|#)\s*@interno\b~m', $cabeza);
 }
 
 // `cloud/*.md` -> los documentos del panel. Sin recursion: lo que esta suelto

@@ -2,6 +2,10 @@
 /**
  * api/v4/mercadopago/pendiente.php
  *
+ * @interno  Su URL la emite `procesar` en las `back_urls`; nadie la configura.
+ *           Fuera del navegador de Documentacion; el circuito esta explicado
+ *           en pagar.md.
+ *
  *   GET /v4/mercadopago/pendiente?collection_id=&payment_id=&status=&...
  *
  * Callback de retorno del Checkout Pro para el caso pendiente (transferencia,

@@ -4,8 +4,8 @@
 
 Endpoint **server-to-server** que llama Mercado Pago para notificar cambios. Es
 la fuente de verdad del estado final de pagos, suscripciones y débitos: los
-callbacks de navegador ([`aprobado`](aprobado.md), [`pendiente`](pendiente.md),
-[`rechazado`](rechazado.md)) no acreditan nada, éste sí.
+callbacks de navegador (`aprobado`, `pendiente`, `rechazado`) no acreditan
+nada, éste sí.
 
 ```
 POST https://api.databox.net.ar/v4/mercadopago/webhook?cta=<uuid de la cuenta>
@@ -22,24 +22,26 @@ notificación.
 más importante del módulo: cerró **15.530 de los 15.617** pagos aprobados que
 hay en la base.
 
-De los siete endpoints del módulo, sólo **tres** los invoca un tercero. Los
-otros cuatro son plomería interna del circuito del navegador: nadie los
-configura ni los escribe a mano.
+El microservicio publica siete endpoints, pero **la superficie de integración
+son tres** — los únicos que invoca un tercero:
 
 | Endpoint | Lo llama | Se entera de la URL por |
 | -------- | -------- | ----------------------- |
 | **[`pagar`](pagar.md)** | El navegador del comprador | El link que arma el sistema origen |
 | **[`webhook`](webhook.md)** | Mercado Pago, server-to-server | Se carga a mano en el panel de vendedor de MP |
 | **[`suscripcionCrear`](suscripcionCrear.md)** | El servidor del sistema origen | Esta documentación |
-| [`procesar`](procesar.md) | *interno* — el JS de la página de `pagar` | El `fetch()` del HTML |
-| [`aprobado`](aprobado.md) · [`pendiente`](pendiente.md) · [`rechazado`](rechazado.md) | *interno* — el navegador, redirigido por Mercado Pago | Las `back_urls` de la preferencia |
 
-> **"Interno" es por integración, no por exposición.** Los cuatro son URLs
-> públicas y sin autenticación, alcanzables desde internet por cualquiera. Por
-> eso [`aprobado`](aprobado.md) no escribe el estado del pago: si lo hiciera,
-> cualquiera acreditaría una factura abriendo esa URL con el
-> `external_reference` correcto. Este webhook sí escribe, y por eso **nunca
-> toma el dato del body** — lo relee de la API de Mercado Pago.
+Los otros cuatro (`procesar`, `aprobado`, `pendiente`, `rechazado`) son
+plomería del circuito del navegador: nadie los llama ni los configura, y no
+figuran en el navegador de Documentación — están marcados `@interno` en su
+`.php`. Lo que hay que saber de ellos está en
+[`pagar`](pagar.md), sección *El circuito interno*.
+
+> **Son URLs públicas igual**, sin autenticación, alcanzables por cualquiera.
+> Por eso `aprobado` no escribe el estado del pago: si lo hiciera, cualquiera
+> acreditaría una factura abriendo esa URL con el `external_reference`
+> correcto. Este webhook sí escribe, y por eso **nunca toma el dato del body**
+> — lo relee de la API de Mercado Pago.
 
 **Al migrar de `/v2/` a `/v4/` sólo hay que tocar esos tres.** Éste es el que
 más fácil se olvida, porque no se cambia en el código sino en el panel de

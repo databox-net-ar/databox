@@ -23,23 +23,20 @@ GET https://api.databox.net.ar/v4/mercadopago/pagar
 **Superficie externa.** Lo abre el navegador del comprador, desde un link que
 arma el sistema origen.
 
-De los siete endpoints del módulo, sólo **tres** los invoca un tercero. Los
-otros cuatro son plomería interna del circuito del navegador: nadie los
-configura ni los escribe a mano.
+El microservicio publica siete endpoints, pero **la superficie de integración
+son tres** — los únicos que invoca un tercero:
 
 | Endpoint | Lo llama | Se entera de la URL por |
 | -------- | -------- | ----------------------- |
 | **[`pagar`](pagar.md)** | El navegador del comprador | El link que arma el sistema origen |
 | **[`webhook`](webhook.md)** | Mercado Pago, server-to-server | Se carga a mano en el panel de vendedor de MP |
 | **[`suscripcionCrear`](suscripcionCrear.md)** | El servidor del sistema origen | Esta documentación |
-| [`procesar`](procesar.md) | *interno* — el JS de esta misma página | El `fetch()` del HTML |
-| [`aprobado`](aprobado.md) · [`pendiente`](pendiente.md) · [`rechazado`](rechazado.md) | *interno* — el navegador, redirigido por Mercado Pago | Las `back_urls` de la preferencia |
 
-> **"Interno" es por integración, no por exposición.** Los cuatro son URLs
-> públicas y sin autenticación, alcanzables desde internet por cualquiera. Por
-> eso [`aprobado`](aprobado.md) no escribe el estado del pago: si lo hiciera,
-> cualquiera acreditaría una factura abriendo esa URL con el
-> `external_reference` correcto.
+Los otros cuatro (`procesar`, `aprobado`, `pendiente`, `rechazado`) son
+plomería del circuito del navegador: nadie los llama ni los configura a mano, y
+**no figuran en el navegador de Documentación** — están marcados `@interno` en
+su `.php`. Lo que hay que saber de ellos está más abajo, en
+[El circuito interno](#el-circuito-interno).
 
 **Al migrar de `/v2/` a `/v4/` sólo hay que tocar esos tres.** Los cuatro
 internos no requieren acción de nadie: las `back_urls` se regeneran en cada
@@ -85,10 +82,9 @@ el navegador.
 ## Este GET escribe
 
 Cada visita **da de alta una fila en `mercadopagopagos`** con estado `'I'`
-(iniciado). El `id` de esa fila es el `external_reference` que
-[`procesar`](procesar.md) le declara a Mercado Pago, y es lo único que después
-permite correlacionar la notificación del [`webhook`](webhook.md) con la
-factura del sistema origen.
+(iniciado). El `id` de esa fila es el `external_reference` que `procesar` le
+declara a Mercado Pago, y es lo único que después permite correlacionar la
+notificación del [`webhook`](webhook.md) con la factura del sistema origen.
 
 Va contra la regla de la casa de que un GET no modifica. Se mantiene a
 propósito: es la firma del microservicio legacy y cambiarla obligaría a tocar
@@ -130,7 +126,7 @@ Defaults de la fila nueva:
 
 La página guarda en la sesión PHP (`pagoId`, `cuentaId`, `facturaId`,
 `facturaMonto`, `cuentaNombre`, `cuentaPublicKey`, `cuentaAccessToken`) lo que
-[`procesar`](procesar.md) necesita para firmar la preferencia.
+`procesar` necesita para firmar la preferencia.
 
 El par de credenciales sale del `modo` de la cuenta:
 
@@ -150,7 +146,118 @@ La cookie de sesión se llama `DBXMP` (no `PHPSESSID`), con path
   dominio de segundo nivel; con `PHPSESSID` una sesión pisaría a la otra.
 - **`SameSite=Lax` y no `Strict`**: el comprador vuelve del checkout por una
   navegación cross-site. Con `Strict` la cookie no viaja en ese retorno y
-  [`aprobado`](aprobado.md) pierde el `pagoId`.
+  `aprobado` pierde el `pagoId`.
+
+## El circuito interno
+
+Los cuatro endpoints que siguen no tienen documentación propia y no aparecen en
+el navegador: no son superficie de integración, nadie los llama ni los
+configura. Esto es lo que hay que saber si algo del circuito falla.
+
+```
+ sistema origen ──> /pagar ──(fetch)──> /procesar ──> crea la Preference
+                                                            │
+                                                            ▼
+                                                  Checkout de Mercado Pago
+                                                            │
+                          ┌─────────────────────────────────┼──────────────────┐
+                          ▼                                 ▼                  ▼
+                     /aprobado                         /pendiente         /rechazado
+                          │                                 │                  │
+                          └────────── redirect al `ret` del sistema origen ────┘
+
+ en paralelo y por su cuenta:  Mercado Pago ──POST──> /webhook   (acredita)
+```
+
+### `POST /procesar`
+
+Lo llama el `fetch()` del HTML que sirve esta página. Crea la Preference con
+`POST https://api.mercadopago.com/checkout/preferences`:
+
+```json
+{
+  "items": [{ "title": "...", "quantity": 1, "unit_price": 4891.58 }],
+  "back_urls": {
+    "success": "https://api.databox.net.ar/v4/mercadopago/aprobado",
+    "failure": "https://api.databox.net.ar/v4/mercadopago/rechazado",
+    "pending": "https://api.databox.net.ar/v4/mercadopago/pendiente"
+  },
+  "auto_return": "approved",
+  "external_reference": "<id interno del pago>"
+}
+```
+
+Devuelve `{"id":"<preference_id>"}` pelado. **No pide apikey y está bien**: lo
+llama un navegador, y una apikey acá sería una apikey impresa en el HTML. Lo
+que autoriza la llamada es la sesión que creó `pagar` — de ahí salen el
+`accessToken` y el `pagoId`. El body sólo aporta título, cantidad y precio; el
+`external_reference` sale **siempre** de la sesión, nunca del body.
+
+| Código | Cuerpo | Cuándo |
+| ------ | ------ | ------ |
+| 200 | `{"id":"..."}` | Preferencia creada. |
+| 405 | `{"id":null,"error":"Metodo no permitido"}` | No es POST. |
+| 409 | `{"id":null,"error":"Sesión de pago no iniciada o vencida..."}` | No hay sesión de `pagar`. |
+| 502 | `{"id":null,"error":"<mensaje de Mercado Pago>"}` | Mercado Pago rechazó la preferencia. |
+
+Cuando la rechaza, el cuerpo completo de Mercado Pago queda en
+`mercadopagoregistros` con tipo `'I'` — ahí está el motivo real
+(`auto_return invalid`, `invalid access token`, monto fuera de rango).
+
+**Base pública.** Las `back_urls` tienen que ser alcanzables desde afuera: con
+`auto_return=approved`, una `success` que Mercado Pago no resuelve hace que
+rechace la preferencia entera. Se resuelve en este orden:
+
+1. `MP_PUBLIC_BASE` del `.env` — para apuntar a un túnel en desarrollo.
+2. `https://api.databox.net.ar` si `APP_ENV=production`.
+3. `http://localhost:8114` en desarrollo.
+
+En desarrollo, sin `MP_PUBLIC_BASE`, el HTML del botón se ve pero el checkout
+real no completa. Es lo esperado.
+
+### `GET /aprobado` · `/pendiente` · `/rechazado`
+
+Son **redirects del navegador**, no llamadas server-to-server: Mercado Pago
+manda al comprador de vuelta con el resultado en la query string
+(`collection_id`, `payment_id`, `status`, `external_reference`,
+`merchant_order_id`, `payment_type`, `site_id`, `processing_mode`,
+`collection_status`, `merchant_account_id`).
+
+Cualquiera puede abrirlas a mano con los parámetros que quiera, **así que no
+son fuente de verdad de nada**:
+
+| Endpoint | Escribe | Por qué |
+| -------- | ------- | ------- |
+| `aprobado` | **nada** | Marcar `'A'` acá dejaría que el navegador declare un cobro: cualquiera acreditaría una factura abriendo la URL con el `external_reference` correcto. Quien marca `'A'` es [`webhook`](webhook.md), que verifica contra la API de Mercado Pago. |
+| `pendiente` | `estado='P'`, `operacion` | `'P'` no acredita plata; si la notificación real es otra, el webhook la corrige. |
+| `rechazado` | `estado='R'`, `operacion` | Ídem. Un pago que el comprador reintenta y aprueba termina en `'A'` por el webhook. |
+
+Los tres identifican el pago por `external_reference` y, si no vino, por el
+`pagoId` de la sesión. Ese respaldo importa: en el `auto_return` de un pago
+aprobado, Mercado Pago no siempre incluye `external_reference`. Por eso
+`aprobado` **no limpia la sesión** y los otros dos sí — una asimetría del
+legacy que se respetó.
+
+Respuestas: `302` al `ret` del pago; `404` `Error inesperado. Inténtelo
+nuevamente mas tarde.` si no se identifica el pago; `500` si la fila no tiene
+un `retorno` válido. Texto legible, no JSON: del otro lado hay una persona.
+
+### ⚠ Quirk heredado: los parámetros de retorno no se guardan
+
+El legacy arma un JSON con esos diez parámetros y lo asigna a
+`$mMercadopagoPago->respuesta`. **Esa columna no existe** en
+`mercadopagopagos`, y el `modificar()` del framework sólo escribe las columnas
+declaradas en el modelo: la asignación se descarta en silencio. O sea que hoy,
+en producción, esos parámetros se pierden.
+
+El port replica el comportamiento observable —se escriben `operacion` y
+`estado`, nada más— en vez de "arreglarlo", porque arreglarlo implica decidir
+dónde guardarlos y eso cambia lo que ve el panel. Si se quieren recuperar, lo
+natural es una fila en `mercadopagoregistros` con tipo `'I'`: una línea en
+`mpRetornoCerrar()` ([`_lib/retorno.php`](_lib/retorno.php)).
+
+No es una pérdida grave: el payload completo y verificado del pago lo trae
+[`webhook`](webhook.md) y queda en `mercadopagopagos.propiedades`.
 
 ## Migración desde `/v2/mercadopago/pagar`
 

@@ -20,17 +20,19 @@ POST https://api.databox.net.ar/v4/mercadopago/suscripcionCrear
 
 **Superficie externa.** Lo llama el servidor del sistema origen, con apikey.
 
-De los siete endpoints del módulo, sólo **tres** los invoca un tercero. Los
-otros cuatro son plomería interna del circuito del navegador: nadie los
-configura ni los escribe a mano.
+El microservicio publica siete endpoints, pero **la superficie de integración
+son tres** — los únicos que invoca un tercero:
 
 | Endpoint | Lo llama | Se entera de la URL por |
 | -------- | -------- | ----------------------- |
 | **[`pagar`](pagar.md)** | El navegador del comprador | El link que arma el sistema origen |
 | **[`webhook`](webhook.md)** | Mercado Pago, server-to-server | Se carga a mano en el panel de vendedor de MP |
 | **[`suscripcionCrear`](suscripcionCrear.md)** | El servidor del sistema origen | Esta documentación |
-| [`procesar`](procesar.md) | *interno* — el JS de la página de `pagar` | El `fetch()` del HTML |
-| [`aprobado`](aprobado.md) · [`pendiente`](pendiente.md) · [`rechazado`](rechazado.md) | *interno* — el navegador, redirigido por Mercado Pago | Las `back_urls` de la preferencia |
+
+Los otros cuatro (`procesar`, `aprobado`, `pendiente`, `rechazado`) son
+plomería del circuito del botón de pago, no tienen que ver con suscripciones y
+no figuran en el navegador de Documentación — están marcados `@interno` en su
+`.php`.
 
 **Éste es el único endpoint del módulo que pide apikey**, y no es casualidad:
 es el único al que lo llama un servidor, o sea lo único que puede guardar un
