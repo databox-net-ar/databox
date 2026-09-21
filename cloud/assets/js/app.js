@@ -15693,6 +15693,9 @@ const dcPagoFiltrosDefaults = {
   // `periodo` es un mes calendario (YYYY-MM, el valor de un <input type="month">);
   // `emi_desde`/`emi_hasta` son el rango de fecha de emisión (YYYY-MM-DD c/u).
   periodo: '', emi_desde: '', emi_hasta: '',
+  // Rango de importe sobre la columna `valor` (la que muestra el listado), no
+  // sobre `monto` — que es el importe en la moneda original del comprobante.
+  valor_desde: '', valor_hasta: '',
   tipo: '', moneda: '', razon: '', cuit: '', estado: '',
   order_by: 'id', dir: 'desc', limite: 100,
 };
@@ -16064,6 +16067,21 @@ route('/datacount_pagos', async (mount) => {
             <div class="form-group">
               <label>CUIT</label>
               <input type="text" id="fDcPagoCuit" oninput="onFiltroDcPago('cuit', this.value)">
+            </div>
+          </div>
+          <!-- Rango de importe sobre la columna Valor del listado. Va por
+               onchange y no por oninput para no disparar una consulta por cada
+               tecla mientras se escribe el número. -->
+          <div class="form-row">
+            <div class="form-group">
+              <label>Valor desde</label>
+              <input type="number" id="fDcPagoValorDesde" step="0.01" placeholder="0,00"
+                     onchange="onFiltroDcPago('valor_desde', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Valor hasta</label>
+              <input type="number" id="fDcPagoValorHasta" step="0.01" placeholder="0,00"
+                     onchange="onFiltroDcPago('valor_hasta', this.value)">
             </div>
           </div>
           <div class="form-group">
@@ -16440,6 +16458,12 @@ function onFiltroDcPago(key, value) {
   } else if (key === 'codigo' || key === 'empresa' || key === 'proyecto') {
     const v = String(value).trim();
     dcPagoFiltros[key] = v === '' ? '' : Math.max(0, Number(v) || 0);
+  } else if (key === 'valor_desde' || key === 'valor_hasta') {
+    // Importes con decimales: se guarda el número tal cual (con coma tolerada
+    // por si el valor no viene del <input type="number">). Un texto que no sea
+    // numérico limpia el extremo en vez de mandar basura al endpoint.
+    const v = String(value).trim().replace(',', '.');
+    dcPagoFiltros[key] = (v === '' || isNaN(Number(v))) ? '' : Number(v);
   } else if (key === 'limite') {
     let n = Number(value); if (!n || n < 1) n = 1; if (n > 1000) n = 1000;
     dcPagoFiltros.limite = n;
@@ -16474,6 +16498,8 @@ function sincronizarControlesFiltrosDcPago() {
   $('#fDcPagoEmiHasta').value = f.emi_hasta;
   $('#fDcPagoRazon').value    = f.razon;
   $('#fDcPagoCuit').value     = f.cuit;
+  $('#fDcPagoValorDesde').value = f.valor_desde;
+  $('#fDcPagoValorHasta').value = f.valor_hasta;
   $('#fDcPagoLimite').value   = f.limite;
   $('#fDcPagoOrderBy').value  = f.order_by;
   $('#fDcPagoDir').value      = f.dir;

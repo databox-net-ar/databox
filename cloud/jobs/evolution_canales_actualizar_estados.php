@@ -26,6 +26,10 @@
  */
 
 require_once __DIR__ . '/_bootstrap.php';
+// evoElegirInstancia(): elegir la instancia del canal dentro de la respuesta de
+// /instance/fetchInstances es la misma operacion que hace GET /v4/evolution/canales,
+// asi que vive en la lib de cliente y no duplicada aca.
+require_once __DIR__ . '/../api/lib/evolution_api.php';
 
 const EVOLUTION_ENDPOINT = 'https://evolution.york.databox.net.ar';
 const EVOLUTION_TIMEOUT_SEG = 30;
@@ -161,7 +165,7 @@ function verificarCanalEvolution(PDO $pdo, array $c): array {
     // canal (no global), Evolution filtra a esa unica instancia.
     // Preferimos matchear por slug/token; si no matchea, tomamos la
     // primera (comportamiento del robot legacy).
-    $instancia = elegirInstanciaEvolution($data, $c);
+    $instancia = evoElegirInstancia($data, $c);
     if ($instancia === null) {
         return ['ok' => false, 'summary' => '',
                 'error' => 'Evolution devolvio 0 instancias para este canal'];
@@ -205,24 +209,4 @@ function verificarCanalEvolution(PDO $pdo, array $c): array {
              . ($celular !== null ? ", celular={$celular}" : '')
              . ", connectionStatus={$connStatus}";
     return ['ok' => true, 'summary' => $summary, 'error' => ''];
-}
-
-/**
- * Elige la instancia correcta dentro de la respuesta de fetchInstances.
- * Preferencia: match por slug (instanceName) o por token. Fallback: [0].
- * Devuelve null si el array esta vacio.
- */
-function elegirInstanciaEvolution(array $data, array $c): ?array {
-    if (!$data) return null;
-    $slug  = (string) ($c['slug']  ?? '');
-    $token = (string) ($c['token'] ?? '');
-    foreach ($data as $inst) {
-        if (!is_array($inst)) continue;
-        $instName  = (string) ($inst['name'] ?? $inst['instanceName'] ?? '');
-        $instToken = (string) ($inst['token'] ?? '');
-        if ($slug  !== '' && $instName  === $slug)  return $inst;
-        if ($token !== '' && $instToken === $token) return $inst;
-    }
-    $first = $data[0] ?? null;
-    return is_array($first) ? $first : null;
 }

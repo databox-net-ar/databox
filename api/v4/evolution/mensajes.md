@@ -400,6 +400,9 @@ como endpoint separado (siempre delegando la lógica a
 
 ## Referencias
 
+- Otras operaciones sobre el mismo servidor de Evolution: [canales.md](canales.md)
+  (listado y estado de los canales), [grupos.md](grupos.md) (crear y configurar
+  grupos) y [grupoMiembros.md](grupoMiembros.md) (agregar / quitar participantes).
 - Tabla destino: `evolution_mensajes` — schema en [db/schema.sql](../../../db/schema.sql).
 - Función compartida de alta: `encolarEvolutionMensaje()` en [cloud/api/lib/evolution_mensajes.php](../../../cloud/api/lib/evolution_mensajes.php).
 - Sender worker: [cloud/jobs/evolution_mensajes_enviar.php](../../../cloud/jobs/evolution_mensajes_enviar.php).

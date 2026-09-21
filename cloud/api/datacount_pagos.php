@@ -109,6 +109,12 @@ function handleListDcPago(PDO $pdo, array $q): void {
     // solo desde, solo hasta, o los dos.
     $emiDesde = dcpNullableDate($q['emi_desde'] ?? null);
     $emiHasta = dcpNullableDate($q['emi_hasta'] ?? null);
+    // Rango de importe sobre `valor` (el importe ya valorizado, la columna que
+    // muestra el listado y suma la tarjeta "Valor total") — NO sobre `monto`,
+    // que es el importe en la moneda original del comprobante. Cada extremo es
+    // opcional y un valor no numerico se ignora en lugar de romper el listado.
+    $valDesde = dcpNullableDec($q['valor_desde'] ?? null);
+    $valHasta = dcpNullableDec($q['valor_hasta'] ?? null);
 
     $orderBy = $q['order_by'] ?? 'id';
     $dir     = strtolower((string)($q['dir'] ?? 'desc'));
@@ -142,6 +148,11 @@ function handleListDcPago(PDO $pdo, array $q): void {
     }
     if ($emiDesde !== null) { $where[] = 'p.emision >= :emi_desde'; $params[':emi_desde'] = $emiDesde; }
     if ($emiHasta !== null) { $where[] = 'p.emision <= :emi_hasta'; $params[':emi_hasta'] = $emiHasta; }
+
+    // Los pagos sin valorizar (`valor` NULL) quedan afuera en cuanto se fija
+    // cualquiera de los dos extremos: no hay importe contra el cual comparar.
+    if ($valDesde !== null) { $where[] = 'p.valor >= :valor_desde'; $params[':valor_desde'] = $valDesde; }
+    if ($valHasta !== null) { $where[] = 'p.valor <= :valor_hasta'; $params[':valor_hasta'] = $valHasta; }
 
     if ($search !== '') {
         $where[] = '(p.razon LIKE :s1 OR p.cuit LIKE :s2 OR p.numero LIKE :s3 OR p.descripcion LIKE :s4)';

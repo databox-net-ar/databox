@@ -38,13 +38,9 @@
 // `online`, `latido` y `actualizado`, que es lo que si sabe de primera mano.
 
 require_once __DIR__ . '/../db.php';
-
-// Mismo endpoint que usan api/lib/mensajes_enviar.php y el job de estados.
-// Se declara con guard (y con nombre propio) para que incluir esta lib junto
-// con cualquiera de esos dos archivos no dispare un "constant already defined".
-if (!defined('EVO_API_BASE')) {
-    define('EVO_API_BASE', 'https://evolution.york.databox.net.ar');
-}
+// EVO_API_BASE + evoApiLlamar(): el transporte vive en la lib de cliente, que
+// es la misma que usan los endpoints de canales y grupos de v4.
+require_once __DIR__ . '/evolution_api.php';
 
 // Timeout de cada request HTTP suelta contra Evolution. Corto a proposito: el
 // restart responde de inmediato (el trabajo pesado lo hace en background) y el
@@ -103,7 +99,7 @@ function evoCanalReiniciar(PDO $pdo, array $canal, ?callable $log = null, array 
 
     // --- 1. El boton RESTART ------------------------------------------------
     $anotar("POST /instance/restart/{$slug}");
-    $r = evoApiLlamar('POST', "/instance/restart/{$slug}", $token);
+    $r = evoApiLlamar('POST', "/instance/restart/{$slug}", $token, null, EVO_REINICIO_TIMEOUT_HTTP);
     if (!$r['ok']) {
         return $fallo($r['error']);
     }
@@ -181,7 +177,7 @@ function evoCanalConnectionState(array $canal): array {
         return ['ok' => false, 'estado' => null, 'error' => 'Canal sin slug/token'];
     }
 
-    $r = evoApiLlamar('GET', "/instance/connectionState/{$slug}", $token);
+    $r = evoApiLlamar('GET', "/instance/connectionState/{$slug}", $token, null, EVO_REINICIO_TIMEOUT_HTTP);
     if (!$r['ok']) {
         return ['ok' => false, 'estado' => null, 'error' => $r['error']];
     }
@@ -209,47 +205,4 @@ function evoCanalPersistirOnline(PDO $pdo, int $id, bool $online): void {
     ");
     $flag = $online ? '1' : '0';
     $st->execute([':online' => $flag, ':online_flag' => $flag, ':id' => $id]);
-}
-
-/**
- * Request contra Evolution API con la apikey del canal. Devuelve
- * ['ok' => bool, 'status' => int, 'data' => ?array, 'raw' => string,
- *  'error' => string]. Encapsula fallos de red y HTTP no-2xx en ok = false.
- */
-function evoApiLlamar(string $metodo, string $ruta, string $token): array {
-    $curl = curl_init();
-    curl_setopt_array($curl, [
-        CURLOPT_URL            => EVO_API_BASE . $ruta,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_ENCODING       => '',
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS      => 5,
-        CURLOPT_TIMEOUT        => EVO_REINICIO_TIMEOUT_HTTP,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
-        CURLOPT_CUSTOMREQUEST  => $metodo,
-        CURLOPT_HTTPHEADER     => [
-            'accept: application/json',
-            'apikey: ' . $token,
-        ],
-    ]);
-    $body   = curl_exec($curl);
-    $err    = curl_error($curl);
-    $status = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
-    curl_close($curl);
-
-    $raw = (string) $body;
-
-    if ($err !== '') {
-        return ['ok' => false, 'status' => 0, 'data' => null, 'raw' => '',
-                'error' => "cURL: {$err}"];
-    }
-    if ($status < 200 || $status >= 300) {
-        return ['ok' => false, 'status' => $status, 'data' => null, 'raw' => $raw,
-                'error' => "HTTP {$status}: " . substr($raw, 0, 200)];
-    }
-
-    $data = json_decode($raw, true);
-    return ['ok' => true, 'status' => $status,
-            'data' => is_array($data) ? $data : null, 'raw' => $raw, 'error' => ''];
 }
