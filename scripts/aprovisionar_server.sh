@@ -155,6 +155,22 @@ services:
       - ./certs:/var/www/certs
     env_file:
       - .env.production
+    # Techo de memoria del contenedor. Sin esto (mem_limit=0, el default) un
+    # proceso PHP runaway se lleva puesto el HOST entero: manchester es una
+    # t3.medium de 3839 MB y hubo 4 OOM-kills en 14 dias, todos de un unico
+    # proceso de este contenedor llegando a ~2,6 GB (incidente 2026-09-24:
+    # lockup total, reboot forzado desde la consola EC2). Con el techo puesto
+    # el kernel mata al runaway DENTRO de este cgroup y el resto del servidor
+    # -- nginx, los otros 10 contenedores, SSH -- no se entera.
+    #
+    # 1536m contra un uso normal medido de ~595 MiB: 2,5x de aire, y
+    # decididamente por debajo de los 2,6 GB del runaway.
+    #
+    # memswap_limit igual a mem_limit deja al contenedor SIN swap a proposito.
+    # El swapfile de 2 GiB del host es la red para todo lo demas; aca conviene
+    # que el runaway muera rapido y limpio en vez de thrashear el disco.
+    mem_limit: 1536m
+    memswap_limit: 1536m
     restart: unless-stopped
 EOF
 echo "        OK"
