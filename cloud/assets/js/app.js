@@ -1443,7 +1443,7 @@ const PLATAFORMAS_GRUPOS = [
       { icono: '☁️', titulo: 'AWS',           desc: 'Consola EC2 (us-east-1).',           url: 'https://us-east-1.console.aws.amazon.com/ec2/v2/home?region=us-east-1#Instances:' },
       { icono: '🌩️', titulo: 'Google Cloud',  desc: 'Consola GCP.',                       url: 'https://console.cloud.google.com/' },
       { icono: '🌐', titulo: 'Cloudflare',    desc: 'Panel principal.',                   url: 'https://dash.cloudflare.com/' },
-      { icono: '🖥️', titulo: 'LatinCloud',    desc: 'WHM cPanel.',                        url: 'https://ar151.xvserver.com:2087/cpsess3116822283/scripts4/listaccts' },
+      { icono: '🖥️', titulo: 'LatinCloud',    desc: 'WHM cPanel.',                        url: 'https://cl104.xvserver.com:2087/cpsess6918435003/scripts4/listaccts' },
       { icono: '🖥️', titulo: 'DonWeb',        desc: 'Panel de hosting.',                  url: 'https://donweb.com/clientes/' },
       { icono: '🖥️', titulo: 'Porteden',      desc: 'Panel de hosting.',                  url: 'https://my.porteden.com/' },
       { icono: '🎮', titulo: 'Play Console',  desc: 'Google Play — publicación Android.', url: 'https://play.google.com/console/u/0/developers/6570590227569156980/inbox' },
@@ -1500,12 +1500,12 @@ const PLATAFORMAS_GRUPOS = [
   {
     id: 'marketing', label: 'Marketing', icono: '📢',
     items: [
-      { icono: '🧑‍💼', titulo: 'EspoCRM',              desc: 'CRM — gestión de clientes y leads.',   url: 'https://espocrm.databox.net.ar' },
       { icono: '📈', titulo: 'Google Ads',            desc: 'Campañas de Ads.',                     url: 'https://ads.google.com/aw/overview' },
       { icono: '📊', titulo: 'Google Analytics',      desc: 'Analítica web.',                       url: 'https://analytics.google.com/analytics/web/#/p402561541/reports/intelligenthome' },
       { icono: '🏬', titulo: 'Google Negocios',       desc: 'Perfiles de Empresa.',                 url: 'https://business.google.com/locations' },
       { icono: '🔍', titulo: 'Google Search Console', desc: 'Indexación y búsqueda.',               url: 'https://search.google.com/search-console?resource_id=https%3A%2F%2Fwww.repo.com.ar%2F&hl=es' },
       { icono: '📘', titulo: 'Meta Business',         desc: 'Facebook / Instagram — administración.', url: 'https://business.facebook.com/latest/home?nav_ref=pages_you_manage_navigation' },
+      { icono: '🗓️', titulo: 'Postiz',                desc: 'Programación de posts en redes.',        url: 'https://postiz.databox.net.ar' },
     ],
   },
   {
