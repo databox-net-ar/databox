@@ -1532,6 +1532,7 @@ const UTILIDADES_GRUPOS = [
     id: 'utilidades', label: 'Utilidades web', icono: '🧰',
     items: [
       { icono: '🎨', titulo: 'AI WebDesign',          desc: 'bolt.new — sitios generados por IA.',        url: 'https://bolt.new/' },
+      { icono: '🖼️', titulo: 'Favicon & App Icons',  desc: 'Favicons para todas las plataformas.',      url: 'https://realfavicongenerator.net/' },
       { icono: '🖼️', titulo: 'Favicon Generator',    desc: 'Genera todos los tamaños de favicon.',       url: 'https://www.favicon-generator.org/' },
       { icono: '📧', titulo: 'Internxt Temp Mail',    desc: 'Correo temporal descartable.',               url: 'https://internxt.com/es/temporary-email' },
       { icono: '🧾', titulo: 'JSON Designer',         desc: 'Editor visual de JSON.',                     url: 'https://jsoneditoronline.org' },
