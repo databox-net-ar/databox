@@ -10585,9 +10585,24 @@ function formDrPlHtml(p, proyectos = [], plantillaId = null) {
           <select id="drPlTipo">${tipoOptions}</select>
         </div>
       </div>
-      <div class="form-group">
-        <label>Nombre</label>
-        <input type="text" id="drPlNombre" maxlength="100" value="${v('nombre')}">
+      <!-- Nombre y Slug comparten renglon al 50%. El slug es la clave publica
+           de la plantilla: los microservicios v4 la resuelven por
+           plantilla_slug (ver api/lib/aws_mensajes.php y hermanos), asi que
+           editarlo rompe a cualquier integracion que lo tenga hardcodeado.
+           Vacio => el backend genera uno (alta) o conserva el que ya tenia
+           (edicion). -->
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nombre</label>
+          <input type="text" id="drPlNombre" maxlength="100" value="${v('nombre')}">
+        </div>
+        <div class="form-group">
+          <label>Slug</label>
+          <input type="text" id="drPlSlug" maxlength="10" value="${v('slug')}"
+                 style="font-family:monospace"
+                 placeholder="${esAlta ? 'Se genera solo si lo dejás vacío' : ''}"
+                 title="Identificador público de la plantilla (hasta 10 caracteres: letras, números, guion y guion bajo)">
+        </div>
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -10753,6 +10768,7 @@ const DR_PL_TAB_DE_CAMPO = {
   drPlMedio:     'general',
   drPlTipo:      'general',
   drPlNombre:    'general',
+  drPlSlug:      'general',
   drPlRemitente: 'general',
   drPlRemite:    'general',
   drPlAsunto:    'cuerpo',
@@ -10764,12 +10780,15 @@ async function guardarDrPl(id, btn) {
   const err = $('#drPlFormError');
   err.style.display = 'none';
   const camposReq = ['drPlProyecto', 'drPlMedio', 'drPlTipo', 'drPlNombre',
-                     'drPlRemitente', 'drPlRemite', 'drPlAsunto',
+                     'drPlSlug', 'drPlRemitente', 'drPlRemite', 'drPlAsunto',
                      'drPlFormato', 'drPlCuerpo'];
   camposReq.forEach((cid) => $('#' + cid)?.classList.remove('input-invalid'));
 
   const payload = {
     nombre:      $('#drPlNombre').value.trim(),
+    // Vacio es valido: el backend genera un slug en el alta y conserva el
+    // existente en la edicion (nunca deja una plantilla sin clave publica).
+    slug:        $('#drPlSlug').value.trim(),
     proyecto_id: $('#drPlProyecto').value,
     medio:       $('#drPlMedio').value,
     tipo:        $('#drPlTipo').value,
@@ -10786,6 +10805,11 @@ async function guardarDrPl(id, btn) {
     ['drPlMedio',     !payload.medio,       'El medio es obligatorio.'],
     ['drPlTipo',      !payload.tipo,        'El tipo es obligatorio.'],
     ['drPlNombre',    !payload.nombre,      'El nombre es obligatorio.'],
+    // El slug viaja a la URL/body de las integraciones: se acota al mismo
+    // juego de caracteres que valida el backend para no depender de que el
+    // servidor sea el unico que avise.
+    ['drPlSlug',      payload.slug !== '' && !/^[A-Za-z0-9_-]{1,10}$/.test(payload.slug),
+                      'El slug admite hasta 10 caracteres entre letras, números, guion y guion bajo.'],
     ['drPlRemitente', !payload.remitente,   'El remitente es obligatorio.'],
     ['drPlRemite',    !payload.remite,      'El remite es obligatorio.'],
     ['drPlAsunto',    !payload.asunto,      'El asunto es obligatorio.'],

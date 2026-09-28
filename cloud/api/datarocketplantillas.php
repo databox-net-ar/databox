@@ -158,6 +158,39 @@ function nullableInt(mixed $v): ?int {
     return (int)$v;
 }
 
+// `slug` es la clave publica de la plantilla: los microservicios v4 resuelven
+// `plantilla_slug` -> id con un `WHERE slug = :s LIMIT 1` (ver
+// lib/{aws,evolution,telegram}_mensajes.php). La tabla NO tiene indice UNIQUE,
+// asi que dos plantillas con el mismo slug harian que ese LIMIT 1 elija una
+// arbitrariamente; por eso el ABM valida la unicidad aca antes de escribir.
+//
+// Devuelve el slug normalizado, o null si el body no trae nada utilizable
+// (el llamador decide si genera uno o conserva el anterior).
+function drPlSlugDelPayload(array $in, PDO $pdo, ?int $excluirId): ?string {
+    $slug = nullableStr($in['slug'] ?? null, 10);
+    if ($slug === null) return null;
+    if (!preg_match('/^[A-Za-z0-9_-]{1,10}$/', $slug)) {
+        jsonError('El slug admite hasta 10 caracteres entre letras, numeros, guion y guion bajo.', 400);
+    }
+    $sql    = 'SELECT id FROM datarocket_plantillas WHERE slug = :slug';
+    $params = [':slug' => $slug];
+    if ($excluirId !== null) {
+        $sql .= ' AND id <> :id';
+        $params[':id'] = $excluirId;
+    }
+    $stmt = $pdo->prepare($sql . ' LIMIT 1');
+    $stmt->execute($params);
+    $otro = $stmt->fetchColumn();
+    if ($otro !== false) {
+        jsonError("El slug '{$slug}' ya lo usa la plantilla #{$otro}.", 409);
+    }
+    return $slug;
+}
+
+function drPlSlugAleatorio(): string {
+    return substr(bin2hex(random_bytes(5)), 0, 10);
+}
+
 function sanitizePayload(array $in): array {
     $adjunto = nullableStr($in['adjunto'] ?? null, 500);
     // `adjunto_origen` se deriva del propio adjunto: si la URL cae bajo el
@@ -194,8 +227,9 @@ function sanitizePayload(array $in): array {
 
 function handleCreate(PDO $pdo, array $in): void {
     $p = sanitizePayload($in);
-    // `slug` es varchar(10) (heredado del `uuid` de la tabla vieja).
-    $p['slug'] = nullableStr($in['slug'] ?? null, 10) ?? substr(bin2hex(random_bytes(5)), 0, 10);
+    // `slug` es varchar(10) (heredado del `uuid` de la tabla vieja). Si el alta
+    // no lo trae, se genera: ninguna plantilla queda sin clave publica.
+    $p['slug'] = drPlSlugDelPayload($in, $pdo, null) ?? drPlSlugAleatorio();
 
     $sql = "
         INSERT INTO datarocket_plantillas
@@ -224,15 +258,22 @@ function handleCreate(PDO $pdo, array $in): void {
 }
 
 function handleUpdate(PDO $pdo, int $id, array $in): void {
-    $exists = $pdo->prepare('SELECT adjunto FROM datarocket_plantillas WHERE id = :id');
+    $exists = $pdo->prepare('SELECT adjunto, slug FROM datarocket_plantillas WHERE id = :id');
     $exists->execute([':id' => $id]);
     $prev = $exists->fetch();
     if (!$prev) jsonError('Plantilla no encontrada', 404);
 
     $p = sanitizePayload($in);
+    // Slug vacio en la edicion = "no lo toques": se conserva el que tenia, y
+    // recien si la fila venia sin ninguno (filas viejas con slug NULL) se le
+    // genera uno. Vaciar el campo nunca deja la plantilla sin clave publica.
+    $p['slug'] = drPlSlugDelPayload($in, $pdo, $id)
+              ?? nullableStr($prev['slug'] ?? null, 10)
+              ?? drPlSlugAleatorio();
 
     $sql = "
         UPDATE datarocket_plantillas SET
+            slug           = :slug,
             nombre         = :nombre,
             proyecto_id    = :proyecto_id,
             medio          = :medio,
@@ -248,6 +289,7 @@ function handleUpdate(PDO $pdo, int $id, array $in): void {
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
+        ':slug'           => $p['slug'],
         ':nombre'         => $p['nombre'],
         ':proyecto_id'    => $p['proyecto_id'],
         ':medio'          => $p['medio'],
